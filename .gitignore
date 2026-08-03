@@ -20,6 +20,11 @@ compile_commands.json
 packaging/pkg/
 packaging/src/
 packaging/*.pkg.tar.*
+# A VCS source is cached as a bare clone named after it, beside the PKGBUILD.
+# Found by running the public PKGBUILD for the first time: two of them appeared
+# as untracked directories in a repository that had just been published.
+packaging/vocem-overlay/
+packaging/imgui/
 
 # Fetched by scripts/make-fonts.py, which deletes them again; what is committed
 # is the subsets it produces under common/fonts/.
