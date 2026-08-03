@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Vocem Overlay
+GenericName=Voice Overlay Settings
+Comment=Configure the in-game Discord voice overlay
+Exec=vocem-config
+Icon=io.github.ales_drnz.vocem_overlay
+Terminal=false
+Categories=Settings;
+Keywords=discord;voice;overlay;vulkan;opengl;
+StartupNotify=true
+StartupWMClass=vocem-config

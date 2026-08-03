@@ -1,0 +1,1094 @@
+// Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+// All rights reserved.
+// Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+//
+// What the overlay's geometry actually is, measured rather than derived.
+//
+// The panel had been judged from screenshots three times, and each pass fixed some
+// numbers by eye and broke others. This runs the real build_panel() and
+// build_notification() -- the same translation unit the layer and the interposer
+// compile -- against a null backend, then reads the geometry back out of the
+// vertices ImGui produced. Nothing here restates a formula from panel.cpp: a
+// distance is measured between two things that were drawn, so a wrong formula
+// shows up as a wrong number instead of agreeing with itself.
+//
+// Colours are the handle. Every shape the panel draws has a colour of its own, and
+// the configurable ones are set to sentinels here, so the bounding box of every
+// vertex carrying a given colour is that shape's rectangle. The window rectangles
+// come from ImGui's own bookkeeping, which is the one thing worth trusting
+// directly: it is what the backend would be told to scissor to.
+//
+// Output is JSON on stdout, so the comparison against the QML preview is a
+// numeric one. With no arguments it runs a self-check instead, asserting the
+// invariants that the drawing must satisfy at every extreme of every setting --
+// which is the part that has to keep holding after this file has been forgotten.
+
+#include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "imgui.h"
+#include "imgui_internal.h"
+#include "vocem/config.h"
+#include "vocem/fonts.h"
+#include "vocem/panel.h"
+#include "vocem/placement.h"
+#include "vocem/shared_state.h"
+#include "vocem/theme.h"
+
+using namespace vocem;
+
+namespace {
+
+// Colours chosen so no two shapes can be confused, and so none of them collides
+// with a colour panel.cpp uses for something else.
+constexpr uint32_t kPanelSentinel = 0x010203;
+constexpr uint32_t kSpeakingSentinel = 0x040506;
+constexpr uint32_t kToastSentinel = 0x070809;
+
+struct Rect {
+    float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
+    bool valid() const { return x1 >= x0; }
+    float width() const { return valid() ? x1 - x0 : 0.0f; }
+    float height() const { return valid() ? y1 - y0 : 0.0f; }
+    void add(float x, float y) {
+        if (x < x0) x0 = x;
+        if (y < y0) y0 = y;
+        if (x > x1) x1 = x;
+        if (y > y1) y1 = y;
+    }
+};
+
+// Every vertex of this colour, whatever its alpha: opacity is a setting, and a box
+// turned down to nothing still occupies the same rectangle.
+Rect colour_bounds(const ImDrawList* list, ImU32 rgb) {
+    Rect rect;
+    if (!list) {
+        return rect;
+    }
+    const ImU32 mask = IM_COL32(255, 255, 255, 0);
+    for (int i = 0; i < list->VtxBuffer.Size; ++i) {
+        const ImDrawVert& vertex = list->VtxBuffer[i];
+        if ((vertex.col & mask) == (rgb & mask)) {
+            rect.add(vertex.pos.x, vertex.pos.y);
+        }
+    }
+    return rect;
+}
+
+// The same colour, once per shape. One participant's picture and the next one's
+// are the same disc drawn twice, and ImGui emits each shape's vertices
+// consecutively, so a break in the run of matching indices is a break between
+// shapes. Splitting them by position instead would fail exactly where it matters:
+// at an avatar size large enough for two rows to overlap.
+std::vector<Rect> colour_clusters(const ImDrawList* list, ImU32 rgb) {
+    std::vector<Rect> clusters;
+    if (!list) {
+        return clusters;
+    }
+    const ImU32 mask = IM_COL32(255, 255, 255, 0);
+    int previous = -10;
+    for (int i = 0; i < list->VtxBuffer.Size; ++i) {
+        const ImDrawVert& vertex = list->VtxBuffer[i];
+        if ((vertex.col & mask) != (rgb & mask)) {
+            continue;
+        }
+        if (i != previous + 1 || clusters.empty()) {
+            clusters.push_back(Rect());
+        }
+        clusters.back().add(vertex.pos.x, vertex.pos.y);
+        previous = i;
+    }
+    return clusters;
+}
+
+Rect cluster(const ImDrawList* list, ImU32 rgb, size_t index) {
+    const std::vector<Rect> clusters = colour_clusters(list, rgb);
+    return index < clusters.size() ? clusters[index] : Rect();
+}
+
+ImU32 to_rgb(uint32_t colour) {
+    return IM_COL32((colour >> 16) & 0xff, (colour >> 8) & 0xff, colour & 0xff, 255);
+}
+
+// A theme colour in the form the searches above compare against. The alpha is
+// dropped because they mask it off anyway: a box turned down to nothing still
+// occupies the same rectangle.
+ImU32 ink(Colour colour) {
+    return IM_COL32(colour.r, colour.g, colour.b, 255);
+}
+
+// The same four people, in the same channel, that the configuration window draws, in the same states and with
+// the same message. Two geometries can only be compared if they are drawing the
+// same thing, and the window's roster -- fixed, and never the live channel -- is
+// what a comparison can be made against with Discord closed. It is written out in
+// ConfigBridge::participants(); this is the other half of it.
+Snapshot make_snapshot(uint32_t users, const char* channel) {
+    static const struct {
+        const char* name;
+        uint32_t flags;
+    } roster[] = {
+        {"User 1", kFlagSpeaking},
+        {"User 2", 0},
+        {"User 3", kFlagMuted},
+        {"User 4", kFlagDeafened},
+    };
+
+    Snapshot snapshot;
+    snapshot.connected = true;
+    snapshot.in_channel = true;
+    std::snprintf(snapshot.channel_name, sizeof(snapshot.channel_name), "%s", channel);
+    snapshot.user_count = users > kMaxUsers ? kMaxUsers : users;
+    for (uint32_t i = 0; i < snapshot.user_count; ++i) {
+        snapshot.users[i].id = 1000 + i;
+        if (i < IM_ARRAYSIZE(roster)) {
+            std::snprintf(snapshot.users[i].name, sizeof(snapshot.users[i].name), "%s",
+                          roster[i].name);
+            snapshot.users[i].flags = roster[i].flags;
+        } else {
+            std::snprintf(snapshot.users[i].name, sizeof(snapshot.users[i].name), "Participant %u",
+                          i + 1);
+            // Beyond the four the window knows about, one of each state, so the
+            // decorations are exercised at every row count.
+            if (i % 4 == 3) snapshot.users[i].flags |= kFlagDeafened;
+        }
+    }
+    snapshot.notification.serial = 1;
+    snapshot.notification.user_id = 1000;
+    snapshot.notification.received = 0.0;
+    std::snprintf(snapshot.notification.title, sizeof(snapshot.notification.title), "User 1");
+    std::snprintf(snapshot.notification.body, sizeof(snapshot.notification.body),
+                  "sent you a direct message");
+    return snapshot;
+}
+
+// What one configuration draws, in pixels of the output it was drawn for.
+struct Measurement {
+    float output_width = 0.0f;
+    float output_height = 0.0f;
+
+    // What ImGui was told to use, reported so a divergence can be traced to the
+    // input rather than to the layout.
+    float font_pixels = 0.0f;
+    float ui_scale = 0.0f;
+    // The unit the message box is laid out in: ui_scale times its own size setting.
+    float message_scale = 0.0f;
+    float line_height = 0.0f;
+    float line_height_with_spacing = 0.0f;
+    float item_spacing_y = 0.0f;
+    float item_spacing_x = 0.0f;
+    float window_padding_x = 0.0f;
+    float window_padding_y = 0.0f;
+    // The width of a known string at the reference size, which is what lets the
+    // QML preview pick a font size that matches this one rather than a nominally
+    // equal one that measures differently.
+    float reference_text_width = 0.0f;
+    float reference_em = 0.0f;
+    // The advance width of the strings the preview shows, which is what the two
+    // sides have to agree on before any box that ends where its text ends can.
+    float name_advance = 0.0f;
+    float channel_advance = 0.0f;
+    float title_advance = 0.0f;
+    float body_advance = 0.0f;
+
+    Rect panel;         // the box, from its background
+    Rect avatar;        // the first participant's picture
+    Rect ring;          // the speaking ring around it
+    Rect badge;         // the muted badge on the second participant
+    Rect channel_text;  // the channel name's ink
+    Rect first_name;    // the first participant's name
+    Rect second_avatar;
+    Rect separator;
+    Rect hairline;      // the stroke just inside the panel's edge
+    Rect separator_accent;  // the blurple bar in front of the separator's hairline
+    Rect overflow;      // the "+N more" line's ink, when anybody was left out
+
+    // The ring is drawn around every picture now, transparent at rest, so the
+    // two counts have to agree -- a ring that appears only for the speaker is
+    // the reflow this design got rid of.
+    size_t ring_count = 0;
+    size_t avatar_count = 0;
+
+    Rect toast;
+    Rect toast_avatar;
+    Rect toast_title;
+    Rect toast_body;
+    Rect toast_accent;    // the blurple bar down the box's left edge
+    Rect toast_hairline;  // the stroke just inside the box's edge
+
+    // What the message box's padding and spacing should be: the shared setting at
+    // the message's own size. The one figure here that is a contract rather than a
+    // measurement, because it is the contract being checked.
+    float toast_padding_x = 0.0f;
+    float toast_padding_y = 0.0f;
+
+    float panel_two_rows_height = 0.0f;  // for the row pitch, measured as a difference
+    float panel_one_row_height = 0.0f;
+    float panel_no_channel_height = 0.0f;
+};
+
+// Several frames with a null backend, and only the last is read. Several for two
+// reasons now: ImGui hides an auto-resized window until it knows its size, and
+// the panel's animations have to settle -- this measures the resting geometry,
+// which the motion contract promises is what an ended animation leaves behind.
+//
+// The clock is monotone across every call and jumps ten seconds a frame: the
+// drawing clamps a frame's animation step to a tenth of a second, so six frames
+// advance every phase by 0.6 animated seconds, past the longest duration there
+// is, whatever state the persistent motion slots were left in by the previous
+// configuration measured. The toast's timestamp is restamped each frame so the
+// box is measured mid-life -- past its entrance, before its fade.
+void run_frames(const Snapshot& snapshot, const Config& config, uint32_t width, uint32_t height,
+                bool with_toast) {
+    static double clock = 100.0;
+    Snapshot animated = snapshot;
+    for (int frame = 0; frame < 6; ++frame) {
+        clock += 10.0;
+        animated.notification.received = clock - 1.0;
+        ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+        ImGui::GetIO().DeltaTime = 1.0f / 60.0f;
+        ImGui::NewFrame();
+        build_panel(animated, config, width, height, nullptr, clock);
+        if (with_toast) {
+            build_notification(animated, config, width, height, nullptr, clock);
+        }
+        ImGui::Render();
+    }
+}
+
+float window_height(const char* name) {
+    ImGuiWindow* window = ImGui::FindWindowByName(name);
+    return window ? window->Size.y : 0.0f;
+}
+
+Measurement measure(const Config& base, uint32_t width, uint32_t height, uint32_t users) {
+    Config config = base;
+    config.panel_colour = kPanelSentinel;
+    config.speaking_colour = kSpeakingSentinel;
+    config.notification_colour = kToastSentinel;
+
+    Measurement out;
+    out.output_width = static_cast<float>(width);
+    out.output_height = static_cast<float>(height);
+
+    const float pixels = font_pixel_size(height, config.scale, config.font_size);
+    ensure_fonts(pixels, config.font_size);
+    configure_style(config);
+
+    const Snapshot snapshot = make_snapshot(users, "Voice channel");
+    run_frames(snapshot, config, width, height, true);
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    out.font_pixels = pixels;
+    out.ui_scale = ui_scale();
+    out.item_spacing_x = style.ItemSpacing.x;
+    out.item_spacing_y = style.ItemSpacing.y;
+    out.window_padding_x = style.WindowPadding.x;
+    out.window_padding_y = style.WindowPadding.y;
+    out.message_scale = out.ui_scale * config.notification_scale;
+    out.toast_padding_x = config.box_padding_x * out.ui_scale * config.notification_scale;
+    out.toast_padding_y = config.box_padding_y * out.ui_scale * config.notification_scale;
+
+    ImGuiWindow* panel = ImGui::FindWindowByName("##vocem");
+    ImGuiWindow* toast = ImGui::FindWindowByName("##vocem_toast");
+    if (panel) {
+        out.line_height = panel->CalcFontSize();
+        out.panel.add(panel->Pos.x, panel->Pos.y);
+        out.panel.add(panel->Pos.x + panel->Size.x, panel->Pos.y + panel->Size.y);
+    }
+    out.line_height_with_spacing = out.line_height + out.item_spacing_y;
+
+    // The reference string is measured with the body font at the size the atlas was
+    // built at, which is the number Qt has to be made to agree with.
+    if (fonts().body) {
+        const ImVec2 size = fonts().body->CalcTextSizeA(pixels, FLT_MAX, 0.0f,
+                                                        "Participant 1 gjqQWM");
+        out.reference_text_width = size.x;
+        out.reference_em = fonts().body->FontSize;
+        out.name_advance = fonts().body->CalcTextSizeA(pixels, FLT_MAX, 0.0f, "User 1").x;
+        out.body_advance =
+            fonts().body->CalcTextSizeA(pixels, FLT_MAX, 0.0f, "sent you a direct message").x;
+    }
+    if (fonts().strong) {
+        out.channel_advance = fonts().strong->CalcTextSizeA(pixels, FLT_MAX, 0.0f, "Voice channel").x;
+        out.title_advance = fonts().strong->CalcTextSizeA(pixels, FLT_MAX, 0.0f, "Someone").x;
+    }
+
+    const ImDrawList* panel_list = panel ? panel->DrawList : nullptr;
+    const ImDrawList* toast_list = toast ? toast->DrawList : nullptr;
+
+    // The colours come from the theme, not from a copy of it. A shape is found here
+    // by looking for its colour, so a palette written out a second time in this file
+    // would go on measuring whatever the panel used to draw: the search would simply
+    // find nothing, and an empty rectangle reads as a shape at the origin rather
+    // than as a test that has stopped looking at the right thing.
+    const Theme theme = theme_for(config);
+    out.avatar = cluster(panel_list, ink(theme.avatar_placeholder), 0);
+    out.second_avatar = cluster(panel_list, ink(theme.avatar_placeholder), 1);
+    // The first ring is the speaker's -- the fixture's first participant -- and
+    // a cluster now rather than the bounds of the colour, because every picture
+    // wears a ring (transparent when its owner is quiet) and the union of all of
+    // them would just be the rows.
+    out.ring = cluster(panel_list, to_rgb(kSpeakingSentinel), 0);
+    out.ring_count = colour_clusters(panel_list, to_rgb(kSpeakingSentinel)).size();
+    out.avatar_count = colour_clusters(panel_list, ink(theme.avatar_placeholder)).size();
+    out.badge = cluster(panel_list, ink(theme.badge_fill), 0);
+    out.separator_accent = colour_bounds(panel_list, ink(theme.separator_accent));
+    out.overflow = cluster(panel_list, ink(theme.text_overflow), 0);
+    // The channel name is the first thing drawn in its colour; a muted
+    // participant's name shares it, and comes later.
+    out.channel_text =
+        config.show_channel_name ? cluster(panel_list, ink(theme.text_channel), 0) : Rect();
+    out.first_name = cluster(panel_list, ink(theme.text_speaking), 0);
+    out.separator = colour_bounds(panel_list, ink(theme.separator));
+    out.hairline = colour_bounds(panel_list, ink(theme.panel_hairline));
+
+    if (toast) {
+        out.toast.add(toast->Pos.x, toast->Pos.y);
+        out.toast.add(toast->Pos.x + toast->Size.x, toast->Pos.y + toast->Size.y);
+    }
+    out.toast_avatar = cluster(toast_list, ink(theme.avatar_placeholder), 0);
+    out.toast_title = cluster(toast_list, ink(theme.toast_title), 0);
+    out.toast_body = cluster(toast_list, ink(theme.toast_body), 0);
+    out.toast_accent = colour_bounds(toast_list, ink(theme.toast_accent));
+    out.toast_hairline = colour_bounds(toast_list, ink(theme.toast_hairline));
+
+    // Heights of the same panel with one row fewer, which is how the row pitch is
+    // obtained without asking the drawing code what it thinks the pitch is.
+    Config quiet = config;
+    quiet.notifications_enabled = false;
+    run_frames(make_snapshot(1, "Voice channel"), quiet, width, height, false);
+    out.panel_one_row_height = window_height("##vocem");
+    run_frames(make_snapshot(2, "Voice channel"), quiet, width, height, false);
+    out.panel_two_rows_height = window_height("##vocem");
+    Config no_channel = quiet;
+    no_channel.show_channel_name = false;
+    run_frames(make_snapshot(1, "Voice channel"), no_channel, width, height, false);
+    out.panel_no_channel_height = window_height("##vocem");
+
+    // Left as it was found, so the caller's next measurement starts from the same
+    // place this one did.
+    run_frames(snapshot, config, width, height, true);
+    return out;
+}
+
+void print_rect(const char* name, const Rect& rect, bool last = false) {
+    if (!rect.valid()) {
+        std::printf("    \"%s\": null%s\n", name, last ? "" : ",");
+        return;
+    }
+    std::printf("    \"%s\": {\"x\": %.3f, \"y\": %.3f, \"w\": %.3f, \"h\": %.3f}%s\n", name,
+                rect.x0, rect.y0, rect.width(), rect.height(), last ? "" : ",");
+}
+
+void print_json(const Measurement& m) {
+    std::printf("{\n");
+    std::printf("    \"output\": {\"w\": %.1f, \"h\": %.1f},\n", m.output_width, m.output_height);
+    std::printf("    \"font_pixels\": %.4f,\n", m.font_pixels);
+    std::printf("    \"ui_scale\": %.4f,\n", m.ui_scale);
+    std::printf("    \"message_scale\": %.4f,\n", m.message_scale);
+    std::printf("    \"line_height\": %.4f,\n", m.line_height);
+    std::printf("    \"line_height_with_spacing\": %.4f,\n", m.line_height_with_spacing);
+    std::printf("    \"item_spacing\": {\"x\": %.4f, \"y\": %.4f},\n", m.item_spacing_x,
+                m.item_spacing_y);
+    std::printf("    \"window_padding\": {\"x\": %.4f, \"y\": %.4f},\n", m.window_padding_x,
+                m.window_padding_y);
+    std::printf("    \"reference_text_width\": %.4f,\n", m.reference_text_width);
+    std::printf("    \"reference_em\": %.4f,\n", m.reference_em);
+    std::printf("    \"name_advance\": %.4f,\n", m.name_advance);
+    std::printf("    \"channel_advance\": %.4f,\n", m.channel_advance);
+    std::printf("    \"title_advance\": %.4f,\n", m.title_advance);
+    std::printf("    \"body_advance\": %.4f,\n", m.body_advance);
+    std::printf("    \"panel_one_row_height\": %.4f,\n", m.panel_one_row_height);
+    std::printf("    \"panel_two_rows_height\": %.4f,\n", m.panel_two_rows_height);
+    std::printf("    \"panel_no_channel_height\": %.4f,\n", m.panel_no_channel_height);
+    print_rect("panel", m.panel);
+    print_rect("avatar", m.avatar);
+    print_rect("second_avatar", m.second_avatar);
+    print_rect("ring", m.ring);
+    print_rect("badge", m.badge);
+    print_rect("channel_text", m.channel_text);
+    print_rect("first_name", m.first_name);
+    print_rect("separator", m.separator);
+    print_rect("separator_accent", m.separator_accent);
+    print_rect("overflow", m.overflow);
+    print_rect("hairline", m.hairline);
+    print_rect("toast", m.toast);
+    print_rect("toast_avatar", m.toast_avatar);
+    print_rect("toast_title", m.toast_title);
+    print_rect("toast_accent", m.toast_accent);
+    print_rect("toast_hairline", m.toast_hairline);
+    print_rect("toast_body", m.toast_body, true);
+    std::printf("}\n");
+}
+
+// --- the self-check ---------------------------------------------------------
+
+int failures = 0;
+
+void check(bool condition, const std::string& what) {
+    if (!condition) {
+        std::printf("  FAIL  %s\n", what.c_str());
+        ++failures;
+    }
+}
+
+void check_close(float measured, float expected, float tolerance, const std::string& what) {
+    if (std::fabs(measured - expected) > tolerance) {
+        std::printf("  FAIL  %s: measured %.3f, expected %.3f\n", what.c_str(), measured, expected);
+        ++failures;
+    }
+}
+
+std::string describe(const Config& config, uint32_t width, uint32_t height, uint32_t users) {
+    char buffer[256];
+    std::snprintf(buffer, sizeof(buffer),
+                  "%ux%u scale %.2f opacity %.2f avatar %.2f margin %.0f padding %.0f/%.0f gap "
+                  "%.0f/%.0f channel %d users %u",
+                  width, height, config.scale, config.opacity, config.avatar_size,
+                  config.screen_margin, config.box_padding_x, config.box_padding_y,
+                  config.avatar_gap, config.row_spacing, config.show_channel_name ? 1 : 0, users);
+    return buffer;
+}
+
+// The invariants. Everything here is a property of the drawing that has to hold at
+// every setting, not a restatement of a formula: a box inside the screen, its
+// contents inside it, one row clear of the next.
+void verify(const Config& config, uint32_t width, uint32_t height, uint32_t users) {
+    const Measurement m = measure(config, width, height, users);
+    const std::string where = describe(config, width, height, users);
+    const float slack = 0.75f;  // antialiasing puts a vertex half a pixel outside
+    // ImGui truncates a window's content origin to whole pixels, so a padding with
+    // a fraction in it lands up to a pixel short of the figure it was given.
+    const float truncation = 1.25f;
+
+    // The panel is expected to fit whatever the settings are: it draws as many
+    // people as the display has room for and says how many are missing, so there is
+    // no configuration in which it runs off the bottom.
+    //
+    // The message box is different. It is one box with one message in it, and at
+    // three times the size on a small output a long message is simply taller than
+    // the screen; the alternatives are drawing it at a size the user did not ask
+    // for or cutting the message in half, and neither is better than a box that
+    // overflows. Its containment is therefore checked where it can fit.
+    // The one case the panel cannot answer for is a display too small for its own
+    // frame: at 120 units of margin and 48 of padding on a 720p screen, the margins
+    // and the padding alone are more than the screen is tall, before a single name
+    // is drawn. The height of the smallest panel there is -- one person -- is the
+    // measure of that, and it is measured rather than worked out.
+    const float margin = config.screen_margin * m.ui_scale;
+    const bool panel_fits = m.panel_one_row_height + margin * 2.0f <= m.output_height + 1.0f;
+    const bool toast_fits = m.toast.valid() && m.toast.height() + margin * 2.0f <= m.output_height &&
+                            m.toast.width() + margin * 2.0f <= m.output_width;
+
+    check(m.panel.valid(), where + ": the panel is drawn");
+    if (panel_fits) {
+        check(m.panel.x0 >= -slack && m.panel.y0 >= -slack &&
+                  m.panel.x1 <= m.output_width + slack && m.panel.y1 <= m.output_height + slack,
+              where + ": the panel is on screen");
+    } else {
+        // Nothing else is possible, but the top-left corner is what a user reads
+        // first, so that is the part that has to survive.
+        check(m.panel.x0 >= -slack && m.panel.y0 >= -slack,
+              where + ": the panel starts on screen even where it cannot fit");
+    }
+    if (toast_fits) {
+        check(m.toast.x0 >= -slack && m.toast.y0 >= -slack &&
+                  m.toast.x1 <= m.output_width + slack && m.toast.y1 <= m.output_height + slack,
+              where + ": the message is on screen");
+    }
+
+    // Each box keeps its own distance from the edge -- the panel's `screen_margin`
+    // and the message's `notification_margin`. They were one setting for both once,
+    // which is entry 17 in reverse: there a hardcoded 12 ignored the slider, here a
+    // shared slider moved a box its owner had not asked to move.
+    const float inset = config.screen_margin * m.ui_scale;
+    const float toast_inset = config.notification_margin * m.ui_scale;
+    // A fraction is a place between the margins, so only the (0,0) anchor puts the
+    // panel *at* the margin on both axes (vocem/placement.h).
+    if (config.position_x <= 0.0f && config.position_y <= 0.0f) {
+        check_close(m.panel.x0, inset, 0.75f, where + ": the panel sits at the margin");
+        check_close(m.panel.y0, inset, 0.75f, where + ": the panel sits at the margin, vertically");
+    }
+    // And the middle of a side means centred, which is the whole of the snap fix:
+    // the box's own centre lands on half the display, not its top edge.
+    if (config.position_y == 0.5f && m.panel.valid()) {
+        const float centre = (m.panel.y0 + m.panel.y1) * 0.5f;
+        const float half = m.output_height * 0.5f;
+        const bool fits = (m.panel.y1 - m.panel.y0) + inset * 2.0f <= m.output_height;
+        if (fits) {
+            check_close(centre, half, 1.0f,
+                        where + ": a middle anchor centres the panel on that side");
+        }
+    }
+    check_close(m.output_width - m.toast.x1, toast_inset, 0.75f,
+                where + ": the message sits at its own margin");
+
+    // Nothing the panel draws may cross its own padding.
+    if (m.avatar.valid() && panel_fits) {
+        check(m.avatar.x0 >= m.panel.x0 + m.window_padding_x - truncation,
+              where + ": the picture starts after the left padding");
+        check(m.avatar.y1 <= m.panel.y1 - m.window_padding_y + slack,
+              where + ": the picture stays above the bottom padding");
+    }
+    if (m.ring.valid() && panel_fits) {
+        check(m.ring.x0 >= m.panel.x0 - slack && m.ring.x1 <= m.panel.x1 + slack &&
+                  m.ring.y0 >= m.panel.y0 - slack && m.ring.y1 <= m.panel.y1 + slack,
+              where + ": the speaking ring stays inside the box");
+    }
+    if (m.badge.valid() && panel_fits) {
+        check(m.badge.x1 <= m.panel.x1 + slack && m.badge.y1 <= m.panel.y1 + slack,
+              where + ": the muted badge stays inside the box");
+    }
+    if (m.first_name.valid() && panel_fits) {
+        check(m.first_name.x1 <= m.panel.x1 - m.window_padding_x + slack + 2.0f,
+              where + ": the name stays inside the right padding");
+    }
+    if (m.channel_text.valid() && panel_fits) {
+        check(m.channel_text.x1 <= m.panel.x1 - m.window_padding_x + slack + 2.0f,
+              where + ": the channel name stays inside the right padding");
+    }
+
+    // One row clear of the next: the pictures must not touch, whatever the avatar
+    // size does to them.
+    if (users >= 2 && m.avatar.valid() && m.second_avatar.valid() && panel_fits) {
+        check(m.second_avatar.y0 >= m.avatar.y1 - slack,
+              where + ": consecutive pictures do not overlap");
+    }
+
+    // Every picture wears its ring, transparent or not: a ring drawn only for
+    // the speaker is a shape that appears, which is the reflow this design got
+    // rid of -- and the alpha is the one thing this measurement cannot see, so
+    // the count is what stands in for "always".
+    check(m.ring_count == m.avatar_count,
+          where + ": every picture wears a ring (" + std::to_string(m.ring_count) + " rings, " +
+              std::to_string(m.avatar_count) + " pictures)");
+
+    // The line under the channel name: the accent bar starts where the content
+    // does, the hairline takes over exactly where the bar ends, and the two
+    // share their row of pixels.
+    if (config.show_channel_name && m.separator_accent.valid()) {
+        check_close(m.separator_accent.x0, m.panel.x0 + m.window_padding_x, truncation,
+                    where + ": the accent bar starts at the content's left edge");
+        if (m.separator.valid()) {
+            check_close(m.separator.x0, m.separator_accent.x1, 1.0f,
+                        where + ": the hairline takes over where the accent bar ends");
+            check_close(m.separator.y0, m.separator_accent.y0, 0.01f,
+                        where + ": the two segments share their row");
+        }
+    }
+
+    // Whoever did not fit is a remark about the list, aligned with the names in
+    // it -- to the column the names start in, not to the pictures.
+    if (m.overflow.valid() && m.first_name.valid()) {
+        check_close(m.overflow.x0, m.first_name.x0, 1.0f,
+                    where + ": the overflow line is aligned with the names");
+    }
+
+    // The hairline follows the box's opacity through its premultiplied alpha, so
+    // it exists exactly when the box does: a panel faded to nothing must not
+    // leave a floating outline.
+    const Theme theme = theme_for(config);
+    if (theme.panel_hairline.a > 0) {
+        check(m.hairline.valid(), where + ": the hairline is drawn");
+        // Just inside the edge: the stroke's own bounds may not leave the box.
+        check(m.hairline.x0 >= m.panel.x0 - slack && m.hairline.y0 >= m.panel.y0 - slack &&
+                  m.hairline.x1 <= m.panel.x1 + slack && m.hairline.y1 <= m.panel.y1 + slack,
+              where + ": the hairline stays inside the box");
+    } else {
+        check(!m.hairline.valid(), where + ": no box, no hairline");
+    }
+
+    // The message box: its contents inside it, on both axes.
+    if (m.toast_avatar.valid()) {
+        check(m.toast_avatar.x0 >= m.toast.x0 + m.toast_padding_x - truncation,
+              where + ": the message picture starts after the left padding");
+        check(m.toast_avatar.y0 >= m.toast.y0 - slack,
+              where + ": the message picture starts inside the box");
+    }
+    // The text is not optional. The fixture always publishes a title and a body,
+    // so a toast that is drawn and fits must carry both -- these used to be
+    // guarded on their own validity, which meant a toast reduced to a textless
+    // box skipped every text check instead of failing one (the gl_toast_alone
+    // pixel count has the same shape of hole, closed the same day).
+    if (toast_fits && config.notification_opacity > 0.0f) {
+        check(m.toast_title.valid(), where + ": the sender's name is drawn in the toast");
+        check(m.toast_body.valid(), where + ": the message text is drawn in the toast");
+    }
+    if (m.toast_body.valid() && toast_fits) {
+        check(m.toast_body.x1 <= m.toast.x1 - m.toast_padding_x + slack + 2.0f,
+              where + ": the message text stays inside the right padding");
+        check(m.toast_body.y1 <= m.toast.y1 + slack,
+              where + ": the message text stays inside the box");
+    }
+    if (m.toast_title.valid() && m.toast_body.valid() && toast_fits) {
+        check(m.toast_title.y1 <= m.toast_body.y0 + slack,
+              where + ": the sender and the message do not overlap");
+    }
+
+    // The toast's edge treatments, which exist exactly when its box does -- the
+    // accent bar is part of the box and premultiplied with its opacity, so a
+    // message turned down to nothing must not leave a blurple bar floating.
+    if (m.toast.valid()) {
+        if (theme.toast_accent.a > 0) {
+            const float rounding = theme.box_radius * m.message_scale;
+            check(m.toast_accent.valid(), where + ": the accent bar is drawn");
+            check_close(m.toast_accent.x0, m.toast.x0, slack,
+                        where + ": the accent bar sits on the box's left edge");
+            check_close(m.toast.y0 + rounding, m.toast_accent.y0, 1.0f,
+                        where + ": the accent bar starts where the corner curvature ends");
+            check_close(m.toast.y1 - rounding, m.toast_accent.y1, 1.0f,
+                        where + ": the accent bar stops where the curvature starts again");
+        } else {
+            check(!m.toast_accent.valid(), where + ": no box, no accent bar");
+        }
+        if (theme.toast_hairline.a > 0) {
+            check(m.toast_hairline.valid(), where + ": the toast hairline is drawn");
+            check(m.toast_hairline.x0 >= m.toast.x0 - slack &&
+                      m.toast_hairline.y0 >= m.toast.y0 - slack &&
+                      m.toast_hairline.x1 <= m.toast.x1 + slack &&
+                      m.toast_hairline.y1 <= m.toast.y1 + slack,
+                  where + ": the toast hairline stays inside the box");
+        } else {
+            check(!m.toast_hairline.valid(), where + ": no box, no toast hairline");
+        }
+    }
+}
+
+// Every shape above is found by its colour, which only works while no two shapes
+// drawn into the same list share one. That is a property of the palette rather than
+// of the drawing, and it is not obvious from looking at the theme: two roles can be
+// given the same grey by somebody who has no reason to think the two are related.
+//
+// When it breaks, nothing fails. `cluster()` returns the first run of vertices in
+// that colour, which is now some other shape's, so a figure comes out plausible and
+// wrong -- and the QML comparison then agrees with it, because both sides are
+// measuring the same confusion. So it is asserted here, once, for every palette the
+// theme can produce.
+void distinct_tokens() {
+    // The roles the measurement searches for, per draw list. Two lists may share a
+    // colour: the panel and the message box are separate windows with separate
+    // vertex buffers, and `channel_text` and `toast_body` have always been the same
+    // value without ever being confused.
+    struct Named {
+        const char* name;
+        Colour colour;
+    };
+
+    // Every palette the theme can produce: the five surfaces, and the pinned text
+    // colours aimed exactly where they would collide -- the speaking name on the
+    // channel's white, the idle grey on the overflow's, both pinned to one value,
+    // the message body on the title's white, an idle name on the hairline. Each of
+    // these is a value a user can type into the colour dialog, and each one made
+    // two measured roles identical until theme_for() learnt to step a pinned
+    // colour one part in 255 off whatever already wears it.
+    struct Pinned {
+        const char* label;
+        uint32_t idle;
+        uint32_t speaking;
+        uint32_t body;
+    };
+    constexpr uint32_t kAuto = Config::kColourAuto;
+    const Pinned pinned_cases[] = {
+        {"nothing pinned", kAuto, kAuto, kAuto},
+        {"speaking pinned to the channel white", kAuto, 0xffffffu, kAuto},
+        {"idle pinned to the overflow grey", 0xb5bac0u, kAuto, kAuto},
+        {"idle and speaking pinned to one value", 0x808080u, 0x808080u, kAuto},
+        {"body pinned to the title white", kAuto, kAuto, 0xffffffu},
+        {"idle pinned to the hairline", 0xfefefeu, kAuto, kAuto},
+    };
+
+    for (uint32_t surface : {0x5865f2u, 0x000000u, 0xffffffu, 0x2b2d31u, 0xe8e8e8u})
+    for (const Pinned& pinned : pinned_cases) {
+        Config config;
+        config.panel_colour = surface;
+        config.notification_colour = surface;
+        config.text_idle_colour = pinned.idle;
+        config.text_speaking_colour = pinned.speaking;
+        config.notification_text_colour = pinned.body;
+        const Theme theme = theme_for(config);
+        const std::string where =
+            "palette for surface " + std::to_string(surface) +
+            (is_light(surface) ? " (light)" : " (dark)") + ", " + pinned.label;
+
+        const Named panel_roles[] = {
+            {"avatar_placeholder", theme.avatar_placeholder},
+            {"badge_fill", theme.badge_fill},
+            {"text_channel", theme.text_channel},
+            {"text_speaking", theme.text_speaking},
+            {"text_idle", theme.text_idle},
+            {"text_muted", theme.text_muted},
+            {"separator", theme.separator},
+            {"separator_accent", theme.separator_accent},
+            // Measurable now, which is why the dark value sits one part in 255
+            // off the idle grey it is meant to read as.
+            {"text_overflow", theme.text_overflow},
+            // Why the hairline is 0xfefefe rather than the white the channel name
+            // wears, and 0x010101 on a pale box rather than the scrim's black: one
+            // part in 255, spent on keeping this table distinct. The badge glyph
+            // is 0xfffffe for the same reason. What is deliberately *not* in this
+            // table: the scrim, the badge rim and the text outline's ink, which
+            // are all black on a dark box by design -- nothing searches for them,
+            // and a table that lists what nothing measures would forbid an
+            // agreement nothing can be confused by.
+            {"panel_hairline", theme.panel_hairline},
+            {"badge_glyph", theme.badge_glyph},
+        };
+        const Named toast_roles[] = {
+            {"avatar_placeholder", theme.avatar_placeholder},
+            {"toast_title", theme.toast_title},
+            {"toast_body", theme.toast_body},
+            {"toast_hairline", theme.toast_hairline},
+            {"toast_accent", theme.toast_accent},
+        };
+
+        for (const Named* roles : {panel_roles, toast_roles}) {
+            const size_t count = roles == panel_roles ? IM_ARRAYSIZE(panel_roles)
+                                                      : IM_ARRAYSIZE(toast_roles);
+            for (size_t i = 0; i < count; ++i) {
+                for (size_t j = i + 1; j < count; ++j) {
+                    check(ink(roles[i].colour) != ink(roles[j].colour),
+                          where + ": " + roles[i].name + " and " + roles[j].name +
+                              " are the same colour, so neither can be measured");
+                }
+            }
+        }
+    }
+}
+
+void self_check() {
+    distinct_tokens();
+
+    const uint32_t modes[][2] = {{3840, 2160}, {1920, 1080}, {1280, 720}, {640, 480}};
+
+    for (const auto& mode : modes) {
+        Config config;
+        verify(config, mode[0], mode[1], 3);
+    }
+
+    // Every setting at both ends of its range, one at a time, so a failure names
+    // the setting that caused it.
+    struct Variant {
+        const char* name;
+        void (*apply)(Config&);
+    };
+    const Variant variants[] = {
+        {"scale 0.5", [](Config& c) { c.scale = 0.5f; }},
+        {"scale 3.0", [](Config& c) { c.scale = 3.0f; }},
+        {"opacity 0", [](Config& c) { c.opacity = 0.0f; }},
+        {"opacity 1", [](Config& c) { c.opacity = 1.0f; }},
+        {"avatar 0.5", [](Config& c) { c.avatar_size = 0.5f; }},
+        {"avatar 2.0", [](Config& c) { c.avatar_size = 2.0f; }},
+        // Both distances, because each box has one of its own now.
+        {"margin 0", [](Config& c) { c.screen_margin = 0.0f; c.notification_margin = 0.0f; }},
+        {"margin 120",
+         [](Config& c) { c.screen_margin = 120.0f; c.notification_margin = 120.0f; }},
+        {"margins apart", [](Config& c) { c.screen_margin = 0.0f; c.notification_margin = 40.0f; }},
+        // The anchor that had the defect: the middle of the left side.
+        {"middle left", [](Config& c) { c.position_x = 0.0f; c.position_y = 0.5f; }},
+        {"middle right", [](Config& c) { c.position_x = 1.0f; c.position_y = 0.5f; }},
+        {"padding 0", [](Config& c) { c.box_padding_x = 0.0f; c.box_padding_y = 0.0f; }},
+        {"padding 48", [](Config& c) { c.box_padding_x = 48.0f; c.box_padding_y = 48.0f; }},
+        {"gap 0", [](Config& c) { c.avatar_gap = 0.0f; c.row_spacing = 0.0f; }},
+        {"gap 48", [](Config& c) { c.avatar_gap = 48.0f; c.row_spacing = 48.0f; }},
+        // The default hides the channel name and draws no box, so the variants
+        // turn them *on* -- the reverse of what they did when the default was the
+        // other way around. Without these, the channel block, the separator and
+        // the boxed treatments would only ever be measured switched off.
+        {"channel shown", [](Config& c) { c.show_channel_name = true; }},
+        {"boxed", [](Config& c) { c.opacity = 0.88f; c.show_channel_name = true;
+                                  c.text_shadow = true; }},
+        {"small text", [](Config& c) { c.font_size = 10.0f; }},
+        {"large text", [](Config& c) { c.font_size = 32.0f; }},
+        {"message 0.5", [](Config& c) { c.notification_scale = 0.5f; }},
+        {"message 3.0", [](Config& c) { c.notification_scale = 3.0f; }},
+        {"message faint", [](Config& c) { c.notification_opacity = 0.0f; }},
+        {"bottom right", [](Config& c) { c.notification_corner = 3; }},
+        {"far corner", [](Config& c) { c.position_x = 1.0f; c.position_y = 1.0f; }},
+    };
+
+    for (const Variant& variant : variants) {
+        for (uint32_t users : {1u, 20u}) {
+            Config config;
+            variant.apply(config);
+            verify(config, 3840, 2160, users);
+            Config small = config;
+            verify(small, 1280, 720, users);
+        }
+    }
+
+    // The motion contract: an ended animation leaves the resting geometry, so
+    // measuring the same configuration twice -- with the animation clock well
+    // advanced between the two -- gives byte-identical rectangles. If a phase
+    // failed to settle, or an animation moved a vertex instead of an alpha, the
+    // second measurement is the one that says so.
+    {
+        Config config;
+        config.opacity = 0.88f;
+        config.show_channel_name = true;
+        const Measurement first = measure(config, 1920, 1080, 3);
+        const Measurement second = measure(config, 1920, 1080, 3);
+        const struct {
+            const char* name;
+            const Rect& a;
+            const Rect& b;
+        } pairs[] = {{"panel", first.panel, second.panel},
+                     {"avatar", first.avatar, second.avatar},
+                     {"ring", first.ring, second.ring},
+                     {"badge", first.badge, second.badge},
+                     {"first_name", first.first_name, second.first_name},
+                     {"toast", first.toast, second.toast}};
+        for (const auto& pair : pairs) {
+            check_close(pair.b.x0, pair.a.x0, 0.01f,
+                        std::string("settled motion: ") + pair.name + " does not drift");
+            check_close(pair.b.y0, pair.a.y0, 0.01f,
+                        std::string("settled motion: ") + pair.name + " does not drift down");
+            check_close(pair.b.width(), pair.a.width(), 0.01f,
+                        std::string("settled motion: ") + pair.name + " keeps its width");
+            check_close(pair.b.height(), pair.a.height(), 0.01f,
+                        std::string("settled motion: ") + pair.name + " keeps its height");
+        }
+    }
+
+    // The switch that says "no voice panel" produces exactly that. It used to
+    // produce nothing at all -- read, saved, toggled, and never consulted by any
+    // drawing code -- so this asks ImGui's own bookkeeping whether the window
+    // was submitted, which a stale rectangle from an earlier frame cannot fake.
+    {
+        Config off;
+        off.panel_enabled = false;
+        run_frames(make_snapshot(3, "Voice channel"), off, 1920, 1080, false);
+        ImGuiWindow* panel = ImGui::FindWindowByName("##vocem");
+        check(panel == nullptr || !panel->WasActive,
+              "panel_enabled off: the voice panel is not drawn");
+    }
+
+    // row_spacing moves the rows and touches nothing else. It used to touch
+    // everything: the avatar's radius was derived from the line-with-spacing
+    // height, so the spacing slider resized every picture on the way past, and
+    // the row carried the spacing inside its own height as well, so the pitch
+    // counted it twice. Owner-reported, from dragging the slider live. The three
+    // checks are the three ways it was wrong: the picture's diameter and a
+    // single row's height are identical under any spacing, and the pitch grows
+    // by exactly the spacing put in -- once.
+    {
+        Config tight;
+        tight.row_spacing = 0.0f;
+        tight.show_channel_name = false;
+        Config loose = tight;
+        loose.row_spacing = 48.0f;
+        const Measurement a = measure(tight, 1920, 1080, 3);
+        const Measurement b = measure(loose, 1920, 1080, 3);
+        check_close(b.avatar.width(), a.avatar.width(), 0.01f,
+                    "the picture's diameter does not follow row_spacing");
+        check_close(b.panel_one_row_height, a.panel_one_row_height, 0.01f,
+                    "a single row's height does not follow row_spacing");
+        const float pitch_a = a.panel_two_rows_height - a.panel_one_row_height;
+        const float pitch_b = b.panel_two_rows_height - b.panel_one_row_height;
+        check_close(pitch_b - pitch_a, 48.0f, 0.75f,
+                    "the spacing enters the pitch exactly once");
+    }
+
+    // The message is not a list, and `row_spacing` is the distance between one
+    // person and the next.
+    //
+    // This is the one check here that compares two configurations rather than
+    // holding one to a property, because the fault it guards against cannot be seen
+    // in a single frame: the gap between the sender's name and the message used to
+    // be `row_spacing`, so a slider on the panel's page moved a box on another one.
+    // At 1080 lines it left eleven pixels of empty space under a name eleven pixels
+    // tall -- reported as looking too far apart, and it was. What is left is the
+    // leading a line of text carries inside its own height, which is a property of
+    // the type and not of any setting, so the two figures below must be identical
+    // and not merely close.
+    {
+        Config tight;
+        tight.row_spacing = 0.0f;
+        Config loose;
+        loose.row_spacing = 48.0f;
+        const Measurement a = measure(tight, 1920, 1080, 3);
+        const Measurement b = measure(loose, 1920, 1080, 3);
+        if (a.toast_title.valid() && a.toast_body.valid() && b.toast_title.valid() &&
+            b.toast_body.valid()) {
+            const float gap_a = a.toast_body.y0 - a.toast_title.y1;
+            const float gap_b = b.toast_body.y0 - b.toast_title.y1;
+            check_close(gap_b, gap_a, 0.01f,
+                        "the sender-to-message gap does not follow the panel's row spacing");
+            // And the panel's rows still do, or the setting would have stopped
+            // doing the one thing it is for.
+            check(b.panel_two_rows_height > a.panel_two_rows_height + 1.0f,
+                  "but the panel's own rows still do");
+        }
+    }
+
+    // Everything at once, both ways round: settings interact, and the interesting
+    // failures are the ones no single slider produces.
+    Config maximal;
+    maximal.scale = 3.0f;
+    maximal.avatar_size = 2.0f;
+    maximal.opacity = 1.0f;
+    maximal.show_channel_name = true;
+    maximal.text_shadow = true;
+    maximal.screen_margin = 120.0f;
+    maximal.notification_margin = 120.0f;
+    maximal.box_padding_x = 48.0f;
+    maximal.box_padding_y = 48.0f;
+    maximal.avatar_gap = 48.0f;
+    maximal.row_spacing = 48.0f;
+    maximal.notification_scale = 3.0f;
+    verify(maximal, 3840, 2160, 20);
+    verify(maximal, 1280, 720, 20);
+
+    Config minimal;
+    minimal.scale = 0.5f;
+    minimal.avatar_size = 0.5f;
+    minimal.screen_margin = 0.0f;
+    minimal.notification_margin = 0.0f;
+    minimal.box_padding_x = 0.0f;
+    minimal.box_padding_y = 0.0f;
+    minimal.avatar_gap = 0.0f;
+    minimal.row_spacing = 0.0f;
+    minimal.notification_scale = 0.5f;
+    minimal.opacity = 0.0f;
+    verify(minimal, 3840, 2160, 1);
+    verify(minimal, 640, 480, 1);
+}
+
+// --- arguments --------------------------------------------------------------
+
+bool set_field(Config& config, const std::string& key, const std::string& value) {
+    const float number = static_cast<float>(std::atof(value.c_str()));
+    if (key == "scale") config.scale = number;
+    else if (key == "opacity") config.opacity = number;
+    else if (key == "avatar_size") config.avatar_size = number;
+    else if (key == "font_size") config.font_size = number;
+    else if (key == "screen_margin") config.screen_margin = number;
+    else if (key == "notification_margin") config.notification_margin = number;
+    else if (key == "box_padding_x") config.box_padding_x = number;
+    else if (key == "box_padding_y") config.box_padding_y = number;
+    else if (key == "avatar_gap") config.avatar_gap = number;
+    else if (key == "row_spacing") config.row_spacing = number;
+    else if (key == "notification_scale") config.notification_scale = number;
+    else if (key == "notification_opacity") config.notification_opacity = number;
+    else if (key == "notification_corner") config.notification_corner = std::atoi(value.c_str());
+    else if (key == "position_x") config.position_x = number;
+    else if (key == "position_y") config.position_y = number;
+    else if (key == "show_channel_name") config.show_channel_name = value != "0";
+    else if (key == "show_muted_state") config.show_muted_state = value != "0";
+    else if (key == "only_speaking") config.only_speaking = value != "0";
+    else if (key == "hide_self") config.hide_self = value != "0";
+    else return false;
+    return true;
+}
+
+}  // namespace
+
+// The placement and its inverse have to be exactly each other, because a drag in
+// the window maps pixels back to a fraction while the drawing maps the fraction to
+// pixels: when the two disagreed by an inset the panel flashed under the pointer,
+// which is how this got written. Pure arithmetic, so it is checked here rather
+// than through a frame.
+void check_placement_round_trip() {
+    const float boxes[] = {40.0f, 101.0f, 337.0f};
+    const float extents[] = {480.0f, 720.0f, 1080.0f, 2160.0f};
+    const float insets[] = {0.0f, 16.0f, 120.0f};
+    const float fractions[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+    int cases = 0;
+    float worst = 0.0f;
+    for (float box : boxes) {
+        for (float extent : extents) {
+            for (float inset : insets) {
+                for (float f : fractions) {
+                    const float at = place_within(f, box, extent, inset);
+                    const float back = fraction_within(at, box, extent, inset);
+                    // Where the box cannot fit between the margins there is no
+                    // travel and every fraction means the same place; the round
+                    // trip is only a claim when there is room to move.
+                    if (extent - box - inset * 2.0f <= 0.0f) {
+                        continue;
+                    }
+                    ++cases;
+                    const float drift = back > f ? back - f : f - back;
+                    if (drift > worst) {
+                        worst = drift;
+                    }
+                }
+            }
+        }
+    }
+    // The count is printed because a drift of zero over no cases is not a result,
+    // it is a test that did not run -- and this file is where that distinction is
+    // made about somebody else's code.
+    std::printf("    placement round trip: worst drift %.6f over %d cases\n", worst, cases);
+    check(cases > 100, "the round trip was actually walked");
+    check(worst < 0.0005f, "a fraction survives being placed and read back");
+
+    // And the two ends are the margins themselves, which is what a drag is limited
+    // to: getting these wrong is what left `drag.maximumX` undefined.
+    check_close(place_within(0.0f, 101.0f, 1920.0f, 16.0f), 16.0f, 0.01f,
+                "fraction 0 puts the box at the near margin");
+    check_close(place_within(1.0f, 101.0f, 1920.0f, 16.0f), 1920.0f - 101.0f - 16.0f, 0.01f,
+                "fraction 1 puts the box at the far margin");
+    check_close(place_within(0.5f, 100.0f, 1000.0f, 16.0f), 450.0f, 0.01f,
+                "and a half centres it");
+}
+
+int main(int argc, char** argv) {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
+    io.DisplaySize = ImVec2(1920.0f, 1080.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char* pixels = nullptr;
+    int atlas_width = 0, atlas_height = 0;
+
+    Config config;
+    uint32_t width = 3840, height = 2160, users = 3;
+    bool dump = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument = argv[i];
+        const size_t equals = argument.find('=');
+        if (equals == std::string::npos) {
+            std::fprintf(stderr, "unrecognised argument: %s\n", argument.c_str());
+            return 2;
+        }
+        const std::string key = argument.substr(0, equals);
+        const std::string value = argument.substr(equals + 1);
+        dump = true;
+        if (key == "width") width = static_cast<uint32_t>(std::atoi(value.c_str()));
+        else if (key == "height") height = static_cast<uint32_t>(std::atoi(value.c_str()));
+        else if (key == "users") users = static_cast<uint32_t>(std::atoi(value.c_str()));
+        else if (!set_field(config, key, value)) {
+            std::fprintf(stderr, "unrecognised setting: %s\n", key.c_str());
+            return 2;
+        }
+    }
+
+    // The atlas has to exist before the first frame; ensure_fonts() builds it and
+    // the null backend only needs the pixels to have been rasterised.
+    ensure_fonts(font_pixel_size(height, config.scale, config.font_size), config.font_size);
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &atlas_width, &atlas_height);
+    io.Fonts->SetTexID(static_cast<ImTextureID>(1));
+
+    if (dump) {
+        print_json(measure(config, width, height, users));
+        ImGui::DestroyContext();
+        return 0;
+    }
+
+    check_placement_round_trip();
+    self_check();
+    ImGui::DestroyContext();
+    if (failures == 0) {
+        std::printf("panel geometry: every invariant holds\n");
+        return 0;
+    }
+    std::printf("panel geometry: %d failures\n", failures);
+    return 1;
+}

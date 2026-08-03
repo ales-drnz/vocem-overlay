@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+     All rights reserved.
+     Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+
+     The tray's "you are speaking" state: the circle filled in the speaking
+     green (0x23a55a, the overlay's own ring token, the same green the panel
+     draws around whoever is talking). Same centre and radius as every other
+     tray icon. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <circle cx="24" cy="24" r="20" fill="#23a55a"/>
+</svg>

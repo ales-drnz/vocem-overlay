@@ -1,0 +1,14 @@
+{
+    "file_format_version": "1.2.1",
+    "layer": {
+        "name": "VK_LAYER_VOCEM_overlay",
+        "type": "GLOBAL",
+        "library_path": "@VOCEM_LAYER_LIBRARY_PATH@",
+        "api_version": "@VOCEM_LAYER_API_VERSION@",
+        "implementation_version": "1",
+        "description": "Vocem Overlay - Discord voice overlay drawn inside the game",
+@VOCEM_LAYER_ENABLE_BLOCK@        "disable_environment": {
+            "VOCEM_DISABLE": "1"
+        }
+    }
+}

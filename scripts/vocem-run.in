@@ -1,0 +1,45 @@
+#!/bin/sh
+# Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+# All rights reserved.
+# Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+#
+# Runs a command with the OpenGL overlay preloaded.
+#
+#     vocem-run <command> [args...]
+#     vocem-run minecraft-launcher
+#     vocem-run %command%          # in a game's launch options
+#
+# Vulkan games need none of this: the layer is loaded by the Vulkan loader itself.
+# OpenGL has no such mechanism, so the library has to be preloaded, and something
+# has to do it.
+#
+# $LIB is expanded by the dynamic linker to the library directory of the process
+# being started, so one value covers 32-bit and 64-bit games without knowing in
+# advance which the command turns out to be.
+
+set -eu
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: vocem-run <command> [args...]" >&2
+    exit 2
+fi
+
+# The shim, not the overlay itself. It is 25 KB with no C++ runtime behind it, and
+# it dlopens the real library RTLD_LOCAL on the first GL frame -- so a game that
+# never draws pays almost nothing, and the overlay's bundled ImGui never enters the
+# game's global symbol scope. This is the same library the session preloads through
+# environment.d; the two paths agreeing matters more than it sounds, because a
+# difference between them would only show up in the games launched one way.
+VOCEM_PRELOAD='@VOCEM_LIBDIR_TOKEN@/libvocem_gl_shim.so'
+
+if [ -n "${LD_PRELOAD:-}" ]; then
+    LD_PRELOAD="${LD_PRELOAD}:${VOCEM_PRELOAD}"
+else
+    LD_PRELOAD="${VOCEM_PRELOAD}"
+fi
+export LD_PRELOAD
+
+# Preloading a launcher is frequently the only way to reach the game it starts, so
+# the interposer ignores processes listed in hidden_apps -- launchers included --
+# and only draws in the game itself.
+exec "$@"

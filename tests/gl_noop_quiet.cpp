@@ -1,0 +1,176 @@
+// Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+// All rights reserved.
+// Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+//
+// A process the overlay declines to draw in must be quiet on the X wire.
+//
+// The GL present hook used to ask the drawable's size -- two glXQueryDrawable,
+// each an X protocol request -- before asking whether this process is one the
+// overlay draws in at all. Every GL process of the session paid it, every
+// frame, forever: measured on the library shipped in 0.1.0-50, the no-op path
+// put 3 X requests on the wire per swap where VOCEM_DISABLE=1 put 0, and each
+// glXQueryDrawable pair costs ~33 us of round trip on this machine. The size
+// is now queried only after a frame has decided it will draw.
+//
+// Wall-clock timing of a swap is compositor noise; X request serials are not.
+// The measurement: NextRequest() around a swap loop, in two child processes of
+// this test -- one with the overlay disabled (the baseline: whatever the
+// driver itself puts on the wire), one with it active but declining (this
+// binary is not a game and is not in shown_apps). The two counts must match:
+// declining must cost nothing the disabled path does not.
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <GL/glx.h>
+#include <X11/Xlib.h>
+
+namespace {
+
+int failures = 0;
+
+void check(bool condition, const char* what) {
+    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
+    if (!condition) {
+        ++failures;
+    }
+}
+
+// Child mode: count X requests across a swap loop and print the per-frame rate.
+int count_requests() {
+    Display* dpy = XOpenDisplay(nullptr);
+    if (!dpy) {
+        return 2;
+    }
+    int attrs[] = {GLX_RGBA, GLX_DOUBLEBUFFER, None};
+    XVisualInfo* vi = glXChooseVisual(dpy, DefaultScreen(dpy), attrs);
+    if (!vi) {
+        return 2;
+    }
+    XSetWindowAttributes swa;
+    swa.colormap =
+        XCreateColormap(dpy, RootWindow(dpy, vi->screen), vi->visual, AllocNone);
+    // Off screen and override-redirect: this runs while the owner may be in a
+    // game, and a probe window must never appear or take focus.
+    swa.override_redirect = True;
+    Window win = XCreateWindow(dpy, RootWindow(dpy, vi->screen), -4000, 0, 320, 240, 0, vi->depth,
+                               InputOutput, vi->visual, CWColormap | CWOverrideRedirect, &swa);
+    XMapWindow(dpy, win);
+    GLXContext ctx = glXCreateContext(dpy, vi, nullptr, True);
+    if (!ctx) {
+        return 2;
+    }
+    glXMakeCurrent(dpy, win, ctx);
+
+    // Warm up past the overlay's own first-frame work (loading the heavy
+    // library, the one-off decision, the application record).
+    for (int i = 0; i < 60; ++i) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        glXSwapBuffers(dpy, win);
+    }
+
+    enum { FRAMES = 500 };
+    const unsigned long before = NextRequest(dpy);
+    for (int i = 0; i < FRAMES; ++i) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        glXSwapBuffers(dpy, win);
+    }
+    const unsigned long after = NextRequest(dpy);
+    printf("%.3f\n", static_cast<double>(after - before) / FRAMES);
+
+    glXMakeCurrent(dpy, None, nullptr);
+    glXDestroyContext(dpy, ctx);
+    XCloseDisplay(dpy);
+    return 0;
+}
+
+// Parent mode: run self in child mode with a chosen environment, read the rate.
+bool child_rate(const char* self, bool disabled, double& rate) {
+    char command[4400];
+    snprintf(command, sizeof(command), "%s %s --count-requests", disabled ? "VOCEM_DISABLE=1" : "",
+             self);
+    FILE* pipe = popen(command, "r");
+    if (!pipe) {
+        return false;
+    }
+    char line[64] = {0};
+    const bool got = fgets(line, sizeof(line), pipe) != nullptr;
+    const int status = pclose(pipe);
+    if (!got || status != 0) {
+        return false;
+    }
+    rate = atof(line);
+    return true;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc > 1 && strcmp(argv[1], "--count-requests") == 0) {
+        return count_requests();
+    }
+
+    if (!getenv("DISPLAY")) {
+        printf("skip no DISPLAY, so no X wire to keep quiet\n");
+        return 77;
+    }
+    if (!getenv("VOCEM_GL_LIBRARY") || !getenv("VOCEM_SHIM_PRELOADED")) {
+        printf("skip meant to run with the shim preloaded and VOCEM_GL_LIBRARY set\n");
+        return 77;
+    }
+
+    // A config of this test's own, with this binary NOT in shown_apps: the case
+    // under measurement is precisely "the overlay declines".
+    char root[] = "/tmp/vocem-noop-quiet-XXXXXX";
+    if (!mkdtemp(root)) {
+        printf("FAIL mkdtemp\n");
+        return 1;
+    }
+    char path[600];
+    snprintf(path, sizeof(path), "%s/vocem", root);
+    mkdir(path, 0700);
+    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
+    if (FILE* file = fopen(path, "w")) {
+        fputs("enabled = true\n", file);
+        fclose(file);
+    }
+    setenv("XDG_CONFIG_HOME", root, 1);
+    snprintf(path, sizeof(path), "%s/cache", root);
+    mkdir(path, 0700);
+    setenv("XDG_CACHE_HOME", path, 1);
+
+    char self[4096];
+    const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (n <= 0) {
+        printf("FAIL cannot find my own binary\n");
+        return 1;
+    }
+    self[n] = '\0';
+
+    alarm(120);
+
+    double disabled = 0.0;
+    double declining = 0.0;
+    if (!child_rate(self, true, disabled)) {
+        printf("skip the disabled baseline could not run (no GLX here?)\n");
+        return 77;
+    }
+    if (!child_rate(self, false, declining)) {
+        printf("FAIL the active child could not run\n");
+        return 1;
+    }
+    printf("     X requests per frame: disabled %.3f, declining %.3f\n", disabled, declining);
+    check(declining <= disabled + 0.01,
+          "a declined process puts nothing on the X wire the disabled one does not");
+
+    char cleanup[700];
+    snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
+    if (system(cleanup) != 0) {
+        // best-effort scratch cleanup
+    }
+    printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
+    return failures == 0 ? 0 : 1;
+}

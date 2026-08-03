@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+     All rights reserved.
+     Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+
+     The tray's "not in a voice channel" state.
+
+     The five tray icons are one circle at one diameter (centre 24,24, radius
+     20 on the 48 grid application icons are designed on): nothing behind it,
+     no application portrait, so at 22 px in a panel the icon is the state and
+     not a picture of the product. This one is the circle drawn as a RING
+     rather than filled, because shape carries the meaning as well as colour
+     here, the same rule the window's own status mark lives by (disc
+     connected, ring waiting) and the same rule the overlay's speaking ring
+     lives by. Filled means "in a channel"; hollow means "not". -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <circle cx="24" cy="24" r="20" fill="none" stroke="#9aa0ab" stroke-width="4"/>
+</svg>

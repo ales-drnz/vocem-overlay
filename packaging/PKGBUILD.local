@@ -1,0 +1,103 @@
+# Maintainer: Alessandro Di Ronza <ales.drnz@gmail.com>
+# Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+# All rights reserved.
+# Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+#
+# Builds the package from the working tree instead of a git tag, for testing changes
+# before they are released. Use it exactly like the normal PKGBUILD:
+#
+#     cd packaging && makepkg -p PKGBUILD.local -fi
+#
+# Going through pacman rather than `cmake --install` is deliberate: the files are
+# tracked, `pacman -Qo` can say where each one came from, and removing it later is
+# `pacman -Rns vocem-overlay` rather than hunting for leftovers by hand.
+
+pkgname=vocem-overlay
+pkgver=0.1.0
+# Reset with 0.1.0: releases are numbered from here (0.1.1, 0.1.2), and pkgrel
+# rises only to rebuild the same release. The old monotonic counter reached 67.
+pkgrel=1
+pkgdesc="Discord voice overlay drawn inside the game (built from the working tree)"
+arch=('x86_64')
+url="https://github.com/ales-drnz/vocem-overlay"
+# See PKGBUILD for what each of these covers; the two must not drift.
+license=('BSD-3-Clause' 'MIT' 'OFL-1.1-no-RFN' 'OFL-1.1-RFN')
+depends=(
+    'vulkan-icd-loader'
+    'qt6-base'
+    'qt6-declarative'
+    'curl'
+    'hicolor-icon-theme'
+    # The 32-bit half is not optional: a Windows game under Proton is often a
+    # 32-bit binary, and this package installs libraries under /usr/lib32 that the
+    # session preloads into every one of them. Without these they fail to load --
+    # and a preloaded object that fails to load makes ld.so print
+    # "cannot be preloaded: ignored" to the stderr of every process that starts.
+    # They were in makedepends only, which builds the files and then ships them
+    # with nothing declaring what they need to run.
+    'lib32-gcc-libs'
+    'lib32-vulkan-icd-loader'
+)
+makedepends=(
+    'cmake'
+    'ninja'
+    'vulkan-headers'
+    'lib32-gcc-libs'
+    'lib32-vulkan-icd-loader'
+)
+optdepends=(
+    'qqc2-desktop-style: native appearance on KDE Plasma'
+)
+options=('!debug')
+
+_root="$startdir/.."
+
+build() {
+    # 64-bit: everything, with automatic coverage enabled as in a real install.
+    cmake -S "$_root" -B "$srcdir/build" -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DVOCEM_ENABLE_BY_DEFAULT=ON \
+        -DVOCEM_BUILD_TESTS=OFF
+    cmake --build "$srcdir/build"
+
+    # 32-bit: only the injected libraries, for 32-bit titles under Proton.
+    cmake -S "$_root" -B "$srcdir/build32" -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DVOCEM_BUILD_HOST_TOOLS=OFF \
+        -DVOCEM_ENABLE_BY_DEFAULT=ON \
+        -DCMAKE_CXX_FLAGS="-m32" \
+        -DCMAKE_SHARED_LINKER_FLAGS="-m32"
+    cmake --build "$srcdir/build32"
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+    DESTDIR="$pkgdir" cmake --install "$srcdir/build32"
+    install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    # OFL texts for the emoji bank and the embedded font subsets (all Modified
+    # Versions under the OFL 1.1; see common/emoji/README.md and
+    # third_party/fonts/README.md).
+    install -Dm644 "$_root/common/emoji/OFL-NotoColorEmoji.txt" \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-NotoColorEmoji.txt"
+    install -Dm644 "$_root/third_party/fonts/OFL.txt" \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-Inter.txt"
+    install -Dm644 "$_root/third_party/fonts/OFL-NotoEmoji.txt" \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-NotoEmoji.txt"
+    install -Dm644 "$_root/third_party/fonts/OFL-NotoSansJP.txt" \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-NotoSansJP.txt"
+    # Dear ImGui, compiled into both injected libraries, and nlohmann/json,
+    # compiled into the daemon: both MIT, both requiring their notice to travel
+    # with a binary distribution.
+    install -Dm644 "$_root/third_party/imgui/LICENSE.txt" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-imgui.txt"
+    install -Dm644 "$_root/third_party/nlohmann/LICENSE.MIT" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-nlohmann-json.txt"
+    # Wuffs, the PNG decoder compiled into vocemd: dual MIT / Apache 2.0, taken
+    # under MIT (third_party/wuffs/README.md), its text shipped for attribution.
+    install -Dm644 "$_root/third_party/wuffs/LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-wuffs.txt"
+}
+
+# vim:set ts=4 sw=4 et:

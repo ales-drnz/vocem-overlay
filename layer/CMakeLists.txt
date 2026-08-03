@@ -1,0 +1,119 @@
+# Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+# All rights reserved.
+# Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+
+find_package(Vulkan REQUIRED)
+find_package(Threads REQUIRED)
+
+set(IMGUI_DIR "${PROJECT_SOURCE_DIR}/third_party/imgui")
+
+add_library(vocem_vk SHARED
+    src/vocem_layer.cpp
+    src/overlay_renderer.cpp
+    src/texture_cache.cpp
+    src/hdr_pipeline.cpp
+    "${PROJECT_SOURCE_DIR}/common/src/panel.cpp"
+    "${PROJECT_SOURCE_DIR}/common/src/fonts.cpp"
+    "${IMGUI_DIR}/imgui.cpp"
+    "${IMGUI_DIR}/imgui_draw.cpp"
+    "${IMGUI_DIR}/imgui_tables.cpp"
+    "${IMGUI_DIR}/imgui_widgets.cpp"
+    "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
+)
+
+# 32-bit and 64-bit libraries coexist in the same directory, so the name carries
+# the architecture.
+# The library keeps one name for both architectures and is distinguished by its
+# directory; only the manifests need separate names, since they live together in
+# implicit_layer.d. The loader resolves a bare library name through the normal
+# search path, which is already architecture-aware.
+set(VOCEM_LIBRARY_NAME vocem_vk)
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(VOCEM_MANIFEST_NAME VkLayer_vocem_overlay.x86.json)
+else()
+    set(VOCEM_MANIFEST_NAME VkLayer_vocem_overlay.json)
+endif()
+
+set_target_properties(vocem_vk PROPERTIES
+    OUTPUT_NAME ${VOCEM_LIBRARY_NAME}
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
+
+target_include_directories(vocem_vk PRIVATE
+    ${Vulkan_INCLUDE_DIRS}
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/common/fonts"
+    "${IMGUI_DIR}"
+    "${IMGUI_DIR}/backends"
+)
+target_link_libraries(vocem_vk PRIVATE Threads::Threads)
+
+target_compile_options(vocem_vk PRIVATE
+    -Wall -Wextra
+    -fno-exceptions
+)
+
+# ImGui is third-party: build it without our warning flags so its output does not
+# drown ours, and keep it out of any -Werror we adopt later.
+set_source_files_properties(
+    "${IMGUI_DIR}/imgui.cpp"
+    "${IMGUI_DIR}/imgui_draw.cpp"
+    "${IMGUI_DIR}/imgui_tables.cpp"
+    "${IMGUI_DIR}/imgui_widgets.cpp"
+    "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
+    PROPERTIES COMPILE_OPTIONS "-w"
+)
+
+# A layer must not pull in the Vulkan loader: it is loaded *by* it and resolves
+# everything through the dispatch chain. The matching ImGui flag forces its Vulkan
+# backend to go through ImGui_ImplVulkan_LoadFunctions, which we point at our own
+# dispatch tables.
+target_compile_definitions(vocem_vk PRIVATE
+    VK_NO_PROTOTYPES
+    IMGUI_IMPL_VULKAN_NO_PROTOTYPES
+    IMGUI_USE_WCHAR32
+    IMGUI_DISABLE_FILE_FUNCTIONS
+    IMGUI_DISABLE_DEBUG_TOOLS
+)
+
+# --- manifest -------------------------------------------------------------
+# Two variants: one for the build tree (absolute path, used by scripts/dev-run.sh)
+# and one for installation (bare filename, resolved via the loader search path).
+
+set(VOCEM_LAYER_LIBRARY_PATH "$<TARGET_FILE:vocem_vk>")
+file(GENERATE
+    OUTPUT "${CMAKE_BINARY_DIR}/dev/${VOCEM_MANIFEST_NAME}"
+    CONTENT "{
+    \"file_format_version\": \"1.2.1\",
+    \"layer\": {
+        \"name\": \"VK_LAYER_VOCEM_overlay\",
+        \"type\": \"GLOBAL\",
+        \"library_path\": \"$<TARGET_FILE:vocem_vk>\",
+        \"api_version\": \"${VOCEM_LAYER_API_VERSION}\",
+        \"implementation_version\": \"1\",
+        \"description\": \"Vocem Overlay - Discord voice overlay drawn inside the game\",
+        \"enable_environment\": { \"VOCEM\": \"1\" },
+        \"disable_environment\": { \"VOCEM_DISABLE\": \"1\" }
+    }
+}
+"
+)
+
+if(VOCEM_ENABLE_BY_DEFAULT)
+    set(VOCEM_LAYER_ENABLE_BLOCK "")
+else()
+    set(VOCEM_LAYER_ENABLE_BLOCK "        \"enable_environment\": {\n            \"VOCEM\": \"1\"\n        },\n")
+endif()
+
+set(VOCEM_LAYER_LIBRARY_PATH "lib${VOCEM_LIBRARY_NAME}.so")
+configure_file(
+    manifest/VkLayer_vocem_overlay.json.in
+    "${CMAKE_CURRENT_BINARY_DIR}/install/${VOCEM_MANIFEST_NAME}"
+    @ONLY
+)
+
+install(TARGETS vocem_vk LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/install/${VOCEM_MANIFEST_NAME}"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/vulkan/implicit_layer.d"
+)

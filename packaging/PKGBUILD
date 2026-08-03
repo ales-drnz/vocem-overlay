@@ -1,0 +1,133 @@
+# Maintainer: Alessandro Di Ronza <ales.drnz@gmail.com>
+# Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+# All rights reserved.
+# Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+#
+# Builds twice: 64-bit with the daemon, CLI and GUI, and 32-bit with just the
+# injected libraries, which 32-bit games -- including Windows titles under Proton,
+# where DXVK produces 32-bit Vulkan -- need in /usr/lib32.
+#
+# Both builds pass -DVOCEM_ENABLE_BY_DEFAULT=ON: an installed package is expected to
+# work with nothing to switch on. That means the Vulkan layer manifest carries only
+# disable_environment, and the OpenGL shim is preloaded session-wide through
+# environment.d, since OpenGL has no layer mechanism. Set VOCEM_DISABLE=1 to turn the
+# overlay off for a single process.
+
+pkgname=vocem-overlay
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Discord voice overlay drawn inside the game, through a Vulkan layer and an OpenGL hook"
+arch=('x86_64')
+url="https://github.com/ales-drnz/vocem-overlay"
+# BSD-3-Clause for the project. MIT for Dear ImGui, compiled into every shipped
+# library, and nlohmann/json, compiled into the daemon; Wuffs is dual-licensed and
+# taken under MIT too. OFL-1.1-no-RFN for the emoji bank (a Modified Version of
+# Noto Color Emoji, common/emoji/README.md), Inter and Noto Emoji;
+# OFL-1.1-RFN for the Noto Sans JP subset, whose own text reserves the name
+# 'Source'. Every one of those texts ships: entry 50 is what a derived artefact
+# without its licence costs, and entry 76 is what shipping it from only one of
+# the two PKGBUILDs cost.
+license=('BSD-3-Clause' 'MIT' 'OFL-1.1-no-RFN' 'OFL-1.1-RFN')
+depends=(
+    'vulkan-icd-loader'
+    'qt6-base'
+    'qt6-declarative'
+    'curl'
+    'hicolor-icon-theme'
+    # The 32-bit half is not optional: a Windows game under Proton is often a
+    # 32-bit binary, and this package installs libraries under /usr/lib32 that the
+    # session preloads into every one of them. Without these they fail to load --
+    # and a preloaded object that fails to load makes ld.so print
+    # "cannot be preloaded: ignored" to the stderr of every process that starts.
+    # They were in makedepends only, which builds the files and then ships them
+    # with nothing declaring what they need to run.
+    'lib32-gcc-libs'
+    'lib32-vulkan-icd-loader'
+)
+makedepends=(
+    'cmake'
+    'ninja'
+    'git'
+    'vulkan-headers'
+    'lib32-gcc-libs'
+    'lib32-vulkan-icd-loader'
+)
+optdepends=(
+    'qqc2-desktop-style: native appearance on KDE Plasma'
+)
+# Dear ImGui is a submodule, and makepkg's git source does not fetch submodules.
+# The comment here used to say they "have to come along" while nothing made them:
+# a clone of this repository without them fails to configure. So imgui is a source
+# of its own, pinned to the tag the submodule points at, and prepare() points the
+# submodule at the copy makepkg already downloaded. Keep the tag in step with
+# `git -C third_party/imgui describe --tags`.
+source=("git+$url.git#tag=v$pkgver"
+        "imgui::git+https://github.com/ocornut/imgui.git#tag=v1.91.9")
+sha256sums=('SKIP'
+            'SKIP')
+
+prepare() {
+    cd "$srcdir/$pkgname"
+    git submodule init
+    git config submodule.third_party/imgui.url "$srcdir/imgui"
+    # protocol.file is refused by default since CVE-2022-39253; this one is our
+    # own download directory, not a remote the source list did not name.
+    git -c protocol.file.allow=always submodule update
+}
+
+build() {
+    cd "$srcdir/$pkgname"
+
+    # 64-bit: everything.
+    cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DVOCEM_ENABLE_BY_DEFAULT=ON
+    cmake --build build
+
+    # 32-bit: injected libraries only. The daemon never enters a game process, so
+    # there is nothing to gain from building it twice.
+    cmake -S . -B build32 -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DVOCEM_BUILD_HOST_TOOLS=OFF \
+        -DVOCEM_ENABLE_BY_DEFAULT=ON \
+        -DCMAKE_CXX_FLAGS="-m32" \
+        -DCMAKE_SHARED_LINKER_FLAGS="-m32"
+    cmake --build build32
+}
+
+package() {
+    cd "$srcdir/$pkgname"
+
+    DESTDIR="$pkgdir" cmake --install build
+    DESTDIR="$pkgdir" cmake --install build32
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    # OFL texts for the emoji bank and the embedded font subsets (all Modified
+    # Versions under the OFL 1.1; see common/emoji/README.md and
+    # third_party/fonts/README.md). These lived only in PKGBUILD.local, so the
+    # package a stranger would build was the one shipping derived font data with
+    # no licence beside it.
+    install -Dm644 common/emoji/OFL-NotoColorEmoji.txt \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-NotoColorEmoji.txt"
+    install -Dm644 third_party/fonts/OFL.txt \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-Inter.txt"
+    install -Dm644 third_party/fonts/OFL-NotoEmoji.txt \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-NotoEmoji.txt"
+    install -Dm644 third_party/fonts/OFL-NotoSansJP.txt \
+        "$pkgdir/usr/share/licenses/$pkgname/OFL-NotoSansJP.txt"
+    # Dear ImGui, compiled into both injected libraries, and nlohmann/json,
+    # compiled into the daemon: both MIT, both requiring their notice to travel
+    # with a binary distribution.
+    install -Dm644 third_party/imgui/LICENSE.txt \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-imgui.txt"
+    install -Dm644 third_party/nlohmann/LICENSE.MIT \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-nlohmann-json.txt"
+    # Wuffs, the PNG decoder compiled into vocemd: dual MIT / Apache 2.0, taken
+    # under MIT (third_party/wuffs/README.md), its text shipped for attribution.
+    install -Dm644 third_party/wuffs/LICENSE \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-wuffs.txt"
+}
+
+# vim:set ts=4 sw=4 et:

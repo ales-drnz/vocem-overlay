@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+     All rights reserved.
+     This one file is under 0BSD rather than the project's BSD 3-Clause: AppStream
+     rejects any metadata_license that is not permissive enough for distributors to
+     merge into a mixed catalogue (`appstreamcli validate` says FSFAP, CC0-1.0 or
+     0BSD), and 0BSD is the BSD-family answer. It covers this metadata only. -->
+<component type="desktop-application">
+  <id>io.github.ales_drnz.vocem_overlay</id>
+  <metadata_license>0BSD</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+
+  <name>Vocem Overlay</name>
+  <summary>Discord voice overlay drawn inside the game</summary>
+
+  <description>
+    <p>
+      Vocem Overlay shows who is talking in your Discord voice channel inside the
+      game itself, rather than in a window on top of it. A Vulkan layer puts it
+      there, and an OpenGL hook does the same for games that use OpenGL.
+    </p>
+    <p>
+      Because the overlay is part of the game's picture rather than a separate
+      window, it is invisible on the desktop and it survives exclusive fullscreen.
+      There are no per-game launch options to set, and no nested compositor.
+    </p>
+    <p>
+      This application sets the overlay up: position, size, opacity, pictures and
+      who to show. It is not affiliated with Discord Inc.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.ales_drnz.vocem_overlay.desktop</launchable>
+
+  <!-- Every URL below hangs off the repository, and the images are committed
+       under imgs/ beside the README's own. They are produced from the real
+       thing: the in-game frame is what VOCEM_CAPTURE_FRAME read back out of a
+       running OpenGL application's own framebuffer, overlay included, and the
+       window shots are the application rendering itself offscreen. -->
+  <url type="homepage">https://github.com/ales-drnz/vocem-overlay</url>
+  <url type="bugtracker">https://github.com/ales-drnz/vocem-overlay/issues</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The voice panel and a message, drawn inside a running OpenGL application</caption>
+      <image>https://raw.githubusercontent.com/ales-drnz/vocem-overlay/master/imgs/in-game.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Positioning the panel on a map of the display</caption>
+      <image>https://raw.githubusercontent.com/ales-drnz/vocem-overlay/master/imgs/settings-panel.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Appearance presets, each one measured against a contrast floor</caption>
+      <image>https://raw.githubusercontent.com/ales-drnz/vocem-overlay/master/imgs/settings-appearance.png</image>
+    </screenshot>
+  </screenshots>
+
+  <developer id="io.github.ales_drnz">
+    <name>Vocem Overlay contributors</name>
+  </developer>
+
+  <provides>
+    <binary>vocem-config</binary>
+    <binary>vocemd</binary>
+    <binary>vocem</binary>
+  </provides>
+
+  <categories>
+    <category>Settings</category>
+  </categories>
+
+  <keywords>
+    <keyword>discord</keyword>
+    <keyword>voice</keyword>
+    <keyword>overlay</keyword>
+    <keyword>vulkan</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-08-03">
+      <description>
+        <p>First public release: Vulkan layer, OpenGL interposer, daemon and
+        settings window.</p>
+      </description>
+    </release>
+  </releases>
+</component>

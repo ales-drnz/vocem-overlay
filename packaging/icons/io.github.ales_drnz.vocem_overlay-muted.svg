@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+     All rights reserved.
+     Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+
+     The tray's "microphone muted" state: the circle filled in the badge red
+     (0xf23f43, the colour the overlay's own muted badge is drawn in), with a
+     white microphone and its slash. Same centre and radius as every other
+     tray icon; the glyph is sized to sit well inside the disc so the shape
+     still reads as a circle at 22 px, where the slash is what survives. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <circle cx="24" cy="24" r="20" fill="#f23f43"/>
+  <rect x="20.5" y="12" width="7" height="13" rx="3.5" fill="#ffffff"/>
+  <path d="M 16 22.5 a 8 8 0 0 0 16 0" fill="none" stroke="#ffffff"
+        stroke-width="3" stroke-linecap="round"/>
+  <line x1="24" y1="30.5" x2="24" y2="35" stroke="#ffffff" stroke-width="3"
+        stroke-linecap="round"/>
+  <line x1="13.5" y1="11" x2="34.5" y2="34.5" stroke="#f23f43" stroke-width="7"/>
+  <line x1="13.5" y1="11" x2="34.5" y2="34.5" stroke="#ffffff" stroke-width="3"
+        stroke-linecap="round"/>
+</svg>

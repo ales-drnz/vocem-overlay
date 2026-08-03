@@ -1,0 +1,32 @@
+# Build trees
+build/
+build-*/
+build32/
+compile_commands.json
+*.o
+*.so
+*.spv
+
+# IDE / OS
+.cache/
+.idea/
+.vscode/
+*.user
+.DS_Store
+
+# makepkg works in the packaging directory and leaves its results there. The
+# packages themselves are build output like any other: 120 MB of them had
+# accumulated beside the PKGBUILD before this line existed.
+packaging/pkg/
+packaging/src/
+packaging/*.pkg.tar.*
+
+# Fetched by scripts/make-fonts.py, which deletes them again; what is committed
+# is the subsets it produces under common/fonts/.
+third_party/fonts/*-Variable.ttf
+
+# AI tooling
+.claude/
+CLAUDE.md
+DESIGN.md
+PROMPT-*.md

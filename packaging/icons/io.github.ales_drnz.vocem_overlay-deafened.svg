@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+     All rights reserved.
+     Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+
+     The tray's "deafened" state: the circle filled in the badge red
+     (0xf23f43), with white headphones: a band over two earpieces, Discord's
+     own vocabulary for the state without Discord's artwork. Deafened wins
+     over muted when both are true, which is the client's own precedence.
+     Same centre and radius as every other tray icon. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <circle cx="24" cy="24" r="20" fill="#f23f43"/>
+  <path d="M 14 27 v -3 a 10 10 0 0 1 20 0 v 3" fill="none" stroke="#ffffff"
+        stroke-width="3" stroke-linecap="round"/>
+  <rect x="12" y="25.5" width="6" height="10" rx="2.5" fill="#ffffff"/>
+  <rect x="30" y="25.5" width="6" height="10" rx="2.5" fill="#ffffff"/>
+</svg>

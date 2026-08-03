@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+     All rights reserved.
+     Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+
+     The tray's "in a voice channel, nobody speaking" state: the circle
+     filled, in the muted grey of the overlay's own text ramp (0x9aa0ab,
+     measured to clear the contrast floor on every scene the panel is read
+     over, which is also what makes it legible on a light panel and a dark
+     one). Same centre and radius as every other tray icon: only the colour
+     and the fill change between states, which is the overlay's rule that
+     state arrives as colour on shapes that were always there. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <circle cx="24" cy="24" r="20" fill="#9aa0ab"/>
+</svg>

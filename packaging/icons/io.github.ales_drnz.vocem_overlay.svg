@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+     All rights reserved.
+     Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+
+     A voice panel inside a frame: the overlay is a participant list drawn inside
+     a game's own picture. Deliberately nothing resembling Discord's branding.
+
+     On the 48 grid KDE application icons are designed on, with the overlay's own
+     tokens from include/vocem/theme.h. The icon drew this design before the
+     product did, and now the two say the same thing by construction: surface
+     #17181c, hairline white at 8% (14% here: an icon's edge is read at 16 px,
+     where 8% is no edge at all), avatar placeholder #4f545c, speaking ring
+     #23a55a two units outside the picture, the speaking name at #f2f3f5 over
+     the idle one at #b5bac1. The corner is 6, the boxes' radius of 8 at this
+     grid's 48/64. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <rect x="3" y="6" width="42" height="36" rx="6" fill="#17181c"/>
+  <rect x="3.5" y="6.5" width="41" height="35" rx="5.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.14" stroke-width="1"/>
+  <circle cx="15" cy="24" r="6" fill="#4f545c"/>
+  <circle cx="15" cy="24" r="8.5" fill="none" stroke="#23a55a" stroke-width="2"/>
+  <rect x="27" y="18.5" width="14" height="3" rx="1.5" fill="#f2f3f5"/>
+  <rect x="27" y="26.5" width="10" height="3" rx="1.5" fill="#b5bac1"/>
+</svg>

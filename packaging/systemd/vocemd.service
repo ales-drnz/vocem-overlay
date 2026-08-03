@@ -1,0 +1,69 @@
+# Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+# All rights reserved.
+# Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+[Unit]
+Description=Vocem Overlay daemon (Discord voice state)
+Documentation=https://github.com/ales-drnz/vocem-overlay
+# Deliberately not graphical-session.target: it is not reached on every desktop,
+# and anchoring here would silently break autostart for those users. The daemon is
+# happy to start early -- it waits for Discord, and for the access token, on its
+# own.
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vocemd
+Restart=on-failure
+RestartSec=10
+# The daemon holds one WebSocket and a shared memory segment: nothing here needs
+# more than a very small footprint, and capping it turns a leak into a restart
+# rather than a swap storm.
+MemoryMax=128M
+Nice=5
+# Stopping must be quick: the exit path unlinks the shared segment, and a SIGKILL
+# skips it, leaving a segment behind its daemon.
+TimeoutStopSec=10
+
+# This is the one process in the project that parses input from the network -- a
+# WebSocket frame, a JSON document, a PNG -- and it holds a token whose scopes
+# include messages.read. It is worth confining whatever parses its bytes.
+#
+# Only directives that need no mount namespace: a user unit that cannot set one up
+# fails to start, and a daemon that will not start is worse than one that is
+# merely confined. ProtectSystem and PrivateTmp are the two left out for that
+# reason; they belong here the day the unit is tested against a machine that
+# cannot do them.
+#
+# `CapabilityBoundingSet=` is deliberately absent, and that is a measurement, not
+# an oversight: an empty bounding set makes a *user* unit fail to start on this
+# systemd -- exit 218, EXIT_CAPABILITIES, three runs out of three under
+# `systemd-run --user`. A user service holds no capabilities to drop anyway. The
+# whole set below was run as a transient unit around a real HTTPS fetch before it
+# was written here, precisely because a daemon that will not start is a worse
+# outcome than a daemon that is not confined.
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# One set per line: the leading ~ negates the first name only, so the three on one
+# line made two of them literal syscall names systemd did not recognise and
+# silently ignored -- `systemd-analyze verify` says so, which is how this was
+# caught.
+SystemCallFilter=~@privileged
+SystemCallFilter=~@resources
+SystemCallFilter=~@obsolete
+# The RPC is TCP on loopback, the CDN is TCP; nothing here speaks anything else.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=default.target
