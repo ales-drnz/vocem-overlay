@@ -267,7 +267,7 @@ does the whole thing: adds the repository and installs the extension, after
 which `flatpak update` keeps it current like anything else.
 
 ```bash
-flatpak install --user ./vocem-overlay-layer.flatpakref
+flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref
 ```
 
 That is the whole installation for a Flatpak game that renders with Vulkan.
@@ -291,8 +291,9 @@ measurement rather than a plan: a daemon inside a sandbox cannot publish anythin
 a game on the host can read without being handed the whole filesystem. The
 extension above is the part that can be a Flatpak, and it is the part that needs
 to be. It is not on Flathub and is not going to be; it is built from the sources
-and published from this project's own pages, and `flatpak/README.md` has the
-commands that do it.
+and published from this project's own pages, signed, at
+<https://ales-drnz.github.io/vocem-overlay/>. `flatpak/README.md` has the
+commands that build and publish it.
 
 #### 1.4 Games with anti-cheat
 

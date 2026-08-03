@@ -42,22 +42,33 @@ which is nothing for GitHub Pages. Publish it from a Pages *artifact* rather
 than by committing it to a branch, or every version's objects end up in the git
 history for ever.
 
-Beside it goes `vulkanlayer/vocem-overlay-layer.flatpakref`, with its `Url`
-pointing at wherever the repository ended up. That single file is the whole
-user-facing installation:
+It is served from the `gh-pages` branch, which carries `repo/`, the
+`.flatpakref` and an `index.html`, and is force-pushed whole at each release so
+the branch never accumulates old objects. Live at
+<https://ales-drnz.github.io/vocem-overlay/>.
+
+`vulkanlayer/vocem-overlay-layer.flatpakref` is the whole user-facing
+installation:
 
 ```sh
-flatpak install --user ./vocem-overlay-layer.flatpakref
+flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref
 ```
 
-Measured: it adds the remote and installs the extension in one step, and from
-then on `flatpak update` carries new versions along with everything else the
-user has. On a desktop the file can simply be opened.
+Measured from the public address, on a machine with nothing of it installed: it
+adds the remote and installs the extension in one step, both architectures land
+inside a real sandbox, and `flatpak update` carries it from then on. On a
+desktop the file can simply be opened.
 
-**Sign it.** With no `GPGKey=` in that file, Flatpak sets `no-gpg-verify` on the
-remote it creates and takes whatever the server hands it -- measured, and it
-does it quietly. One `gpg --export <key> | base64 -w0` into the `GPGKey` field,
-and `--gpg-sign=<key>` on `build-update-repo`, closes it.
+**It is signed**, with the key whose public half is in the `GPGKey` field of
+that file (`FA67BB03AECF6941`). The private half stays on the release machine
+and never leaves it. Without the field, Flatpak sets `no-gpg-verify` on the
+remote it creates and takes whatever the server hands it, quietly -- measured
+on the remote it made before the key was there. `build-update-repo` and the
+build both take `--gpg-sign=`.
+
+Building and publishing from a CI workflow would mean putting that private key
+into a repository secret. It is not done, and it is the reason: the key is on
+one machine on purpose.
 
 ### The offline alternative
 
