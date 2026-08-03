@@ -31,11 +31,18 @@ Once, the toolchain:
 flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk.Compat.i386 org.freedesktop.Sdk.Extension.toolchain-i386 org.freedesktop.Platform.Compat.i386
 ```
 
-Then, from the top of the checkout, with the signing key:
+Then, from the top of the checkout, with the signing key and the project's own
+version:
 
 ```sh
-flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --repo=/tmp/vocem-flatpak-repo /tmp/vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
+flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --subject="Vocem Overlay $(grep -m1 '^pkgver=' packaging/PKGBUILD | cut -d= -f2)" --body="Built from $(git rev-parse --short HEAD) of https://github.com/ales-drnz/vocem-overlay" --repo=/tmp/vocem-flatpak-repo /tmp/vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
 ```
+
+`--subject` is not decoration. The branch is `25.08`, which says which runtime
+the extension fits and nothing about what is in it, so without a subject
+`flatpak info` reads "Export org.freedesktop.Platform.VulkanLayer.VocemOverlay"
+and a user has no way to tell whether the fix a release announced is in the
+copy they have. With it, `flatpak info` says `Vocem Overlay 0.1.2`.
 
 The i386 half is cross-compiled by the second module. It cannot be built on the
 host instead: the layer must match the runtime's ABI, and a library built
