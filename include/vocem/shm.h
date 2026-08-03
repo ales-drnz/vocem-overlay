@@ -91,6 +91,19 @@ public:
 
     bool valid() const { return state_ != nullptr; }
 
+    // The canonical segment, for the mirrors to be copied from. Read-only to
+    // everything but publish().
+    const SharedState* state() const { return state_; }
+
+    // Called with the segment as it stands, after every publish. The daemon
+    // hangs its Flatpak mirrors here (daemon/src/flatpak_bridge.h) so that a
+    // sandboxed game is never served a staler state than a host one, and so that
+    // there is one publish path rather than two to keep in step. A plain
+    // function pointer: this header is compiled into games, and nothing in it
+    // may allocate.
+    void (*on_publish)(const SharedState&, void*) = nullptr;
+    void* on_publish_context = nullptr;
+
     // Publish under the seqlock. The callback must not block: readers spin while
     // the sequence is odd.
     template <typename Fn>
@@ -106,6 +119,13 @@ public:
 
         std::atomic_thread_fence(std::memory_order_release);
         state_->sequence.store(seq + 2, std::memory_order_release);  // even: stable
+
+        // After the segment is stable, never during: a mirror copied from a
+        // half-written source would carry the tear across the boundary with a
+        // sequence that says it did not.
+        if (on_publish) {
+            on_publish(*state_, on_publish_context);
+        }
     }
 
     ~StateWriter() { close(); }
@@ -142,9 +162,7 @@ public:
     // Returns false when the daemon is not running, which is a normal condition:
     // the caller must then behave as if there were nothing to draw.
     bool open() {
-        char name[64];
-        shm_name(name, sizeof(name), getuid());
-        fd_ = shm_open(name, O_RDONLY, 0);
+        fd_ = open_segment();
         if (fd_ < 0) {
             return false;
         }
@@ -198,9 +216,7 @@ public:
         if (!state_ || fd_ < 0) {
             return false;
         }
-        char name[64];
-        shm_name(name, sizeof(name), getuid());
-        const int named = shm_open(name, O_RDONLY, 0);
+        const int named = open_segment();
         if (named < 0) {
             return false;  // the name is gone: the daemon is, too
         }
@@ -261,6 +277,25 @@ public:
     ~StateReader() { close(); }
 
 private:
+    // The segment, by whichever of its two names this process can reach.
+    //
+    // A game inside a Flatpak has a private /dev/shm, so shm_open() there opens
+    // nothing however healthy the daemon is; what it can reach is the mirror the
+    // daemon wrote into the one directory that crosses the sandbox
+    // (vocem/flatpak.h). The mapping is MAP_SHARED over the same inode on both
+    // sides, so everything below this line -- the size check, the seqlock, the
+    // exact comparison of abi_version -- is the same code answering the same
+    // question. Only the name differs.
+    static int open_segment() {
+        char path[512];
+        if (bridge_in_use() && bridge_path(path, sizeof(path), kBridgeStateName)) {
+            return ::open(path, O_RDONLY | O_CLOEXEC);
+        }
+        char name[64];
+        shm_name(name, sizeof(name), getuid());
+        return shm_open(name, O_RDONLY, 0);
+    }
+
     int fd_ = -1;
     const SharedState* state_ = nullptr;
 };

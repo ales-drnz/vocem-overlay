@@ -1,0 +1,102 @@
+# The overlay as a Vulkan layer extension, which is how it reaches a game that
+# is itself a Flatpak. Built from this checkout, not from Flathub: the release
+# channel for this project is the AUR, and the reasons are in DESIGN, entry 85.
+# One manifest, therefore, and no second one to drift away from it.
+id: org.freedesktop.Platform.VulkanLayer.VocemOverlay
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+branch: '25.08'
+build-extension: true
+sdk-extensions:
+  - org.freedesktop.Sdk.Compat.i386
+  - org.freedesktop.Sdk.Extension.toolchain-i386
+
+# Everything an extension installs lands under its own mount point. The version
+# of this branch is the version of the extension POINT declared by the runtime,
+# not the runtime's own branch name: org.gnome.Platform/50 declares
+# `org.freedesktop.Platform.VulkanLayer` at version 25.08, which is why one
+# branch built here reaches GNOME applications as well. Measured: Sober runs on
+# org.gnome.Platform/50 and its /.flatpak-info lists this extension among its
+# runtime-extensions.
+build-options:
+  prefix: /usr/lib/extensions/vulkan/VocemOverlay
+  strip: true
+
+cleanup:
+  - /include
+  - /lib/*/cmake
+  - /lib/*/pkgconfig
+
+x-arch-build-options:
+  x86_64: &x86-64-build-options
+    libdir: /usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu
+  i386: &i386-build-options
+    libdir: /usr/lib/extensions/vulkan/VocemOverlay/lib/i386-linux-gnu
+    append-path: /usr/lib/sdk/toolchain-i386/bin
+    env:
+      CC: i686-unknown-linux-gnu-gcc
+      CXX: i686-unknown-linux-gnu-g++
+
+# What the four configuration options below mean, once, for both modules:
+# No daemon, no CLI, no settings window: none of them belongs inside another
+# application's sandbox, and the daemon could not do its job there anyway --
+# a Flatpak daemon's shared memory is invisible to a game on the host.
+#   -DVOCEM_BUILD_HOST_TOOLS=OFF
+# No environment variable to set: an implicit layer with only
+# disable_environment is on in every Vulkan application it is mounted into.
+#   -DVOCEM_ENABLE_BY_DEFAULT=ON
+# An absolute library_path, and a layer name carrying the architecture. The
+# extension's directory is on no loader search path -- the extension point
+# declares no add-ld-path -- and two manifests with one name are collapsed
+# into one entry by the loader, which would leave one of the two ABIs unable
+# to load. See layer/CMakeLists.txt.
+#   -DVOCEM_LAYER_FLATPAK_EXTENSION=ON
+# The project puts a 32-bit build in lib32 unless the caller has said where it
+# wants it. Here the caller has.
+#   -DVOCEM_LIBDIR_OVERRIDDEN=ON
+
+modules:
+  - name: vocem-overlay
+    buildsystem: cmake-ninja
+    build-options: *x86-64-build-options
+    config-opts:
+      - -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu
+      - -DVOCEM_BUILD_HOST_TOOLS=OFF
+      - -DVOCEM_ENABLE_BY_DEFAULT=ON
+      - -DVOCEM_LAYER_FLATPAK_EXTENSION=ON
+      - -DVOCEM_LIBDIR_OVERRIDDEN=ON
+    post-install:
+      # The colour emoji bank. It is data the injected code reads, and its path
+      # is compiled in from this prefix (vocem/emoji_bank.h), so it travels with
+      # the libraries. Its licence travels beside it: the bank is a Modified
+      # Version of Noto Color Emoji under the OFL 1.1.
+      - install -Dm644 common/emoji/emoji_bank.rgba
+        ${FLATPAK_DEST}/share/vocem/emoji_bank.rgba
+      - install -Dm644 common/emoji/OFL-NotoColorEmoji.txt
+        ${FLATPAK_DEST}/share/vocem/OFL-NotoColorEmoji.txt
+      - install -Dm644 LICENSE ${FLATPAK_DEST}/share/licenses/vocem-overlay/LICENSE
+    sources: &sources
+      - type: dir
+        path: ../..
+
+  - name: vocem-overlay-32bit
+    buildsystem: cmake-ninja
+    build-options: *i386-build-options
+    config-opts:
+      - -DCMAKE_INSTALL_LIBDIR=lib/i386-linux-gnu
+      - -DVOCEM_BUILD_HOST_TOOLS=OFF
+      - -DVOCEM_ENABLE_BY_DEFAULT=ON
+      - -DVOCEM_LAYER_FLATPAK_EXTENSION=ON
+      - -DVOCEM_LIBDIR_OVERRIDDEN=ON
+    sources: *sources
+
+# Nothing here arranges for the OpenGL preload. There is no extension point for
+# a preload at all: it is two environment variables the user sets on the
+# application, a bare soname on LD_PRELOAD and both architecture directories on
+# LD_LIBRARY_PATH, so the loader picks the matching ABI and says nothing about
+# the other. The linker's $LIB token was tried first and measured NOT to expand
+# under /usr/lib/extensions -- see the README, and DESIGN entry 83.
+#
+# And no AppStream metainfo: that is Flathub's requirement for a listing, and
+# there is no listing. Flatpak itself does not want one.

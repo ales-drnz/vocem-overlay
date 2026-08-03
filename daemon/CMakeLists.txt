@@ -9,6 +9,7 @@ add_executable(vocemd
     src/websocket.cpp
     src/avatars.cpp
     src/auth.cpp
+    src/flatpak_bridge.cpp
 )
 
 target_include_directories(vocemd PRIVATE

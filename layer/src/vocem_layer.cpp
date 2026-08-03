@@ -33,6 +33,7 @@
 #include "vocem/config.h"
 #include "vocem/journal.h"
 #include "vocem/draw_decision.h"
+#include "vocem/flatpak.h"
 #include "vocem/panel.h"
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
@@ -260,9 +261,42 @@ VkLayerDeviceCreateInfo* find_device_chain_info(const VkDeviceCreateInfo* info,
 // Instance
 // ---------------------------------------------------------------------------
 
+// Once per process: whether this one is inside a Flatpak sandbox, and if it is,
+// what was done about it.
+//
+// It says so either way it can fail, because the failure is invisible
+// otherwise: a game whose overlay never found the bridge behaves exactly like a
+// game the overlay was never asked to draw in.
+void enter_flatpak_bridge_once() {
+    static bool asked = false;
+    if (asked) {
+        return;
+    }
+    asked = true;
+    const char* id = vocem::flatpak_app_id();
+    if (!id) {
+        return;  // on the host, where everything is where it has always been
+    }
+    if (vocem::enter_flatpak_bridge()) {
+        char root[512];
+        vocem::bridge_root(root, sizeof(root));
+        VOCEM_LOG("inside the Flatpak sandbox of %s: state, settings and avatars come from %s", id,
+                  root);
+        return;
+    }
+    VOCEM_LOG("inside the Flatpak sandbox of %s but could not ask vocemd for a bridge: no "
+              "XDG_RUNTIME_DIR, or its app directory is not writable. There will be no overlay "
+              "in this process.", id);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
                                                     const VkAllocationCallbacks* pAllocator,
                                                     VkInstance* pInstance) {
+    // Before anything derives a path: the configuration and the state are both
+    // on the far side of the sandbox when the game is a Flatpak, and this is
+    // where the three lookups get pointed at the bridge (vocem/flatpak.h).
+    enter_flatpak_bridge_once();
+
     VkLayerInstanceCreateInfo* link = find_instance_chain_info(pCreateInfo, VK_LAYER_LINK_INFO);
     if (!link || !link->u.pLayerInfo) {
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -928,6 +962,11 @@ bool overlay_hidden_here() {
                       vocem::game_verdict().reason.c_str());
         }
     }
+    // Inside a Flatpak, tell the daemon. It adopted this sandbox before the
+    // settings could be read, because the settings arrive across the bridge;
+    // this is where it learns whether the overlay actually belongs here, and
+    // whether to keep sending the channel and the faces at all.
+    vocem::flatpak_bridge_drawing(decision.allowed());
     return !decision.allowed();
 }
 

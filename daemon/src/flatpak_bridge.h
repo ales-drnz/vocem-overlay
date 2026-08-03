@@ -1,0 +1,96 @@
+// Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+// All rights reserved.
+// Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+//
+// Publishing the same state a second time, on the far side of a Flatpak
+// sandbox.
+//
+// A game that is itself a Flatpak cannot see the daemon's POSIX segment, its
+// config.ini or its avatar cache: see vocem/flatpak.h for the measurements and
+// for the one directory that does cross. This class is the daemon's half of
+// that. It finds the sandboxes whose overlay asked to be served, keeps a
+// MAP_SHARED mirror of the segment in each, and copies config.ini and the
+// avatar files those sandboxes need.
+//
+// Everything it touches is on the other side of a trust boundary. The directory
+// under $XDG_RUNTIME_DIR/app/<id> is writable by the sandboxed application, and
+// this process is not sandboxed: it runs as the user, with the user's home
+// reachable. So every open below the application's directory is O_NOFOLLOW and
+// relative to a directory descriptor, and anything that is not the kind of file
+// it should be is refused out loud rather than written through.
+
+#ifndef VOCEM_DAEMON_FLATPAK_BRIDGE_H
+#define VOCEM_DAEMON_FLATPAK_BRIDGE_H
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+#include "vocem/shared_state.h"
+
+namespace vocem {
+
+class FlatpakBridge {
+public:
+    FlatpakBridge() = default;
+    ~FlatpakBridge();
+
+    FlatpakBridge(const FlatpakBridge&) = delete;
+    FlatpakBridge& operator=(const FlatpakBridge&) = delete;
+
+    // Looks for $XDG_RUNTIME_DIR/app. False, once and quietly, on a machine with
+    // no Flatpak at all -- which is not a failure and must not read like one.
+    bool start();
+
+    // Which sandboxes are asking, now. Cheap enough for a one-second tick: one
+    // opendir and one open per application directory.
+    void rescan();
+
+    // Fan the segment out. Called after every publish, so what a sandboxed game
+    // reads is never staler than what a host game reads.
+    void publish(const SharedState& state);
+
+    // config.ini when it moves, and the avatar files the current state names.
+    // Off the publish path: these change on a human's timescale.
+    void refresh_files(const SharedState& state);
+
+    // The daemon is going. Takes every mirror's name away, which is what
+    // StateWriter::unlink_segment() does for the segment and for the same
+    // reason: unlinking is how a reader inside a game learns that what it holds
+    // is history. Without it a Flatpak game would go on drawing the last channel
+    // the daemon ever published, for as long as it ran -- the file stays where
+    // it is and every check the reader makes keeps passing.
+    void stop();
+
+    size_t served() const { return mirrors_.size(); }
+
+private:
+    struct Mirror {
+        std::string id;
+        int directory = -1;   // the sandbox's vocem/ directory
+        int state_file = -1;
+        // What the overlay in that sandbox last said it was doing. The voice
+        // state and the faces only go to a sandbox that is actually drawing
+        // them; config.ini goes either way, because it is what the overlay
+        // reads to decide.
+        bool drawing = false;
+        // The seqlock's counter, kept here and not read back out of the file.
+        // What is in the file is whatever the sandbox last left there.
+        uint32_t sequence = 0;
+        long long config_mtime = 0;
+    };
+
+    void close(Mirror& mirror);
+    bool state_is_ours(const Mirror& mirror) const;
+    bool adopt(const char* id);
+    void mirror_config(Mirror& mirror);
+    void mirror_avatars(Mirror& mirror, const SharedState& state);
+
+    int applications_ = -1;  // $XDG_RUNTIME_DIR/app
+    bool started_ = false;
+    std::vector<Mirror> mirrors_;
+};
+
+}  // namespace vocem
+
+#endif  // VOCEM_DAEMON_FLATPAK_BRIDGE_H

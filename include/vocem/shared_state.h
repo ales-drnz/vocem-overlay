@@ -28,6 +28,8 @@
 #include <cstring>
 #include <string>
 
+#include "vocem/flatpak.h"
+
 namespace vocem {
 
 // Bump on any layout change. Readers compare exactly, never "greater than".
@@ -200,7 +202,15 @@ inline void shm_name(char* out, size_t capacity, unsigned int uid) {
 
 // Where the daemon caches avatar images and the layer reads them from. Both sides
 // derive it the same way so the path never has to travel through the ABI.
+//
+// Inside a Flatpak game the cache the daemon wrote is not reachable at all --
+// XDG_CACHE_HOME there is the application's own ~/.var/app directory -- so the
+// overlay reads the copies the daemon mirrored across the bridge instead. Only
+// the injected code turns that on; see vocem/flatpak.h.
 inline void avatar_cache_dir(char* out, size_t capacity) {
+    if (bridge_in_use() && bridge_path(out, capacity, kBridgeAvatarsName)) {
+        return;
+    }
     if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
         std::snprintf(out, capacity, "%s/vocem/avatars", xdg);
         return;

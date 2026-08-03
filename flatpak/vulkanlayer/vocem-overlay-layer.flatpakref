@@ -1,0 +1,20 @@
+# The one file a user needs. Installing it adds the remote and installs the
+# extension in a single step, and from then on `flatpak update` brings new
+# versions along with everything else -- which a downloaded bundle does not.
+#
+# Url is where the repository is served from. The default below is GitHub Pages
+# for this project's own repository; change it if it is hosted elsewhere.
+#
+# GPGKey is deliberately absent, and that is not free: without it `flatpak`
+# marks the remote `no-gpg-verify` and takes whatever the server hands it.
+# Filling it in is one `gpg --export <key> | base64 -w0` and it is worth doing
+# before this is published anywhere real.
+[Flatpak Ref]
+Title=Vocem Overlay (Vulkan layer for Flatpak games)
+Name=org.freedesktop.Platform.VulkanLayer.VocemOverlay
+Branch=25.08
+Url=https://ales-drnz.github.io/vocem-overlay/repo/
+SuggestRemoteName=vocem-overlay
+Homepage=https://github.com/ales-drnz/vocem-overlay
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=true

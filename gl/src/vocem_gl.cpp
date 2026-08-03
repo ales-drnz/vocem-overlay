@@ -36,6 +36,7 @@
 #include "vocem/avatar_rgba.h"
 #include "vocem/clock.h"
 #include "vocem/draw_decision.h"
+#include "vocem/flatpak.h"
 #include "vocem/fonts.h"
 #include "vocem/journal.h"
 #include "vocem/live_config.h"
@@ -127,6 +128,34 @@ FILE* debug_file() {
         }                                                                \
     } while (0)
 
+
+// Once per process: whether this one is inside a Flatpak sandbox, and if it is,
+// what was done about it.
+//
+// It says so either way it can fail, because the failure is invisible
+// otherwise: a game whose overlay never found the bridge behaves exactly like a
+// game the overlay was never asked to draw in.
+void enter_flatpak_bridge_once() {
+    static bool asked = false;
+    if (asked) {
+        return;
+    }
+    asked = true;
+    const char* id = vocem::flatpak_app_id();
+    if (!id) {
+        return;  // on the host, where everything is where it has always been
+    }
+    if (vocem::enter_flatpak_bridge()) {
+        char root[512];
+        vocem::bridge_root(root, sizeof(root));
+        VOCEM_GLOG("inside the Flatpak sandbox of %s: state, settings and avatars come from %s",
+                   id, root);
+        return;
+    }
+    VOCEM_GLOG("inside the Flatpak sandbox of %s but could not ask vocemd for a bridge: "
+               "no XDG_RUNTIME_DIR, or its app directory is not writable. There will be no "
+               "overlay in this process.", id);
+}
 
 bool overlay_disabled() {
     static const bool disabled = [] {
@@ -549,6 +578,12 @@ public:
             return;
         }
 
+        // Before the first thing that derives a path. Inside a Flatpak game the
+        // segment, config.ini and the avatar cache are all on the far side of
+        // the sandbox, and this is what points the three lookups at the copies
+        // the daemon puts where they can be reached (vocem/flatpak.h).
+        enter_flatpak_bridge_once();
+
         // One stat() every couple of seconds, not per frame.
         const vocem::Config& config = config_.current();
 
@@ -575,6 +610,11 @@ public:
         // drawing -- see `release()`. Turning it back on costs one frame, in which
         // the backend is built again from nothing.
         const bool want = config.enabled && decide(config);
+        // Inside a Flatpak, tell the daemon. It adopted this sandbox before the
+        // settings could be read, because the settings arrive across the bridge;
+        // this is where it learns whether the overlay actually belongs here, and
+        // whether to keep sending the channel and the faces at all.
+        vocem::flatpak_bridge_drawing(want);
         if (want && drawing_ != 1) {
             // The session's journal (vocem/journal.h): opened at the first
             // frame the overlay draws in this process, closed into history on

@@ -140,6 +140,15 @@ void load_overlay() {
     if (!handle) {
         handle = dlopen("/run/host" VOCEM_LIBDIR "/libvocem_gl.so", RTLD_NOW | RTLD_LOCAL);
     }
+    // And by its own path, unprefixed. Inside a Flatpak the overlay is mounted
+    // from the VulkanLayer extension at a directory the loader does not search:
+    // the extension point has no add-ld-path, so the soname above resolves to
+    // nothing and there is no /run/host either. The build that goes into the
+    // extension compiles VOCEM_LIBDIR to where it will be mounted, which is the
+    // one place left to look.
+    if (!handle) {
+        handle = dlopen(VOCEM_LIBDIR "/libvocem_gl.so", RTLD_NOW | RTLD_LOCAL);
+    }
     if (!handle) {
         return;  // not installed, or the wrong architecture: stay out of the way
     }

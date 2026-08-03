@@ -30,8 +30,30 @@ add_library(vocem_vk SHARED
 set(VOCEM_LIBRARY_NAME vocem_vk)
 if(CMAKE_SIZEOF_VOID_P EQUAL 4)
     set(VOCEM_MANIFEST_NAME VkLayer_vocem_overlay.x86.json)
+    set(VOCEM_ARCH_SUFFIX x86)
 else()
     set(VOCEM_MANIFEST_NAME VkLayer_vocem_overlay.json)
+    set(VOCEM_ARCH_SUFFIX x86_64)
+endif()
+
+# The two things a Flatpak extension needs that a distribution package does not.
+#
+# An extension is mounted at /usr/lib/extensions/vulkan/VocemOverlay, and that
+# directory is on no loader search path -- the extension point declares no
+# add-ld-path -- so the bare soname below resolves to nothing there and the
+# library_path has to be absolute. And once the two architectures' manifests
+# carry *different* library paths they must also carry different layer NAMES:
+# on the host both manifests are byte-identical and the loader collapses them
+# into one entry, which is exactly what must not happen when only one of the two
+# is the right ABI. This is what MangoHud's VK_LAYER_MANGOHUD_overlay_x86_64 and
+# _x86 are for.
+option(VOCEM_LAYER_FLATPAK_EXTENSION
+    "Build the layer manifest for a Flatpak VulkanLayer extension: absolute \
+library_path, and a layer name carrying the architecture" OFF)
+if(VOCEM_LAYER_FLATPAK_EXTENSION)
+    set(VOCEM_LAYER_NAME "VK_LAYER_VOCEM_overlay_${VOCEM_ARCH_SUFFIX}")
+else()
+    set(VOCEM_LAYER_NAME "VK_LAYER_VOCEM_overlay")
 endif()
 
 set_target_properties(vocem_vk PROPERTIES
@@ -106,7 +128,11 @@ else()
     set(VOCEM_LAYER_ENABLE_BLOCK "        \"enable_environment\": {\n            \"VOCEM\": \"1\"\n        },\n")
 endif()
 
-set(VOCEM_LAYER_LIBRARY_PATH "lib${VOCEM_LIBRARY_NAME}.so")
+if(VOCEM_LAYER_FLATPAK_EXTENSION)
+    set(VOCEM_LAYER_LIBRARY_PATH "${CMAKE_INSTALL_FULL_LIBDIR}/lib${VOCEM_LIBRARY_NAME}.so")
+else()
+    set(VOCEM_LAYER_LIBRARY_PATH "lib${VOCEM_LIBRARY_NAME}.so")
+endif()
 configure_file(
     manifest/VkLayer_vocem_overlay.json.in
     "${CMAKE_CURRENT_BINARY_DIR}/install/${VOCEM_MANIFEST_NAME}"

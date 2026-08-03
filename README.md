@@ -255,8 +255,44 @@ each. The switch beside a row overrides the verdict either way, and reaches a
 running game within a couple of seconds.
 
 A game it does not recognise draws nothing until you tick its box. A game inside a
-Flatpak sandbox is out of reach: neither the preload nor the layer manifest crosses
-the sandbox.
+Flatpak sandbox needs one thing installed -- see below.
+
+#### 1.3b Games that are themselves Flatpaks
+
+Neither the session preload nor the host's layer manifest crosses a Flatpak
+sandbox, and neither does the daemon's shared memory. What does cross is a Vulkan
+layer **extension**, which Flatpak mounts into other applications' sandboxes. It
+is a single file, and opening it -- or installing it from the command line --
+does the whole thing: adds the repository and installs the extension, after
+which `flatpak update` keeps it current like anything else.
+
+```bash
+flatpak install --user ./vocem-overlay-layer.flatpakref
+```
+
+That is the whole installation for a Flatpak game that renders with Vulkan.
+`vocemd` keeps running on the host, as it always did; the overlay inside the
+sandbox asks it for a copy of what it needs, and the daemon puts the copy in the
+one directory the two sides share.
+
+OpenGL has no extension mechanism of any kind, so a Flatpak game that renders
+with OpenGL needs to be told to preload the interposer, once per application (or
+once for all of them, with no application named):
+
+```bash
+flatpak override --user --env=LD_PRELOAD=libvocem_gl_shim.so --env=LD_LIBRARY_PATH=/usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu:/usr/lib/extensions/vulkan/VocemOverlay/lib/i386-linux-gnu
+```
+
+Both architectures are on that path and the loader takes the one that matches the
+game, so the same command serves a 32-bit title under Proton.
+
+Vocem Overlay itself is **not** installable as a Flatpak, and that is a
+measurement rather than a plan: a daemon inside a sandbox cannot publish anything
+a game on the host can read without being handed the whole filesystem. The
+extension above is the part that can be a Flatpak, and it is the part that needs
+to be. It is not on Flathub and is not going to be; it is built from the sources
+and published from this project's own pages, and `flatpak/README.md` has the
+commands that do it.
 
 #### 1.4 Games with anti-cheat
 

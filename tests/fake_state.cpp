@@ -22,6 +22,7 @@
 
 #include <unistd.h>
 
+#include "flatpak_bridge.h"
 #include "vocem/display.h"
 #include "vocem/note.h"
 #include "private_shm.h"
@@ -67,6 +68,23 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "fake_state: no shared segment\n");
         return 1;
     }
+
+    // The same second publication the daemon makes, so that this fixture can be
+    // looked at inside a game that is itself a Flatpak. Without it the frame
+    // recipe in CLAUDE.md works for every game except the sandboxed ones, which
+    // are exactly the ones the bridge was written for. The private /dev/shm
+    // above does not cover this half: what a bridge writes lands in
+    // $XDG_RUNTIME_DIR/app/<id>/vocem, which is shared with the real session on
+    // purpose -- so a sandbox that has the overlay loaded WILL see this fake
+    // channel. That is the point, and it is why this tool prints which
+    // sandboxes it is feeding.
+    vocem::FlatpakBridge bridge;
+    bridge.start();
+    bridge.rescan();
+    writer.on_publish_context = &bridge;
+    writer.on_publish = [](const vocem::SharedState& state, void* context) {
+        static_cast<vocem::FlatpakBridge*>(context)->publish(state);
+    };
 
     writer.publish([&](vocem::SharedState& state) {
         state.connected = 1;
@@ -134,6 +152,10 @@ int main(int argc, char** argv) {
     uint32_t turn = 0;
     for (;;) {
         ::usleep(2'000'000);
+        // A Flatpak game may start after this tool did, and its overlay asks to
+        // be served when it does.
+        bridge.rescan();
+        bridge.refresh_files(*writer.state());
         writer.publish([&](vocem::SharedState& state) {
             for (uint32_t i = 0; i < state.user_count; ++i) {
                 state.users[i].flags &= ~vocem::kFlagSpeaking;

@@ -32,6 +32,7 @@
 #include <cstring>
 #include <string>
 
+#include "vocem/flatpak.h"
 #include "vocem/paths.h"
 
 namespace vocem {
@@ -248,7 +249,17 @@ struct Config {
     std::string preview_display_panel;
     std::string preview_display_notification;
 
+    // Inside a Flatpak game this file is unreachable: XDG_CONFIG_HOME there is
+    // the application's own directory under ~/.var/app and the user's settings
+    // are not in it. The overlay reads the copy the daemon mirrored across the
+    // bridge instead, and only the injected code asks for that (vocem/flatpak.h).
     static std::string path() {
+        if (bridge_in_use()) {
+            char mirrored[512];
+            if (bridge_path(mirrored, sizeof(mirrored), kBridgeConfigName)) {
+                return mirrored;
+            }
+        }
         if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
             return std::string(xdg) + "/vocem/config.ini";
         }

@@ -103,8 +103,10 @@ add_test(NAME panel_geometry COMMAND vocem_panel_geometry)
 # Not a test: a channel that is not there, for looking at the configuration window
 # with a full one in it. scripts/compare-preview.py runs it against a private
 # /dev/shm so it cannot be mistaken for the daemon.
-add_executable(vocem_fake_state fake_state.cpp)
-target_include_directories(vocem_fake_state PRIVATE "${CMAKE_SOURCE_DIR}/include")
+add_executable(vocem_fake_state fake_state.cpp
+    "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp")
+target_include_directories(vocem_fake_state PRIVATE
+    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src")
 target_link_libraries(vocem_fake_state PRIVATE rt)
 
 # The list of applications the overlay stays out of, and the record each process
@@ -925,3 +927,28 @@ if(TARGET vocem-config)
                 "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/tray_icon_choice.cmake")
 endif()
+
+# The Flatpak bridge, both directions.
+#
+# flatpak_bridge holds the daemon's writer and the injected code's reader against
+# each other across a fake $XDG_RUNTIME_DIR/app: the daemon publishes, a forked
+# child with FLATPAK_ID set enters the bridge exactly as the overlay does and
+# reads back the state, the settings and the avatar -- after unlinking the POSIX
+# segment, so nothing it gets right can have come from /dev/shm. A private
+# /dev/shm, because a StateWriter is opened.
+add_executable(vocem_flatpak_bridge flatpak_bridge.cpp
+    "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp")
+target_include_directories(vocem_flatpak_bridge PRIVATE
+    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src")
+target_link_libraries(vocem_flatpak_bridge PRIVATE rt)
+add_test(NAME flatpak_bridge COMMAND vocem_flatpak_bridge)
+set_tests_properties(flatpak_bridge PROPERTIES SKIP_RETURN_CODE 77)
+
+# The same directory, seen as what it is: writable by a sandbox that the daemon
+# has no reason to trust, while the daemon itself runs as the user with the
+# user's home reachable. Every name it opens down there is a symbolic link here.
+add_executable(vocem_flatpak_bridge_hostile flatpak_bridge_hostile.cpp
+    "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp")
+target_include_directories(vocem_flatpak_bridge_hostile PRIVATE
+    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src")
+add_test(NAME flatpak_bridge_hostile COMMAND vocem_flatpak_bridge_hostile)

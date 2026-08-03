@@ -30,6 +30,8 @@
 #include <string>
 
 #include "vocem/avatar_rgba.h"
+#include "vocem/config.h"
+#include "vocem/flatpak.h"
 #include "vocem/shared_state.h"
 
 namespace {
@@ -114,6 +116,44 @@ int main() {
     vocem::avatar_rgba_path(rgba_fallback, sizeof(rgba_fallback), 310503940594860049ULL, "");
     check(strcmp(rgba_fallback, "/cache/vocem/avatars/default_4.rgba") == 0,
           "and the default face's rgba name also comes from the whole id");
+
+    // The Flatpak bridge is the same shape of problem one wall further out. A
+    // 64-bit daemon writes the mirror, the settings copy and the avatar copies
+    // into $XDG_RUNTIME_DIR/app/<id>/vocem, and both widths of the injected code
+    // look for them there by name. Three strings that must be the same string.
+    setenv("XDG_RUNTIME_DIR", "/run/user/1000", 1);
+    setenv("FLATPAK_ID", "org.vinegarhq.Sober", 1);
+    check(vocem::flatpak_app_id() != nullptr && strcmp(vocem::flatpak_app_id(),
+                                                       "org.vinegarhq.Sober") == 0,
+          "the application id is read the same way at both widths");
+
+    char bridge[512];
+    check(vocem::bridge_root(bridge, sizeof(bridge)) &&
+              strcmp(bridge, "/run/user/1000/app/org.vinegarhq.Sober/vocem") == 0,
+          "and the bridge directory is the same path the daemon writes into");
+
+    // Turned on by hand rather than through enter_flatpak_bridge(), which would
+    // create the directory: what is under test is the derivation, not the mkdir.
+    vocem::detail::bridge_enabled = true;
+    char bridged_state[512];
+    check(vocem::bridge_path(bridged_state, sizeof(bridged_state), vocem::kBridgeStateName) &&
+              strcmp(bridged_state,
+                     "/run/user/1000/app/org.vinegarhq.Sober/vocem/state") == 0,
+          "the mirrored segment has one name at both widths");
+    check(vocem::Config::path() == "/run/user/1000/app/org.vinegarhq.Sober/vocem/config.ini",
+          "the mirrored settings have one name at both widths");
+    char bridged_avatar[832];
+    vocem::avatar_rgba_path(bridged_avatar, sizeof(bridged_avatar), 310503940594860049ULL,
+                            "a71d433becd902959baa0b8e59e9095c");
+    const bool avatar_agrees =
+        strcmp(bridged_avatar,
+               "/run/user/1000/app/org.vinegarhq.Sober/vocem/avatars/"
+               "310503940594860049_a71d433becd902959baa0b8e59e9095c.rgba") == 0;
+    if (!avatar_agrees) {
+        printf("     got    %s\n", bridged_avatar);
+    }
+    check(avatar_agrees, "and so does a mirrored avatar, whole 64-bit id and all");
+    vocem::detail::bridge_enabled = false;
 
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

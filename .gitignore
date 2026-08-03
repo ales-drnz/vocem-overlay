@@ -35,3 +35,6 @@ third_party/fonts/*-Variable.ttf
 CLAUDE.md
 DESIGN.md
 PROMPT-*.md
+
+# flatpak-builder leaves its cache and its build trees beside the manifest.
+.flatpak-builder/

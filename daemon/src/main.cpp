@@ -27,6 +27,8 @@
 
 #include "auth.h"
 #include "avatars.h"
+#include "flatpak_bridge.h"
+#include "log.h"
 #include "vocem/clock.h"
 #include "vocem/display.h"
 #include "vocem/journal.h"
@@ -55,27 +57,6 @@ constexpr size_t kParticipantCeiling = 4 * vocem::kMaxUsers;
 volatile std::sig_atomic_t g_stop = 0;
 
 void handle_signal(int) { g_stop = 1; }
-
-bool verbose() {
-    static const bool value = [] {
-        const char* env = std::getenv("VOCEM_DEBUG");
-        return env && env[0] == '1';
-    }();
-    return value;
-}
-
-#define LOG(...)                                       \
-    do {                                               \
-        std::fprintf(stderr, "[vocemd] " __VA_ARGS__); \
-        std::fputc('\n', stderr);                      \
-    } while (0)
-
-#define DBG(...)          \
-    do {                  \
-        if (verbose()) {  \
-            LOG(__VA_ARGS__); \
-        }                 \
-    } while (0)
 
 // Discord sends explicit nulls for absent fields -- `evt` on command replies,
 // `nick` and `global_name` on users. nlohmann's value() throws on a present-but-
@@ -782,6 +763,17 @@ int main() {
     // journal whose process is gone is a daemon that died without unwinding.
     vocem::journal_begin("daemon", "vocemd");
 
+    // The second half of the same publication, for games that are themselves
+    // Flatpaks and cannot see the segment above. Hung off the writer so there is
+    // one publish path: every state the host sees, a served sandbox sees.
+    vocem::FlatpakBridge bridge;
+    bridge.start();
+    bridge.rescan();
+    writer.on_publish_context = &bridge;
+    writer.on_publish = [](const vocem::SharedState& state, void* context) {
+        static_cast<vocem::FlatpakBridge*>(context)->publish(state);
+    };
+
     vocem::AvatarCache avatars;
     Session session(writer, avatars);
     // The user's settings, reread on the same live mechanism the overlay uses --
@@ -791,6 +783,26 @@ int main() {
     vocem::LiveConfig live_config;
     session.set_display_height(vocem::display_height());
     session.set_connected(false);
+
+    // The bridge's own tick, on the slow clock the sandboxes' needs run on: a
+    // game starting is when a new one appears, and config.ini and the avatar
+    // files move on a human's timescale. The state itself does not wait for
+    // this -- it goes out with every publish. The republish is here so a sandbox
+    // that has just been adopted does not sit on an empty state until the next
+    // thing Discord says.
+    double bridge_checked = 0.0;
+    const auto service_bridge = [&] {
+        const double now = vocem::monotonic_seconds();
+        if (now - bridge_checked < 1.0) {
+            return;
+        }
+        bridge_checked = now;
+        bridge.rescan();
+        if (const vocem::SharedState* state = writer.state()) {
+            bridge.publish(*state);
+            bridge.refresh_files(*state);
+        }
+    };
 
     const std::string path = std::string("/?v=1&client_id=") + vocem::kClientId;
     int backoff_seconds = 1;
@@ -848,6 +860,7 @@ int main() {
                 kRpcPortLast, backoff_seconds);
             for (int i = 0; i < backoff_seconds && !g_stop; ++i) {
                 sleep(1);
+                service_bridge();
             }
             backoff_seconds = backoff_seconds < 30 ? backoff_seconds * 2 : 30;
             continue;
@@ -866,6 +879,7 @@ int main() {
             // drawn from it, and how long that is comes from the same setting
             // the drawing side reads.
             session.expire_note(live_config.current().notification_seconds);
+            service_bridge();
             // The display, on a slower clock: a mode switch or a plugged monitor
             // is rare, and four sysfs opens a minute cost nothing.
             static double display_checked = 0.0;
@@ -910,6 +924,7 @@ int main() {
             vocem::journal_note("authorisation refused; waiting for a retry");
             while (!g_stop) {
                 sleep(1);
+                service_bridge();
             }
             break;
         }
@@ -921,6 +936,9 @@ int main() {
 
     LOG("shutting down");
     avatars.stop();
+    // Before the segment's own name goes, and for the same reason: a mirror left
+    // behind is a Flatpak game drawing a channel nobody is in any more.
+    bridge.stop();
     writer.close();
     vocem::StateWriter::unlink_segment();
     vocem::journal_end();
