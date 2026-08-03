@@ -8,6 +8,21 @@ the settings window, the host libraries — is installed on the host as usual.
 Published from this repository's own pages, at
 <https://ales-drnz.github.io/vocem-overlay/>. Not on Flathub.
 
+## When to rebuild it
+
+It carries the three injected libraries, the two layer manifests and the emoji
+bank, and nothing from `daemon/`, `cli/` or `gui/`. So it is rebuilt and
+republished when a release touched `gl/`, `layer/`, `common/`, `include/` or
+`third_party/` — the same rule that decides whether `build32` has to be rebuilt
+— and left alone otherwise:
+
+```sh
+git diff --name-only <previous tag>..HEAD -- gl layer common include third_party
+```
+
+The one coupling that is not optional: a change to `kAbiVersion` means the
+extension must be republished, or a Flatpak game reads a segment it refuses.
+
 ## Build
 
 Once, the toolchain:
@@ -41,12 +56,11 @@ remote it creates `no-gpg-verify` and says nothing about it. The public half of
 the key is in that file; the private half stays on the release machine, which is
 why the build is not run from CI.
 
-A single-file bundle goes on the release for anyone who would rather not add a
-remote. It does not update itself.
-
-```sh
-flatpak build-bundle --runtime /tmp/vocem-flatpak-repo vocem-overlay-flatpak-layer.flatpak org.freedesktop.Platform.VulkanLayer.VocemOverlay 25.08
-```
+Nothing is attached to the GitHub release. The extension has no version of its
+own — on Flatpak the number is `25.08`, which is the runtime's extension point,
+and `flatpak update` simply takes what is newest on the branch — so a numbered
+file attached to a numbered release is a snapshot of something that is not a
+snapshot. It was tried once and went stale within hours.
 
 ## The branch
 
