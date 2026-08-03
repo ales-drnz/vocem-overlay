@@ -1,135 +1,79 @@
-# Flatpak
+# The Vulkan layer extension
 
-This is not a way of distributing Vocem Overlay. The release channel is the AUR
-and it stays there. What lives here is one **feature**: a Vulkan layer
-extension, which is the only mechanism by which the overlay can reach a game
-that is itself a Flatpak. It is built from this checkout and published beside a
-release, not through Flathub -- DESIGN entry 85 records the decision and its
-reasons, and it was the owner's.
+The overlay reaches a game that is itself a Flatpak through a Vulkan layer
+extension, which Flatpak mounts into other applications' sandboxes. This
+directory holds its manifest. Everything else about the project — the daemon,
+the settings window, the host libraries — is installed on the host as usual.
 
-`vulkanlayer/` holds the manifest. There is one, and it builds from the working
-tree, so there is no second copy to drift away from it; entry 76 is what letting
-`PKGBUILD` and `PKGBUILD.local` drift cost.
+Published from this repository's own pages, at
+<https://ales-drnz.github.io/vocem-overlay/>. Not on Flathub.
 
-## Building it
+## Build
 
-Needs `org.flatpak.Builder`, plus the i386 compatibility and cross-toolchain
-extensions for the 32-bit half:
+Once, the toolchain:
 
 ```sh
 flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk.Compat.i386 org.freedesktop.Sdk.Extension.toolchain-i386 org.freedesktop.Platform.Compat.i386
 ```
 
-Then, from the top of the checkout:
+Then, from the top of the checkout, with the signing key:
 
 ```sh
-flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --repo=/tmp/vocem-flatpak-repo /tmp/vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
+flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --repo=/tmp/vocem-flatpak-repo /tmp/vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
 ```
 
-## Publishing it
+The i386 half is cross-compiled by the second module. It cannot be built on the
+host instead: the layer must match the runtime's ABI, and a library built
+against the host's glibc will not load inside the runtime.
 
-The repository the build already produced **is** the thing to publish: it is a
-directory of ordinary files served over HTTPS, and Flatpak's own documentation
-says so -- "hosting a repository is the preferred way to distribute an
-application, since repositories allow applications to be updated". Measured
-here: 6.7 MB and 61 files after
+## Publish
 
 ```sh
-flatpak build-update-repo --generate-static-deltas --prune /tmp/vocem-flatpak-repo
+flatpak build-update-repo --generate-static-deltas --prune --gpg-sign=FA67BB03AECF6941 /tmp/vocem-flatpak-repo
 ```
 
-which is nothing for GitHub Pages. Publish it from a Pages *artifact* rather
-than by committing it to a branch, or every version's objects end up in the git
-history for ever.
+About 7 MB. The `gh-pages` branch carries `repo/`, `vocem-overlay-layer.flatpakref`
+and `index.html`, and is force-pushed whole at each release so it never
+accumulates old objects.
 
-It is served from the `gh-pages` branch, which carries `repo/`, the
-`.flatpakref` and an `index.html`, and is force-pushed whole at each release so
-the branch never accumulates old objects. Live at
-<https://ales-drnz.github.io/vocem-overlay/>.
+**Sign it.** Without a `GPGKey` field in the `.flatpakref`, Flatpak marks the
+remote it creates `no-gpg-verify` and says nothing about it. The public half of
+the key is in that file; the private half stays on the release machine, which is
+why the build is not run from CI.
 
-`vulkanlayer/vocem-overlay-layer.flatpakref` is the whole user-facing
-installation:
-
-```sh
-flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref
-```
-
-Measured from the public address, on a machine with nothing of it installed: it
-adds the remote and installs the extension in one step, both architectures land
-inside a real sandbox, and `flatpak update` carries it from then on. On a
-desktop the file can simply be opened.
-
-**It is signed**, with the key whose public half is in the `GPGKey` field of
-that file (`FA67BB03AECF6941`). The private half stays on the release machine
-and never leaves it. Without the field, Flatpak sets `no-gpg-verify` on the
-remote it creates and takes whatever the server hands it, quietly -- measured
-on the remote it made before the key was there. `build-update-repo` and the
-build both take `--gpg-sign=`.
-
-Building and publishing from a CI workflow would mean putting that private key
-into a repository secret. It is not done, and it is the reason: the key is on
-one machine on purpose.
-
-### The offline alternative
-
-A single-file bundle, for somebody with no network path to the repository:
+A single-file bundle goes on the release for anyone who would rather not add a
+remote. It does not update itself.
 
 ```sh
 flatpak build-bundle --runtime /tmp/vocem-flatpak-repo vocem-overlay-flatpak-layer.flatpak org.freedesktop.Platform.VulkanLayer.VocemOverlay 25.08
 ```
 
-About three megabytes, installed with `flatpak install --user ./that-file`.
-Measured to work end to end -- both architectures and both layer manifests
-appear inside a real sandbox and the overlay draws -- but a bundle carries no
-remote, so it never updates itself. It is the fallback, not the plan.
+## The branch
 
-### Why the AUR package cannot just do this itself
+`25.08` is the version of the *extension point* the runtime declares, not the
+runtime's own name, so one branch covers several runtimes:
 
-It cannot, and the measurement is one line. The extension has to be built
-against the *runtime's* ABI, not the host's: the layer this machine builds for
-`/usr/lib` refuses to load inside `org.freedesktop.Platform//25.08` with
+| Runtime | Used by | Extension point |
+| --- | --- | --- |
+| `org.freedesktop.Platform/25.08` | Steam, Heroic | 25.08 |
+| `org.gnome.Platform/50`, `/49` | Sober, Lutris, Bottles | 25.08 |
+| `org.kde.Platform/6.10` | PrismLauncher | 25.08 |
+| `org.kde.Platform/6.9`, `org.freedesktop.Platform/24.08` | older applications | 24.08 |
 
-```
-libvocem_vk.so: /usr/lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.43' not found
-```
+A second branch is only needed for the last row.
 
--- host glibc 2.44, runtime glibc 2.42. So pointing a sandboxed game's loader at
-the host's copy with `VK_ADD_IMPLICIT_LAYER_PATH`, which both loaders do
-support, gets a layer that cannot be loaded. The extension is built in the SDK
-by whoever cuts the release, and only the result travels.
+## What the user does
 
-## Which branch
-
-The branch is the version of the extension *point* the runtime declares, not the
-runtime's own name. Measured against Flathub's own runtimes:
-`org.freedesktop.Platform/25.08` (Steam, Heroic), `org.gnome.Platform/50`
-(Sober) and `/49` (Lutris, Bottles) and `org.kde.Platform/6.10`
-(PrismLauncher) all declare it at **25.08**, so the one branch built here
-reaches all of them. Only `org.kde.Platform/6.9` and
-`org.freedesktop.Platform/24.08` would need a second branch.
-
-## What the user does after installing it
-
-Nothing, for a Flatpak game that renders with Vulkan. The extension is mounted
-into every application on a matching runtime and the layer is on by default.
-
-OpenGL has no extension mechanism of any kind, so a Flatpak game that renders
-with OpenGL needs the preload named by hand, once -- per application, or for all
-of them with no application named:
+For Vulkan, install it and nothing else. For OpenGL, which has no extension
+mechanism, the interposer has to be preloaded by hand:
 
 ```sh
 flatpak override --user --env=LD_PRELOAD=libvocem_gl_shim.so --env=LD_LIBRARY_PATH=/usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu:/usr/lib/extensions/vulkan/VocemOverlay/lib/i386-linux-gnu
 ```
 
-A bare soname and both architecture directories, rather than the linker's `$LIB`
-token that the session preload on the host uses. Measured: `$LIB` expands in
-`/usr/$LIB/...` and does **not** expand under `/usr/lib/extensions/...`, so the
-one-value trick that works on the host does not work here -- MangoHud's own
-Flatpak wrapper spells it the way that does not work. With a soname the loader
-searches both directories and loads the one whose ABI matches the process,
-silently ignoring the other, so a 32-bit game under Proton and a 64-bit native
-game take the same two variables.
+A bare soname with both architecture directories on the search path, so the
+loader takes the one matching the process. Do not rewrite it to use the linker's
+`$LIB` token as the host's session preload does: `$LIB` does not expand under
+`/usr/lib/extensions`.
 
-Both need `vocemd` running **on the host**: the daemon holds the Discord
-connection and is the only thing that can. Installing the AUR package is what
-puts it there.
+Both paths need `vocemd` running on the host.

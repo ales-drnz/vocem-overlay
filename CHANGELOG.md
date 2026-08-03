@@ -4,19 +4,14 @@ Games that are themselves Flatpaks.
 
 ### Added
 
-- The overlay reaches a game installed as a Flatpak. It ships as a Vulkan layer extension, which Flatpak mounts into other applications' sandboxes, and carries both the 64-bit and the 32-bit halves. One branch covers Steam, Heroic, Sober, Lutris, Bottles and PrismLauncher, whose runtimes all declare the extension point at the same version.
-- The daemon publishes what a sandboxed overlay needs -- the voice state, your settings and the cached faces -- through the one directory Flatpak already shares between an application and the host. Nothing to grant, nothing to configure. The shared state's layout and its version are the same on both sides of the sandbox; no ABI change, so games already running keep their overlay.
-- A sandbox is served only if the overlay inside it asked, and it is sent the channel and the faces only while it is actually drawing. Switching the overlay off for a game on the Applications page stops what crosses the wall, not just what is painted.
-- `flatpak/README.md` has the commands that build the extension, publish it and install it. It is not on Flathub and will not be.
-
-### Fixed
-
-- The OpenGL interposer can be preloaded inside a Flatpak. The documented command is the one that was measured to work: the linker's `$LIB` token, which the session preload uses on the host, does not expand under `/usr/lib/extensions`.
+- The overlay appears in a game installed as a Flatpak, which it could not reach before. It ships as a Vulkan layer extension carrying both the 64-bit and the 32-bit halves, installed once with a single file, and one branch covers Steam, Heroic, Sober, Lutris, Bottles and PrismLauncher.
+- The daemon publishes the voice state, your settings and the cached pictures into the one directory Flatpak shares between an application and the host. Nothing to grant and nothing to configure. No ABI change, so games already running keep their overlay.
+- A sandbox is served only while the overlay inside it is drawing. Switching a game off on the Applications page stops what is sent to it, not only what is painted.
+- The OpenGL interposer can be preloaded inside a Flatpak, with one `flatpak override`. The command is in the README; the `$LIB` token the host's session preload uses does not work there.
 
 ### Known limitations
 
-- OpenGL games inside a Flatpak need two environment variables set once, because Flatpak has no extension mechanism for a preload at all.
-- A game rendering below its display's mode -- Roblox under Sober with HiDPI off, for instance -- draws an overlay proportionally larger than intended, because the overlay is sized by the display and not by the window. Telling the game to render at native resolution is the remedy.
+- A game rendering below its display's mode draws an overlay proportionally larger than intended, since the overlay is sized by the display rather than by the window. Roblox under Sober does this with HiDPI off. Telling the game to render at native resolution is the remedy.
 
 ## [0.1.0] - 3-08-2026
 

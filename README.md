@@ -72,7 +72,8 @@ For 32-bit games, see [32-bit games](#7-32-bit-games).
   * [1.1 Vulkan](#11-vulkan)
   * [1.2 OpenGL](#12-opengl)
   * [1.3 Which applications it appears in](#13-which-applications-it-appears-in)
-  * [1.4 Games with anti-cheat](#14-games-with-anti-cheat)
+  * [1.4 Games that are themselves Flatpaks](#14-games-that-are-themselves-flatpaks)
+  * [1.5 Games with anti-cheat](#15-games-with-anti-cheat)
 
   </details>
 
@@ -187,6 +188,10 @@ the same either way.
 <td valign="middle"><img src="https://raw.githubusercontent.com/ales-drnz/svg-icons/main/png/terminal.png" width="32"></td>
 <td valign="middle"><b>It tells you why</b><br>every application it was loaded into gets a row saying what the detection went on.</td>
 </tr>
+<tr>
+<td valign="middle"><img src="https://raw.githubusercontent.com/ales-drnz/svg-icons/main/png/package.png" width="32"></td>
+<td valign="middle" colspan="3"><b>Flatpak games too</b><br>a Vulkan layer extension reaches games installed as Flatpaks, which neither the session preload nor the host's layer manifest can.</td>
+</tr>
 </table>
 
 ---
@@ -254,48 +259,35 @@ The **Applications** page lists everything it was loaded into and what it found 
 each. The switch beside a row overrides the verdict either way, and reaches a
 running game within a couple of seconds.
 
-A game it does not recognise draws nothing until you tick its box. A game inside a
-Flatpak sandbox needs one thing installed -- see below.
+A game it does not recognise draws nothing until you tick its box.
 
-#### 1.3b Games that are themselves Flatpaks
+#### 1.4 Games that are themselves Flatpaks
 
-Neither the session preload nor the host's layer manifest crosses a Flatpak
-sandbox, and neither does the daemon's shared memory. What does cross is a Vulkan
-layer **extension**, which Flatpak mounts into other applications' sandboxes. It
-is a single file, and opening it -- or installing it from the command line --
-does the whole thing: adds the repository and installs the extension, after
-which `flatpak update` keeps it current like anything else.
+A Flatpak game inherits neither the session preload nor the host's layer
+manifest. Install the Vulkan layer extension once and it reaches all of them:
 
 ```bash
 flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref
 ```
 
-That is the whole installation for a Flatpak game that renders with Vulkan.
-`vocemd` keeps running on the host, as it always did; the overlay inside the
-sandbox asks it for a copy of what it needs, and the daemon puts the copy in the
-one directory the two sides share.
+`flatpak update` keeps it current afterwards. Nothing else changes: `vocemd` goes
+on running on the host, and the overlay inside the sandbox reads what it needs
+from the one directory Flatpak shares between an application and the host.
 
-OpenGL has no extension mechanism of any kind, so a Flatpak game that renders
-with OpenGL needs to be told to preload the interposer, once per application (or
-once for all of them, with no application named):
+OpenGL has no equivalent mechanism, so a Flatpak game that renders with OpenGL
+also needs the interposer preloaded:
 
 ```bash
 flatpak override --user --env=LD_PRELOAD=libvocem_gl_shim.so --env=LD_LIBRARY_PATH=/usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu:/usr/lib/extensions/vulkan/VocemOverlay/lib/i386-linux-gnu
 ```
 
-Both architectures are on that path and the loader takes the one that matches the
-game, so the same command serves a 32-bit title under Proton.
+That covers every Flatpak application, 32-bit titles under Proton included. Name
+one at the end of the command to limit it to that application.
 
-Vocem Overlay itself is **not** installable as a Flatpak, and that is a
-measurement rather than a plan: a daemon inside a sandbox cannot publish anything
-a game on the host can read without being handed the whole filesystem. The
-extension above is the part that can be a Flatpak, and it is the part that needs
-to be. It is not on Flathub and is not going to be; it is built from the sources
-and published from this project's own pages, signed, at
-<https://ales-drnz.github.io/vocem-overlay/>. `flatpak/README.md` has the
-commands that build and publish it.
+Vocem Overlay itself is not a Flatpak. The daemon has to publish where games on
+the host can read it, which nothing inside a sandbox can do.
 
-#### 1.4 Games with anti-cheat
+#### 1.5 Games with anti-cheat
 
 This injects into a game's process and hooks its rendering, which is what
 anti-cheat systems are built to notice. It has not been run against EAC, BattlEye
