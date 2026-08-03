@@ -13,7 +13,7 @@
 # `pacman -Rns vocem-overlay` rather than hunting for leftovers by hand.
 
 pkgname=vocem-overlay
-pkgver=0.1.1
+pkgver=0.1.2
 # Reset with 0.1.0: releases are numbered from here (0.1.1, 0.1.2), and pkgrel
 # rises only to rebuild the same release. The old monotonic counter reached 67.
 pkgrel=1
