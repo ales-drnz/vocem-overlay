@@ -5,10 +5,10 @@
 # Url is where the repository is served from. The default below is GitHub Pages
 # for this project's own repository; change it if it is hosted elsewhere.
 #
-# GPGKey is deliberately absent, and that is not free: without it `flatpak`
-# marks the remote `no-gpg-verify` and takes whatever the server hands it.
-# Filling it in is one `gpg --export <key> | base64 -w0` and it is worth doing
-# before this is published anywhere real.
+# GPGKey is the repository's signing key, exported and base64-encoded. Without
+# it `flatpak` marks the remote `no-gpg-verify` and takes whatever the server
+# hands it, quietly. The private half lives only on the release machine;
+# `flatpak build-update-repo --gpg-sign=` is what signs with it.
 [Flatpak Ref]
 Title=Vocem Overlay (Vulkan layer for Flatpak games)
 Name=org.freedesktop.Platform.VulkanLayer.VocemOverlay
@@ -18,3 +18,4 @@ SuggestRemoteName=vocem-overlay
 Homepage=https://github.com/ales-drnz/vocem-overlay
 RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
 IsRuntime=true
+GPGKey=mDMEanDdOBYJKwYBBAHaRw8BAQdA6VczwGiilNavpeYcEVN6xCbkRm1W/TEdH1i5wpZZ+RG0I1ZvY2VtIE92ZXJsYXkgPGFsZXMuZHJuekBnbWFpbC5jb20+iJAEExYKADgWIQTpqB6eKwrkLPPws4j6Z7sDrs9pQQUCanDdOAIbAwULCQgHAgYVCgkICwIEFgIDAQIeAQIXgAAKCRD6Z7sDrs9pQcrBAQC8Po9yNT+0mKpYmH0ffgl0tj2gZHHNIG4U9Xkea5aDSQEAwD4/OnYvIcCkP+PDmGQhnGzUdIq2VLTuRAMmcvl0/AU=
