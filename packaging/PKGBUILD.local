@@ -13,10 +13,10 @@
 # `pacman -Rns vocem-overlay` rather than hunting for leftovers by hand.
 
 pkgname=vocem-overlay
-pkgver=0.1.0
+pkgver=0.1.1
 # Reset with 0.1.0: releases are numbered from here (0.1.1, 0.1.2), and pkgrel
 # rises only to rebuild the same release. The old monotonic counter reached 67.
-pkgrel=2
+pkgrel=1
 pkgdesc="Discord voice overlay drawn inside the game (built from the working tree)"
 arch=('x86_64')
 url="https://github.com/ales-drnz/vocem-overlay"
