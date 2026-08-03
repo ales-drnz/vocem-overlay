@@ -101,6 +101,7 @@ private:
     // fetches them post-present, and this process's copy, wiped as soon as the
     // toast is over (vocem/note.h).
     uint64_t wanted_note_serial_ = 0;
+    uint64_t said_empty_note_ = 0;
     NoteReader note_;
     char note_body_[kNotificationBodyCapacity] = {0};
     // Defined in the .cpp: the panel takes an AvatarProvider, the cache is Vulkan

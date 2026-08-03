@@ -54,6 +54,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "vocem/flatpak.h"
 #include "vocem/shared_state.h"
 
 namespace vocem {
@@ -85,6 +86,14 @@ inline void note_shm_name(char* out, size_t capacity, unsigned int uid) {
 
 class NoteWriter {
 public:
+    // Called after every publish and every clear, with the words or with
+    // nullptr. The daemon hangs its Flatpak mirrors here so a sandboxed game
+    // gets the message at the same moment a host game does, through one publish
+    // path rather than two. A plain function pointer: this header is compiled
+    // into games and nothing in it may allocate.
+    void (*on_publish)(uint64_t serial, const char* body, void*) = nullptr;
+    void* on_publish_context = nullptr;
+
     // Publishes the text of one message, creating the segment if it is not
     // there. Called when a notification arrives, never on a timer.
     void publish(uint64_t serial, const char* body) {
@@ -99,6 +108,10 @@ public:
         copy_string(note_->body, kNotificationBodyCapacity, body, body ? std::strlen(body) : 0);
         std::atomic_thread_fence(std::memory_order_release);
         note_->sequence.store(seq + 2, std::memory_order_release);  // even: stable
+
+        if (on_publish) {
+            on_publish(serial, body, on_publish_context);
+        }
     }
 
     // The toast has outlived its seconds: the words go away. Both halves --
@@ -116,6 +129,9 @@ public:
         }
         close();
         unlink_note();
+        if (on_publish) {
+            on_publish(0, nullptr, on_publish_context);
+        }
     }
 
     void close() {
@@ -193,9 +209,7 @@ public:
         have_ = serial;
         std::memset(body_, 0, sizeof(body_));
 
-        char name[64];
-        note_shm_name(name, sizeof(name), getuid());
-        const int fd = shm_open(name, O_RDONLY, 0);
+        const int fd = open_note();
         if (fd < 0) {
             return body_;  // nothing published: the toast is a name alone
         }
@@ -249,6 +263,22 @@ public:
     ~NoteReader() { forget(); }
 
 private:
+    // The words, by whichever of their two names this process can reach. Inside
+    // a Flatpak game shm_open() opens nothing however healthy the daemon is --
+    // /dev/shm there is a private tmpfs -- so what it reaches is the copy the
+    // daemon writes across the bridge, which the daemon removes at the same
+    // moment it unlinks the segment. Everything after this point is the same
+    // code answering the same question; only the name differs.
+    static int open_note() {
+        char path[512];
+        if (bridge_in_use() && bridge_path(path, sizeof(path), kBridgeNoteName)) {
+            return ::open(path, O_RDONLY | O_CLOEXEC);
+        }
+        char name[64];
+        note_shm_name(name, sizeof(name), getuid());
+        return shm_open(name, O_RDONLY, 0);
+    }
+
     uint64_t have_ = 0;
     char body_[kNotificationBodyCapacity] = {0};
 };

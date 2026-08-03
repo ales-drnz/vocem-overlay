@@ -41,6 +41,7 @@
 #include "vocem/avatar_rgba.h"
 #include "vocem/config.h"
 #include "vocem/flatpak.h"
+#include "vocem/note.h"
 #include "vocem/shm.h"
 
 namespace {
@@ -58,6 +59,7 @@ constexpr uint64_t kUserId = 310503940594860049ULL;
 constexpr const char* kUserHash = "a71d433becd902959baa0b8e59e9095c";
 constexpr const char* kServed = "org.example.Game";
 constexpr const char* kSilent = "org.example.NotAsking";
+constexpr uint64_t kNoteSerial = 7;
 
 void make_directories(const std::string& path) {
     std::string partial;
@@ -92,10 +94,12 @@ void fill_avatar(unsigned char* out) {
 int run_as_the_game(bool drawing) {
     setenv("FLATPAK_ID", kServed, 1);
 
-    // Nothing this child reads may come from the segment the parent published on
-    // the host: without the name, shm_open can only fail.
+    // Nothing this child reads may come from the segments the parent published
+    // on the host: without the names, shm_open can only fail.
     char name[64];
     vocem::shm_name(name, sizeof(name), getuid());
+    shm_unlink(name);
+    vocem::note_shm_name(name, sizeof(name), getuid());
     shm_unlink(name);
 
     if (!vocem::enter_flatpak_bridge()) {
@@ -160,6 +164,14 @@ int run_as_the_game(bool drawing) {
            "and so did the whole 64-bit id of the person in it");
     expect(strcmp(snapshot.users[0].name, "Fazen") == 0, "and their name");
     expect(snapshot.connected != 0 && snapshot.in_channel != 0, "and the daemon's own status");
+
+    // The words of a message. They are not in the segment above and never were
+    // -- they live in a place of their own that exists only while the toast is
+    // on screen -- so they need their own crossing, and a toast with a name and
+    // a face and no text is what happens when they do not get one.
+    vocem::NoteReader note;
+    expect(strcmp(note.body_for(kNoteSerial), "THE-SECRET-TEXT") == 0,
+           "the message's words crossed the sandbox too");
     return child_failures;
 }
 
@@ -280,7 +292,21 @@ int main() {
     bridge.rescan();
     bridge.publish(*writer.state());
     bridge.refresh_files(*writer.state());
+
+    vocem::NoteWriter note;
+    note.on_publish_context = &bridge;
+    note.on_publish = [](uint64_t serial, const char* body, void* context) {
+        static_cast<vocem::FlatpakBridge*>(context)->publish_note(serial, body);
+    };
+    note.publish(kNoteSerial, "THE-SECRET-TEXT");
+
     failures += in_child(true);
+
+    // The toast is over: the words go, on both sides of the wall at once.
+    note.clear();
+    struct stat words {};
+    check(stat((runtime + "/app/" + std::string(kServed) + "/vocem/note").c_str(), &words) != 0,
+          "and they are taken away when the toast ends, not left behind");
 
     // The settings copy is written to a temporary and renamed into place, so a
     // game reading on the other side never meets a half-written one. Asked as

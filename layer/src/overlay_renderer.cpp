@@ -348,6 +348,12 @@ void OverlayRenderer::process_uploads() {
     if (wanted_note_serial_ != 0) {
         std::snprintf(note_body_, sizeof(note_body_), "%s",
                       note_.body_for(wanted_note_serial_));
+        if (note_body_[0] == '\0' && said_empty_note_ != wanted_note_serial_) {
+            said_empty_note_ = wanted_note_serial_;
+            VOCEM_RLOG("message %llu has no words here: the note segment is empty or "
+                       "unreachable from this process",
+                       (unsigned long long)wanted_note_serial_);
+        }
     } else if (note_body_[0] != '\0') {
         note_.forget();
         std::memset(note_body_, 0, sizeof(note_body_));

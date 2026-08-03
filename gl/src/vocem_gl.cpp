@@ -680,9 +680,18 @@ public:
         if (toast_frame) {
             // snapshot_ is this process's own copy -- poll_state() reads the
             // segment into it -- so filling the body here reaches nobody else.
+            const char* words = note_.body_for(snapshot->notification.serial);
+            // A toast with a name and a face and no words is the one failure
+            // this path can have that looks exactly like success. Said once per
+            // message, never per frame.
+            if (words[0] == '\0' && said_empty_note_ != snapshot->notification.serial) {
+                said_empty_note_ = snapshot->notification.serial;
+                VOCEM_GLOG("message %llu has no words here: the note segment is empty or "
+                           "unreachable from this process",
+                           (unsigned long long)snapshot->notification.serial);
+            }
             std::snprintf(snapshot_.notification.body,
-                          sizeof(snapshot_.notification.body), "%s",
-                          note_.body_for(snapshot->notification.serial));
+                          sizeof(snapshot_.notification.body), "%s", words);
         } else {
             note_.forget();
         }
@@ -1041,6 +1050,7 @@ private:
     // The message's words, held only while its toast is on screen in this
     // process (vocem/note.h).
     vocem::NoteReader note_;
+    uint64_t said_empty_note_ = 0;
     // When the previous frame was presented, for ImGui's DeltaTime. Zero until
     // the first frame, and zeroed again on release() so the frame that brings
     // the overlay back does not measure the whole time it was away as one step.

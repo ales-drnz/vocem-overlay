@@ -19,6 +19,7 @@
 #include "vocem/avatar_rgba.h"
 #include "vocem/config.h"
 #include "vocem/flatpak.h"
+#include "vocem/note.h"
 #include "vocem/shm.h"
 
 namespace vocem {
@@ -365,6 +366,43 @@ void FlatpakBridge::publish(const SharedState& state) {
             continue;
         }
         mirror.sequence = even;
+    }
+}
+
+void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
+    for (Mirror& mirror : mirrors_) {
+        if (mirror.directory < 0) {
+            continue;
+        }
+        // Gone, or never wanted here. Unlinking is what tells a reader inside
+        // the game that the words are history, exactly as it does on the host.
+        if (!body || serial == 0 || !mirror.drawing) {
+            ::unlinkat(mirror.directory, kBridgeNoteName, 0);
+            continue;
+        }
+        // Written whole into a temporary and renamed into place, rather than
+        // updated under a seqlock: the file is created for one message and
+        // removed with it, so a reader either meets a complete one or none at
+        // all, and the sequence it finds is always stable.
+        NoteShared note{};
+        note.abi_version = kNoteAbiVersion;
+        note.serial = serial;
+        note.sequence.store(2, std::memory_order_relaxed);
+        copy_string(note.body, kNotificationBodyCapacity, body, std::strlen(body));
+
+        const char* temporary = "note.part";
+        const int fd = open_regular(mirror.directory, temporary, O_WRONLY | O_CREAT | O_TRUNC);
+        if (fd < 0) {
+            LOG("could not write the message into the Flatpak sandbox of %s (%s)",
+                mirror.id.c_str(), std::strerror(errno));
+            continue;
+        }
+        const bool written = write_at(fd, &note, sizeof(note), 0);
+        ::close(fd);
+        if (!written ||
+            ::renameat(mirror.directory, temporary, mirror.directory, kBridgeNoteName) != 0) {
+            ::unlinkat(mirror.directory, temporary, 0);
+        }
     }
 }
 

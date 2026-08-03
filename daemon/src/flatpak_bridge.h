@@ -50,6 +50,12 @@ public:
     // reads is never staler than what a host game reads.
     void publish(const SharedState& state);
 
+    // The words of one message, or their removal when `body` is null. Written
+    // only where the overlay says it is drawing, and taken away at the same
+    // moment the daemon unlinks the segment on the host, so the words are in a
+    // sandbox for exactly as long as its toast is on screen.
+    void publish_note(uint64_t serial, const char* body);
+
     // config.ini when it moves, and the avatar files the current state names.
     // Off the publish path: these change on a human's timescale.
     void refresh_files(const SharedState& state);

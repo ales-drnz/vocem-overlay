@@ -376,6 +376,11 @@ private:
     double notification_received_ = 0.0;
     std::string notification_title_;
     vocem::NoteWriter note_;
+
+public:
+    vocem::NoteWriter& note() { return note_; }
+
+private:
     bool note_cleared_ = true;
     std::string notification_avatar_;
     uint64_t self_id_ = 0;
@@ -696,7 +701,17 @@ private:
         if (title.empty() && body.empty()) {
             return;  // nothing worth showing
         }
-        DBG("notification from %s", title.c_str());
+        // The length, never the words: a toast that arrives with a name and a
+        // face and no text is indistinguishable, from the outside, from one
+        // whose text was lost on the way to the screen -- and this is the only
+        // place that can tell the two apart. `body` is documented at the top
+        // level of NOTIFICATION_CREATE, with the message's own `content` as the
+        // fallback; if both are empty, Discord sent no text and nothing
+        // downstream is at fault.
+        DBG("notification from %s: %zu bytes of text (%s)", title.c_str(), body.size(),
+            body.empty()               ? "none: Discord sent no body and no message content"
+            : str_field(data, "body").empty() ? "from the message's content"
+                                              : "from the notification's body");
         {
             // The sender, never the text: the journal is the Debug section's
             // log, and the body's privacy rule (publish()) applies to it too.
@@ -776,6 +791,12 @@ int main() {
 
     vocem::AvatarCache avatars;
     Session session(writer, avatars);
+    // The message's words take the same road as the state, and are removed from
+    // it at the same moment they are removed from the segment.
+    session.note().on_publish_context = &bridge;
+    session.note().on_publish = [](uint64_t serial, const char* body, void* context) {
+        static_cast<vocem::FlatpakBridge*>(context)->publish_note(serial, body);
+    };
     // The user's settings, reread on the same live mechanism the overlay uses --
     // one stat() every couple of seconds, a reparse only when the file moved. The
     // daemon consumes exactly one key: whether a message's text may be published

@@ -50,6 +50,10 @@ namespace vocem {
 // daemon writes them and code inside somebody's game reads them.
 inline constexpr const char* kBridgeDirName = "vocem";
 inline constexpr const char* kBridgeStateName = "state";
+// The words of one message, while its toast is on screen and not a moment
+// longer. A file of its own for the same reason it is a segment of its own on
+// the host (vocem/note.h): it exists only while there is something to draw.
+inline constexpr const char* kBridgeNoteName = "note";
 inline constexpr const char* kBridgeConfigName = "config.ini";
 inline constexpr const char* kBridgeAvatarsName = "avatars";
 inline constexpr const char* kBridgeRequestName = "request";
