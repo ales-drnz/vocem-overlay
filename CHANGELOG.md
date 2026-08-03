@@ -2,8 +2,9 @@
 
 ### Fixed
 
-- The text of a message now appears in a game that is itself a Flatpak. Only the sender's name and picture did: the words of a message travel separately from everything else — they live where they can be reached only while the message is on screen — and 0.1.1 carried the voice state, the settings and the pictures across the sandbox but not them.
-- Both ends now say when a message arrives without its text. The daemon logs how many bytes Discord sent and which field they came from, never the text itself, and the overlay logs once per message when it is asked to draw one whose words it cannot find. A message with no text used to look exactly like no message at all.
+- The text of a message appears in a game that is itself a Flatpak. Before, only the sender's name and picture crossed the sandbox: the words of a message travel separately from the rest, in a place that exists only while the message is on screen, and 0.1.1 did not carry it.
+- The daemon logs how many bytes of text Discord sent and which field they came from, never the text itself.
+- The overlay logs, once per message, when it is asked to draw one whose words it cannot find.
 
 ## [0.1.1] - 3-08-2026
 
