@@ -162,7 +162,7 @@ the same either way.
 <td valign="middle" width="48"><img src="https://raw.githubusercontent.com/ales-drnz/svg-icons/main/png/layers.png" width="32"></td>
 <td valign="middle" width="45%"><b>Part of the frame</b><br>drawn into the game's own framebuffer, so exclusive fullscreen cannot cover it and no compositor decides where it goes.</td>
 <td valign="middle" width="48"><img src="https://raw.githubusercontent.com/ales-drnz/svg-icons/main/png/zap.png" width="32"></td>
-<td valign="middle" width="45%"><b>Enabled once</b><br>no per-game launch options, no nested compositor, nothing to switch on per title.</td>
+<td valign="middle" width="45%"><b>Enabled once</b><br>no per-game launch options and no nested compositor.</td>
 </tr>
 <tr>
 <td valign="middle"><img src="https://raw.githubusercontent.com/ales-drnz/svg-icons/main/png/activity.png" width="32"></td>
@@ -184,7 +184,7 @@ the same either way.
 </tr>
 <tr>
 <td valign="middle"><img src="https://raw.githubusercontent.com/ales-drnz/svg-icons/main/png/shield-check.png" width="32"></td>
-<td valign="middle"><b>Nothing to do inside the game</b><br>one daemon holds the Discord connection. The code in your games opens no sockets and decodes no images.</td>
+<td valign="middle"><b>One daemon, outside the games</b><br>it holds the Discord connection. The code injected into a game opens no sockets and decodes no images.</td>
 <td valign="middle"><img src="https://raw.githubusercontent.com/ales-drnz/svg-icons/main/png/terminal.png" width="32"></td>
 <td valign="middle"><b>It tells you why</b><br>every application it was loaded into gets a row saying what the detection went on.</td>
 </tr>
@@ -270,9 +270,9 @@ manifest. Install the Vulkan layer extension once and it reaches all of them:
 flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref
 ```
 
-`flatpak update` keeps it current afterwards. Nothing else changes: `vocemd` goes
-on running on the host, and the overlay inside the sandbox reads what it needs
-from the one directory Flatpak shares between an application and the host.
+`flatpak update` keeps it current afterwards. `vocemd` stays on the host, and
+the overlay inside the sandbox reads it through a directory Flatpak shares with
+the host.
 
 OpenGL has no equivalent mechanism, so a Flatpak game that renders with OpenGL
 also needs the interposer preloaded:
@@ -335,9 +335,8 @@ up within two seconds. You can edit the file by hand; unknown keys are ignored.
 
 ### 3. The daemon
 
-`vocemd` is the only component that talks to Discord. It publishes voice state into
-shared memory, which is what the overlay reads. Nothing inside a game opens a
-socket or decodes an image.
+`vocemd` is the only component that talks to Discord. It publishes voice state
+into shared memory, and the overlay reads it there.
 
 #### 3.1 Authorisation
 
@@ -347,7 +346,7 @@ on.
 
 Two things to know before you grant it:
 
-* The scopes include `messages.read`, which is what a message box needs.
+* The scopes include `messages.read`, which the message box needs.
 * The prompt names **Streamkit**, not this project. The daemon uses Discord's own
   Streamkit application id, which is how a local client works without a client
   secret.
@@ -406,7 +405,7 @@ the overlay is doing in there.
 
 Windows games under Proton are often 32-bit, and DXVK translates them to 32-bit
 Vulkan. The package installs 32-bit libraries alongside the 64-bit ones, and one
-value in the session's preload covers both widths. Nothing to configure.
+value in the session's preload covers both widths.
 
 The daemon and the command-line tool stay 64-bit. They never enter a game process.
 
