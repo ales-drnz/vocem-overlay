@@ -125,10 +125,6 @@ For 32-bit games, see [32-bit games](#7-32-bit-games).
   <img src="https://raw.githubusercontent.com/ales-drnz/vocem-overlay/master/imgs/in-game.png" width="100%">
 </p>
 
-The overlay wrote that frame out of the running program's own framebuffer. The
-program is a small OpenGL scene rather than a real game; what the overlay draws is
-the same either way.
-
 #### The panel, on a map of your display
 
 <p align="center">
@@ -480,13 +476,13 @@ cmake --build build32
 ```
 
 A test that needs a display, `bwrap`, a GPU or a 32-bit toolchain reports itself
-skipped rather than passing without having run.
+skipped.
 
 ---
 
 ## Name and licence
 
-*Vocem* is Latin for "voice". The project is not affiliated with Discord Inc.
+*Vocem* is Latin for "voice".
 
 The project is **BSD 3-Clause**, in [LICENSE](LICENSE). Three things in the tree are
 not, and travel with their own texts, which the package installs beside it under
@@ -498,8 +494,8 @@ not, and travel with their own texts, which the package installs beside it under
 | Dear ImGui, in both injected libraries, and nlohmann/json, in the daemon | **MIT**, with their notices installed beside the rest. |
 | Wuffs in `third_party/wuffs/`, the image decoder inside the daemon | dual **Apache-2.0 or MIT**, taken here under MIT. |
 
-`stb` is in the tree but ships in nothing. It is the reference the daemon's image
-decoder is compared against, in one test.
+`stb` is in the tree but ships in nothing; a test uses it as a reference for the
+daemon's image decoder.
 
 
 ---
