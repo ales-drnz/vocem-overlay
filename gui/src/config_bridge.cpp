@@ -44,10 +44,24 @@ bool systemd_unit_available() {
 
 }  // namespace
 
+QStringList ConfigBridge::fontFamilies() const { return vocem::installed_font_families(); }
+
+QString ConfigBridge::builtInFontFamily() const { return vocem::overlay_fonts().body; }
+
 QFont ConfigBridge::overlayFont(qreal points, bool strong) const {
     const vocem::OverlayFonts& fonts = vocem::overlay_fonts();
     QFont font;
-    font.setFamilies({strong ? fonts.strong : fonts.body, fonts.punctuation, fonts.emoji});
+    // The chosen family first, then Inter, then the punctuation and the emoji:
+    // the same order the atlas merges them in, so the preview falls through to
+    // the same face the game does for a glyph the chosen font does not carry.
+    const QString chosen = QString::fromStdString(config_.font_family);
+    QStringList families;
+    if (!chosen.isEmpty()) {
+        families.append(chosen);
+    }
+    families.append(strong ? fonts.strong : fonts.body);
+    families.append({fonts.punctuation, fonts.emoji});
+    font.setFamilies(families);
     font.setPointSizeF(points);
     font.setHintingPreference(QFont::PreferNoHinting);
     if (strong) {
@@ -55,8 +69,14 @@ QFont ConfigBridge::overlayFont(qreal points, bool strong) const {
     }
     return font;
 }
-qreal ConfigBridge::overlayFontRatio() const { return vocem::overlay_fonts().ratio; }
-QString ConfigBridge::genericAvatar() const { return vocem::generic_avatar(); }
+
+// Not a constant any more, and it must not be: the ratio between ImGui's font
+// size and Qt's is a property of the file, so a preview drawn in a chosen family
+// and laid out against Inter's proportion would be the wrong width by however
+// much the two faces differ.
+qreal ConfigBridge::overlayFontRatio() const {
+    return vocem::overlay_font_ratio_for(QString::fromStdString(config_.font_family));
+}
 QString ConfigBridge::screenResolution() const { return vocem::screen_resolution(); }
 
 // The connected displays, for the dropdown beside each map. From the one
@@ -596,6 +616,39 @@ void ConfigBridge::crashDismiss(const QString& path) {
     refreshLiveInstances();
 }
 
+// The whole Sessions list at once. It walks the two lists the page draws --
+// which is what makes "Clear" mean what the page shows rather than "empty the
+// directory": a live process's journal is in neither, and removing it under a
+// game that is still drawing would take away the one file that says what the
+// overlay was doing if that game then dies. Each path still goes through
+// inside_journal_directory(), so a planted symlink is refused here exactly as
+// it is refused everywhere else in this file.
+void ConfigBridge::clearJournals() {
+    const QVariantList lists[] = {crash_reports_, journal_history_};
+    for (const QVariantList& list : lists) {
+        for (const QVariant& entry : list) {
+            const QString path = entry.toMap().value(QStringLiteral("path")).toString();
+            if (path.isEmpty() || !inside_journal_directory(path)) {
+                continue;
+            }
+            QFile::remove(path);
+            // The counters travel with their journal, as they do in
+            // crashDismiss(): both suffixes, because this list holds both kinds.
+            QString stat = path;
+            for (const QString& suffix :
+                 {QStringLiteral(".running"), QStringLiteral(".done")}) {
+                if (stat.endsWith(suffix)) {
+                    stat.chop(suffix.size());
+                    QFile::remove(stat + QStringLiteral(".stat"));
+                    break;
+                }
+            }
+        }
+    }
+    refreshCrashReports();
+    refreshLiveInstances();
+}
+
 // The daemon's own account, from journald: the unit's recent lines, on demand.
 // Where there is no unit -- a build tree -- the daemon's journal file in the
 // history above is what there is, and this says so instead of pretending.
@@ -919,6 +972,17 @@ QString ConfigBridge::channelName() const { return tr("Voice channel"); }
 // builds the real panel from this same roster, and scripts/compare-preview.py puts
 // the two side by side. One of each state, so every decoration a row can draw is on
 // screen at once.
+//
+// And no pictures, which is what the measurement's roster has: each of these used
+// to carry the desktop's own `user-identity` icon, drawn *over* the overlay's
+// placeholder by the preview's masked-image path. Two head-and-shoulders figures
+// from two artwork sets, in two greys, one of them square-shouldered -- which is
+// the grey shadow under the silhouette the owner kept reporting and no
+// instrument here could see: the icon does not resolve in the offscreen harness,
+// so it drew nothing where it draws a second figure on a real desktop. What the
+// preview shows now is the placeholder the game draws for somebody whose picture
+// has not arrived, which is also the only honest example: the window has no
+// Discord pictures to show.
 QVariantList ConfigBridge::participants() const {
     const struct {
         const char* name;
@@ -939,7 +1003,6 @@ QVariantList ConfigBridge::participants() const {
         entry["speaking"] = person.speaking;
         entry["muted"] = person.muted;
         entry["deafened"] = person.deafened;
-        entry["avatar"] = genericAvatar();
         list.append(entry);
     }
     return list;
@@ -1130,6 +1193,66 @@ void ConfigBridge::setFontSize(qreal value) {
     persist();
 }
 
+// The family, and the files it stands for. Three fields move together because
+// they are one answer: the window is the only half of this project that may ask
+// fontconfig anything, so what it writes has to be enough for a game to open.
+//
+// A family whose files cannot be resolved is refused rather than half-written.
+// The alternative -- storing the name and no path -- is a setting that shows the
+// user's choice in the window and draws Inter in the game, which is the shape of
+// defect this project keeps finding: the interface saying one thing and the
+// overlay doing another.
+void ConfigBridge::setFontFamily(const QString& value) {
+    const QString wanted = value.trimmed();
+    if (wanted.isEmpty()) {
+        if (config_.font_family.empty() && config_.font_path.empty()) {
+            return;
+        }
+        config_.font_family.clear();
+        config_.font_path.clear();
+        config_.font_path_strong.clear();
+        persist();
+        return;
+    }
+
+    QString regular;
+    QString bold;
+    if (!vocem::font_file_for(wanted, false, &regular)) {
+        // Refused, and said so by putting the control back: a ComboBox has
+        // already moved to what was clicked, and its binding on this value only
+        // re-runs when the settings change. Without this the box would go on
+        // naming a family the file does not carry -- the interface saying one
+        // thing while the overlay does another, which is the shape this refusal
+        // exists to avoid in the first place.
+        emit configChanged();
+        return;
+    }
+    // A family whose bold the overlay cannot reach draws both weights from the
+    // one file it has: ImGui has no synthetic bold, so the honest answer is one
+    // weight rather than a heavier-looking lie. The channel name then leans on
+    // its colour, which the palette gives it anyway.
+    //
+    // "Cannot reach" and not "has none": a variable family keeps its weights as
+    // named instances of one file, and the overlay opens files rather than
+    // instances -- so Adwaita Sans, whose bold fontconfig answers as instance 7
+    // of AdwaitaSans-Regular.ttf, comes out here as the same path twice and is
+    // drawn at the regular weight. The behaviour is the right one; the reason is
+    // worth writing down, because a family that plainly has a bold and does not
+    // show it looks like a defect from the outside.
+    if (!vocem::font_file_for(wanted, true, &bold) || bold.isEmpty()) {
+        bold = regular;
+    }
+    if (config_.font_family == wanted.toStdString() &&
+        config_.font_path == regular.toStdString() &&
+        config_.font_path_strong == bold.toStdString()) {
+        return;
+    }
+    config_.font_family = wanted.toStdString();
+    config_.font_path = regular.toStdString();
+    config_.font_path_strong = bold.toStdString();
+    persist();
+}
+
 void ConfigBridge::setKeepRunning(bool value) {
     if (config_.keep_running == value) {
         return;
@@ -1222,6 +1345,7 @@ static QVariantMap theme_map(const vocem::Config& config) {
     map["textMuted"] = colour(theme.text_muted);
     map["textOverflow"] = colour(theme.text_overflow);
     map["avatarPlaceholder"] = colour(theme.avatar_placeholder);
+    map["avatarMark"] = colour(theme.avatar_mark);
     map["avatarScrim"] = colour(theme.avatar_scrim);
     map["speakingRing"] = colour(theme.speaking_ring);
     map["badgeFill"] = colour(theme.badge_fill);
@@ -1294,6 +1418,10 @@ QVariantList ConfigBridge::overlayPresets() const {
 // one more: a real message is somebody's private mail, and a settings window left
 // open on a second monitor is not where it should turn up.
 //
+// No picture, for the reason the roster carries none: the example is drawn with
+// the overlay's own placeholder, which is what a game draws for somebody whose
+// picture has not arrived.
+//
 // The body is always there, because the drawn toast always carries one: the
 // message's text is not a setting any more, it is a transport (vocem/note.h).
 // The example the preview draws is therefore the shape of every toast.
@@ -1301,7 +1429,6 @@ QVariantMap ConfigBridge::notificationPreview() const {
     QVariantMap entry;
     entry["title"] = tr("User 1");
     entry["body"] = tr("sent you a direct message");
-    entry["avatar"] = genericAvatar();
     return entry;
 }
 
@@ -1311,6 +1438,19 @@ void ConfigBridge::setNotificationsEnabled(bool value) {
     }
     config_.notifications_enabled = value;
     persistNow();
+}
+
+// Upright or sideways. Refused rather than clamped for anything else: an
+// unknown layout is a value nothing in this window can have produced, and
+// silently rounding it to one of the two would make a wrong write look right.
+void ConfigBridge::setPanelLayout(int value) {
+    if ((value != vocem::Config::kLayoutVertical &&
+         value != vocem::Config::kLayoutHorizontal) ||
+        value == config_.panel_layout) {
+        return;
+    }
+    config_.panel_layout = value;
+    persist();
 }
 
 void ConfigBridge::setNotificationCorner(int value) {

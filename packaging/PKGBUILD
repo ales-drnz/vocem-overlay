@@ -14,7 +14,7 @@
 # overlay off for a single process.
 
 pkgname=vocem-overlay
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="Discord voice overlay drawn inside the game, through a Vulkan layer and an OpenGL hook"
 arch=('x86_64')
@@ -34,6 +34,9 @@ depends=(
     'qt6-declarative'
     'curl'
     'hicolor-icon-theme'
+    # The settings window resolves a font family to the files the overlay opens:
+    # a game may not ask fontconfig anything, so the window has to hand it paths.
+    'fontconfig'
     # The 32-bit half is not optional: a Windows game under Proton is often a
     # 32-bit binary, and this package installs libraries under /usr/lib32 that the
     # session preloads into every one of them. Without these they fail to load --

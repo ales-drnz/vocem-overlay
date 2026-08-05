@@ -22,7 +22,8 @@ layout(location = 0) out vec4 fColor;
 layout(set = 0, binding = 0) uniform sampler2D sTexture;
 layout(location = 0) in struct { vec4 Color; vec2 UV; } In;
 
-// 0 = untouched (SDR), 1 = scRGB (extended sRGB linear), 2 = HDR10 PQ.
+// 0 = untouched, 1 = scRGB (extended sRGB linear), 2 = HDR10 PQ,
+// 3 = an sRGB-format attachment, where the hardware does the encoding.
 layout(constant_id = 0) const int kMode = 0;
 layout(constant_id = 1) const float kSdrNits = 203.0;
 
@@ -64,6 +65,18 @@ void main()
     } else if (kMode == 2) {
         // HDR10: linear light in BT.2020 primaries, PQ-encoded.
         c.rgb = pq_encode(bt709_to_bt2020(srgb_to_linear(c.rgb)) * kSdrNits);
+    } else if (kMode == 3) {
+        // An sRGB-format attachment. Nothing to do with HDR, and the most
+        // common swapchain there is: the format itself carries the encoding, so
+        // the hardware applies linear->sRGB to whatever this shader writes.
+        // ImGui's colours are already sRGB, so writing them unchanged encodes
+        // them twice -- measured on an R8G8B8A8_SRGB attachment, the panel's own
+        // 79,84,92 came back 151,155,162, a light grey where the theme asks for
+        // dark slate. Handing the hardware the linear values it expects makes
+        // the round trip exact. Blending then happens in linear light rather
+        // than in sRGB space, which is the one thing this cannot put back: it is
+        // the attachment's own rule, and it is what the game's own draws get.
+        c.rgb = srgb_to_linear(c.rgb);
     }
     fColor = c;
 }

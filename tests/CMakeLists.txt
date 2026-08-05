@@ -77,6 +77,29 @@ target_compile_definitions(vocem_fonts_lifecycle PRIVATE
     IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
 add_test(NAME fonts_lifecycle COMMAND vocem_fonts_lifecycle)
 
+# The font the settings name, drawn -- with Inter merged underneath it for what
+# it does not carry, and a spoken reason whenever the file cannot be used.
+# Measured against this machine's own installed fonts, so it skips (77) on a
+# machine with none.
+add_executable(vocem_system_font
+    system_font.cpp
+    "${PROJECT_SOURCE_DIR}/common/src/fonts.cpp"
+    "${IMGUI_DIR}/imgui.cpp"
+    "${IMGUI_DIR}/imgui_draw.cpp"
+    "${IMGUI_DIR}/imgui_tables.cpp"
+    "${IMGUI_DIR}/imgui_widgets.cpp"
+)
+target_include_directories(vocem_system_font PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/common/fonts"
+    "${IMGUI_DIR}"
+)
+target_compile_definitions(vocem_system_font PRIVATE
+    IMGUI_USE_WCHAR32
+    IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
+add_test(NAME system_font COMMAND vocem_system_font)
+set_tests_properties(system_font PROPERTIES SKIP_RETURN_CODE 77)
+
 # The panel's geometry, measured out of the vertices ImGui produces rather than
 # judged from a screenshot. Same sources as above plus the panel itself, which is
 # the point: this runs the code the layer runs.
@@ -227,10 +250,47 @@ if(VOCEM_HAVE_M32)
     add_test(NAME shim_dlsym32 COMMAND vocem_shim_dlsym32)
     set_tests_properties(shim_dlsym32 PROPERTIES
         ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim32>;VOCEM_SHIM_PRELOADED=1")
+
+    # The *drawing* at 32 bits, which until now nothing ran. Both of these were
+    # compiled at -m32 in build32 and exercised only at 64, which entries 30, 33
+    # and 34 all say is not the same claim: the layout arithmetic is floats and
+    # ints whose widths differ, the font file read turns an off_t into a size_t,
+    # and a game under Proton is very often the 32-bit binary. Same sources, same
+    # definitions, one flag apart -- so a difference that appears here is a
+    # difference the architecture made and nothing else.
+    foreach(probe panel_geometry system_font)
+        add_executable(vocem_${probe}32
+            ${probe}.cpp
+            "${PROJECT_SOURCE_DIR}/common/src/fonts.cpp"
+            "${IMGUI_DIR}/imgui.cpp"
+            "${IMGUI_DIR}/imgui_draw.cpp"
+            "${IMGUI_DIR}/imgui_tables.cpp"
+            "${IMGUI_DIR}/imgui_widgets.cpp")
+        target_include_directories(vocem_${probe}32 PRIVATE
+            "${CMAKE_SOURCE_DIR}/include"
+            "${CMAKE_SOURCE_DIR}/common/fonts"
+            "${IMGUI_DIR}")
+        target_compile_definitions(vocem_${probe}32 PRIVATE
+            IMGUI_USE_WCHAR32
+            IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
+        target_compile_options(vocem_${probe}32 PRIVATE -m32)
+        target_link_options(vocem_${probe}32 PRIVATE -m32)
+    endforeach()
+    target_sources(vocem_panel_geometry32 PRIVATE
+        "${PROJECT_SOURCE_DIR}/common/src/panel.cpp")
+
+    add_test(NAME panel_geometry32 COMMAND vocem_panel_geometry32)
+    add_test(NAME system_font32 COMMAND vocem_system_font32)
+    set_tests_properties(system_font32 PROPERTIES SKIP_RETURN_CODE 77)
 else()
     add_test(NAME shim_dlsym32 COMMAND "${CMAKE_COMMAND}" -E echo
         "skipped: no 32-bit toolchain, so the architecture that broke is untested here")
     set_tests_properties(shim_dlsym32 PROPERTIES SKIP_REGULAR_EXPRESSION "skipped:")
+    foreach(probe panel_geometry system_font)
+        add_test(NAME ${probe}32 COMMAND "${CMAKE_COMMAND}" -E echo
+            "skipped: no 32-bit toolchain, so the drawing is measured at one width only")
+        set_tests_properties(${probe}32 PROPERTIES SKIP_REGULAR_EXPRESSION "skipped:")
+    endforeach()
 endif()
 
 # Two dispatch functions with the same name, one process -- the Electron topology
@@ -301,6 +361,7 @@ if(TARGET vocem-config)
         COMMAND "${CMAKE_COMMAND}"
                 "-DCONFIG_BINARY=$<TARGET_FILE:vocem-config>"
                 "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                "-DQML_DIR=${CMAKE_SOURCE_DIR}/gui/qml"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/debug_section.cmake")
 
     # The Debug section reads journals and only journals: a symlink planted in
@@ -409,6 +470,19 @@ target_include_directories(vocem_gl_draw_local PRIVATE "${CMAKE_SOURCE_DIR}/incl
 target_link_libraries(vocem_gl_draw_local PRIVATE ${CMAKE_DL_LIBS} X11 rt)
 add_test(NAME gl_draw_local COMMAND vocem_gl_draw_local)
 set_tests_properties(gl_draw_local PROPERTIES
+    ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim>;VOCEM_SHIM_PRELOADED=1;VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
+    SKIP_RETURN_CODE 77)
+
+# The overlay's colours in a game that writes sRGB. GL_FRAMEBUFFER_SRGB makes the
+# hardware encode whatever the shader writes, and ImGui's colours are encoded
+# already: the panel's surface came out lifted, white and saturated colours
+# unchanged, which is why it hid. The same measurement the Vulkan half makes
+# through the swapchain's format (hdr_srgb_pixels), on the switch this side has.
+add_executable(vocem_gl_srgb_write gl_srgb_write.cpp)
+target_include_directories(vocem_gl_srgb_write PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(vocem_gl_srgb_write PRIVATE ${CMAKE_DL_LIBS} X11 rt)
+add_test(NAME gl_srgb_write COMMAND vocem_gl_srgb_write)
+set_tests_properties(gl_srgb_write PROPERTIES
     ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim>;VOCEM_SHIM_PRELOADED=1;VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
     SKIP_RETURN_CODE 77)
 
@@ -802,6 +876,26 @@ target_compile_definitions(vocem_hdr_pixels PRIVATE IMGUI_USE_WCHAR32)
 target_link_libraries(vocem_hdr_pixels PRIVATE ${CMAKE_DL_LIBS})
 add_test(NAME hdr_pixels COMMAND vocem_hdr_pixels)
 set_tests_properties(hdr_pixels PROPERTIES SKIP_RETURN_CODE 77)
+
+# The same source against an sRGB-format target, which is the ordinary swapchain
+# and not an HDR one: there the format carries the encoding, the hardware applies
+# linear->sRGB to whatever the shader writes, and the claim is a round trip --
+# what the attachment stores is the byte ImGui asked for. Against the shader
+# before mode 3 existed it stores the sRGB encode of an already-encoded value:
+# measured 128 -> 188, and the panel's own 79,84,92 -> 151,155,162.
+add_executable(vocem_hdr_srgb_pixels
+    hdr_pixels.cpp
+    "${PROJECT_SOURCE_DIR}/layer/src/hdr_pipeline.cpp"
+)
+target_include_directories(vocem_hdr_srgb_pixels PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/layer/src"
+    "${IMGUI_DIR}"
+)
+target_compile_definitions(vocem_hdr_srgb_pixels PRIVATE IMGUI_USE_WCHAR32 VOCEM_SRGB_TARGET)
+target_link_libraries(vocem_hdr_srgb_pixels PRIVATE ${CMAKE_DL_LIBS})
+add_test(NAME hdr_srgb_pixels COMMAND vocem_hdr_srgb_pixels)
+set_tests_properties(hdr_srgb_pixels PROPERTIES SKIP_RETURN_CODE 77)
 
 # The Appearance page previews its presets as four real panels built from the
 # theme each preset would produce (distinct surfaces, one active mark), and

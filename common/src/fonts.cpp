@@ -4,6 +4,10 @@
 
 #include "vocem/fonts.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
@@ -122,6 +126,142 @@ EmojiBank g_emoji_bank;
 // saying out loud rather than a silence.
 bool g_capped = false;
 
+// The typeface the atlas was last built from, so a change of family rebuilds it
+// the way a change of size does. Fixed arrays: this is compared inside a game,
+// and a path longer than this is a path the window did not write.
+constexpr size_t kMaxFontPath = 512;
+char g_body_path[kMaxFontPath] = {};
+char g_strong_path[kMaxFontPath] = {};
+const char* g_font_reason = nullptr;
+
+// A font a game may be handed. The rules are the ones every other read in this
+// project follows (entries 47, 82, 86): a regular file, opened once, capped, and
+// refused out loud rather than half-read.
+//
+// A cap, because ImGui's own AddFontFromFileTTF has none and the path comes out
+// of a text file: a "font" of three hundred megabytes would be read whole into
+// somebody's game. Sixteen is past every real face -- Noto Sans CJK, the
+// largest thing a desktop is likely to carry, is under nine.
+//
+// Deliberately not O_NOFOLLOW, unlike the daemon's reads of a sandbox's
+// directory: a font under /usr/share/fonts is very often reached through a
+// symlink, and this path was written by the user's own settings window rather
+// than by an untrusted peer. What is guarded here is size and kind.
+constexpr size_t kMaxFontBytes = 16u * 1024u * 1024u;
+
+void* read_font_file(const char* path, size_t* size_out) {
+    *size_out = 0;
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        g_font_reason = "the chosen font could not be opened";
+        return nullptr;
+    }
+    struct stat info {};
+    if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+        close(fd);
+        g_font_reason = "the chosen font is not a regular file";
+        return nullptr;
+    }
+    if (info.st_size <= 0 || static_cast<size_t>(info.st_size) > kMaxFontBytes) {
+        close(fd);
+        g_font_reason = "the chosen font is empty or larger than a font should be";
+        return nullptr;
+    }
+    const size_t size = static_cast<size_t>(info.st_size);
+    void* data = IM_ALLOC(size);
+    if (!data) {
+        close(fd);
+        g_font_reason = "there was no room to read the chosen font";
+        return nullptr;
+    }
+    size_t got = 0;
+    while (got < size) {
+        const ssize_t chunk = read(fd, static_cast<char*>(data) + got, size - got);
+        if (chunk <= 0) {
+            break;
+        }
+        got += static_cast<size_t>(chunk);
+    }
+    close(fd);
+    if (got != size) {
+        IM_FREE(data);
+        g_font_reason = "the chosen font could not be read to the end";
+        return nullptr;
+    }
+    *size_out = size;
+    return data;
+}
+
+// Whether those bytes are a font at all, asked before the rasteriser is handed
+// them.
+//
+// stb_truetype trusts its input. Given a file that is not a font,
+// stbtt_GetFontOffsetForIndex returns -1, ImGui's IM_ASSERT on that is compiled
+// out of every release build (this project's are RelWithDebInfo, so NDEBUG), and
+// stbtt_InitFont then parses from `data - 1` with a table count read out of
+// whatever happened to be there: measured as a SIGSEGV inside ensure_fonts,
+// which is to say inside somebody's game, at imstb_truetype.h:1313 with
+// fontstart 4294967295. A path is a line in a text file, so this is reachable
+// from a hand-edited settings file, from a font uninstalled and its name reused,
+// and from anything that writes the key without asking fontconfig.
+//
+// The signatures are the ones stbtt__isfont accepts (imstb_truetype.h:1299),
+// plus the collection tag stbtt_GetFontOffsetForIndex follows -- so nothing this
+// accepts is refused later for its header. The extra question is the one stb
+// does not ask: that the table directory the count describes is inside the file
+// that was actually read. Everything past that is the rasteriser's job, and its
+// answer is Build()'s return value.
+bool looks_like_a_font(const unsigned char* data, size_t size) {
+    // Every bound is written as a subtraction from the size rather than as an
+    // addition to an offset: the offset comes out of the file, and at 32 bits
+    // `offset + 4` on a value near the top of the range wraps to something
+    // small and passes the check it was supposed to fail. Both widths run this.
+    const auto tag_at = [data, size](size_t offset, const unsigned char (&wanted)[4]) {
+        return offset <= size && size - offset >= 4 &&
+               std::memcmp(data + offset, wanted, 4) == 0;
+    };
+    const auto be32 = [data](size_t offset) {
+        return (static_cast<uint32_t>(data[offset]) << 24) |
+               (static_cast<uint32_t>(data[offset + 1]) << 16) |
+               (static_cast<uint32_t>(data[offset + 2]) << 8) |
+               static_cast<uint32_t>(data[offset + 3]);
+    };
+    // An offset table: the tag, then a count of tables, then that many 16-byte
+    // records. Anything shorter than the directory it claims is truncated.
+    const auto directory_fits = [&](size_t start) {
+        static const unsigned char kTrueType1[4] = {'1', 0, 0, 0};
+        static const unsigned char kOpenType[4] = {0, 1, 0, 0};
+        static const unsigned char kCff[4] = {'O', 'T', 'T', 'O'};
+        static const unsigned char kApple[4] = {'t', 'r', 'u', 'e'};
+        static const unsigned char kType1[4] = {'t', 'y', 'p', '1'};
+        if (!tag_at(start, kTrueType1) && !tag_at(start, kOpenType) && !tag_at(start, kCff) &&
+            !tag_at(start, kApple) && !tag_at(start, kType1)) {
+            return false;
+        }
+        if (start > size || size - start < 12) {
+            return false;
+        }
+        const uint64_t tables =
+            (static_cast<uint64_t>(data[start + 4]) << 8) | data[start + 5];
+        return tables * 16u <= static_cast<uint64_t>(size - start) - 12u;
+    };
+
+    static const unsigned char kCollection[4] = {'t', 't', 'c', 'f'};
+    if (tag_at(0, kCollection)) {
+        // A collection: the parser is sent to the first face's offset table, so
+        // that is the one that has to be there.
+        if (size < 16) {
+            return false;
+        }
+        const uint32_t faces = be32(8);
+        if (faces == 0) {
+            return false;
+        }
+        return directory_fits(be32(12));
+    }
+    return directory_fits(0);
+}
+
 void note_emoji_codepoint(uint32_t codepoint) {
     // Below the symbols there are no emoji, and Inter's own glyphs win anyway.
     if (codepoint < 0x2000 || codepoint > 0x10FFFF) {
@@ -174,6 +314,8 @@ void fonts_note_emoji_in(const Snapshot& snapshot) {
     fonts_note_emoji(snapshot.notification.body);
 }
 
+const char* fonts_font_status() { return g_font_reason; }
+
 const char* fonts_emoji_status() {
     // The bank's own refusal first: it is the one that means "none at all".
     if (const char* reason = g_emoji_bank.reason()) {
@@ -211,32 +353,21 @@ float ui_scale() {
     return g_fonts.pixel_size > 0.0f ? g_fonts.pixel_size / reference : 1.0f;
 }
 
-bool ensure_fonts(float pixel_size, float reference) {
-    // The reference is not a size the atlas is built at -- it is what the layout
-    // divides by -- so it costs nothing to follow immediately.
-    g_fonts.reference = reference > 0.0f ? reference : kReferenceSize;
+namespace {
 
-    ImFontAtlas* atlas = ImGui::GetIO().Fonts;
-
-    // Half a pixel of difference is not worth throwing an atlas away for -- and
-    // without a dead band, a size derived from a continuous slider would rebuild
-    // on every frame the user is dragging it.
-    //
-    // The dead band holds only while the atlas it remembers building is still the
-    // one in front of us. Both injected paths destroy their ImGui context and
-    // create another in the same process -- the GL overlay when the user switches
-    // it off and back on, the Vulkan layer when a game replaces its device -- and
-    // the fresh context brings a fresh, empty atlas at the same pixel size. A
-    // size-only dead band answered "nothing to do" and left the pointers below
-    // aimed into the atlas that died with the old context; the first PushFont of
-    // the first frame after the overlay came back crashed the game. An atlas this
-    // module has filled is never empty, so empty means: not ours yet, build.
-    if (g_fonts.pixel_size > 0.0f && atlas->Fonts.Size > 0 &&
-        pixel_size > g_fonts.pixel_size - 0.5f && pixel_size < g_fonts.pixel_size + 0.5f &&
-        g_built_count == g_wanted_count) {
-        return false;
-    }
-
+// One whole build of the atlas, from the two paths already recorded in
+// g_body_path / g_strong_path, answering whether the rasteriser accepted what it
+// was given.
+//
+// A function rather than a stretch of ensure_fonts() because it has to be
+// runnable twice: a chosen face that gets past looks_like_a_font() and still
+// cannot be rasterised leaves ImGui with an atlas of no pixels at all -- measured
+// at 0x0, with every font pointer unloaded, against a variable OpenType
+// (Cantarell-VF.otf: CFF2, which stb_truetype does not implement) -- and an
+// overlay that draws no text while reporting nothing is the silence entry 38 is
+// about. The second run is the carried Inter alone, which is the one build this
+// project knows always works.
+bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     atlas->Clear();
 
     ImFontConfig config;
@@ -249,9 +380,46 @@ bool ensure_fonts(float pixel_size, float reference) {
     // its own copy of the emoji and the punctuation: the channel name is drawn in
     // the heavier one, and it is exactly where an emoji turns up.
     const float emoji_size = pixel_size < kEmojiCeiling ? pixel_size : kEmojiCeiling;
-    auto add_weight = [&](const unsigned char* data, unsigned int size) {
-        ImFont* font = atlas->AddFontFromMemoryCompressedTTF(
-            data, static_cast<int>(size), pixel_size, &config, letter_ranges());
+    // The user's own face first, with Inter merged straight underneath it as the
+    // fallback: ImGui's merge keeps the glyph that is already there, so the
+    // chosen font wins everywhere it has an opinion and Inter fills in the
+    // scripts and symbols it does not carry. Without that fallback, picking a
+    // Latin-only display face would turn every Cyrillic name into question
+    // marks -- a font choice is not a decision to stop drawing people's names.
+    auto add_weight = [&](const unsigned char* data, unsigned int size, const char* path) {
+        ImFont* font = nullptr;
+        if (path[0]) {
+            size_t bytes = 0;
+            if (void* file = read_font_file(path, &bytes)) {
+                if (!looks_like_a_font(static_cast<const unsigned char*>(file), bytes)) {
+                    // Ours to free: nothing has taken it yet, and handing it on
+                    // is what crashes.
+                    IM_FREE(file);
+                    g_font_reason = "the chosen font is not a font file";
+                } else {
+                    ImFontConfig chosen = config;
+                    // The atlas owns this copy and frees it -- at its next
+                    // Clear(), or with the context if the game destroys it. The
+                    // carried fonts are static and stay owned by nobody.
+                    // AddFontFromMemoryTTF cannot answer null (it returns
+                    // AddFont's DstFont, imgui_draw.cpp:2612), so there is no
+                    // failure to test for here: whether the bytes rasterise is
+                    // Build()'s answer, taken at the bottom of this function.
+                    chosen.FontDataOwnedByAtlas = true;
+                    font = atlas->AddFontFromMemoryTTF(file, static_cast<int>(bytes), pixel_size,
+                                                       &chosen, letter_ranges());
+                }
+            }
+        }
+        if (font) {
+            ImFontConfig fallback = config;
+            fallback.MergeMode = true;
+            atlas->AddFontFromMemoryCompressedTTF(data, static_cast<int>(size), pixel_size,
+                                                  &fallback, letter_ranges());
+        } else {
+            font = atlas->AddFontFromMemoryCompressedTTF(data, static_cast<int>(size), pixel_size,
+                                                         &config, letter_ranges());
+        }
 
         ImFontConfig merge = config;
         merge.MergeMode = true;
@@ -265,8 +433,10 @@ bool ensure_fonts(float pixel_size, float reference) {
         return font;
     };
 
-    g_fonts.body = add_weight(InterRegular_compressed_data, InterRegular_compressed_size);
-    g_fonts.strong = add_weight(InterSemiBold_compressed_data, InterSemiBold_compressed_size);
+    g_fonts.body = add_weight(InterRegular_compressed_data, InterRegular_compressed_size,
+                              g_body_path);
+    g_fonts.strong = add_weight(InterSemiBold_compressed_data, InterSemiBold_compressed_size,
+                                g_strong_path);
 
     // A failure here would leave the atlas empty and ImGui would assert on the
     // first frame, so fall back to the built-in bitmap rather than draw nothing.
@@ -320,9 +490,12 @@ bool ensure_fonts(float pixel_size, float reference) {
         }
     }
 
-    atlas->Build();
+    // The rasteriser's own answer, which nothing used to ask for. False means it
+    // could not parse one of the sources: the atlas has no pixels, every font in
+    // it is unloaded, and the caller has to build something else.
+    const bool built = atlas->Build();
 
-    if (rect_count > 0) {
+    if (built && rect_count > 0) {
         unsigned char* pixels = nullptr;
         int atlas_width = 0;
         int atlas_height = 0;
@@ -342,6 +515,71 @@ bool ensure_fonts(float pixel_size, float reference) {
                             static_cast<size_t>(rect->Width) * 4);
             }
         }
+    }
+
+    return built;
+}
+
+}  // namespace
+
+bool ensure_fonts(float pixel_size, float reference, const char* body_path,
+                  const char* strong_path) {
+    // The reference is not a size the atlas is built at -- it is what the layout
+    // divides by -- so it costs nothing to follow immediately.
+    g_fonts.reference = reference > 0.0f ? reference : kReferenceSize;
+
+    // Empty and null are the same answer -- the carried Inter -- and a family
+    // with no bold face on this machine draws both weights from the one file it
+    // does have, which is what the window writes when fontconfig hands it the
+    // same path twice.
+    const char* wanted_body = body_path ? body_path : "";
+    const char* wanted_strong = strong_path && strong_path[0] ? strong_path : wanted_body;
+    if (std::strlen(wanted_body) >= kMaxFontPath || std::strlen(wanted_strong) >= kMaxFontPath) {
+        wanted_body = "";
+        wanted_strong = "";
+        g_font_reason = "the chosen font's path is longer than a path should be";
+    }
+    const bool same_font = std::strcmp(g_body_path, wanted_body) == 0 &&
+                           std::strcmp(g_strong_path, wanted_strong) == 0;
+
+    ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+
+    // Half a pixel of difference is not worth throwing an atlas away for -- and
+    // without a dead band, a size derived from a continuous slider would rebuild
+    // on every frame the user is dragging it.
+    //
+    // The dead band holds only while the atlas it remembers building is still the
+    // one in front of us. Both injected paths destroy their ImGui context and
+    // create another in the same process -- the GL overlay when the user switches
+    // it off and back on, the Vulkan layer when a game replaces its device -- and
+    // the fresh context brings a fresh, empty atlas at the same pixel size. A
+    // size-only dead band answered "nothing to do" and left the pointers below
+    // aimed into the atlas that died with the old context; the first PushFont of
+    // the first frame after the overlay came back crashed the game. An atlas this
+    // module has filled is never empty, so empty means: not ours yet, build.
+    if (g_fonts.pixel_size > 0.0f && atlas->Fonts.Size > 0 &&
+        pixel_size > g_fonts.pixel_size - 0.5f && pixel_size < g_fonts.pixel_size + 0.5f &&
+        g_built_count == g_wanted_count && same_font) {
+        return false;
+    }
+
+    // A new build answers for itself: a refusal from the last one would
+    // otherwise be reported forever, including after the user picked a font that
+    // does load.
+    g_font_reason = nullptr;
+    std::snprintf(g_body_path, sizeof(g_body_path), "%s", wanted_body);
+    std::snprintf(g_strong_path, sizeof(g_strong_path), "%s", wanted_strong);
+
+    // A chosen face the rasteriser cannot parse is refused the way an unreadable
+    // file is: the paths are forgotten, the reason is said, and the atlas is
+    // built again from the carried Inter alone. Without the second build the
+    // game keeps an atlas of no pixels -- no names, no channel, no message, and
+    // nothing in the log to say why.
+    if (!build_atlas(atlas, pixel_size) && (g_body_path[0] || g_strong_path[0])) {
+        g_font_reason = "the chosen font could not be rasterised";
+        g_body_path[0] = '\0';
+        g_strong_path[0] = '\0';
+        build_atlas(atlas, pixel_size);
     }
 
     g_built_count = g_wanted_count;

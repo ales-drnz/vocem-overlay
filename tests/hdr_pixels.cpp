@@ -45,6 +45,23 @@
 
 namespace {
 
+// The target this runs against, chosen at build time so one source answers two
+// different questions with the same machinery (tests/CMakeLists.txt builds both):
+//
+//   * the float target measures what the shader PUTS OUT -- the arithmetic and
+//     the specialization plumbing, with nothing between the shader and the
+//     readback;
+//   * the sRGB target measures the ROUND TRIP -- there the format itself carries
+//     the encoding, the hardware applies linear->sRGB to whatever is written,
+//     and mode 3 exists precisely so that what comes back out is what ImGui put
+//     in. Against the shader before mode 3 existed the panel's 79,84,92 came
+//     back 151,155,162.
+#ifdef VOCEM_SRGB_TARGET
+constexpr VkFormat kTargetFormat = VK_FORMAT_R8G8B8A8_SRGB;
+#else
+constexpr VkFormat kTargetFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+#endif
+
 int failures = 0;
 
 void check(bool condition, const char* what) {
@@ -91,7 +108,9 @@ void bt709_to_bt2020(const double in[3], double out[3]) {  // BT.2087.
 // What hdr.frag promises for one sRGB colour, per mode.
 void reference(int mode, double nits, const double srgb[3], double out[3]) {
     double lin[3] = {srgb_to_linear(srgb[0]), srgb_to_linear(srgb[1]), srgb_to_linear(srgb[2])};
-    if (mode == 1) {  // scRGB: linear, 1.0 = 80 nits, primaries stay BT.709.
+    if (mode == 3) {  // an sRGB-format attachment: hand over linear, primaries stay.
+        for (int i = 0; i < 3; ++i) out[i] = lin[i];
+    } else if (mode == 1) {  // scRGB: linear, 1.0 = 80 nits, primaries stay BT.709.
         for (int i = 0; i < 3; ++i) out[i] = lin[i] * nits / 80.0;
     } else {  // HDR10: BT.2020 primaries, PQ transfer.
         double wide[3];
@@ -303,9 +322,9 @@ int main() {
     // R16G16B16A16_SFLOAT colour attachment with blending is mandated by the
     // spec, but a measurement does not lean on "mandated": ask.
     VkFormatProperties fmt_props{};
-    vk.vkGetPhysicalDeviceFormatProperties(gpu, VK_FORMAT_R16G16B16A16_SFLOAT, &fmt_props);
+    vk.vkGetPhysicalDeviceFormatProperties(gpu, kTargetFormat, &fmt_props);
     if (!(fmt_props.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT)) {
-        skip("device cannot blend into R16G16B16A16_SFLOAT");
+        skip("device cannot blend into the target format");
     }
 
     const float priority = 1.0f;
@@ -337,7 +356,7 @@ int main() {
     // ---- Render pass, mirroring the layer's (vocem_layer.cpp) except that
     // the target is cleared (nothing underneath) and ends TRANSFER_SRC ------
     VkAttachmentDescription attachment{};
-    attachment.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    attachment.format = kTargetFormat;
     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
     attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -401,7 +420,7 @@ int main() {
     VkImageCreateInfo image_info{};
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
-    image_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    image_info.format = kTargetFormat;
     image_info.extent = {kWidth, kHeight, 1};
     image_info.mipLevels = 1;
     image_info.arrayLayers = 1;
@@ -429,7 +448,7 @@ int main() {
     view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_info.image = target;
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    view_info.format = kTargetFormat;
     view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkImageView target_view = VK_NULL_HANDLE;
     if (vk.vkCreateImageView(device, &view_info, nullptr, &target_view) != VK_SUCCESS) {
@@ -514,7 +533,11 @@ int main() {
     make_buffer(4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, staging_buffer, staging_memory, &map);
     std::memset(map, 0xff, 4);  // the 1x1 white texel: sampling is identity
     void* readback = nullptr;
+#ifdef VOCEM_SRGB_TARGET
+    const VkDeviceSize readback_size = kWidth * kHeight * 4;  // 4 x unorm8
+#else
     const VkDeviceSize readback_size = kWidth * kHeight * 8;  // 4 x fp16
+#endif
     make_buffer(readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readback_buffer, readback_memory,
                 &readback);
 
@@ -625,6 +648,14 @@ int main() {
         float nits;
         const char* name;
     };
+#ifdef VOCEM_SRGB_TARGET
+    // One mode, because one mode is what an sRGB-format swapchain ever gets --
+    // and the nits are not part of it: mode 3 is not an HDR conversion, it is
+    // the encoding the attachment does being handed the values it expects.
+    const Case cases[] = {
+        {3, 203.0f, "mode3 sRGB attachment"},
+    };
+#else
     const Case cases[] = {
         {2, 203.0f, "mode2 HDR10 203n (default)"},
         {2, 100.0f, "mode2 HDR10 100n"},
@@ -632,7 +663,9 @@ int main() {
         {1, 203.0f, "mode1 scRGB 203n (default)"},
         {1, 80.0f, "mode1 scRGB 80n"},
         {1, 1000.0f, "mode1 scRGB 1000n"},
+        {3, 203.0f, "mode3 sRGB attachment (what the shader puts out)"},
     };
+#endif
 
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
@@ -731,6 +764,25 @@ int main() {
             die("draw submit");
         }
 
+#ifdef VOCEM_SRGB_TARGET
+        // The round trip: what the attachment stores has to be the byte ImGui
+        // asked for. One unit of slack is the 8-bit quantisation of a value
+        // that went out through a float shader and came back through the
+        // hardware's encode.
+        const uint8_t* stored = static_cast<const uint8_t*>(readback);
+        for (int band = 0; band < 3; ++band) {
+            const uint32_t x = band * kBand + kBand / 2;
+            const uint32_t y = kHeight / 2;
+            const uint8_t* px = stored + (y * kWidth + x) * 4;
+            for (int i = 0; i < 3; ++i) {
+                const int got = px[i];
+                const int want = colours[band][i];
+                snprintf(line, sizeof(line), "%s %s ch%d: stored %d, ImGui asked for %d", c.name,
+                         colour_names[band], i, got, want);
+                check(got >= want - 1 && got <= want + 1, line);
+            }
+        }
+#else
         const uint16_t* pixels = static_cast<const uint16_t*>(readback);
         for (int band = 0; band < 3; ++band) {
             const uint32_t x = band * kBand + kBand / 2;
@@ -751,6 +803,7 @@ int main() {
                      colour_names[band], alpha);
             check(std::fabs(alpha - 1.0) <= 1e-3, line);
         }
+#endif
 
         vocem::hdr_pipeline_destroy(fn, device, pipeline);
     }

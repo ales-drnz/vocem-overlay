@@ -6,6 +6,11 @@
 # system tray icon on Plasma. See the note in main.cpp.
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Widgets)
 
+# The window resolves a font family to the files the overlay opens. It is the
+# only half of this project that may ask: fontconfig inside a game would be a
+# library, a cache and a pile of file syscalls in somebody else's renderer.
+find_package(Fontconfig REQUIRED)
+
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(vocem-config
@@ -101,7 +106,8 @@ target_include_directories(vocem-config PRIVATE
     src
 )
 
-target_link_libraries(vocem-config PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets)
+target_link_libraries(vocem-config PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets
+                                           Fontconfig::Fontconfig)
 
 target_compile_options(vocem-config PRIVATE -Wall -Wextra)
 target_compile_definitions(vocem-config PRIVATE VOCEM_VERSION="${PROJECT_VERSION}")

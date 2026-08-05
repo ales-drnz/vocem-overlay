@@ -48,6 +48,22 @@ SectionPage {
     title: qsTr("Debug")
     subtitle: qsTr("What the overlay is doing right now, and what it left behind.")
 
+    // The page's own action, in the bar every other section carries. There is
+    // nothing to apply here and nothing to put back to a default, so the bar
+    // holds this alone: it empties the Sessions list -- both kinds -- and it
+    // says so rather than being called Reset, which on every other page means
+    // "put the settings back". Enabled only when there is something to clear,
+    // because a button that does nothing is a button that lies about the state
+    // of the page. The daemon's log is not in it: those lines are journald's.
+    barContent: Button {
+        objectName: "debugClear"
+        text: qsTr("Clear Journals")
+        icon.name: "edit-clear-history"
+        enabled: root.config.crashReports.length > 0 ||
+                 root.config.journalHistory.length > 0
+        onClicked: root.config.clearJournals()
+    }
+
     // The daemon's journald lines are fetched when somebody actually looks,
     // not on a timer: this page is the only reader.
     onVisibleChanged: {
@@ -121,127 +137,145 @@ SectionPage {
             Layout.fillHeight: true
 
             // ------------------------------------------------------------ now
-            ColumnLayout {
-                spacing: Theme.largeSpacing
+            //
+            // Inside a scrolling view, because this tab grows: the health card
+            // is fixed, but "Drawing Now" lists one row per process the overlay
+            // is painting in, and a session with several games open ran off the
+            // bottom of the window with nothing to scroll and no bar to say so.
+            ScrollView {
+                id: nowView
 
-                Card {
-                    title: qsTr("Health")
-                    Layout.fillWidth: true
+                clip: true
+                contentWidth: availableWidth
 
-                    SettingRow {
-                        label: qsTr("Vulkan layer")
-                        description: root.config.vulkanLayerInstalled
-                                     ? qsTr("Installed. Every Vulkan game loads it by itself.")
-                                     : qsTr("Not found. Vulkan games cannot show the overlay.")
-                        first: true
+                ColumnLayout {
+                    width: nowView.availableWidth
+                    // At least the viewport, so the placeholder message can
+                    // still centre itself on an empty tab (it asks for the
+                    // slack with Layout.fillHeight, and inside a scrolling
+                    // column there is none unless it is granted here).
+                    height: Math.max(implicitHeight, nowView.availableHeight)
+                    spacing: Theme.largeSpacing
 
-                        Label {
-                            text: root.config.vulkanLayerInstalled ? qsTr("Ready")
-                                                                   : qsTr("Missing")
-                            color: root.config.vulkanLayerInstalled ? Theme.online
-                                                                    : Theme.offline
-                            font.bold: true
-                        }
-                    }
-
-                    SettingRow {
-                        label: qsTr("OpenGL preload")
-                        description: root.config.openglPreloadActive
-                                     ? qsTr("Active in this session.")
-                                     : qsTr("Not in this session's environment. It reaches "
-                                            + "new sessions at the next login.")
-
-                        Label {
-                            text: root.config.openglPreloadActive ? qsTr("Ready")
-                                                                  : qsTr("Next login")
-                            color: root.config.openglPreloadActive ? Theme.online : Theme.busy
-                            font.bold: true
-                        }
-                    }
-
-                    // Both halves of the shared-state contract. A reader that
-                    // meets a segment from another ABI refuses it -- correctly
-                    // -- and from outside that refusal looks exactly like "no
-                    // daemon", so this row is where the difference becomes a
-                    // sentence.
-                    SettingRow {
-                        label: qsTr("Shared state")
-                        description: root.config.segmentAbiVersion === 0
-                                     ? qsTr("No segment: the daemon is not running.")
-                                     : (root.config.segmentAbiVersion === root.config.abiVersion
-                                        ? qsTr("ABI v%1, daemon and window agree.")
-                                              .arg(root.config.abiVersion)
-                                        : qsTr("The daemon publishes v%1, this window expects "
-                                               + "v%2.").arg(root.config.segmentAbiVersion)
-                                                        .arg(root.config.abiVersion))
-
-                        Label {
-                            readonly property bool agree:
-                                root.config.segmentAbiVersion === root.config.abiVersion
-                            text: root.config.segmentAbiVersion === 0
-                                  ? qsTr("none")
-                                  : (agree ? qsTr("v%1").arg(root.config.abiVersion)
-                                           : qsTr("v%1 ≠ v%2")
-                                                 .arg(root.config.segmentAbiVersion)
-                                                 .arg(root.config.abiVersion))
-                            color: root.config.segmentAbiVersion === 0
-                                   ? Theme.busy : (agree ? Theme.online : Theme.offline)
-                            font.bold: true
-                        }
-                    }
-                }
-
-                Card {
-                    // The card's own heading rather than a Label beside it
-                    // wearing the same left margin by hand: one way of heading
-                    // a group, so the two cannot drift apart.
-                    title: qsTr("Drawing Now")
-                    visible: root.config.liveInstances.length > 0
-                    Layout.fillWidth: true
-
-                    Repeater {
-                        model: root.config.liveInstances
+                    Card {
+                        title: qsTr("Health")
+                        Layout.fillWidth: true
 
                         SettingRow {
-                            objectName: "debugLiveRow"
+                            label: qsTr("Vulkan layer")
+                            description: root.config.vulkanLayerInstalled
+                                         ? qsTr("Installed. Every Vulkan game loads it by itself.")
+                                         : qsTr("Not found. Vulkan games cannot show the overlay.")
+                            first: true
 
-                            required property var modelData
-                            required property int index
-
-                            label: modelData.name
-                            description: {
-                                const parts = [];
-                                if (modelData.api === "vulkan") parts.push(qsTr("Vulkan"));
-                                else if (modelData.api === "opengl") parts.push(qsTr("OpenGL"));
-                                parts.push(qsTr("pid %1").arg(modelData.pid));
-                                if (modelData.frames !== undefined) {
-                                    // Frames the overlay was willing to draw in
-                                    // against the frames it painted: "12000 / 0"
-                                    // is an overlay attached and idle, which is a
-                                    // different story from one that is absent.
-                                    parts.push(qsTr("%1 frames seen, %2 drawn")
-                                                   .arg(modelData.frames)
-                                                   .arg(modelData.drawn));
-                                }
-                                return parts.join(" · ");
+                            Label {
+                                text: root.config.vulkanLayerInstalled ? qsTr("Ready")
+                                                                       : qsTr("Missing")
+                                color: root.config.vulkanLayerInstalled ? Theme.online
+                                                                        : Theme.offline
+                                font.bold: true
                             }
-                            first: index === 0
+                        }
+
+                        SettingRow {
+                            label: qsTr("OpenGL preload")
+                            description: root.config.openglPreloadActive
+                                         ? qsTr("Active in this session.")
+                                         : qsTr("Not in this session's environment. It reaches "
+                                                + "new sessions at the next login.")
+
+                            Label {
+                                text: root.config.openglPreloadActive ? qsTr("Ready")
+                                                                      : qsTr("Next login")
+                                color: root.config.openglPreloadActive ? Theme.online : Theme.busy
+                                font.bold: true
+                            }
+                        }
+
+                        // Both halves of the shared-state contract. A reader that
+                        // meets a segment from another ABI refuses it -- correctly
+                        // -- and from outside that refusal looks exactly like "no
+                        // daemon", so this row is where the difference becomes a
+                        // sentence.
+                        SettingRow {
+                            label: qsTr("Shared state")
+                            description: root.config.segmentAbiVersion === 0
+                                         ? qsTr("No segment: the daemon is not running.")
+                                         : (root.config.segmentAbiVersion === root.config.abiVersion
+                                            ? qsTr("ABI v%1, daemon and window agree.")
+                                                  .arg(root.config.abiVersion)
+                                            : qsTr("The daemon publishes v%1, this window expects "
+                                                   + "v%2.").arg(root.config.segmentAbiVersion)
+                                                            .arg(root.config.abiVersion))
+
+                            Label {
+                                readonly property bool agree:
+                                    root.config.segmentAbiVersion === root.config.abiVersion
+                                text: root.config.segmentAbiVersion === 0
+                                      ? qsTr("none")
+                                      : (agree ? qsTr("v%1").arg(root.config.abiVersion)
+                                               : qsTr("v%1 ≠ v%2")
+                                                     .arg(root.config.segmentAbiVersion)
+                                                     .arg(root.config.abiVersion))
+                                color: root.config.segmentAbiVersion === 0
+                                       ? Theme.busy : (agree ? Theme.online : Theme.offline)
+                                font.bold: true
+                            }
                         }
                     }
-                }
 
-                PlaceholderMessage {
-                    visible: root.config.liveInstances.length === 0
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    iconName: "applications-games"
-                    title: qsTr("The overlay is not drawing anywhere")
-                    explanation: qsTr("A game appears here at the first frame the overlay "
-                                      + "paints in it, with the frames it has seen and "
-                                      + "the frames it has drawn.")
-                }
+                    Card {
+                        // The card's own heading rather than a Label beside it
+                        // wearing the same left margin by hand: one way of heading
+                        // a group, so the two cannot drift apart.
+                        title: qsTr("Drawing Now")
+                        visible: root.config.liveInstances.length > 0
+                        Layout.fillWidth: true
 
-                Item { Layout.fillHeight: root.config.liveInstances.length > 0 }
+                        Repeater {
+                            model: root.config.liveInstances
+
+                            SettingRow {
+                                objectName: "debugLiveRow"
+
+                                required property var modelData
+                                required property int index
+
+                                label: modelData.name
+                                description: {
+                                    const parts = [];
+                                    if (modelData.api === "vulkan") parts.push(qsTr("Vulkan"));
+                                    else if (modelData.api === "opengl") parts.push(qsTr("OpenGL"));
+                                    parts.push(qsTr("pid %1").arg(modelData.pid));
+                                    if (modelData.frames !== undefined) {
+                                        // Frames the overlay was willing to draw in
+                                        // against the frames it painted: "12000 / 0"
+                                        // is an overlay attached and idle, which is a
+                                        // different story from one that is absent.
+                                        parts.push(qsTr("%1 frames seen, %2 drawn")
+                                                       .arg(modelData.frames)
+                                                       .arg(modelData.drawn));
+                                    }
+                                    return parts.join(" · ");
+                                }
+                                first: index === 0
+                            }
+                        }
+                    }
+
+                    PlaceholderMessage {
+                        visible: root.config.liveInstances.length === 0
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        iconName: "applications-games"
+                        title: qsTr("The overlay is not drawing anywhere")
+                        explanation: qsTr("A game appears here at the first frame the overlay "
+                                          + "paints in it, with the frames it has seen and "
+                                          + "the frames it has drawn.")
+                    }
+
+                    Item { Layout.fillHeight: root.config.liveInstances.length > 0 }
+                }
             }
 
             // ------------------------------------------------------- sessions
@@ -266,6 +300,26 @@ SectionPage {
                     clip: true
                     spacing: Theme.smallSpacing
                     reuseItems: true
+
+                    // A list that can be longer than the window, and was the one
+                    // long list in this window with no bar beside it: twenty
+                    // sessions are kept, and past the third or fourth there was
+                    // nothing on screen to say the rest were there.
+                    //
+                    // Beside the rows, never over them. A ListView's attached
+                    // scrollbar is an overlay by default and sat on top of the
+                    // cards, half over the Journal buttons; every other scrolling
+                    // view in this window keeps room for its bar (ScrollablePage
+                    // says the same thing about the page margin). The room comes
+                    // out of the delegate's width, which is the only place a
+                    // ListView has to give it from.
+                    readonly property real barRoom:
+                        sessionsBar.visible ? sessionsBar.width + Theme.smallSpacing : 0
+
+                    ScrollBar.vertical: ScrollBar {
+                        id: sessionsBar
+                        policy: ScrollBar.AsNeeded
+                    }
 
                     model: {
                         const rows = [];
@@ -308,7 +362,7 @@ SectionPage {
                         property bool open: false
                         ListView.onReused: open = false
 
-                        width: sessions.width
+                        width: sessions.width - sessions.barRoom
                         implicitHeight: rowLayout.implicitHeight + Theme.cardPadding * 2
                         radius: Theme.cornerRadius
                         color: Theme.cardColour
@@ -372,15 +426,13 @@ SectionPage {
                                 }
                             }
 
-                            Label {
-                                visible: row.crashed
-                                text: qsTr("Ended without shutting down: a crash, or a "
-                                           + "forced stop. The journal's last line is what "
-                                           + "the overlay was doing there.")
-                                opacity: 0.7
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
+                            // No sentence per row here. Every crashed row used
+                            // to carry the same three lines about what ending
+                            // without shutting down means, which on a list of
+                            // eight is the same paragraph eight times: the
+                            // "Ended Badly" header above them says it once, for
+                            // all of them, which is what a section header is
+                            // for.
 
                             // The journal's text is what makes a row expensive,
                             // so it exists only while a row is open: Qt's own

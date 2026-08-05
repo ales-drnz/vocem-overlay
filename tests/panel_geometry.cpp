@@ -275,7 +275,8 @@ Measurement measure(const Config& base, uint32_t width, uint32_t height, uint32_
     out.output_height = static_cast<float>(height);
 
     const float pixels = font_pixel_size(height, config.scale, config.font_size);
-    ensure_fonts(pixels, config.font_size);
+    ensure_fonts(pixels, config.font_size, config.font_path.c_str(),
+                 config.font_path_strong.c_str());
     configure_style(config);
 
     const Snapshot snapshot = make_snapshot(users, "Voice channel");
@@ -446,11 +447,12 @@ void check_close(float measured, float expected, float tolerance, const std::str
 std::string describe(const Config& config, uint32_t width, uint32_t height, uint32_t users) {
     char buffer[256];
     std::snprintf(buffer, sizeof(buffer),
-                  "%ux%u scale %.2f opacity %.2f avatar %.2f margin %.0f padding %.0f/%.0f gap "
+                  "%s %ux%u scale %.2f opacity %.2f avatar %.2f margin %.0f padding %.0f/%.0f gap "
                   "%.0f/%.0f channel %d users %u",
-                  width, height, config.scale, config.opacity, config.avatar_size,
-                  config.screen_margin, config.box_padding_x, config.box_padding_y,
-                  config.avatar_gap, config.row_spacing, config.show_channel_name ? 1 : 0, users);
+                  Config::layout_text(config.panel_layout), width, height, config.scale,
+                  config.opacity, config.avatar_size, config.screen_margin, config.box_padding_x,
+                  config.box_padding_y, config.avatar_gap, config.row_spacing,
+                  config.show_channel_name ? 1 : 0, users);
     return buffer;
 }
 
@@ -552,11 +554,21 @@ void verify(const Config& config, uint32_t width, uint32_t height, uint32_t user
               where + ": the channel name stays inside the right padding");
     }
 
-    // One row clear of the next: the pictures must not touch, whatever the avatar
-    // size does to them.
+    // One person clear of the next: the pictures must not touch, whatever the
+    // avatar size does to them -- in the direction that layout advances in.
+    // Sideways they share a line, which is the whole of that layout, so the same
+    // property is about x there and asserting y would assert the opposite.
+    const bool horizontal = config.panel_layout == Config::kLayoutHorizontal;
     if (users >= 2 && m.avatar.valid() && m.second_avatar.valid() && panel_fits) {
-        check(m.second_avatar.y0 >= m.avatar.y1 - slack,
-              where + ": consecutive pictures do not overlap");
+        if (horizontal) {
+            check(m.second_avatar.x0 >= m.avatar.x1 - slack,
+                  where + ": consecutive pictures do not overlap");
+            check_close(m.second_avatar.y0, m.avatar.y0, 1.0f,
+                        where + ": the people share one line");
+        } else {
+            check(m.second_avatar.y0 >= m.avatar.y1 - slack,
+                  where + ": consecutive pictures do not overlap");
+        }
     }
 
     // Every picture wears its ring, transparent or not: a ring drawn only for
@@ -582,10 +594,19 @@ void verify(const Config& config, uint32_t width, uint32_t height, uint32_t user
     }
 
     // Whoever did not fit is a remark about the list, aligned with the names in
-    // it -- to the column the names start in, not to the pictures.
+    // it: upright, to the column the names start in, never to the pictures;
+    // sideways, to the line they sit on, at the end of it.
     if (m.overflow.valid() && m.first_name.valid()) {
-        check_close(m.overflow.x0, m.first_name.x0, 1.0f,
-                    where + ": the overflow line is aligned with the names");
+        if (horizontal) {
+            check(m.overflow.x0 >= m.first_name.x1 - slack,
+                  where + ": the overflow remark ends the line");
+            check_close((m.overflow.y0 + m.overflow.y1) * 0.5f,
+                        (m.first_name.y0 + m.first_name.y1) * 0.5f, 1.5f,
+                        where + ": the overflow remark sits on the line of names");
+        } else {
+            check_close(m.overflow.x0, m.first_name.x0, 1.0f,
+                        where + ": the overflow line is aligned with the names");
+        }
     }
 
     // The hairline follows the box's opacity through its premultiplied alpha, so
@@ -716,6 +737,10 @@ void distinct_tokens() {
 
         const Named panel_roles[] = {
             {"avatar_placeholder", theme.avatar_placeholder},
+            // The mark on that disc. A role of its own since it became a token,
+            // and measurable because placeholder_inside_disc() below finds it by
+            // its colour.
+            {"avatar_mark", theme.avatar_mark},
             {"badge_fill", theme.badge_fill},
             {"text_channel", theme.text_channel},
             {"text_speaking", theme.text_speaking},
@@ -739,6 +764,7 @@ void distinct_tokens() {
         };
         const Named toast_roles[] = {
             {"avatar_placeholder", theme.avatar_placeholder},
+            {"avatar_mark", theme.avatar_mark},
             {"toast_title", theme.toast_title},
             {"toast_body", theme.toast_body},
             {"toast_hairline", theme.toast_hairline},
@@ -759,14 +785,144 @@ void distinct_tokens() {
     }
 }
 
+// The silhouette on a picture that has not arrived stays on the picture.
+//
+// Written while looking for a dark rim the owner saw under the shoulders, on
+// the suspicion that the shoulders' arc ran the wrong way round its circle --
+// ImGui walks an arc linearly from a_min to a_max, so a pair handed over
+// decreasing draws the other side of the circle, which here would hang a
+// crescent under every avatar. It does not: this passed the moment it was
+// written, at every avatar size, which cleared the geometry and sent the search
+// to the rasterisation, where the rim actually was (two antialiased fills
+// sharing an edge; panel.cpp says what was measured and what the half pixel of
+// overlap is for). The assertion stays, because the property is worth holding
+// and nothing else was checking it: the lens is built from four angles that are
+// fractions of the radius, and the sign of atan2 for a point above the centre is
+// exactly what a reading gets backwards. The slack below is what carries that
+// deliberate half pixel.
+//
+// One participant, so the panel's list holds exactly one disc and one mark, and
+// three avatar sizes, because a shape that is right at one size is not a shape
+// that is right.
+void placeholder_inside_disc() {
+    for (float avatar : {0.5f, 1.0f, 2.0f}) {
+        Config config;
+        config.avatar_size = avatar;
+        config.panel_colour = kPanelSentinel;
+        config.notifications_enabled = false;
+
+        const float pixels = font_pixel_size(1080, config.scale, config.font_size);
+        ensure_fonts(pixels, config.font_size, config.font_path.c_str(),
+                 config.font_path_strong.c_str());
+        configure_style(config);
+        run_frames(make_snapshot(1, "Voice channel"), config, 1920, 1080, false);
+
+        ImGuiWindow* panel = ImGui::FindWindowByName("##vocem");
+        const ImDrawList* list = panel ? panel->DrawList : nullptr;
+        const Theme theme = theme_for(config);
+        const Rect disc = colour_bounds(list, ink(theme.avatar_placeholder));
+        const Rect mark = colour_bounds(list, ink(theme.avatar_mark));
+
+        char buffer[160];
+        std::snprintf(buffer, sizeof(buffer), "the placeholder at avatar size %.1f", avatar);
+        const std::string where = buffer;
+
+        check(disc.valid(), where + ": the disc is drawn");
+        check(mark.valid(), where + ": the head-and-shoulders mark is drawn");
+        if (!disc.valid() || !mark.valid()) {
+            continue;
+        }
+        // Antialiasing puts a vertex about half a pixel outside the shape, and
+        // both shapes pay it, so the slack is the drawing's rather than the
+        // measurement's tolerance for being wrong: the crescent this catches was
+        // 0.59 of a radius past the disc, which is 8 pixels at the default size.
+        const float slack = 0.75f;
+        if (mark.x0 < disc.x0 - slack || mark.x1 > disc.x1 + slack ||
+            mark.y0 < disc.y0 - slack || mark.y1 > disc.y1 + slack) {
+            std::printf("  FAIL  %s: the mark leaves the disc "
+                        "(disc %.2f,%.2f..%.2f,%.2f  mark %.2f,%.2f..%.2f,%.2f)\n",
+                        where.c_str(), disc.x0, disc.y0, disc.x1, disc.y1, mark.x0, mark.y0,
+                        mark.x1, mark.y1);
+            ++failures;
+        }
+
+        // And the half pixel of overlap the seam needs, as a number.
+        //
+        // The rim the owner reported is a rasterisation property, which is why
+        // entry 89 said it had no unit test and left the captured frame as the
+        // only instrument. It has one: the lens's lower boundary IS the disc's
+        // edge, both shapes are filled with the same antialiasing fringe (ImGui
+        // pushes the outer ring of a convex fill half a unit out, imgui_draw.cpp
+        // AddConvexPolyFilled), and a vertex sits exactly at the bottom of each
+        // -- the disc's from the 48-sample circle, the lens's from the arc's
+        // midpoint, which its own angles make symmetric. So the distance between
+        // their lowest vertices is the overlap itself and nothing else: zero
+        // while the two share an edge, half a pixel once the arc is drawn at
+        // radius + 0.5. Measured at every avatar size below, which is what says
+        // it is the drawing's constant rather than one size's accident.
+        const float overlap = mark.y1 - disc.y1;
+        std::printf("  %s: the shoulders overhang the disc by %.2f px\n", where.c_str(),
+                    overlap);
+        check(overlap > 0.25f && overlap < 0.75f,
+              where + ": the shoulders overlap the edge of the disc by half a pixel");
+    }
+}
+
 void self_check() {
     distinct_tokens();
+    placeholder_inside_disc();
 
     const uint32_t modes[][2] = {{3840, 2160}, {1920, 1080}, {1280, 720}, {640, 480}};
 
     for (const auto& mode : modes) {
         Config config;
         verify(config, mode[0], mode[1], 3);
+        Config sideways = config;
+        sideways.panel_layout = Config::kLayoutHorizontal;
+        verify(sideways, mode[0], mode[1], 3);
+    }
+
+    // What the horizontal layout *is*, as a measurement rather than as a
+    // description: a second person costs the panel width and no height at all,
+    // where upright they cost height and no width beyond the longest name. Two
+    // measurements of the same channel, one per layout, on a display wide enough
+    // for both to fit whole.
+    {
+        Config upright;
+        const Measurement one_up = measure(upright, 1920, 1080, 1);
+        const Measurement two_up = measure(upright, 1920, 1080, 2);
+        Config sideways;
+        sideways.panel_layout = Config::kLayoutHorizontal;
+        const Measurement one_side = measure(sideways, 1920, 1080, 1);
+        const Measurement two_side = measure(sideways, 1920, 1080, 2);
+
+        // A person's own width -- picture, gap and name -- is what a sideways
+        // panel pays for each of them and an upright one pays for none of them.
+        // The bar is two lines of text: comfortably more than the couple of
+        // units an upright box moves by when the second name's glyphs are a
+        // shade wider than the first's (they are: "User 2" measures three units
+        // past "User 1"), and comfortably less than a whole cell.
+        const float a_person = one_up.line_height * 2.0f;
+        check(two_up.panel.height() > one_up.panel.height() + 1.0f,
+              "upright, a second person makes the panel taller");
+        check(two_up.panel.width() < one_up.panel.width() + a_person,
+              "upright, a second person does not cost the panel a person's width");
+        check(two_side.panel.width() > one_side.panel.width() + a_person,
+              "sideways, a second person costs the panel a person's width");
+        check_close(two_side.panel.height(), one_side.panel.height(), 1.0f,
+                    "sideways, a second person does not make the panel taller");
+    }
+
+    // And it runs out of room in the direction it grows in: a channel of 24 on a
+    // narrow display draws what fits on the line and says how many are missing,
+    // exactly as the column does when it reaches the bottom of the screen.
+    {
+        Config sideways;
+        sideways.panel_layout = Config::kLayoutHorizontal;
+        const Measurement m = measure(sideways, 640, 480, 24);
+        check(m.overflow.valid(), "sideways, a full channel says how many did not fit");
+        check(m.panel.width() + sideways.screen_margin * m.ui_scale * 2.0f <= 640.0f + 1.0f,
+              "sideways, the line of people stays on the display");
     }
 
     // Every setting at both ends of its range, one at a time, so a failure names
@@ -808,6 +964,26 @@ void self_check() {
         {"message faint", [](Config& c) { c.notification_opacity = 0.0f; }},
         {"bottom right", [](Config& c) { c.notification_corner = 3; }},
         {"far corner", [](Config& c) { c.position_x = 1.0f; c.position_y = 1.0f; }},
+        // The other layout, and the settings whose meaning turns with it: the
+        // row spacing is the distance between two people either way, and the
+        // padding is what a line of people must stay inside.
+        {"sideways", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal; }},
+        {"sideways, spaced", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
+                                            c.row_spacing = 48.0f; }},
+        {"sideways, boxed", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
+                                           c.opacity = 0.88f; c.show_channel_name = true; }},
+        {"sideways, large", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
+                                           c.font_size = 32.0f; c.avatar_size = 2.0f; }},
+        // Both ends of the setting that *is* the sideways layout's spacing: it
+        // is handed to SameLine explicitly there rather than read out of the
+        // style, so zero is a code path of its own and not a smaller number.
+        {"sideways, touching", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
+                                              c.avatar_gap = 0.0f; c.row_spacing = 0.0f; }},
+        // A wide box pushed against the corner it can least afford: the sideways
+        // panel is as wide as the people in it, and the clamp that keeps it on
+        // the display is the one thing its own width cap does not do.
+        {"sideways, far corner", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
+                                                c.position_x = 1.0f; c.position_y = 1.0f; }},
     };
 
     for (const Variant& variant : variants) {
@@ -974,6 +1150,17 @@ bool set_field(Config& config, const std::string& key, const std::string& value)
     else if (key == "notification_scale") config.notification_scale = number;
     else if (key == "notification_opacity") config.notification_opacity = number;
     else if (key == "notification_corner") config.notification_corner = std::atoi(value.c_str());
+    // Through Config's own reader, so the comparison spells the layout the way
+    // the settings file does rather than as a number nobody would recognise.
+    else if (key == "panel_layout")
+        config.panel_layout = Config::to_layout(value.c_str(), config.panel_layout);
+    // The typeface, so the comparison can be run in the font the user picked
+    // rather than only in the carried one: the ratio between ImGui's size and
+    // Qt's is a property of the file, and that is exactly what a preview drawn
+    // in somebody else's font has to get right.
+    else if (key == "font_family") config.font_family = value;
+    else if (key == "font_path") config.font_path = value;
+    else if (key == "font_path_strong") config.font_path_strong = value;
     else if (key == "position_x") config.position_x = number;
     else if (key == "position_y") config.position_y = number;
     else if (key == "show_channel_name") config.show_channel_name = value != "0";
@@ -1072,7 +1259,8 @@ int main(int argc, char** argv) {
 
     // The atlas has to exist before the first frame; ensure_fonts() builds it and
     // the null backend only needs the pixels to have been rasterised.
-    ensure_fonts(font_pixel_size(height, config.scale, config.font_size), config.font_size);
+    ensure_fonts(font_pixel_size(height, config.scale, config.font_size), config.font_size,
+                 config.font_path.c_str(), config.font_path_strong.c_str());
     io.Fonts->GetTexDataAsRGBA32(&pixels, &atlas_width, &atlas_height);
     io.Fonts->SetTexID(static_cast<ImTextureID>(1));
 

@@ -51,6 +51,50 @@ struct Config {
     // Appearance
     float scale = 1.0f;           // user scale on top of the automatic DPI scale
 
+    // Which way the people are laid out inside the panel: one under the next,
+    // or one beside the next. A column is the default because that is what a
+    // participant list is, and because it stays the same width whoever joins;
+    // a row is for a player who wants the overlay along an edge of the screen,
+    // out of the middle of the picture. It is a layout, not a second panel:
+    // the same rows, the same settings, the same box -- only the direction the
+    // cells advance in, and the direction the panel runs out of room in.
+    //
+    // Written as a word rather than a number, unlike notification_corner: this
+    // one has an obvious spelling in the file and a number would have to be
+    // looked up. A file from a version that had no layouts has no key and gets
+    // the column, which is what it was drawing.
+    static constexpr int kLayoutVertical = 0;
+    static constexpr int kLayoutHorizontal = 1;
+    int panel_layout = kLayoutVertical;
+
+    // The layout, by its name. A number is accepted on the way in too, because
+    // that is what a file written by a script is likely to carry, and anything
+    // else keeps the current value rather than turning somebody's panel sideways
+    // over a typo. Public because everything that names this setting -- the
+    // file, the window's bridge, the geometry measurement's own labels -- must
+    // spell it the same way.
+    static int to_layout(const char* text, int fallback) {
+        while (*text == ' ' || *text == '\t') {
+            ++text;
+        }
+        // The whole word, not a prefix: the sentence above promises that a typo
+        // keeps the current value, and a prefix match turns "horizontalq" -- and
+        // "vertical panel" -- into a layout the user did not ask for. The
+        // trailing side is already clean by the time this is called (trim()
+        // takes it off), so a plain comparison is the strict reading.
+        if (std::strcmp(text, "horizontal") == 0 || std::strcmp(text, "1") == 0) {
+            return kLayoutHorizontal;
+        }
+        if (std::strcmp(text, "vertical") == 0 || std::strcmp(text, "0") == 0) {
+            return kLayoutVertical;
+        }
+        return fallback;
+    }
+
+    static const char* layout_text(int layout) {
+        return layout == kLayoutHorizontal ? "horizontal" : "vertical";
+    }
+
     // The two boxes are configured independently, in colour and in transparency,
     // because they are not the same thing: the voice panel sits there for the whole
     // session and can afford to be quiet, while a message arrives, has to be read
@@ -173,6 +217,22 @@ struct Config {
     // It is the reference the rest of the layout is expressed in, so the overlay
     // divides by it rather than by a constant -- see ui_scale() in fonts.h.
     float font_size = 16.0f;
+
+    // The typeface. Empty -- the default -- is the carried Inter, which is what
+    // every version before this one drew and the only thing that needs no
+    // machine to be true of it.
+    //
+    // The *window* resolves a family to files and writes both here; the injected
+    // code only ever opens a path. That split is the whole design: a game's
+    // process may not ask fontconfig anything (a library, a cache, a config
+    // parse and a handful of file syscalls, inside somebody else's renderer),
+    // while the window already has Qt and the desktop's font machinery loaded.
+    // `font_family` is the name the window shows; the two paths are what the
+    // overlay reads, and a file that has gone away since it was chosen falls
+    // back to Inter and says so in the log.
+    std::string font_family;
+    std::string font_path;
+    std::string font_path_strong;
 
     // Voice
     bool only_speaking = false;   // hide participants who are silent
@@ -323,6 +383,8 @@ struct Config {
                 // near-black without their having chosen it, in a version where the
                 // choice is finally visible. Anyone who wants that colour can pick
                 // it, and the default stays what the Discord client looks like.
+            } else if (std::strcmp(key, "panel_layout") == 0) {
+                panel_layout = to_layout(value, panel_layout);
             } else if (std::strcmp(key, "opacity") == 0) {
                 opacity = clamp(to_number(value), 0.0, 1.0);
             } else if (std::strcmp(key, "avatar_size") == 0) {
@@ -352,6 +414,12 @@ struct Config {
                 screen_margin = clamp(to_number(value), 0.0, 120.0);
             } else if (std::strcmp(key, "notification_margin") == 0) {
                 notification_margin = clamp(to_number(value), 0.0, 120.0);
+            } else if (std::strcmp(key, "font_family") == 0) {
+                font_family = value;
+            } else if (std::strcmp(key, "font_path") == 0) {
+                font_path = value;
+            } else if (std::strcmp(key, "font_path_strong") == 0) {
+                font_path_strong = value;
             } else if (std::strcmp(key, "font_size") == 0) {
                 font_size = clamp(to_number(value), 8.0, 48.0);
             } else if (std::strcmp(key, "box_padding_x") == 0) {
@@ -409,6 +477,7 @@ struct Config {
         std::fprintf(file, "position_y = %s\n", decimal(position_y, 4).c_str());
         std::fprintf(file, "\n[appearance]\n");
         std::fprintf(file, "scale = %s\n", decimal(scale, 2).c_str());
+        std::fprintf(file, "panel_layout = %s\n", layout_text(panel_layout));
         std::fprintf(file, "panel_colour = %s\n", colour_text(panel_colour).c_str());
         std::fprintf(file, "speaking_colour = %s\n", colour_text(speaking_colour).c_str());
         std::fprintf(file, "text_idle_colour = %s\n",
@@ -434,6 +503,9 @@ struct Config {
         std::fprintf(file, "notification_margin = %s\n",
                      decimal(notification_margin, 1).c_str());
         std::fprintf(file, "font_size = %s\n", decimal(font_size, 1).c_str());
+        std::fprintf(file, "font_family = %s\n", font_family.c_str());
+        std::fprintf(file, "font_path = %s\n", font_path.c_str());
+        std::fprintf(file, "font_path_strong = %s\n", font_path_strong.c_str());
         std::fprintf(file, "box_padding_x = %s\n", decimal(box_padding_x, 1).c_str());
         std::fprintf(file, "box_padding_y = %s\n", decimal(box_padding_y, 1).c_str());
         std::fprintf(file, "avatar_gap = %s\n", decimal(avatar_gap, 1).c_str());
@@ -467,6 +539,16 @@ struct Config {
     // interface uses it to explain what is about to happen rather than leaving the
     // user with a panel that looks broken.
     bool background_is_faint() const { return opacity < kFaintBackground; }
+
+    // The same question about the message box, which carries an opacity of its
+    // own: the two boxes are set independently, so the sentence the window puts
+    // under each slider has to come from that box's own value. Its slider used
+    // to stop at 20%, which meant the message box was the one surface in the
+    // overlay a user could not turn off -- the answer to "I want the words and
+    // nothing else" was a setting that refused to go there.
+    bool notification_background_is_faint() const {
+        return notification_opacity < kFaintBackground;
+    }
 
 private:
     static const char* trim(char* text) {

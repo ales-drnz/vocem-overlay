@@ -13,10 +13,14 @@
 # `pacman -Rns vocem-overlay` rather than hunting for leftovers by hand.
 
 pkgname=vocem-overlay
-pkgver=0.1.2
+pkgver=0.1.3
 # Reset with 0.1.0: releases are numbered from here (0.1.1, 0.1.2), and pkgrel
 # rises only to rebuild the same release. The old monotonic counter reached 67.
-pkgrel=1
+#
+# This one is ahead of the tag on purpose: this file builds the working tree, so
+# while 0.1.3 is being written it carries 0.1.3 and its pkgrel rises with each
+# test build. The tag-built PKGBUILD moves to 0.1.3 when the tag exists.
+pkgrel=7
 pkgdesc="Discord voice overlay drawn inside the game (built from the working tree)"
 arch=('x86_64')
 url="https://github.com/ales-drnz/vocem-overlay"
@@ -28,6 +32,9 @@ depends=(
     'qt6-declarative'
     'curl'
     'hicolor-icon-theme'
+    # The settings window resolves a font family to the files the overlay opens:
+    # a game may not ask fontconfig anything, so the window has to hand it paths.
+    'fontconfig'
     # The 32-bit half is not optional: a Windows game under Proton is often a
     # 32-bit binary, and this package installs libraries under /usr/lib32 that the
     # session preloads into every one of them. Without these they fail to load --

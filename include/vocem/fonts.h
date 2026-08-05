@@ -71,14 +71,36 @@ inline uint32_t sizing_height(uint32_t display_height, uint32_t drawable_height)
 // make the panel larger, and vice versa.
 float ui_scale();
 
-// Rebuilds the atlas when the requested size differs from the current one, or
-// when fonts_note_emoji() has seen a colour emoji the atlas does not carry yet.
-// Returns true when it did, in which case the caller must recreate its backend's
-// font texture -- the old one no longer matches the atlas.
+// Rebuilds the atlas when the requested size differs from the current one, when
+// the chosen typeface has changed, or when fonts_note_emoji() has seen a colour
+// emoji the atlas does not carry yet. Returns true when it did, in which case
+// the caller must recreate its backend's font texture -- the old one no longer
+// matches the atlas.
 //
-// Must be called from the post-present phase: it allocates, rasterises, reads
-// the emoji bank, and the texture upload that follows it blocks.
-bool ensure_fonts(float pixel_size, float reference);
+// `body_path` and `strong_path` are the files the user chose (Config's
+// font_path / font_path_strong), or null for the carried Inter. They are
+// compared as well as the size, because a font changed in the settings has to
+// reach the game the way a resolution change does -- and a dead band that
+// remembers only the size would hold the old typeface until the display moved
+// (entry 37's shape, one field further along).
+//
+// The chosen file is read here, which is why this belongs where it already was:
+// the post-present phase, where allocating, rasterising and reading are allowed.
+// Never inside a present.
+//
+// A path is a line in a text file, so the bytes behind it are treated as input:
+// the header is checked before the rasteriser sees them (stb_truetype does not
+// check its own, and a file that is not a font used to crash the game -- entry
+// 92), and if the rasteriser then refuses them the atlas is built again from the
+// carried Inter. Either way this returns true and the reason is readable below.
+bool ensure_fonts(float pixel_size, float reference, const char* body_path = nullptr,
+                  const char* strong_path = nullptr);
+
+// Why the overlay is not drawing in the font that was asked for, or nullptr
+// while there is nothing to say. Same contract as fonts_emoji_status(): a
+// literal, so "once" is a pointer comparison, and both injected paths log it.
+// A font that quietly does not load is a setting that quietly does nothing.
+const char* fonts_font_status();
 
 // Tells the atlas which colour emoji the frame's text needs. Walks the string,
 // remembers the codepoints the bank carries (vocem/emoji_bank.h), and the next
