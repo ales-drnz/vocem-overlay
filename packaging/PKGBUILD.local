@@ -65,8 +65,27 @@ _root="$startdir/.."
 
 build() {
     # 64-bit: everything, with automatic coverage enabled as in a real install.
+    # CMAKE_BUILD_TYPE=None, and NDEBUG put back by hand.
+    #
+    # A build type appends its own flags AFTER $CXXFLAGS, so it decides the
+    # optimisation level whatever the machine's makepkg.conf asked for: measured
+    # here, RelWithDebInfo's -O2 landed after this machine's -O3 and won. The
+    # Arch CMake guidelines call that out and name None as the type that appends
+    # nothing -- and it has to be passed explicitly, because CMakeLists.txt
+    # forces RelWithDebInfo when it is left unset, which is the very case those
+    # guidelines warn about.
+    #
+    # NDEBUG is not part of that trade and is added back on its own. It is what
+    # compiles out assert(), and ImGui's IM_ASSERT *is* assert() (imgui.h:91):
+    # 387 of them across the two ImGui units that go into the injected
+    # libraries, every one an abort() in somebody's game if it ever fires.
+    # Rule 7 says a game must never lose its stability to this overlay, so the
+    # asserts stay compiled out no matter what build type is in use. It also
+    # answers the caveat the same guidelines attach to None -- the $srcdir
+    # references they warn about are "caused by the missing NDEBUG definition".
     cmake -S "$_root" -B "$srcdir/build" -G Ninja \
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_BUILD_TYPE=None \
+        -DCMAKE_CXX_FLAGS="$CXXFLAGS -DNDEBUG" \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DVOCEM_ENABLE_BY_DEFAULT=ON \
         -DVOCEM_BUILD_TESTS=OFF
@@ -93,11 +112,11 @@ build() {
     # of every 64-bit process in the session. The flatpak manifest has always
     # said its libdir outright for the same reason; so does this now.
     cmake -S "$_root" -B "$srcdir/build32" -G Ninja \
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_BUILD_TYPE=None \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DVOCEM_BUILD_HOST_TOOLS=OFF \
         -DVOCEM_ENABLE_BY_DEFAULT=ON \
-        -DCMAKE_CXX_FLAGS="$CXXFLAGS -m32" \
+        -DCMAKE_CXX_FLAGS="$CXXFLAGS -DNDEBUG -m32" \
         -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS -m32" \
         -DCMAKE_INSTALL_LIBDIR=lib32 \
         -DVOCEM_LIBDIR_OVERRIDDEN=ON
