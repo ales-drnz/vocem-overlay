@@ -35,14 +35,37 @@ Then, from the top of the checkout, with the signing key and the project's own
 version:
 
 ```sh
-flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --subject="Vocem Overlay $(grep -m1 '^pkgver=' packaging/PKGBUILD | cut -d= -f2)" --body="Built from $(git rev-parse --short HEAD) of https://github.com/ales-drnz/vocem-overlay" --repo=/tmp/vocem-flatpak-repo /tmp/vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
+flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --subject="Vocem Overlay $(grep -m1 '^pkgver=' packaging/PKGBUILD | cut -d= -f2)" --body="Built from $(git rev-parse --short HEAD) of https://github.com/ales-drnz/vocem-overlay" --repo=vocem-flatpak-repo vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
 ```
+
+**The build directory and the repository are beside the manifest, not under
+`/tmp`, and that is load-bearing twice over.** This command named `/tmp` paths
+until 0.1.3, and neither of the two faults that caused was visible in its
+output:
+
+* `flatpak run` gives the application its own `/tmp`. `--filesystem=host`,
+  which `org.flatpak.Builder` already carries, does not cover it -- measured:
+  from inside the sandbox `/tmp` is empty and the host's directory of the same
+  name is not there. So the exported repository would have been written into a
+  tmpfs that is discarded when the builder exits.
+* flatpak-builder refuses outright when its state directory and the target
+  directory are on different filesystems, which they were: `.flatpak-builder`
+  sits beside the manifest on the disk, `/tmp` here is tmpfs. That refusal is
+  what actually happened, and it is the lucky half -- it stops the command
+  before the first fault can lose anything.
+
+Keeping all three in the checkout answers both at once: one filesystem, one
+`--filesystem="$PWD"`, no `--state-dir`, and nothing left in a directory the
+machine empties overnight. `.gitignore` carries all three. The move was checked
+rather than assumed: the repository it exports has the same `ContentChecksum`
+as the one built the old way, so what changed is where the work happens and not
+what ships.
 
 `--subject` is not decoration. The branch is `25.08`, which says which runtime
 the extension fits and nothing about what is in it, so without a subject
 `flatpak info` reads "Export org.freedesktop.Platform.VulkanLayer.VocemOverlay"
 and a user has no way to tell whether the fix a release announced is in the
-copy they have. With it, `flatpak info` says `Vocem Overlay 0.1.2`.
+copy they have. With it, `flatpak info` says `Vocem Overlay 0.1.3`.
 
 The i386 half is cross-compiled by the second module. It cannot be built on the
 host instead: the layer must match the runtime's ABI, and a library built
@@ -51,12 +74,24 @@ against the host's glibc will not load inside the runtime.
 ## Publish
 
 ```sh
-flatpak build-update-repo --generate-static-deltas --prune --gpg-sign=FA67BB03AECF6941 /tmp/vocem-flatpak-repo
+flatpak build-update-repo --generate-static-deltas --prune --gpg-sign=FA67BB03AECF6941 vocem-flatpak-repo
 ```
 
 About 7 MB. The `gh-pages` branch carries `repo/`, `vocem-overlay-layer.flatpakref`
 and `index.html`, and is force-pushed whole at each release so it never
 accumulates old objects.
+
+`--generate-static-deltas` earns its place, and not the way it looks. Because
+the repository is built from scratch every release, it never contains the
+commit a user already has, so their history is *unrelated* in OSTree's sense --
+and the from-empty ("scratch") delta is exactly what OSTree documents for that
+case: one file instead of the several dozen object requests archive-z2 would
+otherwise cost over HTTP. Measured at 0.1.3: 6 766 555 bytes in the from-empty
+delta. What is NOT here is a small incremental delta between releases; that
+would need the previous release's commit to still be in the repository, which
+is a different arrangement from the one the Flatpak documentation shows and
+would buy a few megabytes once per release. Leave `--prune-depth` alone: at 0
+it drops the parent commit, which removes the only incremental delta there is.
 
 **Sign it.** Without a `GPGKey` field in the `.flatpakref`, Flatpak marks the
 remote it creates `no-gpg-verify` and says nothing about it. The public half of

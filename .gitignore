@@ -38,3 +38,9 @@ PROMPT-*.md
 
 # flatpak-builder leaves its cache and its build trees beside the manifest.
 .flatpak-builder/
+# And the release build keeps its build directory and its exported repository
+# there too, deliberately: all three have to be on one filesystem, and /tmp on
+# this machine is a tmpfs the builder's sandbox does not even share. See
+# flatpak/README.md.
+vocem-flatpak-build/
+vocem-flatpak-repo/
