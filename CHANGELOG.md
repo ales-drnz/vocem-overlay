@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Fixed
+
+- The 32-bit libraries are built with the same hardening as the 64-bit ones. They had been built without `_FORTIFY_SOURCE` and without full RELRO since the first release, because the packaging replaced the compiler and linker flags it should have added to — and those are the libraries preloaded into every 32-bit process of the session.
+
 ## [0.1.3] - 5-08-2026
 
 ### Added
