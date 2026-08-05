@@ -256,14 +256,11 @@ int main() {
 
     // The message box, at the defaults. Unlike the panel it draws its surface
     // out of the box -- a message is read once, at a glance -- so its floor is a
-    // promise of the defaults themselves. The body is white now, a part in 255
-    // under the title's white: at a real display's scale the old idle grey
-    // rendered under half the title's pixel coverage on the dark box (measured
-    // by the backend, decided by the owner), so the title/body hierarchy is
-    // carried by the font weight -- the title is drawn in the heavier Inter,
-    // common/src/panel.cpp -- which a colour measurement cannot see. What colour
-    // can still promise, and this holds: the floor on both, and a body that
-    // never reads more strongly than the sender.
+    // promise of the defaults themselves. The body is the palette's idle grey
+    // again (theme.h says why it stopped being white), so the sender and what
+    // the sender said are two colours as well as two weights. Three things are
+    // held here: the floor on both, and a body that never reads more strongly
+    // than the sender -- which is the property the grey exists for.
     {
         Config config;
         const Theme theme = theme_for(config);

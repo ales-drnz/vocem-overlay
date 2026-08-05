@@ -17,6 +17,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <string>
+
 #include "texture_cache.h"
 #include "vocem/live_config.h"
 #include "vocem/note.h"
@@ -92,9 +94,18 @@ private:
     // The font_size setting the atlas should be laid out against, recorded
     // beside the size for the same reason: draw() may not rebuild.
     float wanted_reference_ = 16.0f;
+    // And the files it should be built from, copied here for the same reason
+    // again: process_uploads() runs after the present, and the settings it
+    // reads must be the ones the frame was laid out against. Copies rather than
+    // pointers into the live config, which reparses on its own tick.
+    std::string wanted_font_path_;
+    std::string wanted_font_path_strong_;
     // The last colour-emoji status this renderer logged. A literal's address, so
     // the comparison is the "say it once" and a change says it again.
     const char* emoji_status_said_ = nullptr;
+    // The same, for the typeface: a font that would not load falls back to the
+    // carried Inter, which is indistinguishable from a setting nobody applied.
+    const char* font_status_said_ = nullptr;
     TextureCache textures_;
     LiveConfig config_;
     // The message's words: which toast draw() wants them for, the reader that

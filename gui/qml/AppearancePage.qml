@@ -15,8 +15,8 @@ import Vocem
 ScrollablePage {
     id: root
 
-    settings: ["panelColour", "opacity", "speakingColour", "textIdleColour",
-               "textSpeakingColour", "fontSize", "avatarSize", "textShadow",
+    settings: ["panelLayout", "panelColour", "opacity", "speakingColour", "textIdleColour",
+               "textSpeakingColour", "fontFamily", "fontSize", "avatarSize", "textShadow",
                "showChannelName", "notificationColour", "notificationOpacity",
                "notificationTextColour"]
     title: qsTr("Appearance")
@@ -136,6 +136,12 @@ ScrollablePage {
                             // through, so the previews follow the other controls
                             // live.
                             readonly property QtObject presetConfig: QtObject {
+                                // Everything but the preset's own two writes
+                                // passes through, the layout included: a chip
+                                // that drew a column while the panel is a row
+                                // would be showing a surface on a shape the
+                                // user does not have.
+                                readonly property int panelLayout: root.config.panelLayout
                                 readonly property real fontSize: root.config.fontSize
                                 readonly property real rowSpacing: root.config.rowSpacing
                                 readonly property real boxPaddingX: root.config.boxPaddingX
@@ -255,6 +261,24 @@ ScrollablePage {
             }
         }
 
+        // Which way the people run. First on the card, above the colours,
+        // because it decides the panel's shape and every preview on this page
+        // follows it -- and a ComboBox rather than two radio buttons: the KDE
+        // guidelines keep radios for a set worth seeing at once, and these two
+        // are one question with one answer, shown by the previews beside it.
+        SettingRow {
+            label: qsTr("Layout")
+            description: qsTr("Which way the participants are listed.")
+
+            ComboBox {
+                objectName: "panelLayoutChoice"
+                model: [qsTr("Vertical"), qsTr("Horizontal")]
+                currentIndex: root.config.panelLayout
+                onActivated: root.config.panelLayout = currentIndex
+                Accessible.name: qsTr("Panel layout")
+            }
+        }
+
         SettingRow {
             label: qsTr("Colour")
             description: qsTr("Background of the voice panel.")
@@ -311,7 +335,7 @@ ScrollablePage {
         // the box changes where auto follows it.
         SettingRow {
             label: qsTr("Name colour")
-            description: qsTr("The colour of names when somebody is not speaking. Auto picks pale text on a dark box, and dark text on a pale one.")
+            description: qsTr("The colour of a name while its owner is silent. Auto follows the box.")
 
             ColourButton {
                 colour: root.config.effectiveTextIdleColour
@@ -340,7 +364,7 @@ ScrollablePage {
         // is dragged.
         SettingRow {
             label: qsTr("Text size")
-            description: qsTr("The height of one line of text. Pictures and rows grow with it. Padding and the distance from the edge do not. To scale everything at once, use Panel size.")
+            description: qsTr("The height of one line of text. Pictures and rows grow with it.")
 
             SpinRow {
                 accessibleName: qsTr("Text size")
@@ -348,6 +372,174 @@ ScrollablePage {
                 value: root.config.fontSize
                 defaultValue: root.config.defaultFontSize
                 onMoved: function(chosen) { root.config.fontSize = chosen; }
+            }
+        }
+
+        // The typeface. The list is what this machine has that the overlay can
+        // rasterise, with the carried Inter first: what the window offers is
+        // what the game can draw, which is why the list comes from fontconfig
+        // filtered to TrueType rather than from Qt's font database.
+        //
+        // A ComboBox with a long model rather than a font dialog: KDE's own
+        // font pickers are a dialog because they choose a size and a style as
+        // well, and both of those are settings of their own here.
+        SettingRow {
+            label: qsTr("Font")
+            description: qsTr("The typeface the overlay draws in.")
+
+            ComboBox {
+                id: fontChoice
+
+                objectName: "fontFamilyChoice"
+
+                // The built-in font is the empty string in the settings file;
+                // index 0 stands for it here.
+                readonly property var families: [""].concat(root.config.fontFamilies)
+
+                // Each name written in the font it names, in the list and in the
+                // box: a list of forty family names all set in the desktop's own
+                // font makes you apply one to find out what it looks like. The
+                // built-in entry is the exception -- Inter is what it says, and
+                // the window carries it, so it draws itself too.
+                //
+                // The carried face by name, not through overlayFont(): that
+                // function puts the *chosen* family at the head of its list, and
+                // QFont.family is the head of the list, so once a font was
+                // picked the row labelled "Built-in (Inter)" was drawn in the
+                // very face the user would be leaving -- a label saying one
+                // thing over letters saying another.
+                function familyFor(index) {
+                    return index === 0 ? root.config.builtInFontFamily : families[index];
+                }
+
+                model: families.map(function(name) {
+                    return name === "" ? qsTr("Built-in (Inter)") : name;
+                })
+
+                // How wide the list has to be, measured from the names rather
+                // than picked. Three ways to arrive at this were considered:
+                //
+                //   * Qt's own `implicitContentWidthPolicy: WidestText`, which
+                //     sizes the *box* and not the popup, is documented as
+                //     expensive on large models, and needs a TextInput content
+                //     item -- none of which fits a list of every family on the
+                //     machine;
+                //   * the recipe that circulates for popups, which loops over
+                //     `contentItem.children` -- in a recycling ListView those
+                //     are only the rows currently on screen, so the width would
+                //     change as you scroll;
+                //   * measuring the strings, which is what this does: one pass
+                //     of advanceWidth over the names with the *window's* font.
+                //
+                // The window's font and not each family's own, deliberately: a
+                // row is drawn in the face it names, but measuring two hundred
+                // families in their own faces means loading two hundred fonts to
+                // open a menu. Font pickers elsewhere settle this the same way --
+                // preview the name in its face, size the list once, elide what
+                // does not fit -- and the rows elide.
+                FontMetrics { id: nameMetrics }
+
+                readonly property real widestName: {
+                    let widest = 0;
+                    for (let i = 0; i < model.length; ++i) {
+                        widest = Math.max(widest, nameMetrics.advanceWidth(model[i]));
+                    }
+                    return widest;
+                }
+                currentIndex: Math.max(0, families.indexOf(root.config.fontFamily))
+                onActivated: root.config.fontFamily = families[currentIndex]
+                Accessible.name: qsTr("Overlay font")
+                font.family: familyFor(currentIndex)
+                // A machine's font list is long, and the box is beside a label
+                // rather than across the page.
+                implicitWidth: 220
+
+                delegate: ItemDelegate {
+                    required property var modelData
+                    required property int index
+
+                    // The bar's room comes out of the row, which is the only
+                    // place a ListView has to give it from: without this the
+                    // longest family names ran under the scrollbar.
+                    width: ListView.view ? ListView.view.width - fontList.barRoom
+                                         : implicitWidth
+                    text: modelData
+                    // A name drawn in its own face can be wider than the same
+                    // name measured in the window's, and the list is sized from
+                    // the second: what does not fit ends in an ellipsis rather
+                    // than under the scrollbar.
+                    contentItem: Label {
+                        text: parent.text
+                        font: parent.font
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    font.family: fontChoice.familyFor(index)
+                    // The size stays the window's: this shows which typeface a
+                    // name belongs to, not how large the overlay will draw it.
+                    font.pointSize: Qt.application.font.pointSize
+                    highlighted: fontChoice.highlightedIndex === index
+                }
+
+                // A list of every family on the machine is a long list -- two
+                // hundred rows here -- and the default popup grows with its
+                // contents, opens at the top of them whatever is chosen, and
+                // scrolls with a thin indicator that cannot be dragged. Written
+                // out: ten rows tall, wide enough for a family name, opening on
+                // the one that is set, with a real scrollbar that has room of
+                // its own beside the text. The delegates are recycled, which is
+                // what keeps each row's font from being loaded again every time
+                // it scrolls past.
+                popup: Popup {
+                    id: fontPopup
+
+                    // Never narrower than the box it hangs from, never wider
+                    // than half the window: the longest name on a machine is
+                    // nobody's business but that machine's, and a menu that
+                    // takes half the page to show one of them is worse than an
+                    // elided row. The paddings are the box's own -- same style,
+                    // same metrics -- and the bar's room is added because the
+                    // rows give it their own width.
+                    readonly property real wanted:
+                        fontChoice.widestName + fontChoice.leftPadding +
+                        fontChoice.rightPadding + fontList.barRoom
+                    readonly property real ceiling:
+                        fontChoice.Window.width > 0 ? fontChoice.Window.width * 0.5 : 480
+
+                    y: fontChoice.height
+                    width: Math.min(Math.max(fontChoice.width, wanted), ceiling)
+                    implicitHeight: Math.min(fontList.contentHeight + 2,
+                                             fontChoice.height * 10)
+                    padding: 1
+
+                    // Opened, not aboutToShow: at aboutToShow the popup is not
+                    // visible yet, so the list's model -- which is bound to that
+                    // visibility so two hundred rows are not instantiated while
+                    // the menu is shut -- is still null and there is nothing to
+                    // position. Measured: a Popup whose onAboutToShow asks for
+                    // its own `visible` gets false, and its ListView's count is
+                    // zero; at onOpened both are what they should be.
+                    onOpened: fontList.positionViewAtIndex(fontChoice.currentIndex,
+                                                           ListView.Center)
+
+                    contentItem: ListView {
+                        id: fontList
+
+                        readonly property real barRoom:
+                            fontBar.visible ? fontBar.width : 0
+
+                        clip: true
+                        model: fontChoice.popup.visible ? fontChoice.delegateModel : null
+                        currentIndex: fontChoice.highlightedIndex
+                        reuseItems: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        ScrollBar.vertical: ScrollBar {
+                            id: fontBar
+                            policy: ScrollBar.AlwaysOn
+                        }
+                    }
+                }
             }
         }
 
@@ -366,8 +558,14 @@ ScrollablePage {
         }
 
         SettingRow {
+            // One switch, both boxes: theme_for() reads text_shadow into
+            // panel_text_outline *and* toast_text_outline, so the sentence has
+            // to name the message as well. It used to say "the names", which was
+            // the panel's half of what the setting does -- and the half that
+            // matters least, now that the message background goes down to
+            // nothing and its words can end up on the bare game.
             label: qsTr("Text outline")
-            description: qsTr("A dark edge around the names. You cannot see it on a solid box, and it appears as soon as the background stops covering the text.")
+            description: qsTr("An edge around the overlay's text, in the panel and in messages, for wherever a box does not cover it.")
 
             CheckBox {
                 checked: root.config.textShadow
@@ -411,7 +609,7 @@ ScrollablePage {
 
         SettingRow {
             label: qsTr("Text colour")
-            description: qsTr("The colour of the message text. Auto follows the box. The sender's name stays bold either way.")
+            description: qsTr("The colour of the message itself. Auto follows the box.")
 
             ColourButton {
                 colour: root.config.effectiveNotificationTextColour
@@ -422,13 +620,20 @@ ScrollablePage {
             }
         }
 
+        // Down to nothing, like the panel's. The slider used to stop at 20%,
+        // which made the message box the one surface the overlay would not let
+        // you switch off; and as with the panel, the description says which of
+        // the two a background of zero is, because an empty box and a broken
+        // one look the same.
         SettingRow {
             label: qsTr("Opacity")
-            description: qsTr("How solid the message background is. A solid background is the easiest to read in a game.")
+            description: root.config.notificationBackgroundFaint
+                         ? qsTr("No background: message text only.")
+                         : qsTr("How solid the message background is.")
 
             SliderRow {
                 accessibleName: qsTr("Message opacity")
-                from: 20; to: 100; stepSize: 2
+                from: 0; to: 100; stepSize: 2
                 decimals: 0
                 suffix: "%"
                 value: Math.round(root.config.notificationOpacity * 100)

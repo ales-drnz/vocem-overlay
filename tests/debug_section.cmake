@@ -77,4 +77,26 @@ if(NOT dump MATCHES "\"item\": \"[^\"]*debugTabs[^\"]*\"[^\n]*\"visible\": true"
     message(FATAL_ERROR "the Debug section has no visible tab bar")
 endif()
 
+# The section carries the bottom bar every other page has, with the one action
+# it has to offer in it. Reset and Apply are not here -- there is nothing to
+# apply -- so the bar is earned by the action alone, which is the case
+# SectionPage did not have until the owner asked for this button.
+if(NOT dump MATCHES "\"item\": \"[^\"]*debugClear[^\"]*\"[^\n]*\"visible\": true")
+    message(FATAL_ERROR
+        "the Debug section has no Clear button in its bottom bar -- the page's "
+        "one action belongs where every other page keeps its actions")
+endif()
+
+# And the same sentence is not repeated once per crashed row. The dump carries
+# geometry, never text, so this half is read from the source, as the other
+# source-level rules in this suite are (one_dlsym_version, instant_switches).
+if(DEFINED QML_DIR)
+    file(READ "${QML_DIR}/DebugPage.qml" debug_page)
+    if(debug_page MATCHES "Ended without shutting down")
+        message(FATAL_ERROR
+            "every crashed row still explains what ending badly means -- the "
+            "'Ended Badly' section header says it once, for all of them")
+    endif()
+endif()
+
 message(STATUS "the crash is reported inside the Debug section, and only there")

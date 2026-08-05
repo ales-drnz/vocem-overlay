@@ -84,6 +84,9 @@ using PFN_glGetIntegerv = void (*)(GLenum, GLint*);
 using PFN_glPixelStorei = void (*)(GLenum, GLint);
 using PFN_glBindBuffer = void (*)(GLenum, GLuint);
 using PFN_glBindFramebuffer = void (*)(GLenum, GLuint);
+using PFN_glIsEnabled = unsigned char (*)(GLenum);
+using PFN_glEnable = void (*)(GLenum);
+using PFN_glDisable = void (*)(GLenum);
 using PFN_glGetString = const unsigned char* (*)(GLenum);
 
 bool debug_enabled() {
@@ -366,6 +369,57 @@ private:
     bool active_ = false;
 };
 
+// The application's sRGB-write state, switched off for the overlay's draw and
+// put back.
+//
+// With GL_FRAMEBUFFER_SRGB enabled and an sRGB-capable drawable, the hardware
+// applies linear->sRGB to whatever the fragment shader writes. ImGui's colours
+// are already sRGB, so they get encoded twice: measured on the Vulkan side,
+// where the same thing happens through the swapchain's format, the panel's own
+// 79,84,92 came back 151,155,162 -- a light grey where the theme asks for dark
+// slate. White and fully saturated colours are fixed points, which is why this
+// hides: the text looks right and the box does not.
+//
+// The Vulkan half answers this in the shader, because there the encoding is the
+// attachment's own property and cannot be switched off. Here it is a switch, so
+// it is switched -- and switched back, because it is the game's (rule 12).
+// ImGui's own GL backend does not touch it (0 occurrences in
+// imgui_impl_opengl3.cpp); MangoHud's fork of that backend saves, clears and
+// restores it in exactly this way, which is where the question came from.
+//
+// Desktop GL only. On OpenGL ES the enum is not core -- it arrives with
+// EXT_sRGB_write_control -- and asking for one that does not exist is a
+// GL_INVALID_ENUM in the game's error queue, which is the fault PixelStoreGuard
+// exists to avoid.
+class SrgbWriteGuard {
+public:
+    SrgbWriteGuard(PFN_glIsEnabled is_enabled, PFN_glEnable enable, PFN_glDisable disable, int es)
+        : enable_(enable) {
+        if (es != 0 || !is_enabled || !enable || !disable) {
+            return;
+        }
+        was_enabled_ = is_enabled(kFramebufferSrgb) != 0;
+        if (was_enabled_) {
+            disable(kFramebufferSrgb);
+        }
+    }
+
+    ~SrgbWriteGuard() {
+        if (was_enabled_ && enable_) {
+            enable_(kFramebufferSrgb);
+        }
+    }
+
+    SrgbWriteGuard(const SrgbWriteGuard&) = delete;
+    SrgbWriteGuard& operator=(const SrgbWriteGuard&) = delete;
+
+private:
+    static constexpr GLenum kFramebufferSrgb = 0x8DB9;
+
+    PFN_glEnable enable_ = nullptr;
+    bool was_enabled_ = false;
+};
+
 class GlAvatarProvider : public vocem::AvatarProvider {
 public:
     bool resolve(int es_version) {
@@ -383,6 +437,12 @@ public:
         // than an upload that reads wherever the game's state points.
         pixel_store_ = gl_symbol<PFN_glPixelStorei>("glPixelStorei");
         bind_buffer_ = gl_symbol<PFN_glBindBuffer>("glBindBuffer");
+        // Core since GL 1.0, and not part of `resolved_`: without them the
+        // overlay draws exactly as it did before SrgbWriteGuard existed, which
+        // is a wrong colour rather than a missing avatar.
+        is_enabled_ = gl_symbol<PFN_glIsEnabled>("glIsEnabled");
+        enable_ = gl_symbol<PFN_glEnable>("glEnable");
+        disable_ = gl_symbol<PFN_glDisable>("glDisable");
         resolved_ = gen_textures_ && bind_texture_ && tex_image_ && tex_parameter_ &&
                     get_integer_ && pixel_store_;
         if (!resolved_) {
@@ -395,6 +455,12 @@ public:
     // client-pointer path and with the same exposure.
     PixelStoreGuard pixel_store_guard() const {
         return PixelStoreGuard(get_integer_, pixel_store_, bind_buffer_, es_);
+    }
+
+    // For the overlay's own draw: the sRGB write state is the game's, and the
+    // overlay's colours are already encoded.
+    SrgbWriteGuard srgb_write_guard() const {
+        return SrgbWriteGuard(is_enabled_, enable_, disable_, es_);
     }
 
     // Called once per drawn frame, before the panel is built: the budget below is
@@ -532,6 +598,9 @@ public:
         get_integer_ = nullptr;
         pixel_store_ = nullptr;
         bind_buffer_ = nullptr;
+        is_enabled_ = nullptr;
+        enable_ = nullptr;
+        disable_ = nullptr;
     }
 
 private:
@@ -546,6 +615,9 @@ private:
     PFN_glGetIntegerv get_integer_ = nullptr;
     PFN_glPixelStorei pixel_store_ = nullptr;
     PFN_glBindBuffer bind_buffer_ = nullptr;
+    PFN_glIsEnabled is_enabled_ = nullptr;
+    PFN_glEnable enable_ = nullptr;
+    PFN_glDisable disable_ = nullptr;
     int es_ = 0;  // 0 desktop GL, otherwise the OpenGL ES major version
     std::unordered_map<vocem::AvatarKey, ImTextureID, vocem::AvatarKeyHash> textures_;
 
@@ -768,7 +840,8 @@ public:
                 vocem::font_pixel_size(
                     vocem::sizing_height(snapshot->display_height, height),
                     config.scale, config.font_size),
-                config.font_size)) {
+                config.font_size, config.font_path.c_str(),
+                config.font_path_strong.c_str())) {
             vocem::configure_style(config);
             ImGui_ImplOpenGL3_DestroyFontsTexture();
             ImGui_ImplOpenGL3_CreateFontsTexture();
@@ -783,6 +856,19 @@ public:
                 said = status;
                 if (status) {
                     VOCEM_GLOG("no colour emoji: %s", status);
+                }
+            }
+        }
+
+        // And why the text is not in the font the settings name, on the same
+        // terms: the overlay falls back to its own Inter, which looks like a
+        // setting that was never applied unless the log says otherwise.
+        {
+            static const char* said_font = nullptr;
+            if (const char* status = vocem::fonts_font_status(); status != said_font) {
+                said_font = status;
+                if (status) {
+                    VOCEM_GLOG("drawing in the built-in font: %s", status);
                 }
             }
         }
@@ -816,7 +902,15 @@ public:
             }
         }
 
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        {
+            // After the framebuffer is chosen and around the draw alone: the
+            // switch is per-draw state, and the uploads above are not affected
+            // by it. ImGui's own backend never looks at it, so the overlay's
+            // already-sRGB colours would be encoded a second time in every game
+            // that leaves it on (SrgbWriteGuard says what that measures).
+            const SrgbWriteGuard srgb = avatars_.srgb_write_guard();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        }
 
         if (retarget && previous_framebuffer != 0) {
             bind_framebuffer_(GL_FRAMEBUFFER, static_cast<GLuint>(previous_framebuffer));

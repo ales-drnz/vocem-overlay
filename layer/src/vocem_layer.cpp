@@ -109,8 +109,9 @@ struct DeviceDispatch {
     PFN_vkDestroyFence DestroyFence = nullptr;
     PFN_vkWaitForFences WaitForFences = nullptr;
     PFN_vkResetFences ResetFences = nullptr;
-    // For the HDR pipeline (hdr_pipeline.h): built once per swapchain whose
-    // colour space needs the overlay's colours re-encoded.
+    // For the converting pipeline (hdr_pipeline.h): built once per swapchain
+    // whose colour space -- or whose format -- needs the overlay's colours
+    // written in something other than what ImGui produces.
     PFN_vkCreateShaderModule CreateShaderModule = nullptr;
     PFN_vkDestroyShaderModule DestroyShaderModule = nullptr;
     PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout = nullptr;
@@ -561,12 +562,20 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateSwapchainKHR(VkDevice device,
         g_swapchains[*pSwapchain] = std::move(data);
     }
 
+    // Named rather than numbered, because "mode 3" in a log is a number the
+    // reader has to go and look up, and this line is what somebody reads when
+    // the panel's colours look wrong in their game.
+    const char* conversion = "";
+    switch (vocem::hdr_mode_for(pCreateInfo->imageColorSpace, pCreateInfo->imageFormat)) {
+        case 1: conversion = " (scRGB: colours re-encoded)"; break;
+        case 2: conversion = " (HDR10: colours re-encoded)"; break;
+        case 3: conversion = " (sRGB format: colours handed over linear)"; break;
+        default: break;
+    }
     VOCEM_LOG("swapchain created: %ux%u format %d colour space %d%s",
               pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height,
               static_cast<int>(pCreateInfo->imageFormat),
-              static_cast<int>(pCreateInfo->imageColorSpace),
-              vocem::hdr_mode_for(pCreateInfo->imageColorSpace) ? " (HDR: colours re-encoded)"
-                                                                : "");
+              static_cast<int>(pCreateInfo->imageColorSpace), conversion);
     return VK_SUCCESS;
 }
 
@@ -777,11 +786,13 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
         }
     }
 
-    // A colour space the stock pipeline would paint wrongly on gets the
-    // converting one (hdr_pipeline.h). Failure is not failure of the overlay:
-    // the stock pipeline still draws, with the colours DESIGN's open risk
-    // always said it would have, and the log says which happened.
-    if (const int mode = vocem::hdr_mode_for(sc.color_space)) {
+    // A swapchain the stock pipeline would paint wrongly on gets the converting
+    // one (hdr_pipeline.h) -- for its colour space, or for a format that
+    // carries the sRGB encoding itself, which is the ordinary case and not an
+    // HDR one. Failure is not failure of the overlay: the stock pipeline still
+    // draws, with the colours it drew with before this existed, and the log
+    // says which happened.
+    if (const int mode = vocem::hdr_mode_for(sc.color_space, sc.format)) {
         vocem::HdrDeviceFunctions fn;
         fn.CreateShaderModule = d.CreateShaderModule;
         fn.DestroyShaderModule = d.DestroyShaderModule;
@@ -793,11 +804,11 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
         fn.DestroyPipeline = d.DestroyPipeline;
         if (vocem::hdr_pipeline_create(fn, dev.device, sc.render_pass, mode,
                                        vocem::hdr_sdr_nits(), sc.hdr)) {
-            VOCEM_LOG("HDR pipeline ready (mode %d, SDR white %.0f nits)", mode,
+            VOCEM_LOG("colour pipeline ready (mode %d, SDR white %.0f nits)", mode,
                       vocem::hdr_sdr_nits());
-            vocem::journal_note("HDR pipeline ready");
+            vocem::journal_note("colour pipeline ready");
         } else {
-            VOCEM_LOG("HDR pipeline unavailable: drawing with unconverted colours");
+            VOCEM_LOG("colour pipeline unavailable: drawing with unconverted colours");
         }
     }
 

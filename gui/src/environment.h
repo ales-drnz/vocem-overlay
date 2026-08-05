@@ -31,11 +31,157 @@
 #include <QString>
 #include <QStringList>
 
+#include <fontconfig/fontconfig.h>
+
 #include <algorithm>
 
 #include "vocem/display.h"
 
 namespace vocem {
+
+// --- the machine's own fonts -------------------------------------------------
+//
+// The window resolves a family to files; the game only ever opens a path. That
+// split is deliberate and it is the whole reason this lives here: fontconfig is
+// a library, a cache, a configuration parse and a handful of file syscalls, and
+// none of that may happen inside somebody else's renderer -- while this process
+// already has Qt, which has fontconfig loaded before it draws its first label.
+//
+// Only TrueType outlines are offered, and the reason is narrower than it looks.
+// ImGui rasterises with stb_truetype, which *does* implement Type 2 charstrings
+// (imstb_truetype.h, stbtt__run_charstring) and so reads plain CFF OpenType --
+// but not CFF2, which is what a variable .otf carries: Cantarell-VF.otf was
+// measured producing an atlas of 0x0 pixels and no glyphs at all. The window
+// cannot tell those two apart without rasterising, and fontconfig's format
+// string can, so the filter is the conservative one: what is offered is what the
+// overlay is measured drawing. A family kept out this way is a family the user
+// cannot pick; a family let in wrongly is a setting that appears to do nothing.
+inline bool font_file_for(const QString& family, bool bold, QString* file) {
+    if (family.isEmpty() || !FcInit()) {
+        return false;
+    }
+    FcPattern* pattern = FcPatternCreate();
+    if (!pattern) {
+        return false;
+    }
+    FcPatternAddString(pattern, FC_FAMILY,
+                       reinterpret_cast<const FcChar8*>(family.toUtf8().constData()));
+    FcPatternAddInteger(pattern, FC_WEIGHT, bold ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR);
+    FcPatternAddString(pattern, FC_FONTFORMAT, reinterpret_cast<const FcChar8*>("TrueType"));
+    FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+
+    FcResult result = FcResultNoMatch;
+    FcPattern* match = FcFontMatch(nullptr, pattern, &result);
+    FcPatternDestroy(pattern);
+    if (!match || result != FcResultMatch) {
+        if (match) {
+            FcPatternDestroy(match);
+        }
+        return false;
+    }
+
+    // fontconfig always answers with its best match, so a family that is not
+    // installed comes back as whatever is: the answer is only accepted when it
+    // is the family that was asked for. Without this check, picking a font that
+    // has since been uninstalled would silently draw a different one.
+    //
+    // Every FC_FAMILY value, not the first: a pattern holds a list, one entry
+    // per name the face answers to, and nothing in fontconfig's documentation
+    // promises that index 0 of a *matched* pattern is the same string FcFontList
+    // reported for the same font. Asking all of them costs a loop over two or
+    // three strings and takes the promise out of it. (Measured on this machine
+    // before the change: all 267 offered families resolved through index 0
+    // alone, so this is a promise made rather than a defect fixed.)
+    FcChar8* matched_family = nullptr;
+    FcChar8* path = nullptr;
+    FcChar8* format = nullptr;
+    bool named = false;
+    for (int i = 0; FcPatternGetString(match, FC_FAMILY, i, &matched_family) == FcResultMatch;
+         ++i) {
+        if (QString::fromUtf8(reinterpret_cast<const char*>(matched_family))
+                .compare(family, Qt::CaseInsensitive) == 0) {
+            named = true;
+            break;
+        }
+    }
+    const bool filed = FcPatternGetString(match, FC_FILE, 0, &path) == FcResultMatch;
+    const bool formatted =
+        FcPatternGetString(match, FC_FONTFORMAT, 0, &format) == FcResultMatch;
+
+    // Which face inside the file, which the overlay has no way to ask for: it
+    // opens what is there and stb_truetype reads face 0. fontconfig packs two
+    // things into FC_INDEX -- the face number in the low half, the named
+    // instance of a variable font in the high half -- and only the low half is a
+    // difference the overlay would draw wrong. A collection whose second face
+    // carries the chosen family would come back as file X, face 1, and the game
+    // would draw face 0 of X: the window naming one family while the overlay
+    // draws another, which is the defect this whole resolution exists to avoid.
+    // Refused rather than shipped.
+    //
+    // A named instance is accepted, and what gets drawn is the file's default
+    // instance. Measured on this machine: of 534 resolutions (267 families,
+    // both weights) exactly one lands anywhere but face 0 -- Adwaita Sans bold,
+    // instance 7 of AdwaitaSans-Regular.ttf, which is why the bold of a variable
+    // family comes out at the regular weight and why the comment on
+    // ConfigBridge::setFontFamily says what it says.
+    int face = 0;
+    FcPatternGetInteger(match, FC_INDEX, 0, &face);
+    const bool whole_file = (face & 0xFFFF) == 0;
+
+    bool ok = false;
+    if (named && filed && formatted && whole_file &&
+        qstrcmp(reinterpret_cast<const char*>(format), "TrueType") == 0) {
+        *file = QString::fromUtf8(reinterpret_cast<const char*>(path));
+        ok = true;
+    }
+    FcPatternDestroy(match);
+    return ok;
+}
+
+// Every family with a TrueType face, sorted, once per run of the window.
+inline const QStringList& installed_font_families() {
+    static const QStringList families = [] {
+        QStringList found;
+        if (!FcInit()) {
+            return found;
+        }
+        FcPattern* pattern = FcPatternCreate();
+        FcObjectSet* wanted = FcObjectSetBuild(FC_FAMILY, static_cast<char*>(nullptr));
+        if (!pattern || !wanted) {
+            // One of the two may have been made: fontconfig's own objects are
+            // reference-counted and neither destroy accepts null, so each is
+            // asked for separately.
+            if (pattern) {
+                FcPatternDestroy(pattern);
+            }
+            if (wanted) {
+                FcObjectSetDestroy(wanted);
+            }
+            return found;
+        }
+        FcPatternAddString(pattern, FC_FONTFORMAT, reinterpret_cast<const FcChar8*>("TrueType"));
+        FcPatternAddBool(pattern, FC_OUTLINE, FcTrue);
+        FcFontSet* set = FcFontList(nullptr, pattern, wanted);
+        if (set) {
+            for (int i = 0; i < set->nfont; ++i) {
+                FcChar8* name = nullptr;
+                if (FcPatternGetString(set->fonts[i], FC_FAMILY, 0, &name) == FcResultMatch) {
+                    const QString family = QString::fromUtf8(reinterpret_cast<const char*>(name));
+                    if (!family.isEmpty() && !found.contains(family)) {
+                        found.append(family);
+                    }
+                }
+            }
+            FcFontSetDestroy(set);
+        }
+        FcObjectSetDestroy(wanted);
+        FcPatternDestroy(pattern);
+        found.sort(Qt::CaseInsensitive);
+        return found;
+    }();
+    return families;
+}
 
 // The overlay's typeface, registered once so the previews can draw with it.
 //
@@ -96,6 +242,31 @@ inline const OverlayFonts& overlay_fonts() {
     return fonts;
 }
 
+// The same measurement for a family the user chose. It cannot be the constant
+// it used to be: ascent-minus-descent against the em square is a property of
+// the file, so every preview drawn in somebody else's font would otherwise be
+// laid out against Inter's proportion and end up the wrong width -- which is
+// exactly the divergence this ratio exists to close. Cached per family, because
+// a QML binding asks for it on every evaluation.
+inline qreal overlay_font_ratio_for(const QString& family) {
+    if (family.isEmpty()) {
+        return overlay_fonts().ratio;
+    }
+    static QHash<QString, qreal> measured;
+    const auto found = measured.constFind(family);
+    if (found != measured.constEnd()) {
+        return found.value();
+    }
+    QFont font(family);
+    font.setPixelSize(1000);
+    font.setHintingPreference(QFont::PreferNoHinting);
+    const QFontMetricsF metrics(font);
+    const qreal extent = metrics.ascent() + metrics.descent();
+    const qreal ratio = extent > 1.0 ? 1000.0 / extent : overlay_fonts().ratio;
+    measured.insert(family, ratio);
+    return ratio;
+}
+
 // The first of these names the session's icon theme actually has, so a window
 // on a theme without Breeze's names is not left with holes in it. The last is
 // returned unconditionally, so the caller still gets a name to fall over on.
@@ -106,14 +277,6 @@ inline QString theme_icon(const QStringList& names) {
         }
     }
     return names.isEmpty() ? QString() : names.constLast();
-}
-
-// A generic person from the icon theme, for the previews. Which name a theme
-// carries differs between themes, so it is looked up rather than written down.
-inline QString generic_avatar() {
-    return QStringLiteral("image://icon/") +
-           theme_icon({QStringLiteral("user-identity"), QStringLiteral("avatar-default"),
-                 QStringLiteral("user")});
 }
 
 // The displays, as the maps depict them.

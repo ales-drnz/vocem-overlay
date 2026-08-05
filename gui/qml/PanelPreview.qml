@@ -41,7 +41,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
 import Vocem
 
 Rectangle {
@@ -59,8 +58,14 @@ Rectangle {
     // part of any row's own height: a row that carried it inside itself counted
     // it twice in the pitch, and a picture derived from line-plus-gap resized
     // with the spacing slider. panel.cpp works from the bare line for the same
-    // reasons, in the same words.
+    // reasons, in the same words. Sideways it is the same distance turned
+    // ninety degrees, which is what panel.cpp hands to SameLine.
     readonly property real rowGap: config.rowSpacing
+
+    // Which way the people advance. panel.cpp reads the same setting and calls
+    // it the same thing; everything else about a person -- the picture, the
+    // ring, the badge, the name beside it -- is identical in both.
+    readonly property bool horizontal: config.panelLayout === 1
     readonly property real paddingX: config.boxPaddingX
     readonly property real paddingY: config.boxPaddingY
     readonly property real avatarGap: config.avatarGap
@@ -72,7 +77,7 @@ Rectangle {
 
     Component.onCompleted: Theme.requireTokens(root.tokens, "PanelPreview", [
         "panelSurface", "separator", "textChannel", "textSpeaking", "textIdle",
-        "textMuted", "avatarPlaceholder", "avatarScrim", "speakingRing",
+        "textMuted", "avatarPlaceholder", "avatarMark", "avatarScrim", "speakingRing",
         "badgeFill", "badgeRim", "badgeGlyph", "textOutlineInk",
         "panelHairline",
         "boxRadius", "ringOffset", "ringWidthFactor", "ringAllowance",
@@ -226,166 +231,152 @@ Rectangle {
             }
         }
 
-        Repeater {
-            model: root.config.participants
+        // One container for both layouts: a grid of one column is the list this
+        // has always drawn, and a grid of one row is the same people advancing
+        // sideways. Two containers with the Repeater moved between them would be
+        // two places for a person's geometry to be described.
+        GridLayout {
+            id: people
 
-            Item {
-                id: person
+            columns: root.horizontal ? Math.max(1, root.config.participants.length) : 1
+            rowSpacing: root.rowGap
+            columnSpacing: root.rowGap
+            Layout.fillWidth: !root.horizontal
 
-                required property var modelData
+            Repeater {
+                model: root.config.participants
 
-                implicitWidth: root.pictureSize + root.avatarGap + label.implicitWidth
-                implicitHeight: root.rowSize
-                Layout.fillWidth: true
-                Layout.preferredHeight: root.rowSize
-
-                // The picture's box. The picture is centred in it and the ring and
-                // the badge live in the room around it, so nothing a row draws
-                // crosses into the padding or into the row below.
                 Item {
-                    id: picture
+                    id: person
 
-                    width: root.pictureSize
-                    height: root.rowSize
+                    required property var modelData
 
+                    implicitWidth: root.pictureSize + root.avatarGap + label.implicitWidth
+                    implicitHeight: root.rowSize
+                    // Upright, a row takes the width of the box so its name can
+                    // elide against the far padding; sideways, a person is
+                    // exactly as wide as they are, because that width is what
+                    // the next person starts after.
+                    Layout.fillWidth: !root.horizontal
+                    Layout.preferredHeight: root.rowSize
+
+                    // The picture's box. The picture is centred in it and the ring and
+                    // the badge live in the room around it, so nothing a row draws
+                    // crosses into the padding or into the row below.
                     Item {
-                        objectName: "avatar"
-                        anchors.centerIn: parent
-                        width: root.avatarDiameter
-                        height: root.avatarDiameter
+                        id: picture
 
-                        AvatarPlaceholder {
-                            anchors.fill: parent
-                            discColour: root.tokens.avatarPlaceholder
-                        }
+                        width: root.pictureSize
+                        height: root.rowSize
 
-                        Image {
-                            id: avatarImage
-                            anchors.fill: parent
-                            source: person.modelData.avatar
-                            visible: false
-                            asynchronous: true
-                            mipmap: true
-                            smooth: true
-                            fillMode: Image.PreserveAspectCrop
-                            sourceSize.width: 128
-                            sourceSize.height: 128
-                        }
-
-                        // Round pictures need a mask: clip() only ever clips to a
-                        // rectangle, rounded corners included. The mask is rendered
-                        // into its own layer with multisampling, and the effect is
-                        // given a soft threshold -- without both, the picture keeps
-                        // its square corners at the edge of the circle, which is
-                        // exactly what showed through the speaking ring.
-                        Rectangle {
-                            id: avatarMask
-                            anchors.fill: parent
-                            radius: width / 2
-                            visible: false
-                            antialiasing: true
-                            layer.enabled: true
-                            layer.smooth: true
-                            layer.samples: 4
-                        }
-
-                        MultiEffect {
-                            anchors.fill: parent
-                            source: avatarImage
-                            maskEnabled: true
-                            maskSource: avatarMask
-                            maskSpreadAtMin: 1.0
-                            maskThresholdMin: 0.5
-                            visible: person.modelData.avatar !== "" &&
-                                     avatarImage.status === Image.Ready
-                        }
-
-                        // Muted or deafened: the picture is dimmed and a badge names
-                        // which of the two, the same as in game.
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: width / 2
-                            antialiasing: true
-                            color: root.tokens.avatarScrim
-                            visible: root.config.showMutedState &&
-                                     (person.modelData.muted || person.modelData.deafened)
-                        }
-
-                        StateBadge {
-                            tokens: root.tokens
-                            visible: root.config.showMutedState &&
-                                     (person.modelData.muted || person.modelData.deafened)
-                            deafened: person.modelData.deafened
-                            diameter: parent.width * root.tokens.badgeRadiusFactor
-                            x: parent.width * root.tokens.badgeOffsetFactor - diameter / 2
-                            y: parent.height * root.tokens.badgeOffsetFactor - diameter / 2
-                        }
-
-                        // The ring, outside the picture rather than on its edge,
-                        // matching what the overlay draws: always there, clear
-                        // unless this person is speaking.
-                        Rectangle {
+                        Item {
+                            objectName: "avatar"
                             anchors.centerIn: parent
-                            width: parent.width + root.ringOffset * 2
-                            height: width
-                            radius: width / 2
-                            color: "transparent"
-                            antialiasing: true
-                            // 1/255 at rest, matching the overlay to the part:
-                            // ImGui culls alpha exactly 0, so the ring's resting
-                            // alpha is the smallest one it will actually draw.
-                            border.color: Qt.rgba(root.tokens.speakingRing.r,
-                                                  root.tokens.speakingRing.g,
-                                                  root.tokens.speakingRing.b,
-                                                  person.modelData.speaking ? 1.0 : 1 / 255)
-                            border.width: root.ringWidth
+                            width: root.avatarDiameter
+                            height: root.avatarDiameter
+
+                            AvatarPlaceholder {
+                                anchors.fill: parent
+                                discColour: root.tokens.avatarPlaceholder
+                                markColour: root.tokens.avatarMark
+                            }
+
+                            // No picture is loaded here, and there is no longer
+                            // any machinery to load one. The example roster has
+                            // no faces (the window has no Discord pictures to
+                            // show), so what stood here -- an Image of the
+                            // desktop's `user-identity` icon, masked to a circle
+                            // and drawn over the placeholder -- could only ever
+                            // put a second, different silhouette on top of the
+                            // first. That was the grey shadow under the figure.
+
+                            // Muted or deafened: the picture is dimmed and a badge names
+                            // which of the two, the same as in game.
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: width / 2
+                                antialiasing: true
+                                color: root.tokens.avatarScrim
+                                visible: root.config.showMutedState &&
+                                         (person.modelData.muted || person.modelData.deafened)
+                            }
+
+                            StateBadge {
+                                tokens: root.tokens
+                                visible: root.config.showMutedState &&
+                                         (person.modelData.muted || person.modelData.deafened)
+                                deafened: person.modelData.deafened
+                                diameter: parent.width * root.tokens.badgeRadiusFactor
+                                x: parent.width * root.tokens.badgeOffsetFactor - diameter / 2
+                                y: parent.height * root.tokens.badgeOffsetFactor - diameter / 2
+                            }
+
+                            // The ring, outside the picture rather than on its edge,
+                            // matching what the overlay draws: always there, clear
+                            // unless this person is speaking.
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: parent.width + root.ringOffset * 2
+                                height: width
+                                radius: width / 2
+                                color: "transparent"
+                                antialiasing: true
+                                // 1/255 at rest, matching the overlay to the part:
+                                // ImGui culls alpha exactly 0, so the ring's resting
+                                // alpha is the smallest one it will actually draw.
+                                border.color: Qt.rgba(root.tokens.speakingRing.r,
+                                                      root.tokens.speakingRing.g,
+                                                      root.tokens.speakingRing.b,
+                                                      person.modelData.speaking ? 1.0 : 1 / 255)
+                                border.width: root.ringWidth
+                            }
                         }
                     }
-                }
 
-                Label {
-                    id: label
-                    objectName: "name"
+                    Label {
+                        id: label
+                        objectName: "name"
 
-                    x: picture.width + root.avatarGap
-                    // panel.cpp centres the name against the picture rather than
-                    // leaving it where ImGui puts an item by default, which is the
-                    // top of the row and looked high beside a large avatar.
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Math.max(0, Math.min(label.implicitWidth,
-                                                person.width - picture.width - root.avatarGap))
-                    height: root.fontPixels
-                    verticalAlignment: Text.AlignVCenter
+                        x: picture.width + root.avatarGap
+                        // panel.cpp centres the name against the picture rather than
+                        // leaving it where ImGui puts an item by default, which is the
+                        // top of the row and looked high beside a large avatar.
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.max(0, Math.min(label.implicitWidth,
+                                                    person.width - picture.width - root.avatarGap))
+                        height: root.fontPixels
+                        verticalAlignment: Text.AlignVCenter
 
-                    text: person.modelData.name
-                    // The same three the overlay draws: whoever is speaking at
-                    // full strength, everybody else greyed, and a muted
-                    // participant dimmer still. panel.cpp is where the colours
-                    // are decided; these are the same numbers.
-                    color: ((person.modelData.muted || person.modelData.deafened) &&
-                            root.config.showMutedState)
-                           ? root.tokens.textMuted
-                           : person.modelData.speaking ? root.tokens.textSpeaking
-                                                       : root.tokens.textIdle
-                    font: root.config.overlayFont(root.textPixels * Theme.pointsPerPixel, false)
-                    elide: Text.ElideRight
+                        text: person.modelData.name
+                        // The same three the overlay draws: whoever is speaking at
+                        // full strength, everybody else greyed, and a muted
+                        // participant dimmer still. panel.cpp is where the colours
+                        // are decided; these are the same numbers.
+                        color: ((person.modelData.muted || person.modelData.deafened) &&
+                                root.config.showMutedState)
+                               ? root.tokens.textMuted
+                               : person.modelData.speaking ? root.tokens.textSpeaking
+                                                           : root.tokens.textIdle
+                        font: root.config.overlayFont(root.textPixels * Theme.pointsPerPixel, false)
+                        elide: Text.ElideRight
 
-                    Repeater {
-                        model: root.outlineStrength > 0.0 ? root.outlineOffsets : []
+                        Repeater {
+                            model: root.outlineStrength > 0.0 ? root.outlineOffsets : []
 
-                        Label {
-                            required property var modelData
-                            z: -1
-                            x: modelData[0]
-                            y: modelData[1]
-                            width: parent.width
-                            text: parent.text
-                            font: parent.font
-                            color: Qt.rgba(root.tokens.textOutlineInk.r,
-                                           root.tokens.textOutlineInk.g,
-                                           root.tokens.textOutlineInk.b, root.outlineStrength)
-                            verticalAlignment: parent.verticalAlignment
-                            elide: parent.elide
+                            Label {
+                                required property var modelData
+                                z: -1
+                                x: modelData[0]
+                                y: modelData[1]
+                                width: parent.width
+                                text: parent.text
+                                font: parent.font
+                                color: Qt.rgba(root.tokens.textOutlineInk.r,
+                                               root.tokens.textOutlineInk.g,
+                                               root.tokens.textOutlineInk.b, root.outlineStrength)
+                                verticalAlignment: parent.verticalAlignment
+                                elide: parent.elide
+                            }
                         }
                     }
                 }

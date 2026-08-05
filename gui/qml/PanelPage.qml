@@ -75,7 +75,7 @@ SectionPage {
 
             SettingRow {
                 label: qsTr("Distance from the edge")
-                description: qsTr("How close to the edge of the display the panel may sit. Messages have their own.")
+                description: qsTr("How close to the edge of the display the panel may sit.")
 
                 SliderRow {
                     accessibleName: qsTr("Distance from the edge")

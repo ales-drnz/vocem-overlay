@@ -90,6 +90,11 @@ private:
     Q_PROPERTY(QColor effectiveNotificationTextColour READ effectiveNotificationTextColour
                    NOTIFY configChanged)
     Q_PROPERTY(bool panelEnabled READ panelEnabled WRITE setPanelEnabled NOTIFY configChanged)
+    // 0 upright, 1 sideways -- the numbers Config keeps, so the page's combo box
+    // index and the setting are the same value and nothing translates between
+    // them. The word is only ever written to the file (Config::layout_text).
+    Q_PROPERTY(int panelLayout READ panelLayout WRITE setPanelLayout NOTIFY configChanged)
+    Q_PROPERTY(int defaultPanelLayout READ defaultPanelLayout CONSTANT)
     Q_PROPERTY(qreal notificationScale READ notificationScale WRITE setNotificationScale NOTIFY configChanged)
     Q_PROPERTY(qreal screenMargin READ screenMargin WRITE setScreenMargin NOTIFY configChanged)
     // The message's own distance from the edge: the panel's setting moved a box
@@ -104,6 +109,8 @@ private:
     // A legitimate setting, but the interface has to say so: an opacity that reached
     // zero by accident is indistinguishable from a broken overlay.
     Q_PROPERTY(bool backgroundFaint READ backgroundFaint NOTIFY configChanged)
+    Q_PROPERTY(bool notificationBackgroundFaint READ notificationBackgroundFaint
+                   NOTIFY configChanged)
     // What a reset goes back to, from the same defaults the overlay starts from
     // rather than from a number written twice. Every slider has one: the reset is
     // part of the row rather than something four of the six rows went without.
@@ -132,6 +139,19 @@ private:
     Q_PROPERTY(qreal avatarSize READ avatarSize WRITE setAvatarSize NOTIFY configChanged)
     Q_PROPERTY(qreal fontSize READ fontSize WRITE setFontSize NOTIFY configChanged)
     Q_PROPERTY(qreal defaultFontSize READ defaultFontSize CONSTANT)
+    // The typeface. Empty is the carried Inter, which is what the overlay drew
+    // before this existed and what it falls back to whenever the chosen file
+    // cannot be used. The list is what this machine has that the overlay can
+    // rasterise -- TrueType outlines only -- so the window never offers a font
+    // the game would refuse.
+    Q_PROPERTY(QString fontFamily READ fontFamily WRITE setFontFamily NOTIFY configChanged)
+    Q_PROPERTY(QString defaultFontFamily READ defaultFontFamily CONSTANT)
+    Q_PROPERTY(QStringList fontFamilies READ fontFamilies CONSTANT)
+    // The carried Inter, by the name Qt knows it under. Separate from
+    // overlayFont(): that one answers "what should this preview be drawn in",
+    // which starts with the chosen family, and the row that offers to go *back*
+    // to the built-in font has to be drawn in the built-in font.
+    Q_PROPERTY(QString builtInFontFamily READ builtInFontFamily CONSTANT)
     Q_PROPERTY(bool textShadow READ textShadow WRITE setTextShadow NOTIFY configChanged)
     Q_PROPERTY(bool defaultTextShadow READ defaultTextShadow CONSTANT)
     Q_PROPERTY(bool showChannelName READ showChannelName WRITE setShowChannelName NOTIFY configChanged)
@@ -300,7 +320,10 @@ private:
     // CJK punctuation from the two fonts merged beside it in the atlas, and
     // QFont::setFamilies is how Qt is told the same thing: in order, the first one
     // that has the character wins.
-    Q_PROPERTY(qreal overlayFontRatio READ overlayFontRatio CONSTANT)
+    // Follows the chosen family: it is a property of the font file, and the file
+    // is a setting now. CONSTANT here would have left every preview laying out
+    // somebody else's letters against Inter's proportion.
+    Q_PROPERTY(qreal overlayFontRatio READ overlayFontRatio NOTIFY configChanged)
 
 public:
     explicit ConfigBridge(QObject* parent = nullptr);
@@ -335,6 +358,8 @@ public:
     QColor effectiveTextSpeakingColour() const;
     QColor effectiveNotificationTextColour() const;
     bool panelEnabled() const { return config_.panel_enabled; }
+    int panelLayout() const { return config_.panel_layout; }
+    int defaultPanelLayout() const { return vocem::Config{}.panel_layout; }
     qreal notificationScale() const { return config_.notification_scale; }
     qreal screenMargin() const { return config_.screen_margin; }
     qreal notificationMargin() const { return config_.notification_margin; }
@@ -343,6 +368,9 @@ public:
     qreal avatarGap() const { return config_.avatar_gap; }
     qreal rowSpacing() const { return config_.row_spacing; }
     bool backgroundFaint() const { return config_.background_is_faint(); }
+    bool notificationBackgroundFaint() const {
+        return config_.notification_background_is_faint();
+    }
     qreal defaultOpacity() const { return vocem::Config{}.opacity; }
     qreal defaultScale() const { return vocem::Config{}.scale; }
     qreal defaultNotificationScale() const { return vocem::Config{}.notification_scale; }
@@ -370,6 +398,14 @@ public:
     qreal avatarSize() const { return config_.avatar_size; }
     qreal fontSize() const { return config_.font_size; }
     qreal defaultFontSize() const { return vocem::Config{}.font_size; }
+    QString fontFamily() const { return QString::fromStdString(config_.font_family); }
+    QString defaultFontFamily() const {
+        return QString::fromStdString(vocem::Config{}.font_family);
+    }
+    // Defined beside the rest of the machine-facing code in the .cpp: this
+    // header keeps the settings, and what fonts a machine has is not one.
+    QStringList fontFamilies() const;
+    QString builtInFontFamily() const;
     bool textShadow() const { return config_.text_shadow; }
     bool defaultTextShadow() const { return vocem::Config{}.text_shadow; }
     bool showChannelName() const { return config_.show_channel_name; }
@@ -426,6 +462,7 @@ public:
     void setTextSpeakingColour(const QString& value);
     void setNotificationTextColour(const QString& value);
     void setPanelEnabled(bool value);
+    void setPanelLayout(int value);
     void setNotificationScale(qreal value);
     void setScreenMargin(qreal value);
     void setNotificationMargin(qreal value);
@@ -435,6 +472,9 @@ public:
     void setRowSpacing(qreal value);
     void setAvatarSize(qreal value);
     void setFontSize(qreal value);
+    // Writes the family *and* the two files it resolves to: the game cannot ask
+    // fontconfig anything, so the window has to hand it paths.
+    void setFontFamily(const QString& value);
     void setTextShadow(bool value);
     void setShowChannelName(bool value);
     void setOnlySpeaking(bool value);
@@ -503,10 +543,6 @@ public:
     QString version() const { return QStringLiteral(VOCEM_VERSION); }
     bool vulkanLayerInstalled() const;
     bool openglPreloadActive() const;
-    // A generic person from the icon theme, for the previews. Which of the names
-    // a theme carries differs between themes, so the answer is looked up rather
-    // than written down, and what comes back is handed to image://icon/.
-    QString genericAvatar() const;
     // The first of these names the session's icon theme actually has, so a window
     // on Adwaita is not left with holes where Breeze's names were. The last is
     // returned unconditionally, so the caller still gets a name to fall over on.
@@ -528,6 +564,12 @@ public:
     Q_INVOKABLE void crashCopy(const QString& path) const;
     // Acknowledges one report: the journal is deleted, the list moves on.
     Q_INVOKABLE void crashDismiss(const QString& path);
+    // Empties the Sessions list: every journal it lists, crashed and clean
+    // alike, through the same guard one Dismiss goes through. Exactly what the
+    // page shows and nothing else -- a process that is still drawing keeps its
+    // running journal, because that file is the record of a session nobody has
+    // finished yet, and the daemon's journald lines are not ours to delete.
+    Q_INVOKABLE void clearJournals();
     Q_INVOKABLE void refreshDaemonLog();
 
 signals:

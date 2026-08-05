@@ -66,6 +66,11 @@ vocem::Config sample() {
     config.notification_opacity = 0.9f;
     config.show_channel_name = false;
     config.notification_corner = 2;
+    // The one setting written as a word rather than a number, which is exactly
+    // why it is here: a save() that printed the integer would still parse back
+    // (to_layout takes both), and only a round trip through the file catches a
+    // word that goes out and does not come home.
+    config.panel_layout = vocem::Config::kLayoutHorizontal;
     // Every spacing key, non-default for the same reason: these sat at their
     // defaults here for as long as the file has existed, so a spacing key that
     // fell out of save() would have read back as exactly the value expected.
@@ -104,6 +109,7 @@ void expect_sample(const vocem::Config& config, const char* context) {
     check_close(config.notification_opacity, 0.9f, "notification_opacity");
     check(!config.show_channel_name, "show_channel_name");
     check(config.notification_corner == 2, "notification_corner");
+    check(config.panel_layout == vocem::Config::kLayoutHorizontal, "panel_layout");
     check_close(config.screen_margin, 23.0f, "screen_margin");
     check_close(config.notification_margin, 41.0f, "notification_margin");
     check_close(config.box_padding_x, 7.0f, "box_padding_x");

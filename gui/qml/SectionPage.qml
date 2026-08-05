@@ -49,6 +49,8 @@ Item {
     // so it does not scroll with the content it acts on.
     property alias barContent: extras.data
 
+    readonly property bool hasSettings: settings.length > 0
+
     onAtDefaultsChanged: reset.sync()
 
     readonly property bool atDefaults: {
@@ -124,11 +126,19 @@ Item {
             id: bar
 
             objectName: "pageBar"
-            visible: root.settings.length > 0
+            // A page with settings gets Reset and Apply; a page with an action
+            // of its own gets the bar for that action alone. Debug is the second
+            // kind: it has nothing to apply and one thing to do -- empty the
+            // journals -- and an action that belongs to the whole page belongs
+            // where every other page's actions are, not in the scrolling content
+            // it acts on. Both halves are separate visibilities rather than one,
+            // so neither kind of page shows a button that would do nothing.
+            visible: root.hasSettings || extras.children.length > 0
             color: Theme.headerColour
             // Tight around the buttons: the bar is a frame for two controls, not a
             // band across the window, and it takes room from the page above it.
-            implicitHeight: apply.implicitHeight + Theme.smallSpacing * 2
+            implicitHeight: Math.max(apply.implicitHeight, extras.implicitHeight) +
+                            Theme.smallSpacing * 2
             Layout.fillWidth: true
 
             Rectangle {
@@ -156,6 +166,7 @@ Item {
                     id: reset
 
                     background: null
+                    visible: root.hasSettings
                     alignment: Qt.AlignLeft
                     standardButtons: DialogButtonBox.Reset
 
@@ -197,6 +208,7 @@ Item {
                     id: apply
 
                     background: null
+                    visible: root.hasSettings
                     alignment: Qt.AlignRight
                     standardButtons: DialogButtonBox.Apply
 

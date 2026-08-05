@@ -47,7 +47,7 @@ ScrollablePage {
 
         SettingRow {
             label: qsTr("Your voice state")
-            description: qsTr("Shows whether you are speaking, muted, deafened, in a channel and silent, or not in a channel. A glance at the panel tells you if you are still muted.")
+            description: qsTr("Speaking, muted, deafened, silent in a channel, or not in one.")
             first: true
 
             RadioButton {
@@ -61,7 +61,7 @@ ScrollablePage {
 
         SettingRow {
             label: qsTr("The application's icon")
-            description: qsTr("The same picture whatever is happening. Nobody can read your voice state over your shoulder, or on a stream.")
+            description: qsTr("The same picture whatever is happening. Your voice state stays private.")
 
             RadioButton {
                 objectName: "trayApplicationChoice"

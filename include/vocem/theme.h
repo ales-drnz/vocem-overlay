@@ -129,6 +129,26 @@ inline uint32_t step_off_taken(uint32_t rgb, const uint32_t* taken, int count) {
     return rgb;  // Unreachable: there are far fewer roles than blues.
 }
 
+// The mark on a placeholder disc, from the disc's own colour: carried most of
+// the way towards white on a dark disc, towards black on a pale one. Two
+// reasons it is a blend rather than plain white, both from the drawing: a stark
+// white silhouette is louder than a picture that has not arrived deserves to
+// be, and plain white is exactly `toast_title`, so anything that finds shapes
+// by colour would read the shoulders as part of the sender's name.
+//
+// Rec. 709 luma, the same weights the drawing used before this moved here.
+inline Colour avatar_mark_for(Colour disc) {
+    const float luminance = (0.2126f * static_cast<float>(disc.r) +
+                             0.7152f * static_cast<float>(disc.g) +
+                             0.0722f * static_cast<float>(disc.b)) / 255.0f;
+    const float towards = luminance < 0.5f ? 255.0f : 0.0f;
+    const auto blend = [towards](uint8_t channel) {
+        const float value = static_cast<float>(channel);
+        return static_cast<uint8_t>(value + (towards - value) * 0.45f + 0.5f);
+    };
+    return Colour{blend(disc.r), blend(disc.g), blend(disc.b), 255};
+}
+
 struct Theme {
     // --- the voice panel ---------------------------------------------------
     // The surface carries no alpha: transparency is the `opacity` setting, applied
@@ -180,6 +200,13 @@ struct Theme {
     // Not downloaded yet: a neutral disc keeps the layout stable so nothing jumps
     // when the image arrives.
     Colour avatar_placeholder;
+    // The head-and-shoulders mark drawn on that disc. A token rather than a
+    // blend written out where it is used: it was computed in
+    // common/src/panel.cpp and a second time, in JavaScript, in
+    // gui/qml/AvatarPlaceholder.qml -- two chances to disagree about a colour
+    // that identifies a shape to the geometry measurement, which is exactly the
+    // duplication this file exists to end.
+    Colour avatar_mark;
     // Laid over the picture of somebody muted or deafened. Dimming alone is
     // ambiguous, which is what the badge is for; dimming is what makes the badge
     // read as a state rather than as a sticker.
@@ -334,21 +361,26 @@ inline Theme theme_for(const Config& config) {
         theme.text_overflow = hex(0xb5bac0);
     }
 
+    // The sender and what the sender said are two roles, and they are told apart
+    // by colour again: each palette's body is that palette's own idle grey --
+    // the same grey the panel greys a name with -- under a title that keeps the
+    // full-strength ink. The body was white for a while (one part in 255 under
+    // the title, so the two were one colour to the eye), on the argument that
+    // the weight alone carried the hierarchy; the owner's answer, looking at it
+    // in a game, is that a message a shade quieter than the name above it is
+    // what a message is. The weight still carries its half: the title is drawn
+    // in the heavier Inter (panel.cpp), which no colour measurement can see.
+    //
+    // Both greys clear the 4.5:1 floor on their own default surface, which
+    // tests/theme_contrast.cpp asserts rather than trusts, and neither collides
+    // with another role in the toast's draw list (the panel's overflow grey,
+    // 0xb5bac0, is a part away and lives in the other window's list).
     if (light_toast) {
         theme.toast_title = hex(0x18191c);
-        theme.toast_body = hex(0x46484e);
+        theme.toast_body = hex(0x5a5c62);
     } else {
         theme.toast_title = hex(0xffffff);
-        // White, to the last usable part: the body was the panel's idle grey
-        // (0xb5bac1, 7.8:1 on the worst composite), and at a real display's scale
-        // the grey rendered under half the pixel coverage of the title on the
-        // dark box -- measured by the backend, decided by the owner. The
-        // title/body hierarchy is carried by the font weight (the title is drawn
-        // in the heavier Inter, panel.cpp), not by the colour step any more. Not
-        // 0xffffff: the title owns pure white in the same draw list, and the
-        // measurement tells shapes apart by colour -- the badge glyph's trade,
-        // one part in 255 on blue, invisible.
-        theme.toast_body = hex(0xfffffe);
+        theme.toast_body = hex(0xb5bac1);
     }
 
     // The toast's edge and accent, both premultiplied by the message box's own
@@ -365,6 +397,7 @@ inline Theme theme_for(const Config& config) {
 
     theme.text_outline_ink = light_panel ? hex(0xffffff) : hex(0x000000);
     theme.avatar_placeholder = hex(0x4f545c);
+    theme.avatar_mark = avatar_mark_for(theme.avatar_placeholder);
     theme.avatar_scrim = hex(0x000000, 110);
     theme.badge_fill = hex(0xf23f43);
     // The surface at full opacity, deliberately not at the panel's: the rim's job
@@ -413,28 +446,37 @@ inline Theme theme_for(const Config& config) {
     // colour is the user's own choice, like a pinned surface, and
     // tests/theme_contrast.cpp prints what an arbitrary choice measures rather
     // than promising a floor no palette can hold on it.
+    // The counts are taken from the arrays rather than written beside them: a
+    // role added to the list and not to the number would be a role a pinned
+    // colour is allowed to land on, silently.
     if (config.text_idle_colour != Config::kColourAuto) {
         const uint32_t taken[] = {
-            token_rgb(theme.avatar_placeholder), token_rgb(theme.badge_fill),
-            token_rgb(theme.text_channel),       token_rgb(theme.text_speaking),
-            token_rgb(theme.text_muted),         token_rgb(theme.separator),
-            token_rgb(theme.separator_accent),   token_rgb(theme.text_overflow),
-            token_rgb(theme.panel_hairline),     token_rgb(theme.badge_glyph)};
-        theme.text_idle = hex(step_off_taken(config.text_idle_colour, taken, 10));
+            token_rgb(theme.avatar_placeholder), token_rgb(theme.avatar_mark),
+            token_rgb(theme.badge_fill),         token_rgb(theme.text_channel),
+            token_rgb(theme.text_speaking),      token_rgb(theme.text_muted),
+            token_rgb(theme.separator),          token_rgb(theme.separator_accent),
+            token_rgb(theme.text_overflow),      token_rgb(theme.panel_hairline),
+            token_rgb(theme.badge_glyph)};
+        theme.text_idle =
+            hex(step_off_taken(config.text_idle_colour, taken, sizeof(taken) / sizeof(taken[0])));
     }
     if (config.text_speaking_colour != Config::kColourAuto) {
         const uint32_t taken[] = {
-            token_rgb(theme.avatar_placeholder), token_rgb(theme.badge_fill),
-            token_rgb(theme.text_channel),       token_rgb(theme.text_idle),
-            token_rgb(theme.text_muted),         token_rgb(theme.separator),
-            token_rgb(theme.separator_accent),   token_rgb(theme.text_overflow),
-            token_rgb(theme.panel_hairline),     token_rgb(theme.badge_glyph)};
-        theme.text_speaking = hex(step_off_taken(config.text_speaking_colour, taken, 10));
+            token_rgb(theme.avatar_placeholder), token_rgb(theme.avatar_mark),
+            token_rgb(theme.badge_fill),         token_rgb(theme.text_channel),
+            token_rgb(theme.text_idle),          token_rgb(theme.text_muted),
+            token_rgb(theme.separator),          token_rgb(theme.separator_accent),
+            token_rgb(theme.text_overflow),      token_rgb(theme.panel_hairline),
+            token_rgb(theme.badge_glyph)};
+        theme.text_speaking = hex(
+            step_off_taken(config.text_speaking_colour, taken, sizeof(taken) / sizeof(taken[0])));
     }
     if (config.notification_text_colour != Config::kColourAuto) {
-        const uint32_t taken[] = {token_rgb(theme.avatar_placeholder), token_rgb(theme.toast_title),
+        const uint32_t taken[] = {token_rgb(theme.avatar_placeholder),
+                                  token_rgb(theme.avatar_mark), token_rgb(theme.toast_title),
                                   token_rgb(theme.toast_hairline), token_rgb(theme.toast_accent)};
-        theme.toast_body = hex(step_off_taken(config.notification_text_colour, taken, 4));
+        theme.toast_body = hex(step_off_taken(config.notification_text_colour, taken,
+                                              sizeof(taken) / sizeof(taken[0])));
     }
 
     return theme;

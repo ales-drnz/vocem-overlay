@@ -1,3 +1,21 @@
+## [0.1.3] - 5-08-2026
+
+### Added
+
+- The voice panel can be laid out horizontally, as a line of people along an edge of the screen instead of a column. It is a chip under Appearance, and every preview in the window follows it.
+- The overlay can draw in any TrueType font installed on the machine. The settings window lists what it finds and resolves the family to its regular and bold files; the overlay keeps its own Inter merged underneath for anything the chosen font does not carry, and falls back to it entirely, saying why in the log, whenever the file cannot be read or is not a font it can draw.
+
+### Fixed
+
+- The overlay's colours are right in games that render in sRGB. Where the game's framebuffer carries the sRGB encoding itself — a very common choice on both Vulkan and OpenGL — the overlay's colours were being encoded a second time, which left the panel a light grey instead of dark slate. White text and the speaking ring were unaffected, which is why it went unnoticed.
+- The previews draw the overlay's own placeholder for somebody with no picture. They used to draw the desktop's generic user icon on top of it, which put two different silhouettes in one circle.
+- The silhouette on a picture that has not arrived no longer has a dark rim under its shoulders. Where the shape met the edge of the disc, both were drawn with a soft edge and the game showed through between them.
+- The message box can be turned down to no background at all. Its opacity slider stopped at 20%, which made it the one surface in the overlay that could not be switched off.
+- A message's text is drawn in the panel's idle grey, so it can be told from the sender's name above it. The two had been a part in 255 apart, which is one colour to the eye.
+- The Debug section carries the bottom bar every other page has, with a Clear button that empties the overlay's own journals. The daemon's log is left alone: those lines belong to the system journal.
+- The list of past sessions scrolls, and no longer repeats the same sentence under every crashed one.
+- Several settings had descriptions two and three lines long. They say the same thing in one.
+
 ## [0.1.2] - 3-08-2026
 
 ### Fixed

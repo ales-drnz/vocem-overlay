@@ -21,18 +21,54 @@
 
 namespace vocem {
 
-// Which conversion a swapchain's colour space needs. 0 = none: draw with the
-// stock pipeline, which is every SDR space and every space this file does not
-// implement -- unconverted colours degrade the look, a wrong formula lies
-// about it. HLG in particular is recognised and left at 0 on purpose.
-inline int hdr_mode_for(VkColorSpaceKHR space) {
+// Whether a swapchain's *format* carries the sRGB encoding itself, in which
+// case the hardware applies linear->sRGB to whatever the shader writes and
+// ImGui's already-sRGB colours are encoded twice.
+//
+// The list is Vulkan's: every VK_FORMAT_* whose name ends in _SRGB that a
+// swapchain can plausibly be created with. The block-compressed sRGB formats
+// exist too and are not here -- an image no swapchain has ever been made of is
+// noise in a list somebody has to keep right.
+inline bool format_is_srgb(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_R8_SRGB:
+        case VK_FORMAT_R8G8_SRGB:
+        case VK_FORMAT_R8G8B8_SRGB:
+        case VK_FORMAT_B8G8R8_SRGB:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Which conversion a swapchain needs. 0 = none: draw with the stock pipeline,
+// which is every SDR space in a linear-numeric format and every space this file
+// does not implement -- unconverted colours degrade the look, a wrong formula
+// lies about it. HLG in particular is recognised and left at 0 on purpose.
+//
+// The colour space is asked first and the format second, because a colour space
+// this file implements always comes in a format that carries no encoding of its
+// own (an HDR10 swapchain is 10-bit or float, never *_SRGB): where both could
+// speak, the space is the one that describes what the display will do.
+//
+// Mode 3 is not an HDR mode and it is by far the most common answer: `*_SRGB`
+// is what a great many games ask their swapchain for, and until this was here
+// they all got a washed-out panel. It was found by reading MangoHud, which
+// answers the same question on the CPU by linearising its own style colours --
+// a cure that works for a HUD of text and rectangles and would leave our
+// avatars and colour emoji wrong, because those come out of a texture and never
+// touch a style colour.
+inline int hdr_mode_for(VkColorSpaceKHR space, VkFormat format = VK_FORMAT_UNDEFINED) {
     switch (space) {
         case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
             return 1;  // scRGB: linear, 1.0 = 80 nits
         case VK_COLOR_SPACE_HDR10_ST2084_EXT:
             return 2;  // HDR10: BT.2020 primaries, PQ transfer
         default:
-            return 0;
+            return format_is_srgb(format) ? 3 : 0;
     }
 }
 

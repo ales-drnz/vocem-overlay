@@ -261,6 +261,8 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
         sizing_height(snapshot.display_height, height), config.scale,
         config.font_size);
     wanted_reference_ = config.font_size;
+    wanted_font_path_ = config.font_path;
+    wanted_font_path_strong_ = config.font_path_strong;
     // Spacing is configurable, and it lives in the style rather than in the draw
     // calls, so the style has to follow an edited settings file even when the font
     // size has not moved.
@@ -325,7 +327,9 @@ void OverlayRenderer::process_uploads() {
     // here -- ImGui_ImplVulkan_CreateFontsTexture waits on the queue before
     // replacing the texture, which is legal after the present has returned and
     // would deadlock inside it.
-    if (wanted_font_size_ > 0.0f && ensure_fonts(wanted_font_size_, wanted_reference_)) {
+    if (wanted_font_size_ > 0.0f &&
+        ensure_fonts(wanted_font_size_, wanted_reference_, wanted_font_path_.c_str(),
+                     wanted_font_path_strong_.c_str())) {
         configure_style(config_.current());
         if (!ImGui_ImplVulkan_CreateFontsTexture()) {
             VOCEM_RLOG("font texture upload failed at %.1f px", wanted_font_size_);
@@ -340,6 +344,14 @@ void OverlayRenderer::process_uploads() {
         emoji_status_said_ = status;
         if (status) {
             VOCEM_RLOG("no colour emoji: %s", status);
+        }
+    }
+
+    // And why the text is not in the font the settings name.
+    if (const char* status = fonts_font_status(); status != font_status_said_) {
+        font_status_said_ = status;
+        if (status) {
+            VOCEM_RLOG("drawing in the built-in font: %s", status);
         }
     }
 

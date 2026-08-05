@@ -24,7 +24,7 @@ ScrollablePage {
 
         SettingRow {
             label: qsTr("Keep running when closed")
-            description: qsTr("Closing the window hides it behind the tray icon, and the overlay keeps running. Turn this off and closing quits the application, which takes the overlay out of every running game until you open it again.")
+            description: qsTr("Closing hides the window and the overlay keeps running. With this off, closing quits and the overlay leaves every game.")
             first: true
 
             CheckBox {
@@ -36,7 +36,7 @@ ScrollablePage {
 
         SettingRow {
             label: qsTr("Start at login")
-            description: qsTr("Starts hidden, with only the tray icon. The overlay does not need this at login, because the session starts the daemon on its own. It matters after you quit, when opening this application is what brings the overlay back.")
+            description: qsTr("Starts hidden, with only the tray icon. The overlay itself does not need this: the session starts it.")
 
             CheckBox {
                 checked: root.config.startAtLogin

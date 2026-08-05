@@ -15,7 +15,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
 import Vocem
 
 Rectangle {
@@ -49,7 +48,7 @@ Rectangle {
     readonly property var tokens: config.overlayTheme
 
     Component.onCompleted: Theme.requireTokens(root.tokens, "NotificationPreview", [
-        "toastSurface", "toastTitle", "toastBody", "avatarPlaceholder", "boxRadius",
+        "toastSurface", "toastTitle", "toastBody", "avatarPlaceholder", "avatarMark", "boxRadius",
         "toastHairline", "toastAccent", "toastAccentWidth",
         "textOutlineInk", "toastTextOutline",
     ])
@@ -129,41 +128,14 @@ Rectangle {
             AvatarPlaceholder {
                 anchors.fill: parent
                 discColour: root.tokens.avatarPlaceholder
+                markColour: root.tokens.avatarMark
             }
 
-            Image {
-                id: avatarImage
-                anchors.fill: parent
-                source: root.config.notificationPreview.avatar
-                visible: false
-                asynchronous: true
-                fillMode: Image.PreserveAspectCrop
-                sourceSize.width: 128
-                sourceSize.height: 128
-                mipmap: true
-                smooth: true
-            }
-
-            Rectangle {
-                id: avatarMask
-                anchors.fill: parent
-                radius: width / 2
-                visible: false
-                antialiasing: true
-                layer.enabled: true
-                layer.smooth: true
-                layer.samples: 4
-            }
-
-            MultiEffect {
-                anchors.fill: parent
-                source: avatarImage
-                maskEnabled: true
-                maskSource: avatarMask
-                maskSpreadAtMin: 1.0
-                maskThresholdMin: 0.5
-                visible: avatarImage.status === Image.Ready
-            }
+            // No picture, and no machinery to load one: the example carries no
+            // face, so what stood here -- the desktop's `user-identity` icon,
+            // masked to a circle and drawn over the placeholder -- could only
+            // put a second silhouette on top of the first. ConfigBridge's
+            // participants() says the rest.
         }
 
         ColumnLayout {

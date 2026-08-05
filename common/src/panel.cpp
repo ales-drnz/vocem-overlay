@@ -141,27 +141,16 @@ ImU32 col_scaled(Colour colour, float multiplier) {
 // as a path rather than clipped. ImGui clips to rectangles only, and a rectangle
 // clip would leave square corners exactly where the disc is roundest.
 void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius, Colour disc,
-                             float alpha) {
+                             Colour mark_colour, float alpha) {
     draw_list->AddCircleFilled(centre, radius, col_scaled(disc, alpha), 0);
     if (radius < 3.0f) {
         return;  // below this the mark is one pixel of mud
     }
 
-    // The mark is the disc's own colour carried most of the way towards white on a
-    // dark disc, or towards black on a light one. Two reasons it is a blend rather
-    // than plain white: a stark white silhouette is louder than a picture that has
-    // not arrived deserves to be, and plain white is exactly `toast_title`, so
-    // anything that finds shapes by colour reads the shoulders as part of the
-    // sender's name. tests/panel_geometry does, and said so.
-    const float luminance = (0.2126f * static_cast<float>(disc.r) +
-                             0.7152f * static_cast<float>(disc.g) +
-                             0.0722f * static_cast<float>(disc.b)) / 255.0f;
-    const float towards = luminance < 0.5f ? 255.0f : 0.0f;
-    const auto blend = [towards](uint8_t channel) {
-        const float value = static_cast<float>(channel);
-        return static_cast<uint8_t>(value + (towards - value) * 0.45f + 0.5f);
-    };
-    const ImU32 mark = IM_COL32(blend(disc.r), blend(disc.g), blend(disc.b), scaled(255, alpha));
+    // The mark's colour is a token now (theme.h, avatar_mark_for): it was blended
+    // here and again in the window's QML, and a colour this file draws a shape in
+    // is a colour the geometry measurement identifies that shape by.
+    const ImU32 mark = col_scaled(mark_colour, alpha);
 
     // The head.
     draw_list->AddCircleFilled(ImVec2(centre.x, centre.y - radius * 0.28f), radius * 0.28f, mark,
@@ -170,6 +159,16 @@ void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius,
     // The shoulders. A circle of radius 0.72r whose centre sits 0.87r below the
     // disc's crosses the disc at y = 0.712r, x = +-0.702r; the two arcs between
     // those points bound a convex lens, which is what ImGui can fill in one go.
+    //
+    // Which way round each arc runs is the whole shape -- ImGui walks an arc
+    // linearly from a_min to a_max (imgui_draw.cpp, _PathArcToN), so a pair
+    // handed over decreasing is traversed decreasing. Both pairs here increase
+    // and each passes the pole the lens needs: the shoulders' -2.92 -> -0.22
+    // through -pi/2, the top of that circle, and the disc's 0.79 -> 2.35 through
+    // +pi/2, its bottom. Measured rather than reasoned about, because the sign
+    // of atan2 for a point above the centre is exactly the sort of thing a
+    // reading gets backwards: tests/panel_geometry.cpp's placeholder_inside_disc
+    // holds the mark inside the picture at three avatar sizes.
     const float shoulder_radius = radius * 0.72f;
     const float shoulder_drop = radius * 0.87f;
     const float meet_y = radius * 0.712f;
@@ -178,7 +177,18 @@ void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius,
     const float from = std::atan2(meet_y - shoulder_drop, -meet_x);
     const float to = std::atan2(meet_y - shoulder_drop, meet_x);
     draw_list->PathArcTo(shoulder_centre, shoulder_radius, from, to, 24);
-    draw_list->PathArcTo(centre, radius, std::atan2(meet_y, meet_x),
+    // Half a pixel past the disc's edge, and that half pixel is the whole point.
+    // The lens's lower boundary IS the disc's edge, and two antialiased fills
+    // that share an edge do not add up to a solid one: ImGui fades each of them
+    // out across the same pixel, so where the shoulders meet the picture both
+    // coverages are partial and the game shows through between them. Measured on
+    // a captured frame (VOCEM_CAPTURE_FRAME, the column under the left shoulder):
+    // the pixel read 0x3e4953 against a 0x4f545c disc and a 0x192633 scene --
+    // darker than the disc it sits in, which is the dark rim under the figure
+    // the owner reported. Overlapping by half a device pixel puts the mark's own
+    // fade where the disc has already faded, which is what the disc's edge looks
+    // like everywhere else.
+    draw_list->PathArcTo(centre, radius + 0.5f, std::atan2(meet_y, meet_x),
                          std::atan2(meet_y, -meet_x), 24);
     draw_list->PathFillConvex(mark);
 }
@@ -399,15 +409,17 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     // than ours. Deciding here means the panel always ends on a whole row, says how
     // many people it left out, and does something the preview can reproduce.
     const ImGuiStyle& style = ImGui::GetStyle();
+    const bool horizontal = config.panel_layout == Config::kLayoutHorizontal;
+    // The distance between one person and the next. It is `row_spacing` in both
+    // layouts, because that is what the setting says it is: turned sideways, the
+    // gap between two rows of a list is the gap between two cells of a line.
+    // ItemSpacing.x is `avatar_gap` and stays what it is -- the distance from a
+    // picture to the name beside it -- which is why a horizontal panel asks for
+    // its spacing explicitly at the SameLine rather than through the style.
+    const float cell_gap = pixels(config.row_spacing * scale);
     const float channel_block =
         config.show_channel_name ? ImGui::GetTextLineHeight() + style.ItemSpacing.y * 2.0f : 0.0f;
-    const float room = static_cast<float>(height) - inset * 2.0f - style.WindowPadding.y * 2.0f -
-                       channel_block;
     const float pitch = row + style.ItemSpacing.y;
-    int rows_that_fit = pitch > 0.0f ? static_cast<int>((room + style.ItemSpacing.y) / pitch) : 1;
-    if (rows_that_fit < 1) {
-        rows_that_fit = 1;
-    }
 
     uint32_t wanted_rows = 0;
     for (uint32_t i = 0; i < snapshot.user_count; ++i) {
@@ -416,10 +428,81 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
         if (config.hide_self && (flags & kFlagSelf) != 0) continue;
         ++wanted_rows;
     }
-    // The line that says how many are missing takes a row of its own, so it is
-    // taken out of the budget rather than pushed off the bottom with them.
-    const bool truncated = static_cast<int>(wanted_rows) > rows_that_fit;
-    const int row_budget = truncated ? (rows_that_fit > 1 ? rows_that_fit - 1 : 1) : rows_that_fit;
+
+    // What the display can actually hold. Left to itself, ImGui clamps an
+    // auto-sized window to the viewport and clips whatever does not fit, which
+    // ends the panel on a face cut in half -- and at a size the configuration
+    // window has no way to predict, since the clamp is ImGui's rather than ours.
+    // Deciding here means the panel always ends on a whole person, says how many
+    // it left out, and does something the preview can reproduce.
+    //
+    // The two layouts run out of room in different directions: a column against
+    // the display's height, a row against its width. A column's people are all
+    // the same height, so its budget is one division; a row's are each as wide
+    // as their own name, so its budget is an accumulation.
+    bool truncated = false;
+    int row_budget = 0;
+    if (horizontal) {
+        const float room =
+            static_cast<float>(width) - inset * 2.0f - style.WindowPadding.x * 2.0f;
+        // The remark is measured at its widest plausible spelling rather than
+        // the exact one, which is not known until it is known how many are
+        // missing: two digits covers a channel of 24, which is all the snapshot
+        // can carry. Asserted rather than remembered -- a wider channel would
+        // leave the line reserving less room than the remark takes.
+        static_assert(kMaxUsers < 100, "the overflow remark is measured at two digits");
+        const float remark = cell_gap + ImGui::CalcTextSize("+99 more").x;
+        float used = 0.0f;
+        int fitted = 0;
+        for (uint32_t i = 0; i < snapshot.user_count; ++i) {
+            const User& user = snapshot.users[i];
+            if (config.only_speaking && (user.flags & kFlagSpeaking) == 0) continue;
+            if (config.hide_self && (user.flags & kFlagSelf) != 0) continue;
+            const float cell = picture + style.ItemSpacing.x + ImGui::CalcTextSize(user.name).x;
+            const float advance = (fitted == 0 ? 0.0f : cell_gap) + cell;
+            if (fitted > 0 && used + advance > room) {
+                break;
+            }
+            used += advance;
+            ++fitted;
+        }
+        truncated = fitted < static_cast<int>(wanted_rows);
+        // The remark takes the end of the line, so it is taken out of the budget
+        // rather than pushed off the edge with the people it is about. At least
+        // one person is always drawn: a panel of nothing but "+8 more" would say
+        // less than the panel it replaced.
+        while (truncated && fitted > 1 && used + remark > room) {
+            const User* last = nullptr;
+            int seen = 0;
+            for (uint32_t i = 0; i < snapshot.user_count; ++i) {
+                const User& user = snapshot.users[i];
+                if (config.only_speaking && (user.flags & kFlagSpeaking) == 0) continue;
+                if (config.hide_self && (user.flags & kFlagSelf) != 0) continue;
+                if (++seen == fitted) {
+                    last = &user;
+                    break;
+                }
+            }
+            if (!last) {
+                break;
+            }
+            used -= cell_gap + picture + style.ItemSpacing.x + ImGui::CalcTextSize(last->name).x;
+            --fitted;
+        }
+        row_budget = fitted > 0 ? fitted : 1;
+    } else {
+        const float room = static_cast<float>(height) - inset * 2.0f -
+                           style.WindowPadding.y * 2.0f - channel_block;
+        int rows_that_fit =
+            pitch > 0.0f ? static_cast<int>((room + style.ItemSpacing.y) / pitch) : 1;
+        if (rows_that_fit < 1) {
+            rows_that_fit = 1;
+        }
+        // The line that says how many are missing takes a row of its own, so it is
+        // taken out of the budget rather than pushed off the bottom with them.
+        truncated = static_cast<int>(wanted_rows) > rows_that_fit;
+        row_budget = truncated ? (rows_that_fit > 1 ? rows_that_fit - 1 : 1) : rows_that_fit;
+    }
 
     ImGui::SetNextWindowPos(position, ImGuiCond_Always);
     // No fixed width: with AlwaysAutoResize the box ends where its longest name
@@ -428,11 +511,17 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     // stops a pathological display name from crossing the screen, and never lets
     // the box be wider than the display itself: at three times the size on a small
     // output, 520 units is wider than the screen.
+    //
+    // A horizontal panel is as wide as the people in it, so the 520-unit cap is
+    // not its cap: what stops it is the display, which is also what its own
+    // budget above counted against. Capping it at 520 would have cut the line
+    // off at the third person and left the box claiming there was no room.
     const float widest_panel = static_cast<float>(width) - inset * 2.0f;
-    const float panel_limit = 520.0f * scale < widest_panel ? 520.0f * scale
-                                                            : (widest_panel > 80.0f * scale
-                                                                   ? widest_panel
-                                                                   : 80.0f * scale);
+    const float wanted_limit = horizontal ? widest_panel : 520.0f * scale;
+    const float panel_limit = wanted_limit < widest_panel ? wanted_limit
+                                                          : (widest_panel > 80.0f * scale
+                                                                 ? widest_panel
+                                                                 : 80.0f * scale);
     ImGui::SetNextWindowSizeConstraints(ImVec2(80.0f * scale, 0.0f),
                                         ImVec2(panel_limit, FLT_MAX));
 
@@ -530,6 +619,14 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                 continue;
             }
 
+            // Sideways, one person follows the last on the same line, at the
+            // distance the row spacing asks for. Upright, ImGui's own newline
+            // does it and ItemSpacing.y is that distance -- which is why this is
+            // the only line the two layouts do not share.
+            if (horizontal && drawn > 0) {
+                ImGui::SameLine(0.0f, cell_gap);
+            }
+
             const ImVec2 cursor = ImGui::GetCursorScreenPos();
             const ImVec2 centre(cursor.x + picture * 0.5f, cursor.y + row * 0.5f);
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -571,7 +668,7 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                 // picture at all. The placeholder holds the layout so nothing
                 // jumps when an image lands.
                 draw_avatar_placeholder(draw_list, centre, radius, theme.avatar_placeholder,
-                                        row_alpha);
+                                        theme.avatar_mark, row_alpha);
             }
             if (avatar) {
                 const uint8_t image_alpha = scaled(255, row_alpha * eased(motion.avatar_phase));
@@ -665,8 +762,17 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             char remainder[32];
             std::snprintf(remainder, sizeof(remainder), "+%d more",
                           static_cast<int>(wanted_rows) - drawn);
-            ImGui::Dummy(ImVec2(picture, 0.0f));
-            ImGui::SameLine();
+            if (horizontal) {
+                // At the end of the line, in line with the names it is about,
+                // rather than under a picture that is not there: sideways there
+                // is no column of pictures for it to align with.
+                ImGui::SameLine(0.0f, cell_gap);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                                     (row - ImGui::GetTextLineHeight()) * 0.5f);
+            } else {
+                ImGui::Dummy(ImVec2(picture, 0.0f));
+                ImGui::SameLine();
+            }
             text_outlined(theme, remainder, col(theme.text_overflow), outline, scale);
         }
         const ImVec2 size = ImGui::GetWindowSize();
@@ -869,7 +975,7 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
                                        avatar_radius);
         } else {
             draw_avatar_placeholder(draw_list, centre, avatar_radius, theme.avatar_placeholder,
-                                    1.0f);
+                                    theme.avatar_mark, 1.0f);
         }
 
         // As in the panel: the picture's box is the picture, and the gap beside it
