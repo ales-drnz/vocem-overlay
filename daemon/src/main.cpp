@@ -838,7 +838,7 @@ int main() {
 
     while (!g_stop) {
         // No token is not an error: the daemon asks Discord for authorisation as
-        // soon as it is reachable, and until then it simply waits.
+        // soon as it is reachable, and until then it waits.
         const std::string token = force_authorise ? std::string() : vocem::load_token();
         if (token.empty() && !warned_about_token) {
             warned_about_token = true;

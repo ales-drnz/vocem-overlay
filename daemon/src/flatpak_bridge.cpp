@@ -437,7 +437,7 @@ void FlatpakBridge::publish(const SharedState& state) {
         // would hand every Flatpak application on the machine a way to kill it:
         // touching a mapping past a truncated file's end raises SIGBUS, and this
         // process holds the only Discord connection there is. pwrite into a
-        // short file simply lengthens it again.
+        // short file lengthens it again.
         //
         // The seqlock is the same one the segment has, spelled in four writes:
         // odd, the two runs of the struct that the sequence field divides, then
