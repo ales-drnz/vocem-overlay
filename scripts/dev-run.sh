@@ -9,8 +9,8 @@
 #   scripts/dev-run.sh vkcube
 #   scripts/dev-run.sh vkcube --c 240
 #
-# Note VK_ADD_IMPLICIT_LAYER_PATH rather than VK_ADD_LAYER_PATH: the latter is
-# only consulted for explicit layers, and ours is implicit by design.
+# VK_ADD_IMPLICIT_LAYER_PATH rather than VK_ADD_LAYER_PATH: the latter is only
+# consulted for explicit layers, and ours is implicit by design.
 
 set -eu
 

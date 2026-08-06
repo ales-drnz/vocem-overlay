@@ -21,8 +21,6 @@ add_library(vocem_vk SHARED
     "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
 )
 
-# 32-bit and 64-bit libraries coexist in the same directory, so the name carries
-# the architecture.
 # The library keeps one name for both architectures and is distinguished by its
 # directory; only the manifests need separate names, since they live together in
 # implicit_layer.d. The loader resolves a bare library name through the normal
