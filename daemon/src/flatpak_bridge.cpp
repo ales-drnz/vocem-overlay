@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "log.h"
+#include "vocem/apps.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/config.h"
 #include "vocem/flatpak.h"
@@ -92,27 +93,101 @@ bool write_at(int fd, const void* data, size_t length, off_t offset) {
     return true;
 }
 
-// Whether that sandbox is asking to be served, and whether its overlay is
-// actually drawing. The file is written by code inside a game, so it is read the
-// way anything from over there is read: bounded, and a line that is not there is
-// the safe answer rather than an error.
-bool read_request(int directory, bool& drawing) {
+}  // namespace
+
+// What the overlay inside a sandbox says about itself.
+struct FlatpakBridge::Request {
+    bool drawing = false;
+    // The record that sandbox cannot write where anybody can see it: its
+    // $XDG_CACHE_HOME is its own. Empty name means it has not said yet -- the
+    // request exists from the moment the bridge is entered, and the record is
+    // written a frame later.
+    std::string name;
+    std::string executable;
+    std::string api;
+    std::string why;
+    bool game = false;
+};
+
+namespace {
+
+// One line's value, or an empty string. Lines are `key=value`, and a key that is
+// not there is the safe answer rather than an error.
+std::string request_field(const char* body, const char* key) {
+    const size_t length = std::strlen(key);
+    for (const char* at = body; at && *at;) {
+        const char* end = std::strchr(at, '\n');
+        const size_t line = end ? static_cast<size_t>(end - at) : std::strlen(at);
+        if (line > length && std::strncmp(at, key, length) == 0 && at[length] == '=') {
+            return std::string(at + length + 1, line - length - 1);
+        }
+        at = end ? end + 1 : nullptr;
+    }
+    return {};
+}
+
+}  // namespace
+
+// Whether that sandbox is asking to be served, what its overlay is doing, and
+// what it decided about the application. The file is written by code inside a
+// game, so it is read the way anything from over there is read: bounded, and
+// every field held to what it can legitimately be before it is believed. This
+// process is not sandboxed and what it does with these values is create a file
+// named after one of them.
+bool FlatpakBridge::read_request(int directory, Request& request) {
     const int fd = open_regular(directory, kBridgeRequestName, O_RDONLY);
     if (fd < 0) {
         return false;
     }
-    char body[256];
+    char body[1536];
     const ssize_t got = ::read(fd, body, sizeof(body) - 1);
     ::close(fd);
-    drawing = false;
-    if (got > 0) {
-        body[got] = '\0';
-        if (const char* found = std::strstr(body, "drawing=")) {
-            drawing = found[8] == '1';
-        }
+    request = Request{};
+    if (got <= 0) {
+        return true;
     }
+    body[got] = '\0';
+    request.drawing = request_field(body, "drawing") == "1";
+
+    // A name is what /proc/self/comm gives, so at most fifteen characters, and
+    // the api is one of two words. Anything else is not a record this project
+    // wrote and is dropped whole rather than written down in part.
+    const std::string name = request_field(body, "name");
+    const std::string api = request_field(body, "api");
+    constexpr size_t comm_length = 15;
+    if (name.empty() || name.size() > comm_length || (api != "opengl" && api != "vulkan") ||
+        name.find('/') != std::string::npos || name.front() == '.') {
+        // A record is written under this name. `sanitised()` already makes it a
+        // file name that cannot leave its directory, so this is not the wall --
+        // it is the rule that a name from over there has to look like a name
+        // before anything is done with it at all.
+        return true;
+    }
+    const auto printable = [](const std::string& text, size_t limit) {
+        if (text.size() > limit) {
+            return false;
+        }
+        for (const char character : text) {
+            if (static_cast<unsigned char>(character) < 0x20) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const std::string executable = request_field(body, "exe");
+    const std::string why = request_field(body, "why");
+    if (!printable(name, comm_length) || !printable(executable, 512) || !printable(why, 256)) {
+        return true;
+    }
+    request.name = name;
+    request.executable = executable;
+    request.api = api;
+    request.why = why;
+    request.game = request_field(body, "game") == "1";
     return true;
 }
+
+namespace {
 
 bool copy_into(int directory, const char* source_path, const char* name) {
     std::FILE* source = std::fopen(source_path, "rb");
@@ -239,8 +314,8 @@ bool FlatpakBridge::adopt(const char* id) {
     if (directory < 0) {
         return false;
     }
-    bool drawing = false;
-    if (!read_request(directory, drawing)) {
+    Request request;
+    if (!read_request(directory, request)) {
         // The directory exists but nothing in that sandbox is asking to be
         // served -- or `request` is not a regular file, which is somebody being
         // clever rather than an overlay asking.
@@ -255,7 +330,7 @@ bool FlatpakBridge::adopt(const char* id) {
     Mirror mirror;
     mirror.id = id;
     mirror.directory = directory;
-    mirror.drawing = drawing;
+    mirror.drawing = request.drawing;
     mirror.state_file = open_regular(directory, kBridgeStateName, O_RDWR | O_CREAT);
     if (mirror.state_file < 0) {
         LOG("refusing the Flatpak bridge for %s: %s could not be opened as a regular file (%s)",
@@ -270,8 +345,34 @@ bool FlatpakBridge::adopt(const char* id) {
         return false;
     }
     LOG("serving the overlay inside the Flatpak sandbox of %s", id);
+    write_record_for(mirror, request);
     mirrors_.push_back(std::move(mirror));
     return true;
+}
+
+// The record of an application that cannot write its own where the window can
+// read it: inside a sandbox, $XDG_CACHE_HOME is the sandbox's. It is written here
+// instead, from what came across the bridge, and only when it changed -- this is
+// asked on every rescan tick.
+//
+// The entry the row's icon is looked up by is the daemon's own knowledge, not the
+// sandbox's word for it: the application id of the sandbox being served is the id
+// of the entry Flatpak exported on the host.
+void FlatpakBridge::write_record_for(Mirror& mirror, const Request& request) {
+    if (request.name.empty() || request.name == mirror.recorded) {
+        return;
+    }
+    mirror.recorded = request.name;
+    Application application;
+    application.key = request.name;
+    application.executable = request.executable;
+    application.api = request.api;
+    application.desktop = mirror.id;
+    application.looks_like_game = request.game;
+    application.reason = request.why;
+    write_application_record(application);
+    LOG("wrote the record of '%s' for the Flatpak sandbox of %s (%s)", request.name.c_str(),
+        mirror.id.c_str(), request.why.c_str());
 }
 
 void FlatpakBridge::rescan() {
@@ -285,15 +386,18 @@ void FlatpakBridge::rescan() {
     // from inside exactly like a daemon that is not running.
     for (size_t i = mirrors_.size(); i > 0; --i) {
         Mirror& mirror = mirrors_[i - 1];
-        bool drawing = false;
+        Request request;
         const char* gone = nullptr;
-        if (!read_request(mirror.directory, drawing)) {
+        if (!read_request(mirror.directory, request)) {
             gone = "it stopped asking";
         } else if (!state_is_ours(mirror)) {
             gone = "its state file was replaced";
         }
         if (!gone) {
-            mirror.drawing = drawing;
+            mirror.drawing = request.drawing;
+            // The record arrives a frame after the request that adopted this
+            // sandbox, so this is where it is usually seen.
+            write_record_for(mirror, request);
             continue;
         }
         LOG("no longer serving the Flatpak sandbox of %s: %s", mirror.id.c_str(), gone);

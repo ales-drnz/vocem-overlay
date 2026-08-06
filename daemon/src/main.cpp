@@ -889,7 +889,6 @@ int main() {
 
         LOG("connected to Discord RPC on port %u", reached_on);
         vocem::journal_note("connected to Discord RPC");
-        backoff_seconds = 1;
         RpcClient client(socket, session, token);
 
         while (!g_stop && !client.failed()) {
@@ -949,9 +948,31 @@ int main() {
             }
             break;
         }
+        // A connection that got as far as authenticating is evidence Discord is
+        // really there, and the next attempt should be immediate. One that did
+        // not is a peer that took the connection and dropped it -- Discord
+        // refusing an origin or a client_id, a client still starting, or
+        // something else on the port entirely -- and reconnecting at once turns
+        // that into a busy loop. The backoff used to be reset the moment the
+        // socket connected, which made "reachable" and "willing to talk" the
+        // same question: measured against the packaged 0.1.4-1 daemon, 1914
+        // connections in five seconds against a peer that answered the handshake
+        // and hung up, where this makes 3 -- and the stub, not the daemon, was
+        // what set that ceiling (tests/daemon_reconnect.cpp).
+        if (client.authenticated()) {
+            backoff_seconds = 1;
+        }
         if (!g_stop) {
-            LOG("connection lost, reconnecting");
+            LOG("connection lost, reconnecting%s",
+                client.authenticated() ? "" : " after a pause: the session never started");
             vocem::journal_note("connection lost, reconnecting");
+        }
+        if (!client.authenticated()) {
+            for (int i = 0; i < backoff_seconds && !g_stop; ++i) {
+                sleep(1);
+                service_bridge();
+            }
+            backoff_seconds = backoff_seconds < 30 ? backoff_seconds * 2 : 30;
         }
     }
 

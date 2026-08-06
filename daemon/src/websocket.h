@@ -57,8 +57,14 @@ private:
     // poll() re-armed it on every chunk, so a peer sending one byte every two
     // seconds held a frame open for as long as it liked.
     bool read_exact(void* dest, size_t length, std::chrono::steady_clock::time_point by);
-    bool write_all(const void* data, size_t length);
-    bool send_frame(uint8_t opcode, const void* data, size_t length);
+    // Writes against an absolute deadline, for the same reason reads have one:
+    // a peer that stops reading fills our send buffer and a blocking send waits
+    // in the kernel with no way out. The deadline is passed in rather than
+    // started here, because a reply sent from inside recv() may not outlive the
+    // deadline recv() was given (see the pong in recv()).
+    bool write_all(const void* data, size_t length, std::chrono::steady_clock::time_point by);
+    bool send_frame(uint8_t opcode, const void* data, size_t length,
+                    std::chrono::steady_clock::time_point by);
 
     int fd_ = -1;
     std::string pending_;  // accumulates fragmented messages

@@ -59,7 +59,21 @@ if [ "$#" -eq 0 ]; then
 fi
 
 target=$1
-pids=$(pgrep -f "$target" 2>/dev/null)
+# The exact process name first, and only then the whole command line -- because
+# `pgrep -f` matches this script's own shell, whose command line contains the name
+# that was just typed. Run against `plasmashell` it answered about the shell as
+# well, with "shim loaded: yes" and no record, which is the shape of the report
+# somebody would paste into a bug. Our own two pids and anything running this
+# script are dropped for the same reason.
+pids=$(pgrep -x "$target" 2>/dev/null)
+if [ -z "$pids" ]; then
+    pids=$(pgrep -f "$target" 2>/dev/null | while read -r candidate; do
+        [ "$candidate" = "$$" ] && continue
+        [ "$candidate" = "$PPID" ] && continue
+        tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null | grep -q 'vocem-why' && continue
+        echo "$candidate"
+    done)
+fi
 if [ -z "$pids" ]; then
     echo "== '$target' is not running =="
     echo "Start it and run this again while it is open: almost everything that"
@@ -72,9 +86,19 @@ for pid in $pids; do
     echo "== $comm (pid $pid) =="
 
     # 1. Are we inside it? This is the question the registry cannot answer.
-    shim=$(grep -c "libvocem_gl_shim" "/proc/$pid/maps" 2>/dev/null || echo 0)
-    lib=$(grep -c "libvocem_gl\.so" "/proc/$pid/maps" 2>/dev/null || echo 0)
-    vk=$(grep -c "libvocem_vk" "/proc/$pid/maps" 2>/dev/null || echo 0)
+    #
+    # `grep -c` prints 0 and exits 1 when it finds nothing, so `|| echo 0` put a
+    # second line in the variable and every comparison below then said
+    # "[: 0\n0: integer expected" -- in the middle of the answer, on almost every
+    # process, since most of them have no Vulkan layer in them.
+    count_in_maps() {
+        found=$(grep -c "$1" "/proc/$pid/maps" 2>/dev/null | head -1)
+        [ -n "$found" ] || found=0
+        echo "$found"
+    }
+    shim=$(count_in_maps "libvocem_gl_shim")
+    lib=$(count_in_maps "libvocem_gl\.so")
+    vk=$(count_in_maps "libvocem_vk")
     echo "  shim loaded:       $([ "$shim" -gt 0 ] && echo yes || echo NO)"
     echo "  GL overlay:        $([ "$lib" -gt 0 ] && echo yes || echo no)"
     echo "  Vulkan layer:      $([ "$vk" -gt 0 ] && echo yes || echo no)"
@@ -92,7 +116,12 @@ for pid in $pids; do
     echo "  LD_PRELOAD:        $(env_of LD_PRELOAD)"
 
     # 4. And what it wrote about itself, if it got that far.
-    record=$(grep -l "^name = $comm\$" "$cache"/* 2>/dev/null | head -1)
+    # The record's file name is the process name with everything outside
+    # [A-Za-z0-9._-] turned into an underscore (vocem/apps.h), so it can be
+    # named rather than searched for -- a name like `Risk_of_Rain_2.` is a
+    # regular expression in which every dot matches the next record along.
+    record="$cache/$(printf '%s' "$comm" | tr -c 'A-Za-z0-9._-' '_')"
+    [ -f "$record" ] || record=$(grep -l "^name = $comm\$" "$cache"/* 2>/dev/null | head -1)
     if [ -n "$record" ]; then
         echo "  registry:          $(sed -n 's/^why = //p' "$record") (game=$(sed -n 's/^game = //p' "$record"))"
     else

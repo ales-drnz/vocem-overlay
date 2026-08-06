@@ -99,4 +99,71 @@ if(DEFINED QML_DIR)
     endif()
 endif()
 
-message(STATUS "the crash is reported inside the Debug section, and only there")
+# ---- and the banner is earned. A stopped daemon is not a fault.
+#
+# The banner is the page's one claim that something is wrong, and it used to
+# count "no shared segment" among the things that are: with the daemon simply
+# not running -- which the header says in words, with the button that starts it
+# -- the page fell through its list of causes to the last one and announced
+# that the OpenGL preload was missing, two lines above its own row saying the
+# preload is active. Measured with a screenshot before the fix; asserted here.
+#
+# A private /dev/shm is what makes "no daemon" a fact rather than a hope: the
+# owner's daemon is running while this suite runs, and nothing here may touch
+# it (entry 53). The other two halves of `healthy` are made true so that a
+# visible banner can only mean the segment: a fabricated layer manifest under
+# XDG_DATA_HOME, and an LD_PRELOAD that names the shim. The preload is a path
+# that does not exist -- the window only looks at the string, and the loader
+# says so on stderr and carries on, which is quieter than borrowing the
+# session's real shim.
+find_program(BWRAP_BINARY bwrap)
+if(NOT BWRAP_BINARY)
+    message(STATUS "skip bwrap is missing, so /dev/shm cannot be emptied")
+    return()
+endif()
+
+set(quiet "${CMAKE_CURRENT_BINARY_DIR}/debug-section-nodaemon")
+file(REMOVE_RECURSE "${quiet}")
+file(MAKE_DIRECTORY "${quiet}/config/vocem")
+file(MAKE_DIRECTORY "${quiet}/cache/vocem")
+file(MAKE_DIRECTORY "${quiet}/data/vulkan/implicit_layer.d")
+file(WRITE "${quiet}/data/vulkan/implicit_layer.d/VkLayer_vocem_overlay.json" "{}\n")
+file(WRITE "${quiet}/config/vocem/config.ini" "")
+
+execute_process(
+    COMMAND "${BWRAP_BINARY}" --dev-bind / / --tmpfs /dev/shm --die-with-parent
+            "${CONFIG_BINARY}"
+    RESULT_VARIABLE quiet_status
+    ERROR_VARIABLE quiet_errors
+    TIMEOUT 120
+    ENVIRONMENT_MODIFICATION
+        "XDG_CONFIG_HOME=set:${quiet}/config"
+        "XDG_CACHE_HOME=set:${quiet}/cache"
+        "XDG_DATA_HOME=set:${quiet}/data"
+        "LD_PRELOAD=set:${quiet}/libvocem_gl_shim.so"
+        "QT_QPA_PLATFORM=set:offscreen"
+        "VOCEM_CONFIG_SECTIONS=set:8"
+        "VOCEM_CONFIG_GEOMETRY=set:${quiet}/geometry.json")
+
+if(NOT quiet_status EQUAL 0)
+    message(STATUS "skip the window could not run under bwrap: ${quiet_status} ${quiet_errors}")
+    return()
+endif()
+file(READ "${quiet}/geometry.json" quiet_dump)
+
+# The row that says what is actually going on is still there ...
+if(NOT quiet_dump MATCHES "\"item\": \"[^\"]*debugTabs[^\"]*\"[^\n]*\"visible\": true")
+    message(FATAL_ERROR "the Debug section did not come up without a daemon")
+endif()
+# ... and the banner above it is not.
+if(quiet_dump MATCHES "\"item\": \"[^\"]*debugBanner[^\"]*\"[^\n]*\"visible\": true")
+    message(FATAL_ERROR
+        "the Debug section shows its warning banner with both halves of the "
+        "overlay installed and the daemon merely stopped -- a segment that is "
+        "not there is the header's story, and the banner then has to invent a "
+        "cause for it")
+endif()
+
+message(STATUS
+    "the crash is reported inside the Debug section and only there, and a "
+    "stopped daemon raises no banner")

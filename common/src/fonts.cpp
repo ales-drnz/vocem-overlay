@@ -130,6 +130,17 @@ bool g_capped = false;
 // the way a change of size does. Fixed arrays: this is compared inside a game,
 // and a path longer than this is a path the window did not write.
 constexpr size_t kMaxFontPath = 512;
+// What the caller last ASKED for, which is what the dead band compares against,
+// and what the last build actually USED, which is empty whenever the chosen face
+// was refused. They were one pair of arrays, and the difference is a frame's
+// whole budget: a face that gets past looks_like_a_font() and still cannot be
+// rasterised makes ensure_fonts() forget the paths, so on the next call the
+// remembered path no longer matched the settings' and every frame rebuilt the
+// atlas from scratch -- measured at 61 ms per call on this machine, once per
+// frame, in somebody's game, with a font-texture upload behind it (and a
+// vkQueueWaitIdle behind that on the Vulkan side).
+char g_asked_body[kMaxFontPath] = {};
+char g_asked_strong[kMaxFontPath] = {};
 char g_body_path[kMaxFontPath] = {};
 char g_strong_path[kMaxFontPath] = {};
 const char* g_font_reason = nullptr;
@@ -227,7 +238,25 @@ bool looks_like_a_font(const unsigned char* data, size_t size) {
                static_cast<uint32_t>(data[offset + 3]);
     };
     // An offset table: the tag, then a count of tables, then that many 16-byte
-    // records. Anything shorter than the directory it claims is truncated.
+    // records, each naming a table's offset and length. Anything shorter than
+    // the directory it claims is truncated, and so is anything whose tables
+    // reach past the bytes that were actually read.
+    //
+    // The second question is the one a truncated file fails, and it had to be
+    // asked: stb_truetype does no bounds checking of its own, so a real font
+    // cut short -- an interrupted copy, a file still being written, a partly
+    // synced home directory -- passed the header check and then read past the
+    // end of the buffer. Measured against the code that shipped 0.1.3, at four
+    // truncation lengths of one installed DejaVu (400, 1024, 4096 and 65536
+    // bytes): SIGSEGV every time, inside ensure_fonts, which is inside
+    // somebody's game.
+    //
+    // What this bounds is a font that was cut off, not a font that was built to
+    // do harm: with every table inside the file, stb can still be sent past the
+    // end by a `loca` entry that lies about where a glyph is. That is worth
+    // saying plainly rather than implying otherwise -- the threat model here is
+    // accident, because this path is named by the user's own settings file and
+    // not by an untrusted peer (which is also why the read is not O_NOFOLLOW).
     const auto directory_fits = [&](size_t start) {
         static const unsigned char kTrueType1[4] = {'1', 0, 0, 0};
         static const unsigned char kOpenType[4] = {0, 1, 0, 0};
@@ -243,18 +272,45 @@ bool looks_like_a_font(const unsigned char* data, size_t size) {
         }
         const uint64_t tables =
             (static_cast<uint64_t>(data[start + 4]) << 8) | data[start + 5];
-        return tables * 16u <= static_cast<uint64_t>(size - start) - 12u;
+        if (tables * 16u > static_cast<uint64_t>(size - start) - 12u) {
+            return false;
+        }
+        // Every table where it says it is. Offset and length are read out of the
+        // file, so the sum is done at 64 bits whatever the architecture is: at
+        // 32 bits `offset + length` on two values near the top of the range
+        // wraps to something small and passes the check it exists to fail.
+        for (uint64_t i = 0; i < tables; ++i) {
+            const size_t record = start + 12 + static_cast<size_t>(i) * 16;
+            const uint64_t offset = be32(record + 8);
+            const uint64_t length = be32(record + 12);
+            if (offset + length > static_cast<uint64_t>(size)) {
+                return false;
+            }
+        }
+        return true;
     };
 
     static const unsigned char kCollection[4] = {'t', 't', 'c', 'f'};
     if (tag_at(0, kCollection)) {
         // A collection: the parser is sent to the first face's offset table, so
         // that is the one that has to be there.
+        //
+        // The version is asked because stb asks it: stbtt_GetFontOffsetForIndex
+        // follows a `ttcf` only at header version 1.0 or 2.0
+        // (imstb_truetype.h:1333) and answers -1 for anything else -- which is
+        // the -1 entry 92 is about, reached through a collection instead of
+        // through a file that is not a font at all. The count is read as the
+        // signed value stb reads (`ttLONG`), because a negative one fails its
+        // `index >= n` test and returns -1 by the same door.
         if (size < 16) {
             return false;
         }
+        const uint32_t version = be32(4);
+        if (version != 0x00010000u && version != 0x00020000u) {
+            return false;
+        }
         const uint32_t faces = be32(8);
-        if (faces == 0) {
+        if (faces == 0 || faces > 0x7FFFFFFFu) {
             return false;
         }
         return directory_fits(be32(12));
@@ -539,8 +595,12 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
         wanted_strong = "";
         g_font_reason = "the chosen font's path is longer than a path should be";
     }
-    const bool same_font = std::strcmp(g_body_path, wanted_body) == 0 &&
-                           std::strcmp(g_strong_path, wanted_strong) == 0;
+    // Against what was asked for, not against what was used: a refused face is
+    // still the setting in front of us, and asking again cannot make it load.
+    // The refusal stands until the settings name a different file, exactly as it
+    // does for a file that is not a font at all.
+    const bool same_font = std::strcmp(g_asked_body, wanted_body) == 0 &&
+                           std::strcmp(g_asked_strong, wanted_strong) == 0;
 
     ImFontAtlas* atlas = ImGui::GetIO().Fonts;
 
@@ -567,6 +627,8 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
     // otherwise be reported forever, including after the user picked a font that
     // does load.
     g_font_reason = nullptr;
+    std::snprintf(g_asked_body, sizeof(g_asked_body), "%s", wanted_body);
+    std::snprintf(g_asked_strong, sizeof(g_asked_strong), "%s", wanted_strong);
     std::snprintf(g_body_path, sizeof(g_body_path), "%s", wanted_body);
     std::snprintf(g_strong_path, sizeof(g_strong_path), "%s", wanted_strong);
 

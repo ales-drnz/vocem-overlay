@@ -365,18 +365,43 @@ inline uint32_t overlay_display_height() {
     return height;
 }
 
-// The resolution caption on the maps: the first display of the enumeration,
-// which is the display Qt calls primary on every single-monitor machine. With
-// several, the dropdown beside the map is what names the others. Falls back to
-// Qt's logical size where sysfs is not readable.
+// The display the overlay is sized for: the tallest connected mode, which is
+// what display.h picks and what the daemon publishes. Zero-sized where nothing
+// can be read.
+//
+// The enumeration is sorted by connector name, and the first entry of it was
+// what the maps used to caption themselves with -- so on a machine whose
+// tallest display is not its alphabetically first, the automatic map named one
+// display and drew the boxes at the size they take on another. The number the
+// overlay is actually sized from has one source; so should the picture of it.
+inline DisplayMode sizing_display() {
+    DisplayMode best;
+    for (const DisplayMode& display : displays()) {
+        if (display.height > best.height) {
+            best = display;
+        }
+    }
+    return best;
+}
+
+// The shape of that display, or 0 where no mode can be read -- the automatic
+// map's aspect, which used to come from `Screen`: the screen this window
+// happens to be on, which on a laptop beside a 16:9 monitor is neither the
+// display the overlay is sized for nor the one the caption names.
+inline qreal sizing_display_aspect() {
+    const DisplayMode sizing = sizing_display();
+    return sizing.height > 0 ? static_cast<qreal>(sizing.width) / sizing.height : 0.0;
+}
+
+// The resolution caption on the maps: the display the overlay is sized for,
+// which is the one the automatic map stands for. Falls back to Qt's logical
+// size where sysfs is not readable.
 inline QString screen_resolution() {
     static QString resolution;
     if (resolution.isEmpty()) {
-        const QList<DisplayMode>& connected = displays();
-        if (!connected.isEmpty()) {
-            resolution = QObject::tr("%1 × %2")
-                             .arg(connected.first().width)
-                             .arg(connected.first().height);
+        const DisplayMode sizing = sizing_display();
+        if (sizing.height > 0) {
+            resolution = QObject::tr("%1 × %2").arg(sizing.width).arg(sizing.height);
         } else {
             // Qt's logical size is the wrong number -- see the note above -- but
             // it is the right order of magnitude, and better than no caption.

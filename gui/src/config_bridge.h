@@ -146,7 +146,6 @@ private:
     // the game would refuse.
     Q_PROPERTY(QString fontFamily READ fontFamily WRITE setFontFamily NOTIFY configChanged)
     Q_PROPERTY(QString defaultFontFamily READ defaultFontFamily CONSTANT)
-    Q_PROPERTY(QStringList fontFamilies READ fontFamilies CONSTANT)
     // The carried Inter, by the name Qt knows it under. Separate from
     // overlayFont(): that one answers "what should this preview be drawn in",
     // which starts with the chosen family, and the row that offers to go *back*
@@ -283,6 +282,15 @@ private:
     // What lets a map depicting a smaller display say, honestly, how much
     // larger the overlay will look there. Zero where no mode is readable.
     Q_PROPERTY(int overlayDisplayHeight READ overlayDisplayHeight NOTIFY stateChanged)
+    // The shape of that display, as one number, and zero where no mode can be
+    // read. A map with no display chosen stands for the display the overlay is
+    // sized for, so it takes its shape from here rather than from `Screen` --
+    // the screen this window happens to be sitting on, which is a different
+    // display on any machine with two. One ratio and not the two sides of it:
+    // a number compares equal from one tick to the next, where a map of
+    // {width, height} is a fresh object every time this is read and would
+    // relayout both previews twice a second.
+    Q_PROPERTY(qreal sizingDisplayAspect READ sizingDisplayAspect NOTIFY stateChanged)
     // Which display each map depicts, by connector name; empty means automatic
     // (the largest, which is what the overlay is sized for). Persisted like any
     // other setting: an edit waits for Apply.
@@ -402,9 +410,20 @@ public:
     QString defaultFontFamily() const {
         return QString::fromStdString(vocem::Config{}.font_family);
     }
-    // Defined beside the rest of the machine-facing code in the .cpp: this
-    // header keeps the settings, and what fonts a machine has is not one.
-    QStringList fontFamilies() const;
+    // Every family this machine has that the overlay can rasterise. Defined
+    // beside the rest of the machine-facing code in the .cpp: this header keeps
+    // the settings, and what fonts a machine has is not one.
+    //
+    // A function and not a property, which is a performance contract and not a
+    // style: a QStringList reaching QML as a *property* is wrapped in a
+    // reference sequence, and every indexed read of it calls this getter again
+    // and converts the whole list. `[""].concat(config.fontFamilies)` therefore
+    // asked for the list once per family -- 272 reads of a 272-name list,
+    // measured at 0.95 s of this window's startup on a machine with 271
+    // families, paid before the first frame whether or not anybody ever opens
+    // the Appearance page. Returned from an invokable the same list is
+    // converted once (measured: 1 call).
+    Q_INVOKABLE QStringList fontFamilies() const;
     QString builtInFontFamily() const;
     bool textShadow() const { return config_.text_shadow; }
     bool defaultTextShadow() const { return vocem::Config{}.text_shadow; }
@@ -514,6 +533,7 @@ public:
     QString screenResolution() const;
     QVariantList displays() const;
     int overlayDisplayHeight() const;
+    qreal sizingDisplayAspect() const;
     QString panelPreviewDisplay() const {
         return QString::fromStdString(config_.preview_display_panel);
     }

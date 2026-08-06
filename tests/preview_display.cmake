@@ -181,7 +181,141 @@ if(single_picker STREQUAL "")
         "is exactly what a one-display machine needs it to say")
 endif()
 
+# ---- the map with nothing chosen has the shape of the display it stands for.
+#
+# It used to take its aspect from `Screen`: the screen this window happens to
+# be on, which is a different display from the one the caption names on any
+# machine with two -- and which is not a display shape at all under the
+# offscreen plugin, where every map in every run of this suite came out square
+# while its caption said 3840 x 2160. The single-display run above has one
+# 3840x2160 connector, so the stage is 16:9 or the map is not a map of it.
+if(NOT single_dump MATCHES "\"item\": \"[^\"]*positionStage\", \"x\": [0-9.e+-]+, \"y\": [0-9.e+-]+, \"w\": ([0-9.]+), \"h\": ([0-9.]+)")
+    message(FATAL_ERROR "no positionStage rectangle in the single-display dump")
+endif()
+# Both out of the match before anything else matches over them -- a second
+# regex call replaces CMAKE_MATCH_*, and the height came out empty.
+set(stage_w "${CMAKE_MATCH_1}")
+set(stage_h "${CMAKE_MATCH_2}")
+string(REGEX REPLACE "\\..*" "" stage_w_whole "${stage_w}")
+string(REGEX REPLACE "\\..*" "" stage_h_whole "${stage_h}")
+if(stage_h_whole LESS 1)
+    message(FATAL_ERROR "the map has no height: ${CMAKE_MATCH_2}")
+endif()
+math(EXPR stage_aspect_millis "${stage_w_whole} * 1000 / ${stage_h_whole}")
+if(stage_aspect_millis LESS 1750 OR stage_aspect_millis GREATER 1806)
+    message(FATAL_ERROR
+        "with one 3840x2160 display the map is ${stage_w_whole}x${stage_h_whole} "
+        "(aspect ${stage_aspect_millis}/1000), not the display's 1778/1000 -- the "
+        "map with nothing chosen is not shaped like the display it stands for")
+endif()
+
+# ---- a horizontal panel is capped by the display, not by 520 units.
+#
+# panel.cpp holds a column to 520 units so one pathological display name
+# cannot cross the screen, and says in as many words that this is "not its cap"
+# for a row: what stops a row is the display, which is what its own budget
+# counted against. The preview applied the 520 to both, so a horizontal panel
+# was drawn ending at the third person while the game drew all four. Measured
+# at the settings below on 1920x1080: the overlay 780 units wide, the preview
+# 520 -- 27% of the display shown against 40% drawn.
+#
+# Both sides, in the overlay's own unit. The overlay's half is the same probe
+# scripts/compare-preview.py drives (it sits beside this script in the test
+# tree); without it there is nothing to compare against and the check says so
+# rather than asserting a number nobody re-measures.
+set(geometry_probe "${CMAKE_CURRENT_BINARY_DIR}/vocem_panel_geometry")
+if(NOT EXISTS "${geometry_probe}")
+    message(STATUS "skip the panel geometry probe was not built")
+    return()
+endif()
+
+set(wide "${CMAKE_CURRENT_BINARY_DIR}/preview-display-wide")
+file(REMOVE_RECURSE "${wide}")
+file(MAKE_DIRECTORY "${wide}/config/vocem")
+file(MAKE_DIRECTORY "${wide}/cache/vocem")
+file(MAKE_DIRECTORY "${wide}/drm/card0-DP-1")
+file(WRITE "${wide}/drm/card0-DP-1/status" "connected\n")
+file(WRITE "${wide}/drm/card0-DP-1/enabled" "enabled\n")
+file(WRITE "${wide}/drm/card0-DP-1/modes" "1920x1080\n")
+# Sideways, with the pictures and the gaps wide enough that four people ask for
+# more than 520 units. Every one of these is a setting the window offers.
+set(wide_settings
+    "panel_layout = horizontal"
+    "avatar_size = 2.0"
+    "avatar_gap = 48"
+    "row_spacing = 48"
+    "box_padding_x = 40")
+string(REPLACE ";" "\n" wide_config "${wide_settings}")
+file(WRITE "${wide}/config/vocem/config.ini" "${wide_config}\n")
+
+execute_process(
+    COMMAND "${geometry_probe}" width=1920 height=1080 users=4
+            panel_layout=horizontal avatar_size=2.0 avatar_gap=48 row_spacing=48
+            box_padding_x=40
+    RESULT_VARIABLE probe_status
+    OUTPUT_VARIABLE probe_output
+    ERROR_VARIABLE probe_errors
+    TIMEOUT 60)
+if(NOT probe_status EQUAL 0)
+    message(FATAL_ERROR "the panel geometry probe failed: ${probe_status} ${probe_errors}")
+endif()
+if(NOT probe_output MATCHES "\"panel\": \\{\"x\": [0-9.e+-]+, \"y\": [0-9.e+-]+, \"w\": ([0-9]+)")
+    message(FATAL_ERROR "the probe printed no panel width: ${probe_output}")
+endif()
+set(overlay_width "${CMAKE_MATCH_1}")
+
+execute_process(
+    COMMAND "${CONFIG_BINARY}"
+    RESULT_VARIABLE wide_status
+    ERROR_VARIABLE wide_errors
+    TIMEOUT 90
+    ENVIRONMENT_MODIFICATION
+        "XDG_CONFIG_HOME=set:${wide}/config"
+        "XDG_CACHE_HOME=set:${wide}/cache"
+        "QT_QPA_PLATFORM=set:offscreen"
+        "VOCEM_DRM_ROOT=set:${wide}/drm"
+        "VOCEM_CONFIG_SECTIONS=set:0"
+        "VOCEM_CONFIG_GEOMETRY=set:${wide}/geometry.json")
+if(NOT wide_status EQUAL 0)
+    message(FATAL_ERROR "the window failed on the horizontal panel: ${wide_status} ${wide_errors}")
+endif()
+file(READ "${wide}/geometry.json" wide_dump)
+
+# The preview's box in overlay units: its rectangle divided by the factor the
+# view drew it at, both of which the dump prints for this item.
+if(NOT wide_dump MATCHES "\"item\": \"[^\"]*positionStage/panel\", \"x\": [0-9.e+-]+, \"y\": [0-9.e+-]+, \"w\": ([0-9.]+)[^\n]*\"factor\": ([0-9.]+)")
+    message(FATAL_ERROR "no panel box with a factor in the horizontal dump")
+endif()
+set(preview_pixels "${CMAKE_MATCH_1}")
+set(preview_factor "${CMAKE_MATCH_2}")
+# CMake's arithmetic is integer, so both are taken to thousandths first and the
+# division of one by the other is back in whole overlay units.
+function(to_millis number out)
+    if(NOT number MATCHES "^([0-9]+)(\\.([0-9]+))?$")
+        message(FATAL_ERROR "not a plain number: ${number}")
+    endif()
+    set(fraction "${CMAKE_MATCH_3}000")
+    string(SUBSTRING "${fraction}" 0 3 fraction)
+    math(EXPR millis "${CMAKE_MATCH_1} * 1000 + ${fraction}")
+    set(${out} "${millis}" PARENT_SCOPE)
+endfunction()
+to_millis("${preview_pixels}" pixels_millis)
+to_millis("${preview_factor}" factor_millis)
+if(factor_millis LESS 1)
+    message(FATAL_ERROR "the preview drew the panel at a scale of ${preview_factor}")
+endif()
+math(EXPR preview_units "${pixels_millis} / ${factor_millis}")
+if(preview_units LESS 700 OR preview_units GREATER 860)
+    message(FATAL_ERROR
+        "the horizontal panel preview is ${preview_units} overlay units wide "
+        "where the overlay draws ${overlay_width} -- a row is capped by the "
+        "display it is counted against, not by the column's 520 units "
+        "(panel.cpp says so where it sets the constraint)")
+endif()
+
 message(STATUS
     "depicting the smaller display grows the panel's share by "
-    "${ratio_millis}/1000 (expected 2.000), and the dropdown is on the page "
-    "with two displays and with one")
+    "${ratio_millis}/1000 (expected 2.000), the dropdown is on the page with "
+    "two displays and with one, the automatic map is the display's own shape "
+    "(${stage_aspect_millis}/1000), and a horizontal panel previews "
+    "${preview_units} units against the overlay's ${overlay_width}")

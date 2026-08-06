@@ -139,6 +139,17 @@ target_link_libraries(vocem_fake_state PRIVATE rt)
 add_executable(vocem_apps apps.cpp)
 target_include_directories(vocem_apps PRIVATE "${CMAKE_SOURCE_DIR}/include")
 add_test(NAME apps COMMAND vocem_apps)
+# One of its cases is a FIFO left where the record's temporary file goes: the
+# defective version blocks in open() forever rather than failing, so the timeout
+# is how that case reports itself.
+set_tests_properties(apps PROPERTIES TIMEOUT 60)
+
+# What the decision costs in the process that pays it, which is every OpenGL and
+# Vulkan process in the session and not only the games. Allocations are asserted
+# because they are the same on every machine; the timings are printed beside them.
+add_executable(vocem_apps_cost apps_cost.cpp)
+target_include_directories(vocem_apps_cost PRIVATE "${CMAKE_SOURCE_DIR}/include")
+add_test(NAME apps_cost COMMAND vocem_apps_cost)
 
 # The per-application decision, live: an edited list changes the answer on the
 # next ask in the same process -- the property the Vulkan layer's decided-once
@@ -823,6 +834,18 @@ if(TARGET vocemd)
     add_test(NAME daemon_notification COMMAND vocem_daemon_notification)
     set_tests_properties(daemon_notification PROPERTIES
         ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"
+        SKIP_RETURN_CODE 77)
+
+    # What the daemon does when the port answers and the session does not. The
+    # backoff covered "nothing is listening" and not "something took the
+    # connection and dropped it", which is what Discord's own client does to an
+    # RPC connection it will not serve: measured against the packaged 0.1.4-1
+    # daemon, 1914 connections in five seconds against 3. Same sandbox as above.
+    add_executable(vocem_daemon_reconnect daemon_reconnect.cpp)
+    add_test(NAME daemon_reconnect COMMAND vocem_daemon_reconnect)
+    set_tests_properties(daemon_reconnect PROPERTIES
+        ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"
+        TIMEOUT 120
         SKIP_RETURN_CODE 77)
 endif()
 

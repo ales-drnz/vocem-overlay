@@ -134,6 +134,28 @@ Rectangle {
     // correction, because ImGui and Qt do not mean the same thing by a font size.
     readonly property real textPixels: fontPixels * config.overlayFontRatio
 
+    // How wide the overlay will let the box grow, in these units.
+    //
+    // The two layouts have different caps and panel.cpp says why: a column ends
+    // where its longest name ends and is held to 520 units so that one
+    // pathological display name cannot cross the screen, while a row is an
+    // accumulation of people and what stops it is the display -- which is also
+    // what its own budget counted against. Capping a row at 520 would draw a box
+    // ending at the third person while the game drew all four (measured at
+    // avatar_size 2.0 with the spacings at 48: the overlay 780 units wide, this
+    // preview 520 -- 27% of the display shown against 40% drawn).
+    //
+    // `widestBox` is the display's width in these units, supplied by the view
+    // that stands for a display, exactly as NotificationPreview is told; zero
+    // where the view is a column beside the controls and knows of no display.
+    // The 80-unit floor is panel.cpp's own: a limit below it is not applied.
+    property real widestBox: 0
+    readonly property real widthLimit: {
+        const display = widestBox > 0 ? widestBox : Infinity;
+        const wanted = horizontal ? display : 520;
+        return Math.max(80, Math.min(wanted, display));
+    }
+
     // The surface, at the opacity it is set to, with no floor under it: there was
     // one, so that the box could always be seen on the page it is dragged from;
     // it meant the picture stopped changing halfway down the slider, on the only
@@ -147,7 +169,7 @@ Rectangle {
     antialiasing: true
     // panel.cpp uses AlwaysAutoResize between these two constraints, so the box
     // ends where its longest name ends.
-    implicitWidth: Math.min(520, Math.max(80, contents.implicitWidth + paddingX * 2))
+    implicitWidth: Math.min(widthLimit, Math.max(80, contents.implicitWidth + paddingX * 2))
     implicitHeight: contents.implicitHeight + paddingY * 2
 
     // The hairline, just inside the edge, exactly as panel.cpp draws it by hand:

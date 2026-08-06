@@ -98,6 +98,8 @@ int ConfigBridge::overlayDisplayHeight() const {
     return static_cast<int>(vocem::overlay_display_height());
 }
 
+qreal ConfigBridge::sizingDisplayAspect() const { return vocem::sizing_display_aspect(); }
+
 void ConfigBridge::setPanelPreviewDisplay(const QString& value) {
     const std::string next = value.toStdString();
     if (config_.preview_display_panel == next) {
@@ -224,8 +226,14 @@ QString reason_text(const std::string& reason) {
     if (kind == "heroic") return ConfigBridge::tr("Identified by Heroic");
     if (kind == "minecraft") return ConfigBridge::tr("Identified as Minecraft");
     if (kind == "gamescope") return ConfigBridge::tr("Identified by gamescope");
+    if (kind == "itch") return ConfigBridge::tr("Identified by the itch.io app");
     if (kind == "desktop")
         return ConfigBridge::tr("Identified by its desktop entry (%1)").arg(detail);
+    // Not an entry anybody pointed at: the one installed entry that runs this
+    // program, found by looking. That is what a game started from a terminal or a
+    // file manager has instead of nothing, so the sentence says it was found.
+    if (kind == "entry")
+        return ConfigBridge::tr("Found the desktop entry that runs it (%1)").arg(detail);
     if (kind == "flatpak")
         return ConfigBridge::tr("Identified by its Flatpak id (%1)").arg(detail);
     if (kind == "launcher")
