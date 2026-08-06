@@ -2,7 +2,7 @@
 
 ### Added
 
-- The overlay finds a game you started from a terminal, a script or the file manager, through the desktop entry that runs it.
+- The overlay finds a game started from a terminal, a script or the file manager, through the desktop entry that runs it.
 - Games that are themselves Flatpaks appear on the Applications page, with their own icon.
 - A game launched by the itch.io app is recognised.
 
@@ -12,8 +12,8 @@
 - A session with the gamescope layer switched off no longer counts every process in it as a game.
 - Two games that share a process name no longer overwrite each other's row on the Applications page, and a game can no longer be held up at its first frame by a file left in the way.
 - `vocem-why.sh` prints its answer and no shell errors.
-- The settings window opens about two seconds faster. It used to build the list of the machine's fonts at startup, even if you never opened the Appearance page.
-- The map of your display has the shape of the display the overlay is sized for, and a horizontal panel is previewed at the width the overlay draws it.
+- The settings window opens about two seconds faster. It used to build the list of the machine's fonts at startup, whether or not the Appearance page was ever opened.
+- The map of the display has the shape of the display the overlay is sized for, and a horizontal panel is previewed at the width the overlay draws it.
 - The Debug section shows no warning when the daemon is simply stopped.
 - The opacity settings no longer say "No background" while a faint one is still being drawn.
 - A font file that is cut short is refused instead of crashing the game. A font the overlay cannot draw is refused once, instead of costing the game work on every frame.
@@ -51,7 +51,7 @@ Games that are themselves Flatpaks.
 ### Added
 
 - The overlay appears in a game installed as a Flatpak. It ships as a Vulkan layer extension carrying both architectures, and one branch covers Steam, Heroic, Sober, Lutris, Bottles and PrismLauncher.
-- The daemon publishes the voice state, your settings and the cached pictures into the directory Flatpak shares with the host, and only while the overlay inside it is drawing.
+- The daemon publishes the voice state, the settings and the cached pictures into the directory Flatpak shares with the host, and only while the overlay inside it is drawing.
 - The OpenGL interposer can be preloaded inside a Flatpak with one `flatpak override`. The command is in the README.
 
 ### Known limitations
@@ -67,16 +67,16 @@ First release.
 - A Discord voice overlay drawn inside the game's own frame, where exclusive fullscreen cannot cover it. Vulkan through an implicit layer, OpenGL through a session-wide preload, both at 32 and 64 bits.
 - Who is in the channel, who is speaking, and who is muted or deafened, with names, pictures, and emoji in colour.
 - Direct messages as a message box. The text lives in a shared segment that exists only while the box is on screen.
-- A settings window with ten sections and a map of your display, a tray icon showing your voice state, and `vocem` on the command line. Changes reach a running game within two seconds of Apply.
+- A settings window with ten sections and a map of the display, a tray icon showing the current voice state, and `vocem` on the command line. Changes reach a running game within two seconds of Apply.
 - An Applications page listing every process the overlay was loaded into, with what the detection went on for each and a switch that overrides it.
 - A crash journal per drawing process, shown in the Debug section.
 - HDR swapchains: the overlay's colours are encoded for the target instead of being blown out, with reference white at 203 nits.
-- `vocemd` is the only component that talks to Discord. It connects only to 127.0.0.1, on ports 6463 to 6472, and checks that the process listening there belongs to you before it sends its token.
+- `vocemd` is the only component that talks to Discord. It connects only to 127.0.0.1, on ports 6463 to 6472, and checks that the process listening there belongs to the same user before it sends its token.
 - `VOCEM_DISABLE=1` keeps the overlay out of one process.
 
 ### Known limitations
 
-- A game the detection does not recognise draws nothing until you tick its box on the Applications page.
+- A game the detection does not recognise draws nothing until its box is ticked on the Applications page.
 - A game inside a Flatpak sandbox is out of reach. (Lifted in 0.1.1.)
 - A launch script that assigns `LD_PRELOAD` instead of appending to it takes the OpenGL overlay out of that game. Vulkan is not affected.
 - Anti-cheat has not been tested. This injects into a game's process and hooks its rendering.
