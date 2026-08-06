@@ -98,6 +98,8 @@ int ConfigBridge::overlayDisplayHeight() const {
     return static_cast<int>(vocem::overlay_display_height());
 }
 
+qreal ConfigBridge::sizingDisplayAspect() const { return vocem::sizing_display_aspect(); }
+
 void ConfigBridge::setPanelPreviewDisplay(const QString& value) {
     const std::string next = value.toStdString();
     if (config_.preview_display_panel == next) {

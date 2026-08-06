@@ -172,6 +172,31 @@ public:
     }
 };
 
+// A popup is in no screenshot and in no geometry dump, because nothing in a
+// harness ever clicks one open. The font picker's list is the case that made
+// this necessary: its width, its height, where it opens and which face each row
+// is drawn in were all reasoned about and none of them had ever been measured,
+// so every claim about them rested on reading the source back.
+//
+// VOCEM_CONFIG_OPEN is a comma-separated list of objectNames. Anything named
+// that has a `popup` (a ComboBox does) has it opened after the section switch
+// and before the grab; an item that is a Popup itself is opened directly. An
+// open popup's contents are parented into the window's overlay, which is a
+// child of the window's content item, so the walk below finds them with no
+// further help. Inert without the variable, like the screenshot path.
+void open_named_popups(QQuickWindow* window, const QString& names) {
+    for (const QString& name : names.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        auto* found = window->findChild<QQuickItem*>(name.trimmed());
+        // Only where it is: the named control lives on one section, and every
+        // other section would otherwise get that section's menu hanging over it.
+        if (!found || !found->isVisible()) {
+            continue;
+        }
+        QObject* popup = found->property("popup").value<QObject*>();
+        QMetaObject::invokeMethod(popup ? popup : found, "open");
+    }
+}
+
 bool ask_running_instance_to_show() {
     QLocalSocket socket;
     socket.connectToServer(instance_socket_name());
@@ -368,9 +393,23 @@ int main(int argc, char* argv[]) {
                 QGuiApplication::exit(0);
                 return;
             }
+            // One section at a time, with the clock stopped while this one is
+            // being taken. Left running, the walk assumed every step costs less
+            // than the 400 ms before its grab -- and the first step that did not
+            // (opening the font menu builds the machine's whole font list) let
+            // the next timeout in on top of it, so the same section was set
+            // twice, grabbed twice and dumped twice while the sections ran out.
+            // A dump of three sections that are all section 0 looks exactly like
+            // a finished measurement.
+            step->stop();
             window->setProperty("section", *index);
+            // Before the grab, so the popup has the same moment to lay itself
+            // out that the page has.
+            if (const char* open = std::getenv("VOCEM_CONFIG_OPEN"); open && *open) {
+                open_named_popups(window, QString::fromLocal8Bit(open));
+            }
             // Grab on the next tick: the property change has to reach the scene.
-            QTimer::singleShot(400, window, [window, path, geometry_file, index] {
+            QTimer::singleShot(400, window, [window, path, geometry_file, index, step] {
                 // Always grabbed, even when no screenshot was asked for: the grab is
                 // what forces a synchronous render, and without a render the section
                 // that has just been switched to is never laid out. Its items then
@@ -427,6 +466,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 ++(*index);
+                step->start();
             });
         });
         step->start();

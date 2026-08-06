@@ -79,9 +79,21 @@ SectionPage {
         return root.config.crashReports.length > 0 ? 1 : 0;
     }
 
+    // The one comparison the banner and the Shared state row both turn on,
+    // spelled once: the daemon publishes a segment this window cannot read.
+    readonly property bool abiMismatch:
+        config.segmentAbiVersion !== 0 && config.segmentAbiVersion !== config.abiVersion
+
+    // What "nothing is wrong" means here. A segment that is not there at all is
+    // NOT wrong: it means the daemon is stopped, which the header says in words
+    // with the button that starts it beside them. Requiring the versions to be
+    // equal made every stopped daemon unhealthy, and the banner then fell
+    // through its list of causes to the last one and announced that the OpenGL
+    // preload was missing -- two lines above the row saying the preload is
+    // active. Measured with a private /dev/shm: banner "The OpenGL preload is
+    // not in this session's environment", row "Active in this session. Ready".
     readonly property bool healthy:
-        config.vulkanLayerInstalled && config.openglPreloadActive &&
-        config.segmentAbiVersion === config.abiVersion
+        config.vulkanLayerInstalled && config.openglPreloadActive && !abiMismatch
 
     ColumnLayout {
         anchors.fill: parent
@@ -92,13 +104,14 @@ SectionPage {
             objectName: "debugBanner"
             visible: !root.healthy
             Layout.fillWidth: true
-            severity: root.config.segmentAbiVersion !== 0 &&
-                      root.config.segmentAbiVersion !== root.config.abiVersion
-                      ? InlineMessage.Severity.Error
-                      : InlineMessage.Severity.Warning
+            severity: root.abiMismatch ? InlineMessage.Severity.Error
+                                       : InlineMessage.Severity.Warning
+            // The three causes, in the order they are worth reading, and
+            // together they are exactly what `healthy` is false for -- so the
+            // last one is a statement about the preload and not a fallback that
+            // answers for whatever else went wrong.
             text: {
-                if (root.config.segmentAbiVersion !== 0 &&
-                    root.config.segmentAbiVersion !== root.config.abiVersion) {
+                if (root.abiMismatch) {
                     return qsTr("The daemon publishes shared state v%1 and this window "
                                 + "expects v%2. One half is from an older install. "
                                 + "Games keep an empty overlay until the mismatched "

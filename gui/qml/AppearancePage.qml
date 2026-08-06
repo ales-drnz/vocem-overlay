@@ -300,8 +300,13 @@ ScrollablePage {
         // the two it is.
         SettingRow {
             label: qsTr("Opacity")
+            // "Little or no", because the sentence appears below 15% and not at
+            // zero (Config::kFaintBackground): at 8% the panel still draws a
+            // background, and a row that answered "No background" there was
+            // telling the user the opposite of what the overlay does -- in the
+            // one sentence that exists to tell an empty box from a broken one.
             description: root.config.backgroundFaint
-                         ? qsTr("No background: names and avatars only.")
+                         ? qsTr("Little or no background: names and avatars over the game.")
                          : qsTr("How solid the panel background is.")
 
             SliderRow {
@@ -392,9 +397,49 @@ ScrollablePage {
 
                 objectName: "fontFamilyChoice"
 
-                // The built-in font is the empty string in the settings file;
-                // index 0 stands for it here.
-                readonly property var families: [""].concat(root.config.fontFamilies)
+                // The families this box offers, and when it goes and gets them.
+                // The built-in font is the empty string in the settings file, in
+                // this list as in the file.
+                //
+                // Until somebody actually goes for the font, the box carries one
+                // entry: the family that is set. Handing this style's ComboBox
+                // the machine's whole font list is what costs -- it walks every
+                // item to size itself (qqc2-desktop-style's ComboBox.qml,
+                // `onCountChanged`, one `boundingRect` per row) -- and measured
+                // here with 271 families installed it is 1.05 s, paid at
+                // *startup*, because every page of this window is built when the
+                // window is. Everybody paid it, including everybody who never
+                // opens this page. Now the menu asks on its way open and the
+                // keyboard asks when the box takes focus, so the second is spent
+                // by the person who wants a font, once, and by nobody else.
+                //
+                // Read through a function call, and kept: the list comes over as
+                // a copy that way. As a property it arrives as a sequence that
+                // re-reads itself on every indexed access, and `concat` walks it
+                // -- see ConfigBridge::fontFamilies().
+                property bool familiesReady: false
+                function ensureFamilies() {
+                    familiesReady = true;
+                    // A ComboBox puts its current index back to 0 whenever its
+                    // model is replaced, so the index is set again here, after
+                    // the list has grown. A binding cannot do it: it runs on the
+                    // count change and the reset comes after it, and then
+                    // nothing re-evaluates. Measured before this line: with
+                    // "DejaVu Sans" set, the menu opened at the top of the list
+                    // with "Built-in (Inter)" highlighted.
+                    currentIndex = Math.max(0, families.indexOf(root.config.fontFamily));
+                }
+
+                readonly property var families:
+                    familiesReady ? [""].concat(root.config.fontFamilies())
+                                  : [root.config.fontFamily]
+
+                // Whichever road is taken to the list, it is built before it is
+                // needed: the menu's, and the keyboard's -- arrow keys on a
+                // focused box move through the families without opening
+                // anything, and a box holding one row would have nowhere to
+                // move.
+                onActiveFocusChanged: if (activeFocus) ensureFamilies()
 
                 // Each name written in the font it names, in the list and in the
                 // box: a list of forty family names all set in the desktop's own
@@ -408,8 +453,12 @@ ScrollablePage {
                 // picked the row labelled "Built-in (Inter)" was drawn in the
                 // very face the user would be leaving -- a label saying one
                 // thing over letters saying another.
+                // By the value in the list and not by the index, because the
+                // list is one entry long until it is asked for: the built-in
+                // entry is the empty family wherever it sits.
                 function familyFor(index) {
-                    return index === 0 ? root.config.builtInFontFamily : families[index];
+                    const family = families[index];
+                    return family === "" ? root.config.builtInFontFamily : family;
                 }
 
                 model: families.map(function(name) {
@@ -446,6 +495,16 @@ ScrollablePage {
                     }
                     return widest;
                 }
+                // What the box says, from the setting itself rather than from
+                // whichever row the list thinks is current. Two things stop
+                // being able to make it lie: the ComboBox's own reset of its
+                // index when the model changes, and a family this machine
+                // cannot resolve -- setFontFamily() refuses that one and the box
+                // has already moved, and it used to be put back by a binding
+                // that only re-ran because the refusal emitted configChanged.
+                // The name shown is the name in the settings, always.
+                displayText: root.config.fontFamily === "" ? qsTr("Built-in (Inter)")
+                                                           : root.config.fontFamily
                 currentIndex: Math.max(0, families.indexOf(root.config.fontFamily))
                 onActivated: root.config.fontFamily = families[currentIndex]
                 Accessible.name: qsTr("Overlay font")
@@ -455,6 +514,8 @@ ScrollablePage {
                 implicitWidth: 220
 
                 delegate: ItemDelegate {
+                    objectName: "fontRow"
+
                     required property var modelData
                     required property int index
 
@@ -469,6 +530,12 @@ ScrollablePage {
                     // the second: what does not fit ends in an ellipsis rather
                     // than under the scrollbar.
                     contentItem: Label {
+                        // Named for the geometry dump: a row's own implicitWidth
+                        // is the one number that says which face it was drawn in
+                        // (the row's width is the list's). That is how the
+                        // built-in row is held to the built-in font -- see
+                        // tests/appearance_previews.cmake.
+                        objectName: "fontRowName"
                         text: parent.text
                         font: parent.font
                         elide: Text.ElideRight
@@ -492,6 +559,12 @@ ScrollablePage {
                 // it scrolls past.
                 popup: Popup {
                     id: fontPopup
+
+                    // The list is built here rather than at `onOpened`: at
+                    // aboutToShow the popup is not visible yet, so the ListView's
+                    // model is still null and the rows are instantiated once,
+                    // after this, with the full list already in place.
+                    onAboutToShow: fontChoice.ensureFamilies()
 
                     // Never narrower than the box it hangs from, never wider
                     // than half the window: the longest name on a machine is
@@ -524,6 +597,12 @@ ScrollablePage {
 
                     contentItem: ListView {
                         id: fontList
+
+                        // A Popup is not an item, so the list inside it is what
+                        // the geometry dump can see of it: this name is how the
+                        // harness reads where the menu opened and how large it
+                        // is (VOCEM_CONFIG_OPEN in gui/src/main.cpp).
+                        objectName: "fontList"
 
                         readonly property real barRoom:
                             fontBar.visible ? fontBar.width : 0
@@ -627,8 +706,9 @@ ScrollablePage {
         // one look the same.
         SettingRow {
             label: qsTr("Opacity")
+            // The same threshold and the same honesty as the panel's above.
             description: root.config.notificationBackgroundFaint
-                         ? qsTr("No background: message text only.")
+                         ? qsTr("Little or no background: the message over the game.")
                          : qsTr("How solid the message background is.")
 
             SliderRow {

@@ -48,16 +48,22 @@ Rectangle {
     // a caption and comes from the kernel, through the bridge.
     //
     // A pinned shape wins over everything, the chosen display included, and only
-    // the comparison harness pins one. `Screen` is the screen the window happens
-    // to be on, so the share of the display a box covers is a different figure on
-    // a 16:10 laptop than on a 16:9 monitor -- fine for somebody looking at the
-    // map, useless for a check that has to mean the same thing everywhere it is
-    // run, and not a display shape at all under a platform plugin that has no
-    // screen.
+    // the comparison harness pins one. With nothing chosen the map stands for the
+    // display the overlay is sized for, and takes its shape from the kernel's
+    // mode for that display (the bridge's `sizingDisplayAspect`).
+    //
+    // `Screen` is the last resort and not the first any more. It is the screen
+    // this *window* happens to be on: on a laptop beside a monitor it is a
+    // different display from the one the map is about, so the caption said one
+    // resolution while the rectangle under it was another display's shape. It is
+    // also not a display shape at all under a platform plugin that has no screen,
+    // which is what every offscreen run of this window has -- the maps come out
+    // square there, and no test could see it.
     readonly property real aspect:
         config.pinnedScreenAspect > 0 ? config.pinnedScreenAspect
         : (shownDisplay && shownDisplay.height > 0 ? shownDisplay.width / shownDisplay.height
-        : (Screen.height > 0 ? Screen.width / Screen.height : 16 / 9))
+        : (config.sizingDisplayAspect > 0 ? config.sizingDisplayAspect
+        : (Screen.height > 0 ? Screen.width / Screen.height : 16 / 9)))
 
     // How much larger (or smaller) the overlay looks on the depicted display than
     // on the one it is sized for. The overlay sizes itself from the LARGEST
@@ -199,6 +205,11 @@ Rectangle {
             id: panelContent
 
             config: root.config
+            // What the overlay will not draw past, in the overlay's units: the
+            // display less its two margins. A column is held to 520 units and
+            // never notices; a row is held by the display alone (panel.cpp),
+            // and only a view standing for a display can say how wide that is.
+            widestBox: (root.width - root.inset * 2) / panelBox.factor
 
             transformOrigin: Item.TopLeft
             scale: panelBox.factor

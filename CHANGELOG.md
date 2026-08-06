@@ -2,6 +2,11 @@
 
 ### Fixed
 
+- The settings window opens faster. It built the list of the machine's fonts at startup, for everybody, whether or not the Appearance page was ever opened: about two seconds here, with 271 families installed. The list is built when you go for a font now.
+- The map of your display has the shape of the display the overlay is sized for. It used to take its shape from the screen the window happens to be on and its resolution from the first display by name.
+- A horizontal panel is previewed at the width the overlay draws it. The preview was capped at the width a vertical panel gets, so it ended at the third person where the game drew four.
+- The Debug section shows no warning when the daemon is simply stopped. It reported a fault and then named the OpenGL preload as the cause, two lines above its own row saying the preload is active.
+- The opacity settings say "Little or no background" where they used to say "No background". The sentence appears below 15%, and at 8% there is still a background there.
 - The package is built with the compiler flags the machine building it asks for. It used to pin its own optimisation level, overriding what `makepkg.conf` had chosen. Assertions stay compiled out either way: an assertion inside injected code would end the game rather than the overlay.
 - The 32-bit libraries are built with the same hardening as the 64-bit ones. They had been built without `_FORTIFY_SOURCE` and without full RELRO since the first release, because the packaging replaced the compiler and linker flags it should have added to — and those are the libraries preloaded into every 32-bit process of the session.
 
