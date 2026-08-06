@@ -61,6 +61,19 @@ rather than assumed: the repository it exports has the same `ContentChecksum`
 as the one built the old way, so what changed is where the work happens and not
 what ships.
 
+**The command does not exit when it is done, and that is not a failure.**
+Signing makes gpg start `gpg-agent` and `keyboxd`, and it starts them *inside*
+the sandbox; `bwrap` does not exit until every process in its namespace has
+gone, and those two are daemons, so they never do. Measured at 0.1.4: the
+export finished and the wrapper then sat in `do_wait` with no child doing any
+work for twenty-five minutes, until it was killed. Read the state before
+waiting on it: the repository is complete when
+`ostree --repo=vocem-flatpak-repo log runtime/org.freedesktop.Platform.VulkanLayer.VocemOverlay/x86_64/25.08`
+prints the commit with the subject this release's `--subject` asked for. Then
+kill the two daemons by pid -- `gpgconf --kill all` does not reach them, it
+talks to the host's socket and theirs is inside the sandbox -- and the wrapper
+exits 0 on its own. Nothing about the export is affected either way.
+
 `--subject` is not decoration. The branch is `25.08`, which says which runtime
 the extension fits and nothing about what is in it, so without a subject
 `flatpak info` reads "Export org.freedesktop.Platform.VulkanLayer.VocemOverlay"
