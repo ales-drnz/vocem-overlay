@@ -443,11 +443,11 @@ inline bool categories_say_game(const std::string& categories);
 // user's copy of a system entry is the ordinary case.
 //
 // Costs one pass over the installed entries, once, in the process that pays it:
-// measured here at 1.8 ms for the 210 entries of this machine, in the same frame
-// that already writes the record. It is only reached by processes that got no
-// answer from anywhere else, which on this machine is the compositor, the portals
-// and the probes -- everything with an entry of its own has already been decided
-// by it.
+// measured here at 2.2-2.7 ms over four runs for the 251 entries of this machine
+// -- the whole verdict, of which this pass is nearly all -- in the same frame that
+// already writes the record. It is only reached by processes that got no answer
+// from anywhere else, which on this machine is the compositor, the portals and the
+// probes -- everything with an entry of its own has already been decided by it.
 inline std::string entry_that_runs_this(const std::string& binary, const std::string& comm) {
     if (binary.empty() && comm.empty()) {
         return {};
@@ -542,7 +542,7 @@ inline bool is_own_process(const std::string& name) {
 //     that game's `SteamAppId` too -- so the overlay would be drawn once by
 //     gamescope and once by the game inside it, on top of each other.
 //
-// MangoHud carries a list of fifty-seven names for the same reason and calls it a
+// MangoHud carries a list of the same kind for the same reason and calls it a
 // blacklist; there it *is* the policy, because MangoHud draws everywhere else.
 // Here it only takes back what the detection wrongly gave. It is code rather than
 // a default in the settings file for the same reason `is_own_process` is: there is
