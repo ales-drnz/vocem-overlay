@@ -89,13 +89,12 @@ void WebSocket::close() {
     pending_.clear();
 }
 
-bool WebSocket::write_all(const void* data, size_t length) {
+bool WebSocket::write_all(const void* data, size_t length, Clock::time_point deadline) {
     const auto* bytes = static_cast<const uint8_t*>(data);
     size_t written = 0;
     // A peer that stops reading fills our send buffer, and a blocking send then
     // waits in the kernel with no way out: the daemon would sit there through its
-    // own SIGTERM. Wait on the descriptor instead, against a deadline.
-    const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(kFrameTimeoutMs);
+    // own SIGTERM. Wait on the descriptor instead, against the caller's deadline.
     while (written < length) {
         struct pollfd pfd{fd_, POLLOUT, 0};
         const int ready = ::poll(&pfd, 1, remaining_ms(deadline));
@@ -192,7 +191,8 @@ bool WebSocket::connect(const char* host, uint16_t port, const std::string& path
     request += "Origin: " + origin + "\r\n";
     request += "\r\n";
 
-    if (!write_all(request.data(), request.size())) {
+    if (!write_all(request.data(), request.size(),
+                   Clock::now() + std::chrono::milliseconds(kFrameTimeoutMs))) {
         close();
         return false;
     }
@@ -240,7 +240,8 @@ PeerIdentity WebSocket::peer_owner() const {
                         ntohs(ours.sin_port));
 }
 
-bool WebSocket::send_frame(uint8_t opcode, const void* data, size_t length) {
+bool WebSocket::send_frame(uint8_t opcode, const void* data, size_t length,
+                           Clock::time_point deadline) {
     if (fd_ < 0) {
         return false;
     }
@@ -274,12 +275,13 @@ bool WebSocket::send_frame(uint8_t opcode, const void* data, size_t length) {
         payload[i] = static_cast<uint8_t>(src[i] ^ mask[i & 3]);
     }
 
-    return write_all(header.data(), header.size()) &&
-           (length == 0 || write_all(payload.data(), payload.size()));
+    return write_all(header.data(), header.size(), deadline) &&
+           (length == 0 || write_all(payload.data(), payload.size(), deadline));
 }
 
 bool WebSocket::send_text(const std::string& payload) {
-    return send_frame(kOpText, payload.data(), payload.size());
+    return send_frame(kOpText, payload.data(), payload.size(),
+                      Clock::now() + std::chrono::milliseconds(kFrameTimeoutMs));
 }
 
 WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
@@ -295,6 +297,18 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
     const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
 
     for (;;) {
+        // The deadline bounds the whole call, the work as well as the waiting.
+        // poll() only ever consults it when it has to wait, so a peer that keeps
+        // the socket readable -- pings sent as fast as the wire takes them --
+        // made every poll return at once and this loop never came back at all:
+        // measured, recv() asked for one second and had not returned after
+        // sixty. That is entry 72's starvation again, one step further in. An
+        // absolute deadline that only bounds the sleeping is not a deadline on
+        // the call. Whatever has already been read stays in `pending_` for the
+        // next call, so a fragmented message is not lost by returning here.
+        if (remaining_ms(deadline) == 0) {
+            return Result::Timeout;
+        }
         struct pollfd pfd{fd_, POLLIN, 0};
         int ready = ::poll(&pfd, 1, remaining_ms(deadline));
         if (ready == 0) {
@@ -362,12 +376,17 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
 
         switch (opcode) {
             case kOpPing:
-                send_frame(kOpPong, payload.data(), payload.size());
+                // The pong may not outlive the deadline this call was given: a
+                // peer that floods pings and reads nothing fills our send buffer,
+                // and a reply with a deadline of its own then held the daemon's
+                // tick for five seconds per ping, for as long as the flood ran.
+                send_frame(kOpPong, payload.data(), payload.size(),
+                           deadline < frame_by ? deadline : frame_by);
                 continue;
             case kOpPong:
                 continue;
             case kOpClose:
-                send_frame(kOpClose, nullptr, 0);
+                send_frame(kOpClose, nullptr, 0, frame_by);
                 return Result::Closed;
             case kOpText:
             case kOpContinuation:

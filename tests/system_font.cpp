@@ -21,6 +21,13 @@
 //      the size. Without that, a font picked in the window would not reach a
 //      running game until its resolution changed (entry 37's shape).
 //
+// Cases 5 to 8 are the other half: a path is a line in a text file, so the
+// bytes behind it are an input. Each of the four is a way stb_truetype was
+// handed something it does not check -- a file that is not a font, a font it
+// cannot rasterise, a real font cut short, a collection whose version it will
+// not follow -- and three of the four crashed the process before the check that
+// answers them existed.
+//
 // Against the 0.1.2 library there is no such thing as a chosen font at all, so
 // every claim here fails to compile rather than to run -- which is the honest
 // state of a feature that did not exist.
@@ -105,6 +112,30 @@ void write_file(const char* path, const unsigned char* head, size_t head_size, s
         std::fputc(0, file);
     }
     std::fclose(file);
+}
+
+// The first `bytes` of a real font, and nothing after them: a file that was cut
+// off rather than a file that was never a font. An interrupted copy, a font
+// manager still writing, a partly synced home directory -- and a hand-edited
+// settings file pointing at any of them.
+bool write_prefix(const char* path, const std::string& source, size_t bytes) {
+    FILE* in = std::fopen(source.c_str(), "rb");
+    if (!in) {
+        return false;
+    }
+    std::vector<unsigned char> head(bytes);
+    const size_t got = std::fread(head.data(), 1, bytes, in);
+    std::fclose(in);
+    if (got != bytes) {
+        return false;  // the chosen font is smaller than this cut: not this case
+    }
+    FILE* out = std::fopen(path, "wb");
+    if (!out) {
+        return false;
+    }
+    std::fwrite(head.data(), 1, got, out);
+    std::fclose(out);
+    return true;
 }
 
 float width_of(ImFont* font, float size) {
@@ -259,6 +290,62 @@ int main() {
         io.Fonts->GetTexDataAsRGBA32(&pixels, &atlas_width, &atlas_height);
         check(pixels != nullptr && atlas_width > 0 && atlas_height > 0,
               "and the atlas has pixels in it");
+
+        // And the refusal is REMEMBERED. The fallback forgets the paths it could
+        // not use, so a dead band that compared those paths never matched the
+        // settings again: every frame rebuilt the whole atlas and re-uploaded the
+        // font texture -- 61 ms per call measured here, at 24 px, once per frame
+        // inside somebody's game, with a vkQueueWaitIdle behind it on the Vulkan
+        // side. The dead band compares what was ASKED for.
+        check(!vocem::ensure_fonts(size, 16.0f, path, path),
+              "and asking for the same unrasterisable font again does not rebuild");
+        std::remove(path);
+    }
+
+    // 7. A real font, cut short. stb_truetype does no bounds checking of its
+    //    own, so a file with a font's header and a table directory pointing past
+    //    the end of what was read is a read past the end of the buffer: measured
+    //    against the library that shipped 0.1.3 as SIGSEGV at every one of these
+    //    three lengths. This is the reachable-by-accident half of entry 92 --
+    //    an interrupted copy, a file still being written -- where case 5 is the
+    //    reachable-by-mistake half.
+    for (size_t bytes : {size_t{400}, size_t{1024}, size_t{4096}}) {
+        // A name of its own per length: the dead band compares the path, so
+        // three cuts under one filename would be one build and two no-ops.
+        char path_buffer[64];
+        std::snprintf(path_buffer, sizeof(path_buffer), "vocem-truncated-%zu.ttf", bytes);
+        const char* path = path_buffer;
+        if (!write_prefix(path, chosen, bytes)) {
+            continue;  // the chosen font is smaller than this cut
+        }
+        check(vocem::ensure_fonts(size, 16.0f, path, path), "a truncated font rebuilds");
+        check(vocem::fonts_font_status() != nullptr,
+              "a truncated font is refused out loud rather than parsed past its end");
+        check(std::fabs(width_of(vocem::fonts().body, size) - inter_width) < 0.01f,
+              "and the carried Inter is what draws instead");
+        std::remove(path);
+    }
+
+    // 8. A collection whose header version stb_truetype does not follow.
+    //    stbtt_GetFontOffsetForIndex reads a `ttcf` only at version 1.0 or 2.0
+    //    (imstb_truetype.h:1333) and answers -1 for anything else -- the same -1
+    //    that case 5 is about, arriving through a different door, and the header
+    //    check that answered case 5 did not ask this question.
+    {
+        const char* path = "vocem-odd-collection.ttf";
+        static const unsigned char ttc[] = {
+            't', 't', 'c', 'f',       // the collection tag
+            0, 3, 0, 0,               // version 3.0: not one stb follows
+            0, 0, 0, 1,               // one face
+            0, 0, 0, 16,              // whose offset table is at 16
+            0, 1, 0, 0, 0, 0, 0, 0,   // a well-formed, empty OpenType directory
+        };
+        write_file(path, ttc, sizeof(ttc), 200);
+        check(vocem::ensure_fonts(size, 16.0f, path, path), "an odd collection rebuilds");
+        check(vocem::fonts_font_status() != nullptr,
+              "a collection stb_truetype will not follow is refused before it is handed over");
+        check(std::fabs(width_of(vocem::fonts().body, size) - inter_width) < 0.01f,
+              "and the carried Inter is what draws instead");
         std::remove(path);
     }
 

@@ -18,6 +18,12 @@
 //      daemon's per-tick duties all live after that call: the note segment stops
 //      expiring, the channel stops reconciling, and the stop flag is never read
 //      again, so SIGTERM ends in SIGKILL and leaves a stale segment.
+//   2b. And the absolute deadline that answered 2 was consulted by poll() alone,
+//      which only consults it when it has to wait. A peer pinging at the speed of
+//      the wire kept the socket readable, so every poll returned at once and the
+//      loop ran on the pong's own write deadline instead: recv asked for a second
+//      and had not returned after forty-five. The same starvation, through the
+//      door the first fix left open.
 //   3. RFC 6455 section 5.5 gives control frames at most 125 bytes and requires
 //      FIN. Neither was checked, so an 8 MiB "ping" was allocated and echoed back.
 //   4. The frame's own read had a timeout and not a deadline: poll() re-armed it
@@ -279,6 +285,88 @@ int ping_flood() {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. The same flood, at the speed of the wire rather than five a second.
+//
+// The case above is a peer that pings faster than the caller's timeout. This one
+// is a peer that pings faster than the client can answer, and it is a different
+// defect: the deadline was absolute, but poll() is the only thing that ever
+// looked at it, and poll() only looks when it has to wait. With the socket never
+// empty every poll returned at once, every ping was answered with a pong, and the
+// pong's own five-second write deadline was what the loop ran on -- the caller's
+// second never came round again. Measured against the client that shipped 0.1.4:
+// recv() asked for one second and had not returned after forty-five, with the
+// daemon's tick -- note expiry, channel reconciliation, the stop flag -- stopped
+// for all of it. That is entry 72's starvation, alive, one function further in.
+//
+// The peer here writes blocking, on purpose: that is what makes both sides wedge
+// against each other, and it is the shape a straightforward peer has.
+
+int saturating_ping_flood() {
+    uint16_t port = 0;
+    const int listen_fd = listener(port);
+    if (listen_fd < 0) {
+        std::fprintf(stderr, "no loopback listener\n");
+        return kFail;
+    }
+
+    const pid_t child = ::fork();
+    if (child == 0) {
+        ::close(listen_fd);
+        vocem::WebSocket socket;
+        if (!socket.connect("127.0.0.1", port, "/", "http://localhost")) {
+            ::_exit(kFail);
+        }
+        std::string out;
+        const auto start = std::chrono::steady_clock::now();
+        const vocem::WebSocket::Result result = socket.recv(out, 1000);
+        const double elapsed = milliseconds_since(start);
+        // Closed is as acceptable an answer as Timeout -- the point is that it
+        // comes back at all, and inside the second it was given plus slack.
+        if (elapsed > 2000.0) {
+            std::fprintf(stderr, "  recv returned %d after %.0f ms\n",
+                         static_cast<int>(result), elapsed);
+            ::_exit(kFail);
+        }
+        ::_exit(0);
+    }
+
+    const int server = ::accept(listen_fd, nullptr, nullptr);
+    ::close(listen_fd);
+    if (server < 0 || !accept_upgrade(server)) {
+        ::kill(child, SIGKILL);
+        ::waitpid(child, nullptr, 0);
+        std::fprintf(stderr, "the upgrade did not complete\n");
+        return kFail;
+    }
+
+    // As fast as the socket takes them, for as long as it takes them. send_all
+    // stops on the first refusal, which is what the child going away looks like.
+    const std::vector<uint8_t> ping = frame(true, 0x9, "ping");
+    const auto start = std::chrono::steady_clock::now();
+    while (milliseconds_since(start) < 8000.0) {
+        if (!send_all(server, ping)) {
+            break;
+        }
+    }
+    ::close(server);
+
+    const int status = reap(child, 1000);
+    if (status == -1) {
+        std::fprintf(stderr,
+                     "FAIL recv never came back under a ping flood at wire speed: the deadline "
+                     "bounds the waiting and not the work, so the daemon's tick starves and the "
+                     "stop flag is never read again\n");
+        return kFail;
+    }
+    if (status != 0) {
+        std::fprintf(stderr, "FAIL recv came back, but well past the deadline it was given\n");
+        return kFail;
+    }
+    std::fprintf(stderr, "  saturating ping flood: recv honoured its deadline\n");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // 3. Control frames that break RFC 6455 section 5.5.
 
 int oversized_control(bool fin, const char* what) {
@@ -403,12 +491,13 @@ int main() {
     int failures = 0;
     failures += unterminated_message() != 0;
     failures += ping_flood() != 0;
+    failures += saturating_ping_flood() != 0;
     failures += oversized_control(true, "a 200-byte ping") != 0;
     failures += oversized_control(false, "a ping with FIN clear") != 0;
     failures += slow_frame_body() != 0;
 
     if (failures != 0) {
-        std::fprintf(stderr, "%d of 5 hostile-peer cases failed\n", failures);
+        std::fprintf(stderr, "%d of 6 hostile-peer cases failed\n", failures);
         return kFail;
     }
     std::fprintf(stderr, "the client bounds the message, honours its deadline, and refuses "

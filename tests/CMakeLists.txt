@@ -824,6 +824,18 @@ if(TARGET vocemd)
     set_tests_properties(daemon_notification PROPERTIES
         ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"
         SKIP_RETURN_CODE 77)
+
+    # What the daemon does when the port answers and the session does not. The
+    # backoff covered "nothing is listening" and not "something took the
+    # connection and dropped it", which is what Discord's own client does to an
+    # RPC connection it will not serve: measured against the packaged 0.1.4-1
+    # daemon, 1914 connections in five seconds against 3. Same sandbox as above.
+    add_executable(vocem_daemon_reconnect daemon_reconnect.cpp)
+    add_test(NAME daemon_reconnect COMMAND vocem_daemon_reconnect)
+    set_tests_properties(daemon_reconnect PROPERTIES
+        ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"
+        TIMEOUT 120
+        SKIP_RETURN_CODE 77)
 endif()
 
 # The one place in this project that reads bytes off a socket, held against a peer

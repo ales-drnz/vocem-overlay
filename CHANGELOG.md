@@ -2,6 +2,10 @@
 
 ### Fixed
 
+- A font file that is cut short is refused instead of crashing the game. An interrupted copy, or a file still being written, used to be read past its end.
+- A font the overlay cannot draw is refused once instead of on every frame. Each refusal rebuilt the whole atlas and re-uploaded it: 61 ms per frame, inside the game.
+- The daemon keeps its own clock while a program on Discord's port floods it. Messages stopped expiring, the channel stopped being reconciled, and the daemon did not stop when it was asked to.
+- The daemon waits before trying again when something answers on Discord's port and drops the connection. It used to reconnect at once, thousands of times in a few seconds.
 - The settings window opens faster. It built the list of the machine's fonts at startup, for everybody, whether or not the Appearance page was ever opened: about two seconds here, with 271 families installed. The list is built when you go for a font now.
 - The map of your display has the shape of the display the overlay is sized for. It used to take its shape from the screen the window happens to be on and its resolution from the first display by name.
 - A horizontal panel is previewed at the width the overlay draws it. The preview was capped at the width a vertical panel gets, so it ended at the third person where the game drew four.
