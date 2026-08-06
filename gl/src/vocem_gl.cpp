@@ -199,7 +199,7 @@ void* real_dlsym(void* handle, const char* name) {
 // RTLD_NEXT first, which is right when this library was preloaded directly, and
 // then RTLD_DEFAULT, which is what makes it work when it was not. That second
 // attempt is not belt-and-braces: it is the case that matters. In a real install
-// nothing preloads this library -- the 25 KB shim does, and it brings this one in
+// nothing preloads this library -- the shim does, and it brings this one in
 // with dlopen(RTLD_LOCAL) on the first GL frame. RTLD_NEXT inside a library loaded
 // that way searches the objects after it in *its own* local scope, which does not
 // contain libGL, so every lookup returned null.
