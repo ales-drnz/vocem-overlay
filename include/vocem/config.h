@@ -250,9 +250,9 @@ struct Config {
     // live, and a second settings file for two switches would be one too many.
     //
     // Closing the window puts it away behind the tray icon by default: the overlay
-    // is a thing you set up once and leave running, and quitting it from the window
-    // is not usually what a close button means. Somebody who wants the close button
-    // to mean quit can say so.
+    // is set up once and left running, and quitting it from the window is not
+    // usually what a close button means. Somebody who wants the close button to
+    // mean quit can say so.
     bool keep_running = true;
     // Whether the window starts with the session, hidden, so the tray icon is there
     // from login. Written out as a desktop entry under $XDG_CONFIG_HOME/autostart,

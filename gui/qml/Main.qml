@@ -272,7 +272,7 @@ ApplicationWindow {
                         // numbers as far as the harness is concerned.
                         // Not the bell: that is the Notifications section's
                         // icon, and two entries wearing one picture is a column
-                        // you have to read twice.
+                        // that has to be read twice.
                         { title: qsTr("System tray"),
                           icons: ["preferences-desktop-plasma", "preferences-desktop"] },
                         // Last of the sections that say something rather than

@@ -11,7 +11,7 @@
 // the size that picture is drawn at, which is 22 pixels, the size Tray.qml asks
 // the theme for and the size Breeze carries this artwork at.
 //
-// The neighbours are there because an icon alone tells you nothing: the question
+// The neighbours are there because an icon alone answers nothing: the question
 // somebody is answering on this page is "will I be able to tell which one is
 // mine, and will it say something I would rather it did not". So the row holds a
 // few of the things that are actually in a tray on this desktop, drawn from the

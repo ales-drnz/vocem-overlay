@@ -443,9 +443,9 @@ ScrollablePage {
 
                 // Each name written in the font it names, in the list and in the
                 // box: a list of forty family names all set in the desktop's own
-                // font makes you apply one to find out what it looks like. The
-                // built-in entry is the exception -- Inter is what it says, and
-                // the window carries it, so it draws itself too.
+                // font has to be applied one at a time before any of them can be
+                // seen. The built-in entry is the exception -- Inter is what it
+                // says, and the window carries it, so it draws itself too.
                 //
                 // The carried face by name, not through overlayFont(): that
                 // function puts the *chosen* family at the head of its list, and
@@ -476,7 +476,7 @@ ScrollablePage {
                 //   * the recipe that circulates for popups, which loops over
                 //     `contentItem.children` -- in a recycling ListView those
                 //     are only the rows currently on screen, so the width would
-                //     change as you scroll;
+                //     change as the list scrolls;
                 //   * measuring the strings, which is what this does: one pass
                 //     of advanceWidth over the names with the *window's* font.
                 //

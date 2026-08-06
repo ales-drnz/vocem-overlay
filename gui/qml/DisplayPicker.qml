@@ -55,8 +55,8 @@ RowLayout {
     // *besides* offering a choice: which display the picture stands for, at
     // what resolution, and the fact that the overlay sizes itself for the
     // largest one. On a single-display machine that is a caption confirming
-    // the map is about the screen you are looking at, and it is the first
-    // place somebody plugging a second monitor in will look.
+    // the map is about the one screen there is, and it is the first place
+    // somebody plugging a second monitor in will look.
     spacing: Theme.smallSpacing
 
     function optionsFrom(found) {
