@@ -38,6 +38,7 @@
 #include <string>
 
 #include "flatpak_bridge.h"
+#include "vocem/apps.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/config.h"
 #include "vocem/flatpak.h"
@@ -390,6 +391,68 @@ int main() {
     bridge.rescan();
     bridge.publish(*writer.state());
     check(bridge.served() == 1, "the sandbox asks again and is served again");
+
+    // The record of an application that cannot write its own where anybody can
+    // read it. Inside a sandbox $XDG_CACHE_HOME is the sandbox's, so the record
+    // was written, was right, and was invisible to the window that exists to show
+    // it -- listed as a limit of the design for as long as there was no way
+    // across. It comes over the bridge now, in the same file as the request, and
+    // the daemon writes it here.
+    // Written by the same record_application() the injected code calls, in a
+    // child that is the game: neither half checked against itself, like the rest
+    // of this file. The child's own $XDG_CACHE_HOME is the sandbox's, which is
+    // the whole difficulty -- what it writes there is what nobody could read.
+    check(vocem::known_applications().empty(), "nothing is written down before a record arrives");
+    const std::string sandbox_cache = root + "/sandbox-cache";
+    fflush(stdout);
+    const pid_t recorder = fork();
+    if (recorder == 0) {
+        setenv("FLATPAK_ID", kServed, 1);
+        setenv("XDG_CACHE_HOME", sandbox_cache.c_str(), 1);
+        vocem::enter_flatpak_bridge();
+        vocem::record_application("vulkan");
+        fflush(stdout);
+        _exit(0);
+    }
+    int recorder_status = 0;
+    waitpid(recorder, &recorder_status, 0);
+    check(vocem::known_applications().empty(),
+          "what the sandbox wrote for itself stayed inside it, which is the difficulty");
+    bridge.rescan();
+    const std::vector<vocem::Application> crossed = vocem::known_applications();
+    check(crossed.size() == 1, "a record from inside the sandbox reaches the host's list");
+    if (crossed.size() == 1) {
+        check(crossed[0].key == vocem::process_name(),
+              "under the name the overlay in there was known by");
+        check(crossed[0].api == "vulkan", "with what it drew with");
+        check(!crossed[0].reason.empty(),
+              "and the evidence, which is the whole point of the field");
+        check(crossed[0].desktop == kServed,
+              "the entry is the daemon's own knowledge -- the sandbox being served -- "
+              "so the row can find its icon");
+        check(crossed[0].seen > 0, "and it is stamped when it was written");
+    }
+
+    // Everything in that file was written by code inside somebody's game, and
+    // this process is not sandboxed: what it does with those values is create a
+    // file named after one of them. A name no kernel could have given, an api
+    // that is not one of the two, and a value with a newline folded into it are
+    // each dropped whole rather than written down in part.
+    const auto refused = [&](const std::string& body, const char* what) {
+        write_file(std::string(runtime + "/app/" + kServed + "/vocem/request"), body.data(),
+                   body.size());
+        bridge.rescan();
+        const std::vector<vocem::Application> after = vocem::known_applications();
+        check(after.size() == 1 && after[0].key == vocem::process_name(), what);
+    };
+    refused("pid=1\ndrawing=1\nname=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\napi=vulkan\ngame=1\n",
+            "a name longer than the kernel's fifteen characters is not a record");
+    refused("pid=1\ndrawing=1\nname=other\napi=nonsense\ngame=1\n",
+            "nor is an api that is neither opengl nor vulkan");
+    refused("pid=1\ndrawing=1\nname=../../escape\napi=vulkan\ngame=1\n",
+            "nor a name that is trying to be a path");
+    refused("pid=1\ndrawing=1\nname=other\napi=vulkan\ngame=1\nwhy=fine\nexe=\x01\x02\n",
+            "nor one whose executable is not text");
 
     int ready[2];
     int go[2];

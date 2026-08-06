@@ -1,16 +1,29 @@
 ## [Unreleased]
 
+### Added
+
+- The overlay appears in a game you started from a terminal, from a script or from the file manager, when the machine has a desktop entry that runs it. Exactly one installed entry may name the program and that entry has to be a game, so an interpreter that many entries name is still left alone.
+- The Applications page lists games that are themselves Flatpaks. A sandboxed game writes its record where only the sandbox can read it, so the record now travels to the daemon over the same bridge the settings arrive by, and the row carries the game's own icon.
+- The overlay recognises a game launched by the itch.io app. That app is not installed here, so the variable it sets was read from its source and has not been measured on a machine.
+
 ### Fixed
 
-- A font file that is cut short is refused instead of crashing the game. An interrupted copy, or a file still being written, used to be read past its end.
-- A font the overlay cannot draw is refused once instead of on every frame. Each refusal rebuilt the whole atlas and re-uploaded it: 61 ms per frame, inside the game.
-- The daemon keeps its own clock while a program on Discord's port floods it. Messages stopped expiring, the channel stopped being reconciled, and the daemon did not stop when it was asked to.
-- The daemon waits before trying again when something answers on Discord's port and drops the connection. It used to reconnect at once, thousands of times in a few seconds.
+- A game launched by Heroic is named by Heroic. It used to arrive as Steam game 0, because Heroic runs games through umu and umu sets Steam's variables from an app id it does not have. The row said Steam and looked for an icon that names nothing.
+- A game whose desktop entry starts through a wrapper gets the overlay. The check that stops a game started from a terminal claiming the terminal's entry read only the first word of the entry's command, and thirty of the thirty-six game entries installed here start with `env`, `sh`, `mangohud` or a script beside the binary.
+- A game installed in a Wine prefix, an application started over D-Bus, and every application on GNOME are matched to their desktop entries. The name of the unit an application is started in can be read in more ways than one, and only one of them was tried.
+- A session with the gamescope layer switched off no longer counts every process in it as a game.
+- Two processes of the same name write their records at the same time without spoiling each other's. Every Minecraft is `java` and every Chromium graphics process is `CrGpuMain`.
+- A game's first frame cannot be held up by whatever is sitting where its record goes. A pipe left at that name used to block the game there for good.
+- `vocem-why.sh` prints its answer and nothing else. It reported on the shell that ran it, printed `integer expected` on almost every process, and could read the record of a different application.
 - The settings window opens faster. It built the list of the machine's fonts at startup, for everybody, whether or not the Appearance page was ever opened: about two seconds here, with 271 families installed. The list is built when you go for a font now.
 - The map of your display has the shape of the display the overlay is sized for. It used to take its shape from the screen the window happens to be on and its resolution from the first display by name.
 - A horizontal panel is previewed at the width the overlay draws it. The preview was capped at the width a vertical panel gets, so it ended at the third person where the game drew four.
 - The Debug section shows no warning when the daemon is simply stopped. It reported a fault and then named the OpenGL preload as the cause, two lines above its own row saying the preload is active.
 - The opacity settings say "Little or no background" where they used to say "No background". The sentence appears below 15%, and at 8% there is still a background there.
+- A font file that is cut short is refused instead of crashing the game. An interrupted copy, or a file still being written, used to be read past its end.
+- A font the overlay cannot draw is refused once instead of on every frame. Each refusal rebuilt the whole atlas and re-uploaded it: 61 ms per frame, inside the game.
+- The daemon keeps its own clock while a program on Discord's port floods it. Messages stopped expiring, the channel stopped being reconciled, and the daemon did not stop when it was asked to.
+- The daemon waits before trying again when something answers on Discord's port and drops the connection. It used to reconnect at once, thousands of times in a few seconds.
 - The package is built with the compiler flags the machine building it asks for. It used to pin its own optimisation level, overriding what `makepkg.conf` had chosen. Assertions stay compiled out either way: an assertion inside injected code would end the game rather than the overlay.
 - The 32-bit libraries are built with the same hardening as the 64-bit ones. They had been built without `_FORTIFY_SOURCE` and without full RELRO since the first release, because the packaging replaced the compiler and linker flags it should have added to — and those are the libraries preloaded into every 32-bit process of the session.
 

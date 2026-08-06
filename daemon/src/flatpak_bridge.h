@@ -71,6 +71,11 @@ public:
     size_t served() const { return mirrors_.size(); }
 
 private:
+    // What the overlay inside a sandbox says about itself, in the one file it can
+    // write where this process can read it. Defined in the implementation: the
+    // shape of that file is between the two halves of the bridge and nobody else.
+    struct Request;
+
     struct Mirror {
         std::string id;
         int directory = -1;   // the sandbox's vocem/ directory
@@ -84,8 +89,13 @@ private:
         // What is in the file is whatever the sandbox last left there.
         uint32_t sequence = 0;
         long long config_mtime = 0;
+        // The name of the record already written on the host for this sandbox, so
+        // that a tick which learns nothing new writes nothing.
+        std::string recorded;
     };
 
+    static bool read_request(int directory, Request& request);
+    void write_record_for(Mirror& mirror, const Request& request);
     void close(Mirror& mirror);
     bool state_is_ours(const Mirror& mirror) const;
     bool adopt(const char* id);

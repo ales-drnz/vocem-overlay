@@ -67,6 +67,12 @@ inline bool bridge_enabled = false;
 // What was last written into `request`, so that saying the same thing again
 // costs nothing. -1 until the first answer.
 inline int bridge_drawing_written = -1;
+// The record of this application, in the lines the daemon will find: `name=`,
+// `exe=`, `api=`, `game=`, `why=`. It goes in the same file as the request
+// because the request is rewritten whole whenever `drawing` changes, and a
+// second file would be a second thing for the daemon to find, bound and refuse.
+// Empty until the overlay writes its record (vocem/apps.h).
+inline char bridge_record[1024] = {};
 
 // An id, if it fits whole. Nothing is truncated into a path: half an application
 // id names another application's directory, and a Flatpak id is at most 255
@@ -149,6 +155,34 @@ inline bool bridge_path(char* out, size_t capacity, const char* leaf) {
     return written > 0 && static_cast<size_t>(written) < capacity;
 }
 
+namespace detail {
+
+// The whole of `request`, rewritten. One writer, because the file says two
+// things -- whether this sandbox is asking and what the overlay decided about
+// the application -- and they arrive at different moments: rewriting it for one
+// of them must not take the other away.
+inline bool write_bridge_request(int drawing) {
+    char path[512];
+    if (!bridge_path(path, sizeof(path), kBridgeRequestName)) {
+        return false;
+    }
+    const int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return false;
+    }
+    char body[1280];
+    const int length = std::snprintf(body, sizeof(body), "pid=%d\ndrawing=%d\n%s",
+                                     static_cast<int>(::getpid()), drawing, bridge_record);
+    if (length > 0) {
+        (void)!::write(fd, body, static_cast<size_t>(length));
+    }
+    ::close(fd);
+    bridge_drawing_written = drawing;
+    return true;
+}
+
+}  // namespace detail
+
 // Whether the paths this project derives -- the state, config.ini, the avatar
 // cache -- should be taken from the bridge rather than from the host's own
 // locations.
@@ -177,24 +211,15 @@ inline const char* enter_flatpak_bridge() {
     if (!bridge_path(request, sizeof(request), kBridgeRequestName)) {
         return nullptr;
     }
-    const int fd = ::open(request, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        return nullptr;
-    }
     // What is in it is for the daemon and for a person reading it. The ABI is
     // deliberately not stated: it lives in the mirrored segment, where the
     // reader compares it, and a second copy of a version number is a second
     // thing to forget to move. `drawing` starts at 0, because at this point
     // nothing has read the settings yet -- the settings are on the other side of
     // this very bridge.
-    char body[128];
-    const int length = std::snprintf(body, sizeof(body), "pid=%d\ndrawing=0\n",
-                                     static_cast<int>(::getpid()));
-    if (length > 0) {
-        (void)!::write(fd, body, static_cast<size_t>(length));
+    if (!detail::write_bridge_request(0)) {
+        return nullptr;
     }
-    ::close(fd);
-    detail::bridge_drawing_written = 0;
 
     detail::bridge_enabled = true;
     return detail::flatpak_id_storage;
@@ -216,22 +241,52 @@ inline void flatpak_bridge_drawing(bool drawing) {
     if (!detail::bridge_enabled || detail::bridge_drawing_written == (drawing ? 1 : 0)) {
         return;
     }
-    char request[512];
-    if (!bridge_path(request, sizeof(request), kBridgeRequestName)) {
+    detail::write_bridge_request(drawing ? 1 : 0);
+}
+
+// What this application is, told to the daemon so that it can be written down on
+// the host's side.
+//
+// Every process writes a record of itself under $XDG_CACHE_HOME/vocem/apps, and
+// inside a sandbox that directory is the sandbox's own: the record is written, is
+// correct, and cannot be read by the window that exists to show it. That was
+// listed as a limit of the design for as long as there was no way across. There
+// is one now -- the same bridge the settings arrive by -- so the record goes over
+// it as five more lines of the request, and the daemon writes the file.
+//
+// Once per process, off any hot path, right after the local record is written.
+// The daemon bounds and refuses what it finds here: this is a file inside
+// somebody's game, and the daemon is not sandboxed.
+inline void flatpak_bridge_record(const char* name, const char* executable, const char* api,
+                                  bool game, const char* why) {
+    if (!detail::bridge_enabled || !name || !*name) {
         return;
     }
-    const int fd = ::open(request, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        return;
-    }
-    char body[128];
-    const int length = std::snprintf(body, sizeof(body), "pid=%d\ndrawing=%d\n",
-                                     static_cast<int>(::getpid()), drawing ? 1 : 0);
-    if (length > 0) {
-        (void)!::write(fd, body, static_cast<size_t>(length));
-    }
-    ::close(fd);
-    detail::bridge_drawing_written = drawing ? 1 : 0;
+    // A process name is whatever the process called itself and a path is whatever
+    // it is: a newline in either would forge a line of this file, so each value is
+    // put on one line before it is written rather than after.
+    const auto one_line = [](char* out, size_t capacity, const char* value) {
+        size_t at = 0;
+        for (; value && value[at] && at + 1 < capacity; ++at) {
+            out[at] = (value[at] == '\n' || value[at] == '\r') ? ' ' : value[at];
+        }
+        out[at] = '\0';
+        return out;
+    };
+    char safe_name[64];
+    char safe_executable[512];
+    char safe_why[256];
+    std::snprintf(detail::bridge_record, sizeof(detail::bridge_record),
+                  "name=%s\nexe=%s\napi=%s\ngame=%d\nwhy=%s\n",
+                  one_line(safe_name, sizeof(safe_name), name),
+                  one_line(safe_executable, sizeof(safe_executable), executable),
+                  api && (std::strcmp(api, "opengl") == 0 || std::strcmp(api, "vulkan") == 0)
+                      ? api
+                      : "",
+                  game ? 1 : 0, one_line(safe_why, sizeof(safe_why), why));
+    detail::write_bridge_request(detail::bridge_drawing_written < 0
+                                     ? 0
+                                     : detail::bridge_drawing_written);
 }
 
 }  // namespace vocem
