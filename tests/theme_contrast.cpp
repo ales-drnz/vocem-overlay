@@ -39,10 +39,10 @@
 //     clears 3:1 (measured: the default green is 2.79:1 on Breeze Light over
 //     snow, and Breeze's own Positive is worse).
 //
-// Note also that the light-box palette has no other coverage anywhere: the geometry
-// harness forces the panel colour to a near-black sentinel so that shapes can be
-// told apart by colour, so `is_light()` is never taken through the drawing. Here it
-// is exercised directly.
+// The light-box palette has no other coverage anywhere: the geometry harness
+// forces the panel colour to a near-black sentinel so that shapes can be told
+// apart by colour, so `is_light()` is never taken through the drawing. Here it is
+// exercised directly.
 
 #include <cmath>
 #include <cstdio>
@@ -225,7 +225,7 @@ int main() {
     // Every preset the window offers, from the same table the window reads.
     // Shipping a preset is promising it reads, and a promise this file does not
     // hold is a table nobody re-reads -- so the floor is asserted for all of them
-    // except the two that cannot carry one: Discord, which is the old look kept
+    // except the two that cannot carry one: purple, which is the old look kept
     // for whoever wants the client's own blurple, and transparent, where there is
     // no surface to composite and the text outline carries the names instead.
     for (const Preset& preset : kPresets) {

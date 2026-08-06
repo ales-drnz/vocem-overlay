@@ -63,10 +63,10 @@ inline constexpr Colour hex(uint32_t value, uint8_t alpha = 255) {
 // Whether text on this background should be light or dark. A user who picks a pale
 // colour for the box should not be left with white names on it.
 //
-// Rec. 601 luma, which is close enough for a legibility decision. Note that no test
-// exercises the light branch through the geometry harness: `measure()` forces the
-// panel colour to a near-black sentinel so that shapes can be told apart by colour,
-// so the pale-box palette is checked by asking this file rather than by drawing.
+// Rec. 601 luma, which is close enough for a legibility decision. No test exercises
+// the light branch through the geometry harness: `measure()` forces the panel
+// colour to a near-black sentinel so that shapes can be told apart by colour, so
+// the pale-box palette is checked by asking this file rather than by drawing.
 inline constexpr bool is_light(uint32_t colour) {
     return (0.299f * static_cast<float>((colour >> 16) & 0xff) +
             0.587f * static_cast<float>((colour >> 8) & 0xff) +
@@ -484,9 +484,9 @@ inline Theme theme_for(const Config& config) {
 
 // The surfaces the configuration window offers ready-made, and the opacity each
 // one is promised at. Values here and nowhere else: the window's preset row reads
-// them through the bridge and tests/theme_contrast.cpp holds every non-Discord,
-// non-transparent entry to the 4.5:1 floor -- so a preset cannot be added or moved
-// without the measurement following it.
+// them through the bridge and tests/theme_contrast.cpp holds every entry but
+// purple and transparent to the 4.5:1 floor -- so a preset cannot be added or
+// moved without the measurement following it.
 //
 //   * transparent   -- the default, on the owner's judgement: no box at all, the
 //                      names straight on the game. The surface colour stays the
@@ -495,16 +495,15 @@ inline Theme theme_for(const Config& config) {
 //                      that was measured rather than from nothing.
 //   * dark          -- #17181c at 88%: the surface whose composite passes the
 //                      4.5:1 floor in every scene; see the notes in config.h.
-//   * discord       -- the old default, kept for whoever wants the client's own
+//   * light         -- #eff0f1, and solid rather than 88%: a pale box at 88% over
+//                      a dark scene composites down towards the scene, and the
+//                      muted grey cannot clear 4.5:1 there without crossing the
+//                      idle grey. Pale is promised solid or not at all --
+//                      measured, in tests/theme_contrast.cpp.
+//   * purple        -- the old default, kept for whoever wants the client's own
 //                      blurple. Solid, and deliberately not promised a floor: the
 //                      blurple cannot carry one, which is the measured reason it
 //                      is not the boxed default.
-//   * breeze-dark   -- Breeze's View surface (#141618), from BreezeDark.colors.
-//   * breeze-light  -- Breeze's Window surface (#EFF0F1). Solid, not 88%: a pale
-//                      box at 88% over a dark scene composites down towards the
-//                      scene, and the muted grey cannot clear 4.5:1 there without
-//                      crossing the idle grey. Pale is promised solid or not at
-//                      all -- measured, in tests/theme_contrast.cpp.
 //
 // The id is stable and untranslated; the window shows its own words for it.
 struct Preset {
