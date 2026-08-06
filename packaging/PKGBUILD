@@ -14,7 +14,7 @@
 # overlay off for a single process.
 
 pkgname=vocem-overlay
-pkgver=0.1.3
+pkgver=0.1.4
 pkgrel=1
 pkgdesc="Discord voice overlay drawn inside the game, through a Vulkan layer and an OpenGL hook"
 arch=('x86_64')
