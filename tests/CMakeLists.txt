@@ -1163,3 +1163,17 @@ add_test(NAME shim_private_dispatch COMMAND vocem_shim_private_dispatch)
 set_tests_properties(shim_private_dispatch PROPERTIES
     ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim>;VOCEM_SHIM_PRELOADED=1;VOCEM_STUB_PRIVATE_EGL=$<TARGET_FILE:vocem_stub_private_egl>"
     SKIP_RETURN_CODE 77)
+
+# The tool for the person having the problem, held to printing one answer.
+#
+# `systemctl is-active` reports a STATE, so its exit status is that state: it
+# prints "inactive" and exits 3. `$(... || echo unknown)` therefore ran both
+# branches and put two lines in the report, exactly when the daemon is down --
+# which is when somebody runs this. Entry 99 is the same fault with `grep -c`,
+# five lines further down in the same file, found and fixed while this one stood.
+# Hermetic: a stub systemctl earlier on PATH, so the test never asks the owner's
+# live daemon anything and needs no skip.
+add_test(NAME vocem_why
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/vocem_why.cmake")
