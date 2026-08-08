@@ -1177,3 +1177,24 @@ add_test(NAME vocem_why
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/vocem_why.cmake")
+
+# Two OpenGL interposers in one process, and which of them draws.
+#
+# The companion of gl_beside_steam, asking the question that pair cannot: those
+# two count OUR pixels, so they pass whether the other overlay survived us or
+# not. Against MangoHud -- live on this machine, and the shim it preloads
+# exports the same ten names ours does -- the two exclude each other and
+# whoever is first in LD_PRELOAD wins. The witness is our own debug log and not
+# the pixel count, because with MangoHud first the frame is still full of
+# foreign pixels and they are MangoHud's. See the file's header.
+find_file(VOCEM_MANGOHUD_SHIM libMangoHud_shim.so
+    PATHS /usr/lib/mangohud /usr/lib64/mangohud /usr/local/lib/mangohud
+    NO_DEFAULT_PATH)
+add_test(NAME gl_beside_mangohud
+    COMMAND "${CMAKE_COMMAND}"
+            "-DPROBE=$<TARGET_FILE:vocem_gl_draw_local>"
+            "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+            "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+            "-DMANGOHUD_SHIM=${VOCEM_MANGOHUD_SHIM}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_beside_mangohud.cmake")
+set_tests_properties(gl_beside_mangohud PROPERTIES SKIP_REGULAR_EXPRESSION "^skip|skip ")
