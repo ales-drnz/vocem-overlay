@@ -726,6 +726,20 @@ void ConfigBridge::refreshState() {
         // 28223 frames in its journal, and an empty Debug page. Exactly the
         // silence this page exists to break, produced by the page itself.
         refreshLiveInstances();
+        // And the machine's displays, on the same slow tick. They were read
+        // once, on first use, and kept for the life of the process -- which for
+        // a tray application started at login is the whole session. The daemon
+        // re-reads /sys/class/drm every sixty seconds and running games follow
+        // it, so a monitor plugged in after the window opened resized the
+        // overlay while the map of it went on drawing the display that was
+        // there at login. Forgotten here rather than re-read here: the reads
+        // are what fill them again, and every one of them is a binding on
+        // stateChanged, which this tick ends by emitting.
+        //
+        // On this tick and not the twice-a-second one, measured: 141 us per
+        // enumeration on this machine, so four seconds is thirty-five parts in
+        // a million and still fifteen times more often than the daemon asks.
+        vocem::forget_displays();
     }
 
     if (!attached_) {
