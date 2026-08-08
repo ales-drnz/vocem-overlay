@@ -1069,3 +1069,41 @@ add_executable(vocem_flatpak_bridge_hostile flatpak_bridge_hostile.cpp
 target_include_directories(vocem_flatpak_bridge_hostile PRIVATE
     "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src")
 add_test(NAME flatpak_bridge_hostile COMMAND vocem_flatpak_bridge_hostile)
+
+# One installed package, one answer to "which version is this?".
+#
+# The installed 0.1.4-1 gave three: pacman said 0.1.4, the About page said
+# 0.1.0, the metainfo's newest release said 0.1.2 and .SRCINFO said 0.1.2 too.
+# CMakeLists.txt states the release; neither PKGBUILD passes it to CMake, so the
+# number in the binary and the number on the package had never been related.
+#
+# Not equality: the two PKGBUILDs are meant to differ mid-cycle (one builds the
+# working tree, one builds a tag), so this holds each to its own rule and prints
+# which state it matched. It also runs the built window and asks what version it
+# carries, because every source-level claim about this was already fine while the
+# binary said 0.1.0.
+add_test(NAME version_agrees
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DCONFIG_BINARY=$<IF:$<TARGET_EXISTS:vocem-config>,$<TARGET_FILE:vocem-config>,>"
+            "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/version_agrees.cmake")
+
+# Whose clock the words of a message are retired on. The tick that scrubs and
+# unlinks the note segment was reached only from the recv loop of a LIVE Discord
+# connection, so Discord quitting left the text of the last direct message in
+# /dev/shm -- readable by every process in the session -- for as long as it
+# stayed away: measured against the packaged 0.1.4-1 daemon, still there forty
+# seconds after the connection closed, which is only where the counting stopped.
+# Second case in the same file: a SIGKILLed daemon runs no destructor, and the
+# unit carries Restart=on-failure with MemoryMax=128M, so the next daemon is
+# what has to decline the inheritance. daemon_notification's sandbox.
+if(TARGET vocemd)
+    add_executable(vocem_daemon_note_expiry daemon_note_expiry.cpp)
+    target_include_directories(vocem_daemon_note_expiry PRIVATE "${CMAKE_SOURCE_DIR}/include")
+    target_link_libraries(vocem_daemon_note_expiry PRIVATE rt)
+    add_test(NAME daemon_note_expiry COMMAND vocem_daemon_note_expiry)
+    set_tests_properties(daemon_note_expiry PROPERTIES
+        ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"
+        TIMEOUT 240
+        SKIP_RETURN_CODE 77)
+endif()
