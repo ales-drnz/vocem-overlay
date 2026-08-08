@@ -1,3 +1,10 @@
+## [0.1.5] - 8-08-2026
+
+### Fixed
+
+- The About page names the release that is installed. It had said 0.1.0 in every release since the first one, and the list of changes Discover and GNOME Software show had stopped at 0.1.2.
+- The map of the display follows a monitor plugged in, unplugged, or switched to another resolution while the settings window is open. It used to draw the display that was there when the window opened, which for a window started at login is the display that was there at login, while the overlay had already resized for the new one.
+
 ## [0.1.4] - 6-08-2026
 
 ### Added
