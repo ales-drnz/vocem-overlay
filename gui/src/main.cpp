@@ -354,6 +354,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        // The version this binary carries, once, before any section. It is the
+        // same string ConfigBridge::version() answers with and AboutPage.qml
+        // prints, so a run of the window can be asked what it calls itself.
+        //
+        // Nothing could ask before, and the number was wrong for four releases:
+        // the About page of the installed 0.1.4 package said "Version 0.1.0",
+        // because VOCEM_VERSION comes from CMakeLists.txt's project(VERSION) and
+        // that line had never moved. What this line does not carry is the
+        // rendered label -- the dump holds rectangles and numbers, not text --
+        // so it answers "which version is compiled in", one QML binding short of
+        // "which version the page shows".
+        if (geometry_file->isOpen()) {
+            QTextStream out(geometry_file);
+            out << "{\"version\": \"" << QStringLiteral(VOCEM_VERSION) << "\"}\n";
+        }
+
         // The window at a size of the caller's choosing, so the layouts can be
         // judged at the smallest one the window allows as well as at its default.
         if (const char* size = std::getenv("VOCEM_CONFIG_SIZE"); size && *size) {

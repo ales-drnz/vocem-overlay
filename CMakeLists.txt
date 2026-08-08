@@ -4,7 +4,17 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(vocem-overlay
-    VERSION 0.1.0
+    # The release number, stated once, here. Everything else that carries a
+    # version derives from this or is checked against it: gui/CMakeLists.txt
+    # compiles it into the window as VOCEM_VERSION, and tests/version_agrees.cmake
+    # holds both PKGBUILDs, .SRCINFO and the metainfo's release list to it.
+    #
+    # It sat at 0.1.0 while four releases went out, because neither PKGBUILD
+    # passes a version to CMake and nothing compared the two: the installed
+    # 0.1.4 package's About page read "Version 0.1.0", the metainfo's newest
+    # release was 0.1.2, and .SRCINFO said 0.1.2 as well. Four copies of one
+    # fact, none of them told when another moved.
+    VERSION 0.1.5
     DESCRIPTION "Discord voice overlay drawn inside the game, on Linux"
     LANGUAGES CXX
 )
