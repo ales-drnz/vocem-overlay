@@ -1175,5 +1175,5 @@ set_tests_properties(shim_private_dispatch PROPERTIES
 # live daemon anything and needs no skip.
 add_test(NAME vocem_why
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
-            "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/vocem_why.cmake")

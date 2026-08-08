@@ -35,7 +35,14 @@
 # runs -- and means it measures the same thing on a machine with no systemd at
 # all. `XDG_CACHE_HOME` is a scratch directory, so no real registry is read.
 
-set(work "${CMAKE_CURRENT_BINARY_DIR}/vocem-why-test")
+# WORK_DIR and not CMAKE_CURRENT_BINARY_DIR, which the other .cmake tests here
+# are passed and which this one deliberately does not use: under `cmake -P` that
+# name is a built-in bound to the current working directory, so a -D of it is
+# accepted and ignored. It goes unnoticed in the others because ctest runs them
+# with the build directory as their cwd, which is the value being passed anyway
+# -- but run one by hand from the source tree and it writes its scratch there.
+# This one did, once, and left a directory in the repository root.
+set(work "${WORK_DIR}/vocem-why-test")
 file(REMOVE_RECURSE "${work}")
 file(MAKE_DIRECTORY "${work}/bin")
 file(MAKE_DIRECTORY "${work}/cache/vocem/apps")
