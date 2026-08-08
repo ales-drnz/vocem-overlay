@@ -1108,6 +1108,25 @@ if(TARGET vocemd)
         SKIP_RETURN_CODE 77)
 endif()
 
+# The map of the display follows the machine while the window is open.
+#
+# environment.h answered the display question once, on first use, and a tray
+# application started at login means "once" is "at login": a monitor plugged in
+# afterwards resized the overlay within a minute while the picture of it went on
+# drawing the display that was there this morning. preview_display.cmake could
+# not see it -- it sets VOCEM_DRM_ROOT before launching, so it can only ever
+# measure what the window knew at birth. This one plants the second connector
+# 1.6 s in, the way live_while_open.cmake plants a journal, and holds both maps
+# to the new display's shape. Against the packaged 0.1.4-1 window every section
+# stays 5:4.
+if(TARGET vocem-config)
+    add_test(NAME display_change_while_open
+        COMMAND "${CMAKE_COMMAND}"
+                "-DCONFIG_BINARY=$<TARGET_FILE:vocem-config>"
+                "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/display_change_while_open.cmake")
+endif()
+
 # A settings value is as long as the user's list, not as long as a buffer.
 #
 # Config::load() read the file with char line[256] and a bare fgets, so a line
