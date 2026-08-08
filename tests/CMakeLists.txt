@@ -1139,3 +1139,27 @@ endif()
 add_executable(vocem_config_long_line config_long_line.cpp)
 target_include_directories(vocem_config_long_line PRIVATE "${CMAKE_SOURCE_DIR}/include")
 add_test(NAME config_long_line COMMAND vocem_config_long_line)
+
+# What the shim's dispatch hooks hand back when the real dispatcher is not the
+# system's.
+#
+# The dlsym hook substitutes our hook only inside if (is_system_gl(real)), so a
+# private GL keeps its private names -- entry 36. dispatch() has the same test
+# and returns entry->hook from OUTSIDE it. Constructed here rather than reasoned
+# about: a private EGL opened RTLD_GLOBAL lands in the shim's own RTLD_NEXT
+# order, and from then on the two roads answer differently for one name in one
+# process -- dlsym with the private library's function, the dispatcher with our
+# hook. Not reachable with RTLD_LOCAL, which is what Chromium actually does.
+#
+# Left as a measurement, not a fix: the symmetric change would make the shim
+# hand a private dispatcher's answer straight back, which is entry 35's defect
+# in the case where next legitimately is the application's own linked GL.
+add_library(vocem_stub_private_egl SHARED stub_private_egl.cpp)
+set_target_properties(vocem_stub_private_egl PROPERTIES CXX_VISIBILITY_PRESET hidden)
+
+add_executable(vocem_shim_private_dispatch shim_private_dispatch.cpp)
+target_link_libraries(vocem_shim_private_dispatch PRIVATE ${CMAKE_DL_LIBS})
+add_test(NAME shim_private_dispatch COMMAND vocem_shim_private_dispatch)
+set_tests_properties(shim_private_dispatch PROPERTIES
+    ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim>;VOCEM_SHIM_PRELOADED=1;VOCEM_STUB_PRIVATE_EGL=$<TARGET_FILE:vocem_stub_private_egl>"
+    SKIP_RETURN_CODE 77)
