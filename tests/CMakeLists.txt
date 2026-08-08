@@ -1107,3 +1107,16 @@ if(TARGET vocemd)
         TIMEOUT 240
         SKIP_RETURN_CODE 77)
 endif()
+
+# A settings value is as long as the user's list, not as long as a buffer.
+#
+# Config::load() read the file with char line[256] and a bare fgets, so a line
+# past 255 bytes arrived in pieces: the first piece parsed short and the rest,
+# having no '=' in it, was skipped in silence. hidden_apps came back truncated
+# in the games the user had just hidden, and the window -- which reads this same
+# header -- wrote the truncation back on the next Apply, so the entries left the
+# file for good. Measured against 0.1.4's header: 330 bytes in, 241 out, ending
+# mid-name. The owner's own file was at 179 bytes of that budget.
+add_executable(vocem_config_long_line config_long_line.cpp)
+target_include_directories(vocem_config_long_line PRIVATE "${CMAKE_SOURCE_DIR}/include")
+add_test(NAME config_long_line COMMAND vocem_config_long_line)
