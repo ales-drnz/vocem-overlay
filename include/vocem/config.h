@@ -348,14 +348,17 @@ struct Config {
         if (!file) {
             return;  // defaults are a perfectly good configuration
         }
-        char line[256];
-        while (std::fgets(line, sizeof(line), file)) {
-            char* equals = std::strchr(line, '=');
-            if (!equals || line[0] == '#' || line[0] == '[' || line[0] == ';') {
+        std::string line;
+        while (read_line(file, line)) {
+            // `data()` is non-const from C++17, and the parsing below writes a
+            // terminator over the '=' exactly as it did to a char array.
+            char* text = line.data();
+            char* equals = std::strchr(text, '=');
+            if (!equals || text[0] == '#' || text[0] == '[' || text[0] == ';') {
                 continue;
             }
             *equals = '\0';
-            const char* key = trim(line);
+            const char* key = trim(text);
             const char* value = trim(equals + 1);
 
             if (std::strcmp(key, "position_x") == 0) {
@@ -551,6 +554,57 @@ struct Config {
     }
 
 private:
+    // The longest single line this reader will keep. A settings file is the
+    // user's own, so this is not a defence against a hostile one; it is the
+    // bound that stops a line of any length turning into memory inside
+    // somebody's game, which is where this header is compiled. 64 KiB is about
+    // four thousand process names, and the lists are one entry per application
+    // the user has decided about.
+    static constexpr size_t kMaxLineBytes = 64 * 1024;
+
+    // Reads one whole line, however long it is.
+    //
+    // This used to be `char line[256]` and a bare `fgets`, which takes 255
+    // bytes and stops. The rest of a long line came back on the next iteration,
+    // had no '=' in it, and was skipped -- so nothing errored, nothing was
+    // logged, and the value was simply short. Two consequences, and the second
+    // is the one that cost something: the injected code got a truncated
+    // `hidden_apps`, so the applications the user hid last were given the
+    // overlay again; and the settings window reads this same header, so the
+    // next Apply wrote the truncation back and those entries were gone from the
+    // file for good, without anyone touching that page. The last surviving name
+    // was cut mid-word, so the list also gained an entry that is no
+    // application. Measured on a 330-byte list: 241 bytes came back, ending
+    // "...SomeGameBinary14,SomeGameBina", and the round trip kept them.
+    // `font_path`, `font_path_strong` and `shown_apps` share the same road.
+    //
+    // A line past the cap is consumed to its end and dropped rather than kept
+    // in pieces: half a value is not a value, and a caller reading a truncated
+    // list would act on it.
+    static bool read_line(std::FILE* file, std::string& line) {
+        line.clear();
+        char chunk[256];
+        bool any = false;
+        bool dropped = false;
+        while (std::fgets(chunk, sizeof(chunk), file)) {
+            any = true;
+            const size_t length = std::strlen(chunk);
+            if (!dropped && line.size() + length > kMaxLineBytes) {
+                dropped = true;
+                line.clear();
+            }
+            if (!dropped) {
+                line.append(chunk, length);
+            }
+            // `fgets` stops at the newline or at the buffer; only the newline
+            // ends the line.
+            if (length > 0 && chunk[length - 1] == '\n') {
+                break;
+            }
+        }
+        return any;
+    }
+
     static const char* trim(char* text) {
         while (*text == ' ' || *text == '\t') {
             ++text;
