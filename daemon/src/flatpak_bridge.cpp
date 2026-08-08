@@ -344,6 +344,12 @@ bool FlatpakBridge::adopt(const char* id) {
         close(mirror);
         return false;
     }
+    // A `note` already in this directory was not written by us: publish_note()
+    // only ever writes to mirrors it is already holding, so anything here came
+    // from a daemon that is gone -- one that was killed before it could retire
+    // the words. The host half of that inheritance is declined in main(); this
+    // is the sandbox's copy of the same words.
+    ::unlinkat(directory, kBridgeNoteName, 0);
     LOG("serving the overlay inside the Flatpak sandbox of %s", id);
     write_record_for(mirror, request);
     mirrors_.push_back(std::move(mirror));
