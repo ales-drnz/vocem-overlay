@@ -55,6 +55,30 @@
 // application's own linked GL. The decision is the owner's; this file is so that
 // it is taken on a measurement.
 //
+// **Taken. The answer is that it stays as it is, and the measurement that
+// settles it is in tests/gl_beside_mangohud.cmake.** The question was which
+// rule wins, and it turns on what actually stands in `next` on a real machine.
+// It is not ANGLE. MangoHud 0.8.4 preloads `libMangoHud_shim.so`, which exports
+// the same ten names this shim does and whose basename fails `is_system_gl()`
+// exactly as ANGLE's `libEGL.so` does -- and the `mangohud` wrapper appends it
+// AFTER the session's preload, so it is our RTLD_NEXT. Returning `entry->hook`
+// from outside the test is therefore not a hole: it is what keeps this overlay
+// in the chain when the thing below it is another interposer. Under the
+// symmetric change that same call hands the application MangoHud's hook, which
+// is exactly the state measured in the other preload order -- zero of our log
+// lines, none of our pixels. The change would trade the one order we win for
+// the one we already lose.
+//
+// What `is_system_gl` cannot do is separate two questions that both fail its
+// name test and want opposite answers: "another implementation I must not
+// cross-wire" (ANGLE -- do not substitute) and "the next link in the chain"
+// (MangoHud, Steam -- substitute and forward there). Telling them apart by name
+// would be MangoHud's own blacklist, which this project refuses on principle.
+// The shape a real answer would take is structural rather than nominal: a chain
+// interposer is always in LD_PRELOAD and ANGLE never is, and `dladdr` already
+// yields the object's path. Not attempted and not measured -- written down so
+// the next reader starts from it instead of from the symmetric change.
+//
 // Each case runs in its own forked child. The shim's slots are process-global
 // and fill once, so a case that ran after another would be measuring the first
 // one's leftovers.
