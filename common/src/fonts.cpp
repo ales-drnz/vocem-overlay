@@ -373,6 +373,16 @@ void note_emoji_codepoint(uint32_t codepoint) {
     }
     // The one bank lookup this codepoint will ever cost.
     bool in_bank = g_emoji_bank.contains(codepoint);
+    // Unless the bank has not arrived yet, which only happens inside a Flatpak:
+    // the daemon copies it in on its own tick and the game's first frame beats
+    // it. Writing "no colour glyph" down now would outlive the wait -- the
+    // verdict here is remembered for the life of the process -- so nothing is
+    // written down at all until the bank has either opened or given up. Costs a
+    // walk of the seen table per codepoint per frame for at most thirty seconds
+    // in a sandbox, and the open behind it is rate-limited to two a second.
+    if (!in_bank && g_emoji_bank.still_arriving()) {
+        return;
+    }
     // The atlas budget, which is a different question from the one above: past
     // it a new colour emoji stays monochrome, and it is remembered as "not in
     // the bank" so it never costs another lookup either.

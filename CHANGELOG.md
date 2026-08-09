@@ -1,4 +1,4 @@
-## [0.1.5] - 8-08-2026
+## [0.1.5] - 9-08-2026
 
 ### Fixed
 
@@ -7,7 +7,7 @@
 - The text of a direct message leaves shared memory when its toast ends, whatever Discord is doing. It was removed only while a Discord connection was up, so quitting Discord after a message left that message's text readable by every program in the session for as long as Discord stayed away. A daemon that is killed outright cannot clear it, so the next one to start clears what it finds.
 - A settings line longer than 255 bytes is read and written whole. Longer lines were cut without a word: the applications hidden past the cut were given the overlay again, and the settings window wrote the cut-down list back to the file at the next Apply, which lost those entries for good. The lists of hidden and shown applications and the two font paths all share that line length.
 - `vocem-why.sh` reports the daemon's state on one line when the daemon is stopped. It printed the state and the word "unknown" underneath it.
-- Colour emoji are drawn in colour in a Steam game. The bank they come from was looked for at one absolute path, and inside the container a Steam title runs in that path belongs to the container rather than to the machine, so those games drew every emoji as a white shape while the same game started outside the container drew it in colour. A game that is itself a Flatpak gets the bank across the bridge for the same reason.
+- Colour emoji are drawn in colour in a Steam game, and in a game that is itself a Flatpak. The bank they come from was looked for at one absolute path, and inside the container a Steam title runs in that path belongs to the container rather than to the machine, so those games drew every emoji as a white shape while the same game started outside the container drew it in colour. A game that is itself a Flatpak gets the bank across the bridge for the same reason, and waits for it to arrive rather than giving up on the first frame.
 - A keycap emoji is drawn by one font throughout. The digit came from the plain typeface and the box around it from the colour bank, which put a grey digit inside a coloured tile.
 - Emoji stay coloured in a channel full of decorated or CJK names. The table that remembers which characters have a colour glyph counted every unusual character, not only the emoji, and once it filled every emoji that arrived afterwards was drawn as a white shape until the game was restarted.
 

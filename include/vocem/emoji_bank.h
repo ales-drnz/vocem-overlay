@@ -44,9 +44,22 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "vocem/clock.h"
 #include "vocem/flatpak.h"
 
 namespace vocem {
+
+// How often to look again for a bank that is not there *yet*, and how long to
+// keep looking. Deliberately the same policy, and the same two numbers, as
+// vocem/avatar_file.h: inside a Flatpak the daemon copies the bank in on its
+// own one-second tick, and the overlay's first frame happens before that. A
+// single refused open remembered for the life of the process therefore left a
+// sandboxed game monochrome for ever even though the file appeared a moment
+// later -- measured, twice, with the host path hidden the way a sandbox hides
+// it. "A picture that has not arrived yet is not a picture that failed" is the
+// same sentence, one file along.
+constexpr double kBankRetrySeconds = 0.5;
+constexpr double kBankGiveUpSeconds = 30.0;
 
 constexpr uint32_t kEmojiBankPixels = 32;
 constexpr uint32_t kEmojiBankRgbaBytes = kEmojiBankPixels * kEmojiBankPixels * 4;
@@ -90,7 +103,28 @@ public:
         if (attempted_) {
             return false;
         }
-        attempted_ = true;
+        // Not there *yet* is not the same as not there. On the host every
+        // candidate is a file that either exists or does not, and one look
+        // settles it; inside a Flatpak the only reachable candidate is the copy
+        // the daemon makes on its own tick, and the game's first frame beats it.
+        // So a sandbox gets the avatar cache's policy -- looked at again twice a
+        // second, given up on after thirty -- and the host gets exactly the one
+        // attempt it always had.
+        if (bridge_in_use()) {
+            const double now = monotonic_seconds();
+            if (first_asked_ == 0.0) {
+                first_asked_ = now;
+            } else if (now < next_attempt_) {
+                return false;
+            } else if (now - first_asked_ >= kBankGiveUpSeconds) {
+                attempted_ = true;
+                reason_ = "no colour emoji bank came across the Flatpak bridge";
+                return false;
+            }
+            next_attempt_ = now + kBankRetrySeconds;
+        } else {
+            attempted_ = true;
+        }
 
         // Named explicitly: that answer is the whole answer. An override that
         // points at nothing must NOT fall through to the installed bank -- the
@@ -133,7 +167,12 @@ public:
             return true;
         }
         std::snprintf(path_, sizeof(path_), "%s", VOCEM_EMOJI_BANK_PATH);
-        if (!reason_) {
+        // While a sandbox is still being waited on there is nothing to report:
+        // saying "no bank on disk" during the wait would put a reason in the log
+        // that the next half-second may make untrue, and this project's rule is
+        // that a component which declines to act says why -- not that it guesses
+        // early.
+        if (!reason_ && !still_arriving()) {
             reason_ = "no colour emoji bank on disk";
         }
         return false;
@@ -143,6 +182,13 @@ public:
     // (working, or never asked). The string is a literal, so a caller can log it
     // once by comparing the pointer.
     const char* reason() const { return reason_; }
+    // Whether the bank may still turn up. True only inside a Flatpak, only
+    // while nothing has opened and the thirty seconds have not run out: the
+    // caller must not write down "this codepoint has no colour glyph" during
+    // that window, because the answer is not in yet.
+    bool still_arriving() const {
+        return fd_ < 0 && !attempted_ && first_asked_ != 0.0;
+    }
     // The path the answer above is about: the candidate that opened, or the
     // installed one when none did.
     const char* path() const { return path_; }
@@ -218,6 +264,11 @@ private:
     int fd_ = -1;
     uint32_t count_ = 0;
     bool attempted_ = false;
+    // The Flatpak retry window: when the first look happened and when the next
+    // one is due. Zero until the first look, which is what tells still_arriving()
+    // that a sandbox is being waited on at all.
+    double first_asked_ = 0.0;
+    double next_attempt_ = 0.0;
     // The candidate being tried, and afterwards the one that answered. A buffer
     // rather than a pointer because two of the four candidates are composed
     // rather than named, and this is read back by the log.

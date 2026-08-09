@@ -1198,3 +1198,17 @@ add_test(NAME gl_beside_mangohud
             "-DMANGOHUD_SHIM=${VOCEM_MANGOHUD_SHIM}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_beside_mangohud.cmake")
 set_tests_properties(gl_beside_mangohud PROPERTIES SKIP_REGULAR_EXPRESSION "^skip|skip ")
+
+# A bank that has not arrived yet is not a bank that is missing.
+#
+# The Flatpak candidate added with the /run/host one did not work: the daemon
+# copies the bank in on its own one-second tick, the game's first frame beats it,
+# and one refused open was remembered for the life of the process. The sandbox's
+# shape is built with bwrap rather than described; see the file's header.
+add_executable(vocem_emoji_bank_arrives emoji_bank_arrives.cpp)
+target_include_directories(vocem_emoji_bank_arrives PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(vocem_emoji_bank_arrives PRIVATE rt)
+add_test(NAME emoji_bank_arrives COMMAND vocem_emoji_bank_arrives)
+set_tests_properties(emoji_bank_arrives PROPERTIES
+    ENVIRONMENT "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
+set_tests_properties(emoji_bank_arrives PROPERTIES SKIP_RETURN_CODE 77)
