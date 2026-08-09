@@ -33,6 +33,9 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 
+#include <string>
+#include <vector>
+
 #include "private_shm.h"
 #include "vocem/shm.h"
 
@@ -171,7 +174,12 @@ bool read_raw(const char* path, unsigned char* into, size_t bytes) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // The child of the container leg below: draw one frame with no override, so
+    // the candidates in vocem/emoji_bank.h are what has to find the bank.
+    if (argc > 2 && strcmp(argv[1], "--draw-through-run-host") == 0) {
+        return draw_and_dump(nullptr, argv[2]);
+    }
     if (!getenv("DISPLAY")) {
         printf("skip no DISPLAY, so no GLX drawable to draw into\n");
         return 77;
@@ -375,6 +383,100 @@ int main() {
     } else {
         printf("     (no bank installed at %s; the default-path leg has nothing to test)\n",
                VOCEM_EMOJI_BANK_PATH);
+    }
+
+    // And the leg that was missing, which is the one a Steam title actually
+    // runs in.
+    //
+    // pressure-vessel gives the game a container with its own /usr and mounts
+    // the host at /run/host. Measured with no game launched:
+    // `/usr/share/vocem/emoji_bank.rgba` is ABSENT in there and
+    // `/run/host/usr/share/vocem/emoji_bank.rgba` is PRESENT. The shim has had
+    // that fallback for the heavy library since entry 31; the bank had one
+    // hardcoded path and no fallback, so every Steam game drew the overlay with
+    // monochrome emoji while the same game outside the container drew them in
+    // colour -- "sometimes coloured and sometimes not", from a chair.
+    //
+    // Built here rather than described: bwrap with a tmpfs over the compiled-in
+    // path's directory, so that path is as absent as it is in the container, and
+    // the real bank bound at /run/host + the same path. Nothing of the shape is
+    // assumed; the process has to find it the way it would in there.
+    {
+        char container_path[700];
+        snprintf(container_path, sizeof(container_path), "%s/container.raw", root);
+        std::string compiled = VOCEM_EMOJI_BANK_PATH;
+        const std::string compiled_dir = compiled.substr(0, compiled.find_last_of('/'));
+        const std::string host_copy = std::string("/run/host") + VOCEM_EMOJI_BANK_PATH;
+        char self[4096];
+        const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+        if (n > 0) {
+            self[n] = '\0';
+            fflush(stdout);
+            const pid_t pid = fork();
+            if (pid == 0) {
+                // The compiled-in path is hidden only where it exists: bwrap
+                // creates its own mountpoints and cannot mkdir into a read-only
+                // /usr/local, so asking for a tmpfs over a directory that is not
+                // there fails the whole sandbox. In a build tree that path is
+                // already absent, which is the same state the container is in.
+                struct stat there {};
+                const bool hide = ::stat(compiled_dir.c_str(), &there) == 0;
+                std::vector<const char*> args = {"bwrap", "--dev-bind", "/", "/"};
+                if (hide) {
+                    args.push_back("--tmpfs");
+                    args.push_back(compiled_dir.c_str());
+                }
+                // /run/host does not exist on a host, and bwrap builds its own
+                // mountpoints -- which it cannot do inside a root-owned /run.
+                // A tmpfs over /run gives it somewhere to build, and the
+                // session's own /run/user goes back on top of it because the X
+                // connection is reached through it (without that the child
+                // opens no display and the leg measures nothing).
+                args.push_back("--tmpfs");
+                args.push_back("/run");
+                args.push_back("--dev-bind");
+                args.push_back("/run/user");
+                args.push_back("/run/user");
+                args.push_back("--ro-bind");
+                args.push_back(bank);
+                args.push_back(host_copy.c_str());
+                args.push_back("--die-with-parent");
+                args.push_back(self);
+                args.push_back("--draw-through-run-host");
+                args.push_back(container_path);
+                args.push_back(nullptr);
+                execvp("bwrap", const_cast<char* const*>(args.data()));
+                _exit(76);
+            }
+            int status = 0;
+            waitpid(pid, &status, 0);
+            const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+            if (code == 76 || code == 77) {
+                printf("     (the container shape could not be built here; leg skipped)\n");
+            } else {
+                check(code == 0, "the container-shaped frame was drawn and read back");
+                static unsigned char in_container[W * H * 4];
+                if (read_raw(container_path, in_container, sizeof(in_container))) {
+                    long colour_container = 0;
+                    for (long i = 0; i < (long)W * H; ++i) {
+                        const unsigned char* a = in_container + i * 4;
+                        const unsigned char* b = without_bank + i * 4;
+                        const int dr = a[0] > b[0] ? a[0] - b[0] : b[0] - a[0];
+                        const int dg = a[1] > b[1] ? a[1] - b[1] : b[1] - a[1];
+                        const int db = a[2] > b[2] ? a[2] - b[2] : b[2] - a[2];
+                        if ((dr >= 24 || dg >= 24 || db >= 24) && spread(a) > 40) {
+                            ++colour_container;
+                        }
+                    }
+                    printf("     coloured with the bank reachable only under /run/host: %ld\n",
+                           colour_container);
+                    check(colour_container > 40,
+                          "a game inside a container finds the bank the host mounted for it");
+                } else {
+                    check(false, "the container-shaped frame is the size it should be");
+                }
+            }
+        }
     }
 
     char cleanup[800];
