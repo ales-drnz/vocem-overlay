@@ -70,10 +70,19 @@ against the host's glibc will not load inside the runtime.
 flatpak build-update-repo --generate-static-deltas --prune --gpg-sign=FA67BB03AECF6941 vocem-flatpak-repo
 ```
 
-About 7 MB. The repository is rebuilt from scratch every release, so a user's
-history is always unrelated to it and the from-empty static delta is the whole
-download: one file instead of several dozen object requests over HTTP. Leave
-`--prune-depth` alone; at 0 it drops the parent commit.
+Two deltas come out of this, and both are wanted: the from-empty one, which is
+the whole download for somebody installing today, and the incremental one from
+the previous release, which is what `flatpak update` takes. Measured at 0.1.5:
+`884edf4e35-258698c0c2` and `258698c0c2`. Leave `--prune-depth` alone; at 0 it
+drops the parent commit, and the parent is what the incremental delta is against.
+
+This paragraph used to say the repository is rebuilt from scratch every release,
+so that a user's history is always unrelated to it and the from-empty delta is
+the only one. That is not what the command does -- `--force-clean` cleans the
+build directory and never the repository -- and it is not what happened at 0.1.5,
+which exported on top of 0.1.4's commit. Keeping the parent is the better of the
+two anyway: an existing user downloads the difference rather than the whole
+thing. The cost is the size served, 7 MB at one commit and 24 MB at two.
 
 The `gh-pages` branch carries `repo/`, `vocem-overlay-layer.flatpakref`,
 `index.html` and `.nojekyll`, and is force-pushed whole at each release so it
