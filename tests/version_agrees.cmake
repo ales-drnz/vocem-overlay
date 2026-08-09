@@ -27,9 +27,13 @@
 #   * CMakeLists.txt states the release being written. One statement, everything
 #     else derives from it or is checked against it.
 #   * PKGBUILD.local builds the working tree, so it carries that same number.
-#   * PKGBUILD builds `#tag=v$pkgver`, so it carries the newest tag that exists
-#     and stays a release behind until the owner tags. A PKGBUILD naming a tag
-#     nobody can fetch is broken for the stranger it exists for.
+#   * PKGBUILD builds `#tag=v$pkgver`, so it names either the newest tag that
+#     exists or the release this commit is about to be tagged with. A PKGBUILD
+#     naming a tag nobody can fetch is broken for the stranger it exists for --
+#     and a tag whose own PKGBUILD names the PREVIOUS release is broken for the
+#     same stranger, which is why the second state has to be allowed: a tag
+#     cannot exist before the commit it is put on. Ahead of both numbers is a
+#     fault; behind is mid-cycle.
 #   * .SRCINFO is generated from PKGBUILD, so it says whatever PKGBUILD says.
 #   * the metainfo lists every release that has a tag, newest first. It may name
 #     the release being written, because the entry and the tag are made in one
@@ -171,9 +175,24 @@ if(newest_tag STREQUAL "")
             "packaging/PKGBUILD says pkgver=${tagged_pkgver}, which is ahead of the ${project_version} being written, and no tags are visible here to check it against.")
     endif()
     set(state "no tags visible: only the ordering of PKGBUILD's ${tagged_pkgver} against ${project_version} was checked")
+elseif(tagged_pkgver VERSION_EQUAL project_version AND NOT newest_tag VERSION_EQUAL project_version)
+    # The release being cut. This state was missing and the rule above forbade
+    # it, which made the test impossible to satisfy at the one moment it
+    # matters: a tag cannot exist before the commit it is put on, so the commit
+    # that moves PKGBUILD to the new number is always one where that tag is not
+    # there yet. Forbidding it would leave two bad choices -- tag first and ship
+    # a v0.1.5 whose own PKGBUILD fetches v0.1.4, which is what a stranger
+    # checking out that tag would build, or edit the test to make it green. What
+    # the project actually does, and what v0.1.4 shows in its own tree, is move
+    # the number and then tag that commit.
+    #
+    # This branch is the narrow one: PKGBUILD may be ahead of every tag only
+    # when it names exactly the release CMakeLists.txt states. Ahead of both is
+    # still a fault, and behind is still the mid-cycle state below.
+    set(state "being cut: PKGBUILD carries ${project_version} and v${project_version} is not tagged yet")
 elseif(NOT tagged_pkgver VERSION_EQUAL newest_tag)
     list(APPEND problems
-        "packaging/PKGBUILD says pkgver=${tagged_pkgver} and the newest tag is v${newest_tag}. That file fetches #tag=v\$pkgver, so it has to name a tag that exists, and the newest one is what a stranger should get.")
+        "packaging/PKGBUILD says pkgver=${tagged_pkgver}, which is neither the newest tag (v${newest_tag}) nor the ${project_version} being released. That file fetches #tag=v\$pkgver, so it has to name a tag that exists or the one this commit is about to be tagged with.")
 elseif(newest_tag VERSION_EQUAL project_version)
     set(state "released: v${newest_tag} exists, so all three files carry ${project_version}")
 else()
