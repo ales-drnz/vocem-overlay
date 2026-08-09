@@ -2,14 +2,14 @@
 
 ### Fixed
 
-- The About page names the release that is installed. It had said 0.1.0 in every release since the first one, and the list of changes Discover and GNOME Software show had stopped at 0.1.2.
-- The map of the display follows a monitor plugged in, unplugged, or switched to another resolution while the settings window is open. It used to draw the display that was there when the window opened, which for a window started at login is the display that was there at login, while the overlay had already resized for the new one.
-- The text of a direct message leaves shared memory when its toast ends, whatever Discord is doing. It was removed only while a Discord connection was up, so quitting Discord after a message left that message's text readable by every program in the session for as long as Discord stayed away. A daemon that is killed outright cannot clear it, so the next one to start clears what it finds.
-- A settings line longer than 255 bytes is read and written whole. Longer lines were cut without a word: the applications hidden past the cut were given the overlay again, and the settings window wrote the cut-down list back to the file at the next Apply, which lost those entries for good. The lists of hidden and shown applications and the two font paths all share that line length.
-- `vocem-why.sh` reports the daemon's state on one line when the daemon is stopped. It printed the state and the word "unknown" underneath it.
-- Colour emoji are drawn in colour in a Steam game, and in a game that is itself a Flatpak. The bank they come from was looked for at one absolute path, and inside the container a Steam title runs in that path belongs to the container rather than to the machine, so those games drew every emoji as a white shape while the same game started outside the container drew it in colour. A game that is itself a Flatpak gets the bank across the bridge for the same reason, and waits for it to arrive rather than giving up on the first frame.
-- A keycap emoji is drawn by one font throughout. The digit came from the plain typeface and the box around it from the colour bank, which put a grey digit inside a coloured tile.
-- Emoji stay coloured in a channel full of decorated or CJK names. The table that remembers which characters have a colour glyph counted every unusual character, not only the emoji, and once it filled every emoji that arrived afterwards was drawn as a white shape until the game was restarted.
+- The About page names the release that is installed, and the list of changes Discover and GNOME Software show reaches it too.
+- The map of the display follows a monitor plugged in, unplugged or switched to another resolution while the settings window is open. It used to draw whatever was there when the window opened.
+- The text of a direct message leaves shared memory when its toast ends, whatever Discord is doing. It used to stay for as long as Discord was away, and what a killed daemon leaves behind is cleared by the next one to start.
+- A settings line is read and written whole at any length. Past 255 bytes it was cut without a word, which gave the overlay back to the applications hidden after the cut and lost them from the file at the next Apply.
+- Colour emoji are drawn in colour in a Steam game, and in a game that is itself a Flatpak. The bank they come from was looked for at one path, which inside a container belongs to the container rather than to the machine.
+- A keycap emoji is drawn by one typeface throughout, instead of a plain digit inside a coloured tile.
+- Emoji stay coloured in a channel full of decorated or CJK names. The table of characters that have a colour glyph counted every unusual character, not only the emoji.
+- `vocem-why.sh` reports the daemon's state on one line when the daemon is stopped.
 
 ## [0.1.4] - 6-08-2026
 
