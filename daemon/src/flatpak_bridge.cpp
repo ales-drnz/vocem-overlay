@@ -573,14 +573,46 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
     ::close(avatars);
 }
 
+// The colour emoji bank, once per sandbox that draws.
+//
+// Inside a Flatpak the compiled-in path names the *runtime's* /usr and finds
+// nothing, so the overlay drew every emoji in the monochrome fallback and said
+// so in the log and nowhere else. It is the same omission the note segment had
+// before entry 88 -- a fourth thing to carry that nothing carried -- and the
+// same answer.
+//
+// Unlike the settings and the faces this is copied exactly once: six megabytes
+// that never change while the daemon runs. Only into a sandbox the overlay is
+// actually drawing in, so a Flatpak the user has excluded costs nothing, and
+// six megabytes of the runtime directory is a real cost to name rather than
+// spend quietly.
+void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
+    if (mirror.emoji_bank_copied) {
+        return;
+    }
+    // The daemon is not sandboxed, so the installed path is the right one here.
+    if (copy_into(mirror.directory, VOCEM_EMOJI_BANK_PATH, kBridgeEmojiBankName)) {
+        mirror.emoji_bank_copied = true;
+        DBG("copied %s into the Flatpak sandbox of %s", kBridgeEmojiBankName, mirror.id.c_str());
+        return;
+    }
+    // Said once, not once per tick: a machine with no bank installed is a
+    // decision somebody made, not an error to repeat every second.
+    mirror.emoji_bank_copied = true;
+    LOG("no colour emoji bank at %s to give the Flatpak sandbox of %s: its emoji stay "
+        "monochrome (%s)", VOCEM_EMOJI_BANK_PATH, mirror.id.c_str(), std::strerror(errno));
+}
+
 void FlatpakBridge::refresh_files(const SharedState& state) {
     for (Mirror& mirror : mirrors_) {
         // The settings always: they are what the overlay reads to decide whether
         // it draws in this game at all, so withholding them would make the
-        // decision unanswerable. The faces only where it does draw.
+        // decision unanswerable. The faces and the emoji bank only where it does
+        // draw.
         mirror_config(mirror);
         if (mirror.drawing) {
             mirror_avatars(mirror, state);
+            mirror_emoji_bank(mirror);
         }
     }
 }

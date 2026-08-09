@@ -57,6 +57,12 @@ inline constexpr const char* kBridgeNoteName = "note";
 inline constexpr const char* kBridgeConfigName = "config.ini";
 inline constexpr const char* kBridgeAvatarsName = "avatars";
 inline constexpr const char* kBridgeRequestName = "request";
+// The colour emoji bank. Inside a sandbox the host's /usr is not mounted, so
+// the compiled-in path names the runtime's own /usr and finds nothing -- the
+// same shape as the note being the fourth thing to carry and nothing carrying
+// it. Six megabytes and it never changes, so it is copied once per sandbox and
+// only into one that is actually drawing.
+inline constexpr const char* kBridgeEmojiBankName = "emoji_bank.rgba";
 
 namespace detail {
 // Room for the id parsed out of /.flatpak-info. Namespace scope and
