@@ -85,6 +85,20 @@
        out-of-date release list is not something AppStream can catch, and nothing
        else looked. tests/version_agrees.cmake does now. -->
   <releases>
+    <release version="0.1.5" date="2026-08-09">
+      <description>
+        <p>Fixed</p>
+        <ul>
+          <li>The About page names the release that is installed.</li>
+          <li>The map of the display follows a monitor plugged in while the settings window is open.</li>
+          <li>The text of a direct message leaves shared memory when its toast ends, whatever Discord is doing.</li>
+          <li>A settings line longer than 255 bytes is read and written whole.</li>
+          <li>Colour emoji are drawn in colour in a Steam game, and in a game that is itself a Flatpak.</li>
+          <li>A keycap emoji is drawn by one font throughout.</li>
+          <li>Emoji stay coloured in a channel full of decorated or CJK names.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-08-06">
       <description>
         <p>Several ways a game went undetected are fixed: launched by Heroic,
