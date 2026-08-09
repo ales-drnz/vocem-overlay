@@ -36,7 +36,17 @@ case "${LD_PRELOAD:-}" in
     *) echo "  !! this shell has no preload: if the session is the same,"
        echo "     no OpenGL program can have the overlay. Log out and back in." ;;
 esac
-echo "daemon: $(systemctl --user is-active vocemd.service 2>/dev/null || echo unknown)"
+# `systemctl is-active` reports a STATE, so its exit status *is* that state
+# rather than an error: "inactive" comes back with exit 3, and a unit systemd
+# has never heard of with exit 4, both having printed the word on stdout. So
+# `|| echo unknown` ran the fallback as well as the command and put two lines
+# where one belongs -- and it did it precisely when the daemon is down, which is
+# the situation somebody runs this tool in. Entry 99 is the same mistake with
+# `grep -c`, five lines further down, found and fixed while this one stood.
+# Take the output; fall back only when there is none.
+daemon_state=$(systemctl --user is-active vocemd.service 2>/dev/null)
+[ -n "$daemon_state" ] || daemon_state=unknown
+echo "daemon: $daemon_state"
 echo
 
 if [ "$#" -eq 0 ]; then
@@ -99,6 +109,11 @@ for pid in $pids; do
     shim=$(count_in_maps "libvocem_gl_shim")
     lib=$(count_in_maps "libvocem_gl\.so")
     vk=$(count_in_maps "libvocem_vk")
+    # `A && echo x || echo y` is the same shape as the fault above and is sound
+    # here, which is worth saying rather than leaving to be re-derived: the first
+    # branch is a `[` test, so it either succeeds and `echo x` runs alone, or it
+    # fails and only `echo y` does. The fault needs a first branch that prints
+    # AND fails, which is what `systemctl is-active` and `grep -c` both do.
     echo "  shim loaded:       $([ "$shim" -gt 0 ] && echo yes || echo NO)"
     echo "  GL overlay:        $([ "$lib" -gt 0 ] && echo yes || echo no)"
     echo "  Vulkan layer:      $([ "$vk" -gt 0 ] && echo yes || echo no)"

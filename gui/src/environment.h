@@ -341,12 +341,61 @@ inline QList<DisplayMode> read_displays() {
     return found;
 }
 
+// The three answers below are remembered between reads, and forgotten on the
+// window's slow tick.
+//
+// Remembered, because a QML binding asks for each of them every time the state
+// changes -- twice a second -- and a /sys walk per binding per tick is not what
+// this window should spend its time on. NOT answered once, which is what they
+// used to be: this is a tray application that starts hidden at login and stays
+// up for the session, so "once" meant "at login". Meanwhile the daemon re-reads
+// the same tree every sixty seconds and republishes, and running games follow
+// it -- so after a monitor was plugged in the overlay resized and the window
+// that is supposed to be a picture of it went on drawing the old display,
+// captioning the old resolution, and not offering the new one in "Map shows",
+// until somebody quit the tray icon and opened it again. Measured against the
+// packaged 0.1.4-1 with a 1280x1024 tree and a 3840x2160 connector added 1.6 s
+// after the window was up: every map stayed 5:4 for the rest of the run, where
+// the same two displays present at startup gave 16:9. The reader was right; the
+// remembering was the defect (entry 63's shape, in the instrument the owner uses
+// to place the overlay).
+//
+// All three together, so one call forgets all of them: two facts about one
+// display refreshed a tick apart is a window disagreeing with itself.
+namespace detail {
+
+struct RememberedDisplays {
+    QList<DisplayMode> connected;
+    uint32_t sizing_height = 0;
+    QString resolution;
+};
+
+inline RememberedDisplays& remembered_displays() {
+    static RememberedDisplays remembered;
+    return remembered;
+}
+
+}  // namespace detail
+
+// Ask the kernel again the next time each of them is read.
+//
+// The cadence belongs to the caller and ConfigBridge puts it on its four-second
+// sweep, not on the twice-a-second tick. Measured before choosing: one
+// read_displays() against this machine's /sys/class/drm (four connectors, one
+// connected) costs 141 us, twice over 200 runs -- so four seconds is thirty-five
+// parts in a million of the window's time, sooner than anybody can plug a
+// monitor in and look at the settings, and fifteen times more attentive than the
+// daemon, which calls the same question every sixty seconds.
+inline void forget_displays() {
+    detail::remembered_displays() = detail::RememberedDisplays{};
+}
+
 inline const QList<DisplayMode>& displays() {
-    // Answered once and remembered. A display that is asleep reports itself
-    // disconnected with no modes at all -- which is what a run with the monitor
-    // blanked found, and what a caption of "0 × 0" came from -- so an empty answer
-    // is asked again on the next tick rather than kept.
-    static QList<DisplayMode> connected;
+    // A display that is asleep reports itself disconnected with no modes at all
+    // -- which is what a run with the monitor blanked found, and what a caption
+    // of "0 × 0" came from -- so an empty answer is asked again on the next read
+    // rather than kept until the sweep.
+    QList<DisplayMode>& connected = detail::remembered_displays().connected;
     if (connected.isEmpty()) {
         connected = read_displays();
     }
@@ -356,9 +405,9 @@ inline const QList<DisplayMode>& displays() {
 // The height the overlay is actually sized for: the largest connected mode,
 // through the same reader the daemon publishes from (vocem/display.h), under
 // the same overridable root as the enumeration above. Zero -- a VM, a headless
-// run -- is asked again on the next tick, like the caption.
+// run -- is asked again on the next read, like the caption.
 inline uint32_t overlay_display_height() {
-    static uint32_t height = 0;
+    uint32_t& height = detail::remembered_displays().sizing_height;
     if (height == 0) {
         height = vocem::display_height_under(drm_root().toLocal8Bit().constData());
     }
@@ -397,7 +446,7 @@ inline qreal sizing_display_aspect() {
 // which is the one the automatic map stands for. Falls back to Qt's logical
 // size where sysfs is not readable.
 inline QString screen_resolution() {
-    static QString resolution;
+    QString& resolution = detail::remembered_displays().resolution;
     if (resolution.isEmpty()) {
         const DisplayMode sizing = sizing_display();
         if (sizing.height > 0) {

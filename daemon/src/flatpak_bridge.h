@@ -89,6 +89,10 @@ private:
         // What is in the file is whatever the sandbox last left there.
         uint32_t sequence = 0;
         long long config_mtime = 0;
+        // Whether the colour emoji bank has been put in this sandbox. Six
+        // megabytes that never change, so it is copied once and only into a
+        // sandbox the overlay is actually drawing in.
+        bool emoji_bank_copied = false;
         // The name of the record already written on the host for this sandbox, so
         // that a tick which learns nothing new writes nothing.
         std::string recorded;
@@ -101,6 +105,7 @@ private:
     bool adopt(const char* id);
     void mirror_config(Mirror& mirror);
     void mirror_avatars(Mirror& mirror, const SharedState& state);
+    void mirror_emoji_bank(Mirror& mirror);
 
     int applications_ = -1;  // $XDG_RUNTIME_DIR/app
     bool started_ = false;

@@ -354,6 +354,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        // The version this binary carries, once, before any section. It is the
+        // same string ConfigBridge::version() answers with and AboutPage.qml
+        // prints, so a run of the window can be asked what it calls itself.
+        //
+        // Nothing could ask before, and the number was wrong for four releases:
+        // the About page of the installed 0.1.4 package said "Version 0.1.0",
+        // because VOCEM_VERSION comes from CMakeLists.txt's project(VERSION) and
+        // that line had never moved. What this line does not carry is the
+        // rendered label -- the dump holds rectangles and numbers, not text --
+        // so it answers "which version is compiled in", one QML binding short of
+        // "which version the page shows".
+        if (geometry_file->isOpen()) {
+            QTextStream out(geometry_file);
+            out << "{\"version\": \"" << QStringLiteral(VOCEM_VERSION) << "\"}\n";
+        }
+
         // The window at a size of the caller's choosing, so the layouts can be
         // judged at the smallest one the window allows as well as at its default.
         if (const char* size = std::getenv("VOCEM_CONFIG_SIZE"); size && *size) {
@@ -373,19 +389,44 @@ int main(int argc, char* argv[]) {
         // VOCEM_CONFIG_SECTIONS stops earlier. A screenshot run wants all of them;
         // the geometry comparison reads two, and walking the other six costs it a
         // second and a half of switching pages for nothing.
-        int sections = 9;
-        if (const char* last = std::getenv("VOCEM_CONFIG_SECTIONS"); last && *last) {
-            const int asked = QString::fromLocal8Bit(last).toInt();
-            if (asked >= 0 && asked < sections) {
-                sections = asked;
+        //
+        // A comma in it is an explicit walk instead: the sections to visit, in
+        // order, repeats allowed. Anything a page only says after a while cannot
+        // be measured by a walk that visits each page once and never comes back
+        // -- the maps of the display are on the first two sections and the
+        // window's slow sweep is four seconds, so "0,1,2,3,0" is how a map is
+        // grabbed, drawn and visible, after something changed underneath it. The
+        // plain number is what it always was.
+        const int last_section = 9;
+        QList<int> walk;
+        if (const char* asked = std::getenv("VOCEM_CONFIG_SECTIONS"); asked && *asked) {
+            const QString text = QString::fromLocal8Bit(asked);
+            if (text.contains(QLatin1Char(','))) {
+                for (const QString& part : text.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+                    bool number = false;
+                    const int section = part.trimmed().toInt(&number);
+                    if (number && section >= 0 && section <= last_section) {
+                        walk.append(section);
+                    }
+                }
+            } else {
+                const int stop = text.toInt();
+                for (int section = 0; section <= qBound(0, stop, last_section); ++section) {
+                    walk.append(section);
+                }
+            }
+        }
+        if (walk.isEmpty()) {
+            for (int section = 0; section <= last_section; ++section) {
+                walk.append(section);
             }
         }
         auto* step = new QTimer(window);
         auto* index = new int(0);
         step->setInterval(700);
         QObject::connect(step, &QTimer::timeout, window,
-                         [window, path, geometry_file, index, step, sections] {
-            if (*index > sections) {
+                         [window, path, geometry_file, index, step, walk] {
+            if (*index >= walk.size()) {
                 if (geometry_file->isOpen()) {
                     geometry_file->close();
                 }
@@ -402,14 +443,18 @@ int main(int argc, char* argv[]) {
             // A dump of three sections that are all section 0 looks exactly like
             // a finished measurement.
             step->stop();
-            window->setProperty("section", *index);
+            // The section this step visits; the step's own number is what names
+            // the file and the dump line, because a walk may visit one section
+            // more than once and two grabs must not land on one name.
+            const int section = walk.at(*index);
+            window->setProperty("section", section);
             // Before the grab, so the popup has the same moment to lay itself
             // out that the page has.
             if (const char* open = std::getenv("VOCEM_CONFIG_OPEN"); open && *open) {
                 open_named_popups(window, QString::fromLocal8Bit(open));
             }
             // Grab on the next tick: the property change has to reach the scene.
-            QTimer::singleShot(400, window, [window, path, geometry_file, index, step] {
+            QTimer::singleShot(400, window, [window, path, geometry_file, index, step, section] {
                 // Always grabbed, even when no screenshot was asked for: the grab is
                 // what forces a synchronous render, and without a render the section
                 // that has just been switched to is never laid out. Its items then
@@ -443,7 +488,8 @@ int main(int argc, char* argv[]) {
                 if (geometry_file->isOpen()) {
                     QTextStream out(geometry_file);
                     QHash<QString, int> seen;
-                    out << "{\"section\": " << *index << ", \"window\": {\"w\": " << window->width()
+                    out << "{\"section\": " << section << ", \"step\": " << *index
+                        << ", \"window\": {\"w\": " << window->width()
                         << ", \"h\": " << window->height() << "}}\n";
                     // Every visible window and whether it hangs off another one.
                     // The crash report is supposed to be its own window on the

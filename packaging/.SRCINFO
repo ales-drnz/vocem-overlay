@@ -1,6 +1,6 @@
 pkgbase = vocem-overlay
 	pkgdesc = Discord voice overlay drawn inside the game, through a Vulkan layer and an OpenGL hook
-	pkgver = 0.1.2
+	pkgver = 0.1.5
 	pkgrel = 1
 	url = https://github.com/ales-drnz/vocem-overlay
 	arch = x86_64
@@ -12,17 +12,17 @@ pkgbase = vocem-overlay
 	makedepends = ninja
 	makedepends = git
 	makedepends = vulkan-headers
-	makedepends = lib32-gcc-libs
-	makedepends = lib32-vulkan-icd-loader
 	depends = vulkan-icd-loader
 	depends = qt6-base
 	depends = qt6-declarative
 	depends = curl
 	depends = hicolor-icon-theme
+	depends = fontconfig
 	depends = lib32-gcc-libs
 	depends = lib32-vulkan-icd-loader
 	optdepends = qqc2-desktop-style: native appearance on KDE Plasma
-	source = git+https://github.com/ales-drnz/vocem-overlay.git#tag=v0.1.2
+	options = !debug
+	source = git+https://github.com/ales-drnz/vocem-overlay.git#tag=v0.1.5
 	source = imgui::git+https://github.com/ocornut/imgui.git#tag=v1.91.9
 	sha256sums = SKIP
 	sha256sums = SKIP

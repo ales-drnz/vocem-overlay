@@ -812,7 +812,26 @@ int main() {
     // that has just been adopted does not sit on an empty state until the next
     // thing Discord says.
     double bridge_checked = 0.0;
-    const auto service_bridge = [&] {
+    // Everything that has to happen whatever Discord is doing, in one place so
+    // that a loop cannot run some of it. Every loop in main() that spends time
+    // -- the port walk's pause, the reconnect pause, the wait after a refused
+    // authorisation, and the recv loop itself -- calls this and nothing else.
+    //
+    // That shape is the fix for a defect, not a tidying: the note's expiry used
+    // to be called from the recv loop alone, so it ran only while a Discord
+    // connection was up. Discord quitting after a message therefore left the
+    // words of that message in /dev/shm, readable by every process in the
+    // session, for as long as it stayed away -- measured against the packaged
+    // 0.1.4-1 daemon as still there forty seconds after the connection closed,
+    // which is where the counting stopped and not where the exposure ended.
+    // `vocem/note.h` promises the words live no longer than the toast; the toast
+    // is timed by this daemon, so the clock has to be this daemon's own.
+    const auto tick = [&] {
+        session.expire_note(live_config.current().notification_seconds);
+
+        // The bridge is on the slower clock the sandboxes' needs run on; the
+        // expiry above is not, because it is already a deadline of its own and
+        // a second of granularity on top of it is a second of exposure.
         const double now = vocem::monotonic_seconds();
         if (now - bridge_checked < 1.0) {
             return;
@@ -824,6 +843,17 @@ int main() {
             bridge.refresh_files(*state);
         }
     };
+
+    // A note found here was written by a daemon that is gone, and its toast went
+    // with it. `~NoteWriter()` retires the words on a clean exit, but the unit
+    // carries `Restart=on-failure` and `MemoryMax=128M`, and a SIGKILL runs no
+    // destructor -- so an OOM-killed daemon leaves the last message's text
+    // behind exactly as a crash does. Nothing can be done inside the process
+    // being killed; declining the inheritance is what the next one can do.
+    // `clear()` is the whole retirement and not just the unlink: it also fires
+    // the `on_publish` hook above, which removes the mirror of those words from
+    // every Flatpak sandbox that was being served.
+    session.note().clear();
 
     const std::string path = std::string("/?v=1&client_id=") + vocem::kClientId;
     int backoff_seconds = 1;
@@ -876,12 +906,18 @@ int main() {
             reached_on = port;
             break;
         }
+        // Between ports, because `connect()` above is allowed a whole handshake
+        // deadline against a peer that accepts and then says nothing, and ten
+        // ports of that would accumulate into a minute and a half in which the
+        // note's expiry never came round. One tick per port bounds the wait to
+        // one deadline rather than ten.
+        tick();
         if (reached_on == 0) {
             DBG("Discord not reachable on ports %u-%u, retrying in %ds", kRpcPortFirst,
                 kRpcPortLast, backoff_seconds);
             for (int i = 0; i < backoff_seconds && !g_stop; ++i) {
                 sleep(1);
-                service_bridge();
+                tick();
             }
             backoff_seconds = backoff_seconds < 30 ? backoff_seconds * 2 : 30;
             continue;
@@ -894,12 +930,11 @@ int main() {
         while (!g_stop && !client.failed()) {
             std::string raw;
             const auto result = socket.recv(raw, 1000);
-            // The recv timeout doubles as the tick that retires a message's
-            // words: the note segment lives only as long as the toast that is
-            // drawn from it, and how long that is comes from the same setting
-            // the drawing side reads.
-            session.expire_note(live_config.current().notification_seconds);
-            service_bridge();
+            // The recv timeout is one of the four places the tick is driven
+            // from, and for a long time it was the only one -- which is what
+            // left a message's words in /dev/shm whenever Discord went away
+            // between the toast and the tick. See `tick` above.
+            tick();
             // The display, on a slower clock: a mode switch or a plugged monitor
             // is rare, and four sysfs opens a minute cost nothing.
             static double display_checked = 0.0;
@@ -944,7 +979,7 @@ int main() {
             vocem::journal_note("authorisation refused; waiting for a retry");
             while (!g_stop) {
                 sleep(1);
-                service_bridge();
+                tick();
             }
             break;
         }
@@ -970,7 +1005,7 @@ int main() {
         if (!client.authenticated()) {
             for (int i = 0; i < backoff_seconds && !g_stop; ++i) {
                 sleep(1);
-                service_bridge();
+                tick();
             }
             backoff_seconds = backoff_seconds < 30 ? backoff_seconds * 2 : 30;
         }

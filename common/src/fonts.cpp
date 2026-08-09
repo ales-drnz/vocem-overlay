@@ -111,8 +111,24 @@ static_assert(kEmojiCeiling <= static_cast<float>(kEmojiBankPixels),
 // purpose: a name with a typographic apostrophe shows the same codepoint every
 // frame, and forgetting the rejection would put a bank lookup -- file reads --
 // on the per-frame path. A fixed array, because everything here can run inside
-// a game; past the cap new emoji stay monochrome, which still draws.
-constexpr uint32_t kMaxSeenCodepoints = 96;
+// a game.
+//
+// **Two budgets, because they are two different things.** This array is the
+// remembered verdict, and its size is only about not asking the bank twice; the
+// atlas budget below is about how many coloured rectangles a rebuild can carry.
+// They were one number, ninety-six, and the array counted every codepoint from
+// U+2000 up whether the bank had it or not -- so a channel of decorated and CJK
+// names filled it with characters that were never going to be coloured, and
+// from then on every emoji that arrived stayed monochrome for the life of the
+// process. Measured: ninety-eight ideographs seen in names, then
+// `fonts_emoji_status()` reporting the table full and a fire arriving
+// afterwards drawn by the monochrome font. Which reads, from a chair, as
+// "sometimes they are coloured and sometimes they are not".
+constexpr uint32_t kMaxSeenCodepoints = 512;
+// How many bank glyphs one atlas carries. This is the number with a cost behind
+// it: one custom rectangle per weight per emoji, each the emoji's own square of
+// texture (kEmojiCeiling above says what that is worth).
+constexpr uint32_t kMaxBankGlyphs = 96;
 constexpr uint32_t kSeenInBank = 0x80000000u;
 uint32_t g_seen[kMaxSeenCodepoints];
 uint32_t g_seen_count = 0;
@@ -320,7 +336,21 @@ bool looks_like_a_font(const unsigned char* data, size_t size) {
 
 void note_emoji_codepoint(uint32_t codepoint) {
     // Below the symbols there are no emoji, and Inter's own glyphs win anyway.
+    //
+    // The floor is deliberate and it is not going up: the bank *does* carry the
+    // fourteen codepoints under it -- the digits, `#`, `*`, `©` and `®` -- but
+    // they are the bases of keycap sequences, and colouring U+0032 would draw
+    // "User 2" with a keycap in it.
     if (codepoint < 0x2000 || codepoint > 0x10FFFF) {
+        return;
+    }
+    // And the other half of the same decision, which was missing: U+20E3 is the
+    // box a keycap sequence draws *around* its digit, it is above the floor, and
+    // the bank has it -- so `1` came out of the monochrome font and the box
+    // around it came out of the bank, and the user saw a grey digit inside a
+    // blue tile. Half an emoji coloured is worse than none: refused here, so a
+    // keycap is drawn by one font throughout.
+    if (codepoint == 0x20E3) {
         return;
     }
     long low = 0;
@@ -342,7 +372,24 @@ void note_emoji_codepoint(uint32_t codepoint) {
         return;
     }
     // The one bank lookup this codepoint will ever cost.
-    const bool in_bank = g_emoji_bank.contains(codepoint);
+    bool in_bank = g_emoji_bank.contains(codepoint);
+    // Unless the bank has not arrived yet, which only happens inside a Flatpak:
+    // the daemon copies it in on its own tick and the game's first frame beats
+    // it. Writing "no colour glyph" down now would outlive the wait -- the
+    // verdict here is remembered for the life of the process -- so nothing is
+    // written down at all until the bank has either opened or given up. Costs a
+    // walk of the seen table per codepoint per frame for at most thirty seconds
+    // in a sandbox, and the open behind it is rate-limited to two a second.
+    if (!in_bank && g_emoji_bank.still_arriving()) {
+        return;
+    }
+    // The atlas budget, which is a different question from the one above: past
+    // it a new colour emoji stays monochrome, and it is remembered as "not in
+    // the bank" so it never costs another lookup either.
+    if (in_bank && g_wanted_count >= kMaxBankGlyphs) {
+        in_bank = false;
+        g_capped = true;
+    }
     std::memmove(&g_seen[low + 1], &g_seen[low],
                  (g_seen_count - static_cast<uint32_t>(low)) * sizeof(uint32_t));
     g_seen[low] = codepoint | (in_bank ? kSeenInBank : 0);
@@ -520,7 +567,7 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     // follows it, and a third weight fails to compile instead of writing past
     // two stack arrays inside a game.
     constexpr uint32_t kAtlasWeights = 2;
-    constexpr uint32_t kMaxRects = kMaxSeenCodepoints * kAtlasWeights;
+    constexpr uint32_t kMaxRects = kMaxBankGlyphs * kAtlasWeights;
     int rect_index[kMaxRects];
     uint32_t rect_codepoint[kMaxRects];
     uint32_t rect_count = 0;

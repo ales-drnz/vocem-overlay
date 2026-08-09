@@ -40,10 +40,26 @@
 #include <unistd.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include "vocem/clock.h"
+#include "vocem/flatpak.h"
+
 namespace vocem {
+
+// How often to look again for a bank that is not there *yet*, and how long to
+// keep looking. Deliberately the same policy, and the same two numbers, as
+// vocem/avatar_file.h: inside a Flatpak the daemon copies the bank in on its
+// own one-second tick, and the overlay's first frame happens before that. A
+// single refused open remembered for the life of the process therefore left a
+// sandboxed game monochrome for ever even though the file appeared a moment
+// later -- measured, twice, with the host path hidden the way a sandbox hides
+// it. "A picture that has not arrived yet is not a picture that failed" is the
+// same sentence, one file along.
+constexpr double kBankRetrySeconds = 0.5;
+constexpr double kBankGiveUpSeconds = 30.0;
 
 constexpr uint32_t kEmojiBankPixels = 32;
 constexpr uint32_t kEmojiBankRgbaBytes = kEmojiBankPixels * kEmojiBankPixels * 4;
@@ -63,6 +79,19 @@ constexpr uint32_t kEmojiBankRecordBytes = 4 + kEmojiBankRgbaBytes;
 // caller can say why colour emoji are absent instead of leaving it to be
 // guessed: the honesty rule wants a component that declines to act to say so,
 // and this class is not the one holding a log.
+//
+// **The bank is looked for in more than one place, and it has to be.** For a
+// long time this was one hardcoded absolute path, in a project where every other
+// thing the injected code reads has a list of candidates -- the shim tries the
+// soname, then `/run/host` + VOCEM_LIBDIR, then VOCEM_LIBDIR (entry 31); the
+// state, the settings, the avatars and the note each have a POSIX name and a
+// Flatpak mirror. The bank had one, and the one was wrong wherever `/usr` is not
+// the host's. Measured inside the Steam Linux Runtime with no game launched:
+// `/usr/share/vocem/emoji_bank.rgba` is ABSENT and
+// `/run/host/usr/share/vocem/emoji_bank.rgba` is PRESENT -- so every Steam title
+// under pressure-vessel drew the overlay with monochrome emoji while the same
+// game outside it drew them in colour. From the outside that is "sometimes
+// coloured, sometimes not", which is exactly how it was reported.
 class EmojiBank {
 public:
     // True when the bank is present and well-formed; the monochrome fallback
@@ -74,35 +103,95 @@ public:
         if (attempted_) {
             return false;
         }
-        attempted_ = true;
-        path_ = std::getenv("VOCEM_EMOJI_BANK");
-        if (!path_ || !path_[0]) {
-            path_ = VOCEM_EMOJI_BANK_PATH;
+        // Not there *yet* is not the same as not there. On the host every
+        // candidate is a file that either exists or does not, and one look
+        // settles it; inside a Flatpak the only reachable candidate is the copy
+        // the daemon makes on its own tick, and the game's first frame beats it.
+        // So a sandbox gets the avatar cache's policy -- looked at again twice a
+        // second, given up on after thirty -- and the host gets exactly the one
+        // attempt it always had.
+        if (bridge_in_use()) {
+            const double now = monotonic_seconds();
+            if (first_asked_ == 0.0) {
+                first_asked_ = now;
+            } else if (now < next_attempt_) {
+                return false;
+            } else if (now - first_asked_ >= kBankGiveUpSeconds) {
+                attempted_ = true;
+                reason_ = "no colour emoji bank came across the Flatpak bridge";
+                return false;
+            }
+            next_attempt_ = now + kBankRetrySeconds;
+        } else {
+            attempted_ = true;
         }
-        const int fd = ::open(path_, O_RDONLY | O_CLOEXEC);
-        if (fd < 0) {
+
+        // Named explicitly: that answer is the whole answer. An override that
+        // points at nothing must NOT fall through to the installed bank -- the
+        // differential test drives its no-bank leg exactly this way, and a
+        // fallback here would give it a bank and make both its frames identical.
+        if (const char* named = std::getenv("VOCEM_EMOJI_BANK"); named && named[0]) {
+            std::snprintf(path_, sizeof(path_), "%s", named);
+            if (try_open()) {
+                return true;
+            }
+            reason_ = "no colour emoji bank where VOCEM_EMOJI_BANK points";
+            return false;
+        }
+
+        // Inside a Flatpak game the host's /usr is not mounted at all, so the
+        // copy the daemon puts in the bridge directory is the only reachable
+        // one (vocem/flatpak.h). Asked before the installed path, because in a
+        // sandbox that path may exist and belong to the runtime.
+        if (bridge_in_use() && bridge_path(path_, sizeof(path_), kBridgeEmojiBankName)) {
+            if (try_open()) {
+                return true;
+            }
+            if (reason_) {
+                return false;  // it was there and it was malformed: say that
+            }
+        }
+        // Where the package put it, which is right on the host.
+        std::snprintf(path_, sizeof(path_), "%s", VOCEM_EMOJI_BANK_PATH);
+        if (try_open()) {
+            return true;
+        }
+        if (reason_) {
+            return false;
+        }
+        // And inside a container that mounts the host there -- pressure-vessel
+        // does, which is where every Steam title runs. The same fallback, and
+        // for the same reason, as the shim's second dlopen candidate.
+        std::snprintf(path_, sizeof(path_), "/run/host%s", VOCEM_EMOJI_BANK_PATH);
+        if (try_open()) {
+            return true;
+        }
+        std::snprintf(path_, sizeof(path_), "%s", VOCEM_EMOJI_BANK_PATH);
+        // While a sandbox is still being waited on there is nothing to report:
+        // saying "no bank on disk" during the wait would put a reason in the log
+        // that the next half-second may make untrue, and this project's rule is
+        // that a component which declines to act says why -- not that it guesses
+        // early.
+        if (!reason_ && !still_arriving()) {
             reason_ = "no colour emoji bank on disk";
-            return false;
         }
-        struct stat info{};
-        if (::fstat(fd, &info) != 0 || info.st_size <= 0 ||
-            info.st_size % kEmojiBankRecordBytes != 0) {
-            ::close(fd);
-            reason_ = "the colour emoji bank is not a whole number of records";
-            return false;
-        }
-        fd_ = fd;
-        count_ = static_cast<uint32_t>(info.st_size / kEmojiBankRecordBytes);
-        return true;
+        return false;
     }
 
     // Why there are no colour emoji, or nullptr while there is nothing to say
     // (working, or never asked). The string is a literal, so a caller can log it
     // once by comparing the pointer.
     const char* reason() const { return reason_; }
-    // The path the answer above is about -- either the environment's or the
-    // installed one, whichever was tried.
-    const char* path() const { return path_ ? path_ : VOCEM_EMOJI_BANK_PATH; }
+    // Whether the bank may still turn up. True only inside a Flatpak, only
+    // while nothing has opened and the thirty seconds have not run out: the
+    // caller must not write down "this codepoint has no colour glyph" during
+    // that window, because the answer is not in yet.
+    bool still_arriving() const {
+        return fd_ < 0 && !attempted_ && first_asked_ != 0.0;
+    }
+    // The path the answer above is about: the candidate that opened, or the
+    // installed one when none did.
+    const char* path() const { return path_; }
 
     // Whether the bank carries this codepoint. Binary search over the sorted
     // records, reading only the 4-byte keys.
@@ -126,6 +215,27 @@ public:
     }
 
 private:
+    // One candidate, already in path_. Opens it, checks it is a whole number of
+    // records, and takes it. A candidate that opens and is malformed stops the
+    // search rather than falling through: a bank of the wrong length is a fault
+    // worth naming, and the next candidate would hide it.
+    bool try_open() {
+        const int fd = ::open(path_, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            return false;
+        }
+        struct stat info{};
+        if (::fstat(fd, &info) != 0 || info.st_size <= 0 ||
+            info.st_size % kEmojiBankRecordBytes != 0) {
+            ::close(fd);
+            reason_ = "the colour emoji bank is not a whole number of records";
+            return false;
+        }
+        fd_ = fd;
+        count_ = static_cast<uint32_t>(info.st_size / kEmojiBankRecordBytes);
+        return true;
+    }
+
     long index_of(uint32_t codepoint) {
         long low = 0;
         long high = static_cast<long>(count_) - 1;
@@ -154,7 +264,15 @@ private:
     int fd_ = -1;
     uint32_t count_ = 0;
     bool attempted_ = false;
-    const char* path_ = nullptr;
+    // The Flatpak retry window: when the first look happened and when the next
+    // one is due. Zero until the first look, which is what tells still_arriving()
+    // that a sandbox is being waited on at all.
+    double first_asked_ = 0.0;
+    double next_attempt_ = 0.0;
+    // The candidate being tried, and afterwards the one that answered. A buffer
+    // rather than a pointer because two of the four candidates are composed
+    // rather than named, and this is read back by the log.
+    char path_[512] = VOCEM_EMOJI_BANK_PATH;
     const char* reason_ = nullptr;
 };
 

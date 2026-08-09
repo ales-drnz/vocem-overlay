@@ -991,9 +991,29 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // iterator into the maps.
     bool needs_init = false;
     // Whether this process is one the overlay is in a position to draw in, which
-    // is what the window's list is a list of. Acted on after the present: the
-    // record is a handful of syscalls, once in the life of a process, and the
-    // present path takes no I/O at all.
+    // is what the window's list is a list of. The RECORD is acted on after the
+    // present: a handful of syscalls, once in the life of a process.
+    //
+    // The verdict behind it is not, and this comment used to say it was. The
+    // `overlay_hidden_here()` below is asked inside the lock and before the
+    // present, and its first evaluation reads /proc/self/comm, /proc/self/exe,
+    // /proc/self/cgroup and /proc/self/cmdline -- and, for a process none of the
+    // launcher signals answer for, opens every installed desktop entry.
+    // Measured by tests/apps_cost on this machine: 2.2-2.4 ms once when it falls
+    // through to that last pass, 76-92 us once when a signal answers it, and
+    // 0.9 ns per frame ever after. So rule 8 -- no blocking I/O in
+    // vkQueuePresentKHR -- holds for every frame except the first one, which is
+    // a narrower claim than the one that stood here.
+    //
+    // Kept that way on purpose, and not because 2.4 ms is small. Nothing can be
+    // drawn before the verdict exists, so moving it past the present buys a
+    // frame of latency rather than removing the work; the frame it would buy is
+    // one the overlay is not on anyway, since the renderer is built post-present
+    // by rule 10. Against that: the Vulkan present path has no frame-level test
+    // to change it under (entry 70 is that finding), and this runs under a lock
+    // inside somebody's game. The cost is once, while the process is still
+    // starting, and it is the processes with no launcher signal -- the browsers
+    // and the compositor, not the games -- that pay the 2.4 ms.
     bool drawable = false;
     vocem::RendererTarget pending_target;
 

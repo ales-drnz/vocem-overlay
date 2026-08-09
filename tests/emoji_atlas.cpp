@@ -109,6 +109,53 @@ int main() {
     vocem::fonts_note_emoji("\xE2\x80\x99");  // typographic apostrophe
     check(!vocem::ensure_fonts(16.0f, 16.0f), "a non-emoji codepoint rebuilds nothing");
 
+    // A keycap is drawn by one font or by the other, never half by each.
+    //
+    // `1️⃣` is three codepoints. The digit is below the noter's floor
+    // -- deliberately, because colouring U+0032 would put a keycap inside
+    // "User 2" -- while U+20E3, the box the sequence draws *around* the digit,
+    // is above it and IS in the bank. So the digit came out of the monochrome
+    // font and the box came out of the bank: a grey 1 inside a blue tile, on
+    // screen, measured in a captured frame. Half an emoji coloured is worse
+    // than none.
+    vocem::fonts_note_emoji("1\xEF\xB8\x8F\xE2\x83\xA3");
+    vocem::ensure_fonts(16.0f, 16.0f);
+    const ImFontGlyph* keycap = body_now()->FindGlyphNoFallback(0x20E3);
+    check(!(keycap && keycap->Colored),
+          "the keycap's box is not coloured on its own, so a keycap is one font throughout");
+
+    // The emoji budget is not spent by things that are not emoji.
+    //
+    // The seen table remembers a verdict for every codepoint from U+2000 up, in
+    // the bank or not, so that a name with a typographic apostrophe costs one
+    // bank lookup and not one per frame. That memory shared its size with the
+    // atlas's rectangle budget, and the atlas budget is the one with a cost
+    // behind it -- so a channel of decorated and CJK names filled it with
+    // characters that were never going to be coloured, and every emoji arriving
+    // afterwards stayed monochrome for the life of the process. Which is
+    // "sometimes they are coloured and sometimes they are not", from a chair.
+    //
+    // Two hundred ideographs is a plausible evening in a channel with Japanese
+    // names in it, and comfortably past the ninety-six the two budgets used to
+    // share.
+    {
+        char utf8[4] = {0};
+        for (uint32_t codepoint = 0x4E00; codepoint < 0x4E00 + 200; ++codepoint) {
+            utf8[0] = static_cast<char>(0xE0 | (codepoint >> 12));
+            utf8[1] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+            utf8[2] = static_cast<char>(0x80 | (codepoint & 0x3F));
+            vocem::fonts_note_emoji(utf8);
+        }
+    }
+    vocem::ensure_fonts(16.0f, 16.0f);
+    check(vocem::fonts_emoji_status() == nullptr,
+          "two hundred non-emoji codepoints are not a full emoji table");
+    vocem::fonts_note_emoji("\xF0\x9F\x8D\x95");  // pizza, U+1F355, in the bank
+    vocem::ensure_fonts(16.0f, 16.0f);
+    const ImFontGlyph* pizza = body_now()->FindGlyphNoFallback(0x1F355);
+    check(pizza && pizza->Colored,
+          "and an emoji arriving after them is still coloured");
+
     // The cap. The seen table holds 96 codepoints; the mechanism past it --
     // cap check above the bank lookup, the refusal said out loud by
     // fonts_emoji_status() -- had no witness until here: nothing failed

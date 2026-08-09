@@ -1069,3 +1069,146 @@ add_executable(vocem_flatpak_bridge_hostile flatpak_bridge_hostile.cpp
 target_include_directories(vocem_flatpak_bridge_hostile PRIVATE
     "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src")
 add_test(NAME flatpak_bridge_hostile COMMAND vocem_flatpak_bridge_hostile)
+
+# One installed package, one answer to "which version is this?".
+#
+# The installed 0.1.4-1 gave three: pacman said 0.1.4, the About page said
+# 0.1.0, the metainfo's newest release said 0.1.2 and .SRCINFO said 0.1.2 too.
+# CMakeLists.txt states the release; neither PKGBUILD passes it to CMake, so the
+# number in the binary and the number on the package had never been related.
+#
+# Not equality: the two PKGBUILDs are meant to differ mid-cycle (one builds the
+# working tree, one builds a tag), so this holds each to its own rule and prints
+# which state it matched. It also runs the built window and asks what version it
+# carries, because every source-level claim about this was already fine while the
+# binary said 0.1.0.
+add_test(NAME version_agrees
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DCONFIG_BINARY=$<IF:$<TARGET_EXISTS:vocem-config>,$<TARGET_FILE:vocem-config>,>"
+            "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/version_agrees.cmake")
+
+# Whose clock the words of a message are retired on. The tick that scrubs and
+# unlinks the note segment was reached only from the recv loop of a LIVE Discord
+# connection, so Discord quitting left the text of the last direct message in
+# /dev/shm -- readable by every process in the session -- for as long as it
+# stayed away: measured against the packaged 0.1.4-1 daemon, still there forty
+# seconds after the connection closed, which is only where the counting stopped.
+# Second case in the same file: a SIGKILLed daemon runs no destructor, and the
+# unit carries Restart=on-failure with MemoryMax=128M, so the next daemon is
+# what has to decline the inheritance. daemon_notification's sandbox.
+if(TARGET vocemd)
+    add_executable(vocem_daemon_note_expiry daemon_note_expiry.cpp)
+    target_include_directories(vocem_daemon_note_expiry PRIVATE "${CMAKE_SOURCE_DIR}/include")
+    target_link_libraries(vocem_daemon_note_expiry PRIVATE rt)
+    add_test(NAME daemon_note_expiry COMMAND vocem_daemon_note_expiry)
+    set_tests_properties(daemon_note_expiry PROPERTIES
+        ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"
+        TIMEOUT 240
+        SKIP_RETURN_CODE 77)
+endif()
+
+# The map of the display follows the machine while the window is open.
+#
+# environment.h answered the display question once, on first use, and a tray
+# application started at login means "once" is "at login": a monitor plugged in
+# afterwards resized the overlay within a minute while the picture of it went on
+# drawing the display that was there this morning. preview_display.cmake could
+# not see it -- it sets VOCEM_DRM_ROOT before launching, so it can only ever
+# measure what the window knew at birth. This one plants the second connector
+# 1.6 s in, the way live_while_open.cmake plants a journal, and holds both maps
+# to the new display's shape. Against the packaged 0.1.4-1 window every section
+# stays 5:4.
+if(TARGET vocem-config)
+    add_test(NAME display_change_while_open
+        COMMAND "${CMAKE_COMMAND}"
+                "-DCONFIG_BINARY=$<TARGET_FILE:vocem-config>"
+                "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/display_change_while_open.cmake")
+endif()
+
+# A settings value is as long as the user's list, not as long as a buffer.
+#
+# Config::load() read the file with char line[256] and a bare fgets, so a line
+# past 255 bytes arrived in pieces: the first piece parsed short and the rest,
+# having no '=' in it, was skipped in silence. hidden_apps came back truncated
+# in the games the user had just hidden, and the window -- which reads this same
+# header -- wrote the truncation back on the next Apply, so the entries left the
+# file for good. Measured against 0.1.4's header: 330 bytes in, 241 out, ending
+# mid-name. The owner's own file was at 179 bytes of that budget.
+add_executable(vocem_config_long_line config_long_line.cpp)
+target_include_directories(vocem_config_long_line PRIVATE "${CMAKE_SOURCE_DIR}/include")
+add_test(NAME config_long_line COMMAND vocem_config_long_line)
+
+# What the shim's dispatch hooks hand back when the real dispatcher is not the
+# system's.
+#
+# The dlsym hook substitutes our hook only inside if (is_system_gl(real)), so a
+# private GL keeps its private names -- entry 36. dispatch() has the same test
+# and returns entry->hook from OUTSIDE it. Constructed here rather than reasoned
+# about: a private EGL opened RTLD_GLOBAL lands in the shim's own RTLD_NEXT
+# order, and from then on the two roads answer differently for one name in one
+# process -- dlsym with the private library's function, the dispatcher with our
+# hook. Not reachable with RTLD_LOCAL, which is what Chromium actually does.
+#
+# Left as a measurement, not a fix: the symmetric change would make the shim
+# hand a private dispatcher's answer straight back, which is entry 35's defect
+# in the case where next legitimately is the application's own linked GL.
+add_library(vocem_stub_private_egl SHARED stub_private_egl.cpp)
+set_target_properties(vocem_stub_private_egl PROPERTIES CXX_VISIBILITY_PRESET hidden)
+
+add_executable(vocem_shim_private_dispatch shim_private_dispatch.cpp)
+target_link_libraries(vocem_shim_private_dispatch PRIVATE ${CMAKE_DL_LIBS})
+add_test(NAME shim_private_dispatch COMMAND vocem_shim_private_dispatch)
+set_tests_properties(shim_private_dispatch PROPERTIES
+    ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim>;VOCEM_SHIM_PRELOADED=1;VOCEM_STUB_PRIVATE_EGL=$<TARGET_FILE:vocem_stub_private_egl>"
+    SKIP_RETURN_CODE 77)
+
+# The tool for the person having the problem, held to printing one answer.
+#
+# `systemctl is-active` reports a STATE, so its exit status is that state: it
+# prints "inactive" and exits 3. `$(... || echo unknown)` therefore ran both
+# branches and put two lines in the report, exactly when the daemon is down --
+# which is when somebody runs this. Entry 99 is the same fault with `grep -c`,
+# five lines further down in the same file, found and fixed while this one stood.
+# Hermetic: a stub systemctl earlier on PATH, so the test never asks the owner's
+# live daemon anything and needs no skip.
+add_test(NAME vocem_why
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/vocem_why.cmake")
+
+# Two OpenGL interposers in one process, and which of them draws.
+#
+# The companion of gl_beside_steam, asking the question that pair cannot: those
+# two count OUR pixels, so they pass whether the other overlay survived us or
+# not. Against MangoHud -- live on this machine, and the shim it preloads
+# exports the same ten names ours does -- the two exclude each other and
+# whoever is first in LD_PRELOAD wins. The witness is our own debug log and not
+# the pixel count, because with MangoHud first the frame is still full of
+# foreign pixels and they are MangoHud's. See the file's header.
+find_file(VOCEM_MANGOHUD_SHIM libMangoHud_shim.so
+    PATHS /usr/lib/mangohud /usr/lib64/mangohud /usr/local/lib/mangohud
+    NO_DEFAULT_PATH)
+add_test(NAME gl_beside_mangohud
+    COMMAND "${CMAKE_COMMAND}"
+            "-DPROBE=$<TARGET_FILE:vocem_gl_draw_local>"
+            "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+            "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+            "-DMANGOHUD_SHIM=${VOCEM_MANGOHUD_SHIM}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_beside_mangohud.cmake")
+set_tests_properties(gl_beside_mangohud PROPERTIES SKIP_REGULAR_EXPRESSION "^skip|skip ")
+
+# A bank that has not arrived yet is not a bank that is missing.
+#
+# The Flatpak candidate added with the /run/host one did not work: the daemon
+# copies the bank in on its own one-second tick, the game's first frame beats it,
+# and one refused open was remembered for the life of the process. The sandbox's
+# shape is built with bwrap rather than described; see the file's header.
+add_executable(vocem_emoji_bank_arrives emoji_bank_arrives.cpp)
+target_include_directories(vocem_emoji_bank_arrives PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(vocem_emoji_bank_arrives PRIVATE rt)
+add_test(NAME emoji_bank_arrives COMMAND vocem_emoji_bank_arrives)
+set_tests_properties(emoji_bank_arrives PROPERTIES
+    ENVIRONMENT "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
+set_tests_properties(emoji_bank_arrives PROPERTIES SKIP_RETURN_CODE 77)

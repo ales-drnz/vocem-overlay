@@ -16,8 +16,9 @@
 // always shown.
 //
 // The list comes from the bridge's one display enumeration (environment.h),
-// which is cached after the first non-empty read; the rebuild below only fires
-// for the display that was asleep when the window opened.
+// which is re-read on the window's four-second sweep, so the rebuild below fires
+// for a display plugged in, unplugged or switched to another mode while the
+// window is open -- as well as for the one that was asleep when it opened.
 
 import QtQuick
 import QtQuick.Controls
@@ -68,6 +69,19 @@ RowLayout {
         return list;
     }
 
+    // Two option lists that say the same thing. Every value and every label,
+    // not the count: a display unplugged in the same sweep as another is
+    // plugged in leaves the count alone, and a display switched to a different
+    // mode changes only its label, which is where its resolution is written.
+    function sameOptions(one, other) {
+        if (one.length !== other.length)
+            return false;
+        for (let i = 0; i < one.length; ++i)
+            if (one[i].value !== other[i].value || one[i].label !== other[i].label)
+                return false;
+        return true;
+    }
+
     function indexFor(name) {
         for (let i = 0; i < picker.options.length; ++i)
             if (picker.options[i].value === name)
@@ -102,8 +116,13 @@ RowLayout {
     Connections {
         target: root.config
         function onStateChanged() {
-            if (root.config.displays.length + 1 !== picker.options.length) {
-                picker.options = root.optionsFrom(root.config.displays);
+            // Only when the enumeration itself changed. A ComboBox puts
+            // currentIndex back to 0 when its model is replaced (entry 104), so
+            // reassigning on every tick would drag the selection to "Automatic"
+            // under the hand that set it.
+            const fresh = root.optionsFrom(root.config.displays);
+            if (!root.sameOptions(fresh, picker.options)) {
+                picker.options = fresh;
                 picker.currentIndex = root.indexFor(root.selection);
             }
         }
