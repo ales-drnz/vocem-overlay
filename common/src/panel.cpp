@@ -402,12 +402,11 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     ImVec2 position(place_within(config.position_x, last_width, static_cast<float>(width), inset),
                     place_within(config.position_y, last_height, static_cast<float>(height), inset));
 
-    // How many people the display can actually hold. Left to itself, ImGui clamps
-    // an auto-sized window to the viewport and clips whatever does not fit, which
-    // ends the panel on a face cut in half at the bottom edge -- and at a size the
-    // configuration window has no way to predict, since the clamp is ImGui's rather
-    // than ours. Deciding here means the panel always ends on a whole row, says how
-    // many people it left out, and does something the preview can reproduce.
+    // First, how many people the settings ask for at all (the filters), and
+    // the distances a row is built from. The clamp-and-truncate story belongs
+    // to the budget below -- the same paragraph used to stand here too, thirty
+    // lines from the arithmetic it describes, and a reader went looking for
+    // the clamp under the wrong copy.
     const ImGuiStyle& style = ImGui::GetStyle();
     const bool horizontal = config.panel_layout == Config::kLayoutHorizontal;
     // The distance between one person and the next. It is `row_spacing` in both

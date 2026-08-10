@@ -10,9 +10,12 @@
 //
 //   1. Direct calls resolved by the dynamic linker  -> LD_PRELOAD is enough.
 //   2. glXGetProcAddress / eglGetProcAddress lookups -> those are hooked too.
-//   3. dlsym() called by the application itself      -> dlsym is hooked as well,
-//      because some native titles overwrite LD_PRELOAD and would otherwise
-//      escape. MangoHud enables the same hook by default for that reason.
+//   3. dlsym() called by the application itself      -> dlsym is hooked as
+//      well, IN THE SHIM (gl/src/vocem_gl_shim.cpp): SDL, GLFW and glad
+//      dlopen their GL and dlsym on that handle, invisible to interposition
+//      by construction. All three doors live in the shim since the entry-45
+//      rebuild took this file's own hook table away; this library only draws
+//      when the shim hands it a frame.
 //
 // The panel is the shared implementation in common/src/panel.cpp: this file only
 // deals with getting a frame, a size, and a texture upload path.
@@ -173,10 +176,12 @@ bool overlay_disabled() {
     return disabled;
 }
 
-// The real dlsym, reached through dlvsym so it bypasses our own interposed
-// dlsym below. Every internal lookup must go through this: asking the interposed
-// dlsym for "glXSwapBuffers" would hand back our own hook, and the hook would
-// then call itself for every frame until the stack ran out.
+// The real dlsym, reached through dlvsym so it bypasses the interposed dlsym
+// in the shim -- which is in this process, even though this file no longer
+// hooks anything itself (entry 45 removed its table). Every internal lookup
+// must go through this: asking the interposed dlsym for "glXSwapBuffers"
+// would hand back the shim's hook, and the hook would call itself for every
+// frame until the stack ran out.
 //
 // The version is looked for and not assumed -- see real_dlsym.h. This was the
 // **second** copy of that line, and it outlived the fix to the first by exactly as
@@ -214,8 +219,9 @@ void* real_dlsym(void* handle, const char* name) {
 // either, and draw() returned before drawing anything. The overlay never appeared
 // in an OpenGL game, and cost so little that the measurement looked like success.
 //
-// Only safe for functions we do not hook: asking RTLD_DEFAULT for glXSwapBuffers
-// would find our own interposed copy and call it forever.
+// Only safe for functions the SHIM does not hook: asking RTLD_DEFAULT for
+// glXSwapBuffers would find its interposed copy -- ahead of libGL in the
+// global scope -- and call it forever.
 template <typename Fn>
 Fn next_symbol(const char* name) {
     if (void* found = real_dlsym(RTLD_NEXT, name)) {

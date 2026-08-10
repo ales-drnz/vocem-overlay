@@ -6,7 +6,8 @@
 #
 # The KDE guidelines ask for an icon, a short title and an explanation where a
 # view has nothing in it -- not a line of grey text where the content would have
-# been. The Debug section was rebuilt on that in 0.1.0-64 and has three of them;
+# been. The Debug section was rebuilt on that in 0.1.0-64 and has two of them
+# (the Daemon Log tab has none);
 # the Applications page, next door, still answered "nothing has run yet" with a
 # card holding a single row, and answered a filter that matches nothing with
 # another one. Two pages, two shapes, for the same situation.

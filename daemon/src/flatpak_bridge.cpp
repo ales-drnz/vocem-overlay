@@ -250,18 +250,24 @@ FlatpakBridge::~FlatpakBridge() {
 bool FlatpakBridge::start() {
     const std::string directory = applications_directory();
     if (directory.empty()) {
-        LOG("no XDG_RUNTIME_DIR: Flatpak games cannot be reached from here");
+        // Once, not once per second: rescan() retries this for the life of the
+        // process, and the header promises the refusal is said "once and
+        // quietly" -- which this line, unguarded, made false in both halves on
+        // any machine without a session runtime directory.
+        if (!runtime_missing_said_) {
+            runtime_missing_said_ = true;
+            LOG("no XDG_RUNTIME_DIR: Flatpak games cannot be reached from here");
+        }
         return false;
     }
     applications_ = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    started_ = applications_ >= 0;
-    if (!started_) {
+    if (applications_ < 0) {
         // Not an error: a machine that has never run a Flatpak has no such
         // directory. It may appear later, and rescan() keeps looking.
         DBG("%s is not there yet; no Flatpak game has run in this session",
             directory.c_str());
     }
-    return started_;
+    return applications_ >= 0;
 }
 
 bool FlatpakBridge::state_is_ours(const Mirror& mirror) const {

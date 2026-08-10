@@ -822,8 +822,11 @@ int main() {
     };
     // The user's settings, reread on the same live mechanism the overlay uses --
     // one stat() every couple of seconds, a reparse only when the file moved. The
-    // daemon consumes exactly one key: whether a message's text may be published
-    // into the segment at all.
+    // daemon consumes exactly one key: notification_seconds, the toast's
+    // lifetime, which is what the note segment's expiry runs on (the tick
+    // below). The old sentence here described a publish switch that entry 64
+    // removed -- the body field in the segment is unconditionally empty now and
+    // the words travel through the note segment instead.
     vocem::LiveConfig live_config;
     session.set_display_height(vocem::display_height());
     session.set_connected(false);

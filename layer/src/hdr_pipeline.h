@@ -102,7 +102,7 @@ struct HdrPipeline {
     VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
 };
 
-// Builds the converting pipeline for `mode` (1 or 2) against the layer's own
+// Builds the converting pipeline for `mode` (1, 2 or 3) against the layer's own
 // render pass. Returns false -- with everything released -- on any failure,
 // in which case the caller draws with the stock pipeline: a game must never
 // lose its overlay, let alone its stability, to a pipeline that would only

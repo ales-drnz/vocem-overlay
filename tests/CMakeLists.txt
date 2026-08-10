@@ -856,10 +856,13 @@ endif()
 
 # What a message becomes by the time a game can read it: the real vocemd, driven
 # by a stub Discord RPC, with the segment read back the way a game reads it. The
-# body of a message must stay out of the segment unless the settings say
-# otherwise -- the daemon as shipped in 0.1.0-43 published it unconditionally,
-# and this fails against that binary. Sandboxed under bwrap (private /dev/shm,
-# private network) and skipped where bwrap is missing.
+# body of a message stays out of the segment unconditionally since entry 64 --
+# the words travel through the note segment instead, and the test asserts the
+# segment's body field empty with no setting in the sentence (the "unless the
+# settings say otherwise" that used to stand here described entry 58's switch,
+# which 64 removed). The daemon as shipped in 0.1.0-43 published the body
+# unconditionally, and this fails against that binary. Sandboxed under bwrap
+# (private /dev/shm, private network) and skipped where bwrap is missing.
 if(TARGET vocemd)
     add_executable(vocem_daemon_notification daemon_notification.cpp)
     target_include_directories(vocem_daemon_notification PRIVATE "${CMAKE_SOURCE_DIR}/include")

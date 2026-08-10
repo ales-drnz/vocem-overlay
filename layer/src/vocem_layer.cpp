@@ -8,7 +8,9 @@
 // tracking, semaphore chaining. What gets painted lives in overlay_renderer /
 // common/src/panel.cpp; this file decides where and when, and its design rules
 // are older than any of the drawing:
-//   * Never block in vkQueuePresentKHR. No I/O, no allocation on the hot path.
+//   * Never block in vkQueuePresentKHR. No per-frame I/O, no allocation on the
+//     hot path (the exact shape of that claim, with its measured exceptions,
+//     is at overlay_hidden_here's call site).
 //   * Per-image state is indexed by swapchain image index, never by acquisition
 //     order (MangoHud 0.8.3 fixed exactly this class of bug).
 //   * If anything we need is missing, degrade to a pure pass-through. A layer
@@ -463,6 +465,12 @@ VKAPI_ATTR void VKAPI_CALL vocem_GetDeviceQueue(VkDevice device, uint32_t queueF
         }
     }
     if (!next) {
+        // The same answer as GetDeviceQueue2 below, for the same failure: the
+        // output must be a handle the application can test, not whatever was
+        // on its stack. The two answered this differently once.
+        if (pQueue) {
+            *pQueue = VK_NULL_HANDLE;
+        }
         return;
     }
     next(device, queueFamilyIndex, queueIndex, pQueue);
@@ -484,10 +492,12 @@ VKAPI_ATTR void VKAPI_CALL vocem_GetDeviceQueue2(VkDevice device,
         }
     }
     if (!next) {
-        // The application asked for a function this device does not have -- see
-        // vocem_GetDeviceProcAddr, which no longer hands out our hook for one.
-        // Should it get here anyway, its output must be a handle it can test and
-        // not whatever was on its stack.
+        // The application asked for a function this device does not have.
+        // vocem_GetDeviceProcAddr no longer hands out our hook for one, but
+        // vocem_GetInstanceProcAddr still answers from the intercepted table
+        // before asking the chain -- so this is an ordinary road here, not an
+        // accident (the previous sentence called it one). The output must be a
+        // handle the application can test, not whatever was on its stack.
         if (pQueue) {
             *pQueue = VK_NULL_HANDLE;
         }
@@ -961,9 +971,19 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // launcher signals answer for, opens every installed desktop entry.
     // Measured by tests/apps_cost on this machine: 2.2-2.4 ms once when it falls
     // through to that last pass, 76-92 us once when a signal answers it, and
-    // 0.9 ns per frame ever after. So rule 8 -- no blocking I/O in
-    // vkQueuePresentKHR -- holds for every frame except the first one, which is
-    // a narrower claim than the one that stood here.
+    // 0.9 ns per frame ever after.
+    //
+    // And "except the first frame" is still not the whole of it, which the
+    // previous version of this comment claimed (the entry-114 shape, one layer
+    // further in). Two steady-state costs also live inside the present, on
+    // their own cadences: current_config() runs LiveConfig::current() -- one
+    // stat() at most every two seconds, a full fopen-and-reparse when the file
+    // moved -- both here and in draw(); and the state poll asks
+    // still_current() (one shm_open, two fstats) every 300 presents. So rule 8
+    // as it holds is: no PER-FRAME blocking I/O, a once-per-process verdict on
+    // the first frame, and a handful of deliberate, cadenced syscalls the
+    // design accepts by name. A claim wider than that is where the next
+    // violation hides (entry 42).
     //
     // Kept that way on purpose, and not because 2.4 ms is small. Nothing can be
     // drawn before the verdict exists, so moving it past the present buys a

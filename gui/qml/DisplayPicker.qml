@@ -10,10 +10,12 @@
 // which display it is talking about; OverlayStage then draws the boxes at the
 // share of that screen they will really cover, and says so when it differs.
 //
-// Hidden outright on a single-display machine -- a dropdown with one honest
-// answer is furniture -- and the empty selection means automatic: the largest
-// display, which is the one the overlay is sized for and the one the maps have
-// always shown.
+// Always shown, one display or several: the header used to promise "hidden
+// outright on a single-display machine" while the body kept it visible, and
+// the body is right (its own comment below says why the old reasoning was
+// overturned) -- a file whose header contradicts its body is read by its
+// header. The empty selection means automatic: the largest display, which is
+// the one the overlay is sized for and the one the maps have always shown.
 //
 // The list comes from the bridge's one display enumeration (environment.h),
 // which is re-read on the window's four-second sweep, so the rebuild below fires

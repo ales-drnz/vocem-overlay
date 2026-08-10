@@ -581,9 +581,13 @@ inline bool is_own_process(const std::string& name) {
 // no configuration in which the overlay belongs on the Steam client's own window,
 // and a default that can be edited away is not a guarantee. `shown_apps` still
 // overrides it, because the user has the last word about their own machine.
+
 // Which of those names this is, or nullptr. The name is kept rather than thrown
 // away: `launcher` on its own is a verdict without its evidence, and the whole
-// point of the `why` field is that a refusal can be read.
+// point of the `why` field is that a refusal can be read. (The long rationale
+// above documents the LIST; this sentence is this function's own contract --
+// the two ran together as one block once, and a reader had to reach this line
+// to learn the block ends in a function returning a string.)
 inline const char* launcher_name(const std::string& name) {
     static const char* const names[] = {
         // Launchers whose own entry is in the games section.

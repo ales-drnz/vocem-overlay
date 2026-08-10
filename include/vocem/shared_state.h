@@ -242,7 +242,12 @@ inline bool avatar_hash_is_sane(const char* hash) {
     return false;  // never terminated within the field
 }
 
-// A user with no custom avatar gets one of Discord's defaults. The index is
+// The OLD cache's path: PNG, from before the format became raw RGBA
+// (vocem/avatar_rgba.h owns the living format and its own path). Kept solely
+// so the daemon can migrate a cache written by an earlier release
+// (avatars.cpp reads and unlinks these); no reader looks here any more, and
+// this function's name predates the change -- the comment is the warning.
+// A user with no custom avatar gets one of Discord's defaults; the index is
 // derived from the account id, matching what the client itself shows.
 inline void avatar_cache_path(char* out, size_t capacity, uint64_t user_id,
                               const char* avatar_hash) {

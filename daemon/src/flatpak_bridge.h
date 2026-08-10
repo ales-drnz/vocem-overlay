@@ -111,7 +111,7 @@ private:
     void mirror_emoji_bank(Mirror& mirror);
 
     int applications_ = -1;  // $XDG_RUNTIME_DIR/app
-    bool started_ = false;
+    bool runtime_missing_said_ = false;  // the no-XDG_RUNTIME_DIR refusal, said once
     std::vector<Mirror> mirrors_;
 };
 
