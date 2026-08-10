@@ -169,9 +169,8 @@ inline bool same_name(const char* candidate, const std::string& name) {
     if (name == candidate) {
         return true;
     }
-    constexpr size_t comm_length = 15;
-    return std::strlen(candidate) > comm_length && name.size() == comm_length &&
-           name.compare(0, comm_length, candidate, comm_length) == 0;
+    return std::strlen(candidate) > kCommLength && name.size() == kCommLength &&
+           name.compare(0, kCommLength, candidate, kCommLength) == 0;
 }
 
 // The application ids a systemd cgroup line can be read as, best first.
@@ -1267,8 +1266,7 @@ inline std::vector<Application> known_applications() {
         // reads this is the window, and the key is what a flipped switch writes
         // into the settings file, so a corrupt file is not given a row a
         // thousand characters wide to put there.
-        constexpr size_t comm_length = 15;
-        if (!application.key.empty() && application.key.size() <= comm_length &&
+        if (!application.key.empty() && application.key.size() <= kCommLength &&
             !is_own_process(application.key)) {
             applications.push_back(application);
         }

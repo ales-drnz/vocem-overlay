@@ -154,8 +154,7 @@ bool FlatpakBridge::read_request(int directory, Request& request) {
     // wrote and is dropped whole rather than written down in part.
     const std::string name = request_field(body, "name");
     const std::string api = request_field(body, "api");
-    constexpr size_t comm_length = 15;
-    if (name.empty() || name.size() > comm_length || (api != "opengl" && api != "vulkan") ||
+    if (name.empty() || name.size() > vocem::kCommLength || (api != "opengl" && api != "vulkan") ||
         name.find('/') != std::string::npos || name.front() == '.') {
         // A record is written under this name. `sanitised()` already makes it a
         // file name that cannot leave its directory, so this is not the wall --
@@ -176,7 +175,7 @@ bool FlatpakBridge::read_request(int directory, Request& request) {
     };
     const std::string executable = request_field(body, "exe");
     const std::string why = request_field(body, "why");
-    if (!printable(name, comm_length) || !printable(executable, 512) || !printable(why, 256)) {
+    if (!printable(name, vocem::kCommLength) || !printable(executable, 512) || !printable(why, 256)) {
         return true;
     }
     request.name = name;
@@ -500,8 +499,11 @@ void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
         note.sequence.store(2, std::memory_order_relaxed);
         copy_string(note.body, kNotificationBodyCapacity, body, std::strlen(body));
 
-        const char* temporary = "note.part";
-        const int fd = open_regular(mirror.directory, temporary, O_WRONLY | O_CREAT | O_TRUNC);
+        // The same "<name>.part" rule copy_into() spells: this was the one
+        // place the bridge's file naming was stated twice, as a literal.
+        const std::string temporary = std::string(kBridgeNoteName) + ".part";
+        const int fd =
+            open_regular(mirror.directory, temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
         if (fd < 0) {
             LOG("could not write the message into the Flatpak sandbox of %s (%s)",
                 mirror.id.c_str(), std::strerror(errno));
@@ -510,8 +512,8 @@ void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
         const bool written = write_at(fd, &note, sizeof(note), 0);
         ::close(fd);
         if (!written ||
-            ::renameat(mirror.directory, temporary, mirror.directory, kBridgeNoteName) != 0) {
-            ::unlinkat(mirror.directory, temporary, 0);
+            ::renameat(mirror.directory, temporary.c_str(), mirror.directory, kBridgeNoteName) != 0) {
+            ::unlinkat(mirror.directory, temporary.c_str(), 0);
         }
     }
 }
@@ -608,8 +610,17 @@ void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
     if (mirror.emoji_bank_copied) {
         return;
     }
-    // The daemon is not sandboxed, so the installed path is the right one here.
-    if (copy_into(mirror.directory, VOCEM_EMOJI_BANK_PATH, kBridgeEmojiBankName)) {
+    // The same resolution every reader of the bank makes (emoji_bank.h, and
+    // CMakeLists.txt documents the override): $VOCEM_EMOJI_BANK first, the
+    // installed path otherwise. The bridge used to take the installed path
+    // alone, so in a dev tree the overlay opened the built bank while the
+    // daemon copied nothing and logged a missing file that was not the one
+    // being used.
+    const char* bank_path = std::getenv("VOCEM_EMOJI_BANK");
+    if (!bank_path || !bank_path[0]) {
+        bank_path = VOCEM_EMOJI_BANK_PATH;  // not sandboxed: the installed path is right here
+    }
+    if (copy_into(mirror.directory, bank_path, kBridgeEmojiBankName)) {
         mirror.emoji_bank_copied = true;
         DBG("copied %s into the Flatpak sandbox of %s", kBridgeEmojiBankName, mirror.id.c_str());
         return;
@@ -618,7 +629,7 @@ void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
     // decision somebody made, not an error to repeat every second.
     mirror.emoji_bank_copied = true;
     LOG("no colour emoji bank at %s to give the Flatpak sandbox of %s: its emoji stay "
-        "monochrome (%s)", VOCEM_EMOJI_BANK_PATH, mirror.id.c_str(), std::strerror(errno));
+        "monochrome (%s)", bank_path, mirror.id.c_str(), std::strerror(errno));
 }
 
 void FlatpakBridge::refresh_files(const SharedState& state) {

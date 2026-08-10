@@ -362,6 +362,17 @@ add_test(NAME one_dlsym_version
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/one_dlsym_version.cmake")
 
+# The vocem_gl_* entry points: the names the shim resolves against the symbols
+# the built library exports, both directions, both widths when both are built.
+# A rename on one side is entry 38's failure (loads, hooks, never draws, never
+# says why) and nothing else relates the two files.
+add_test(NAME gl_entry_points
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+            "-DLIBRARY32=${VOCEM_GL32_LIBRARY}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_entry_points.cmake")
+set_tests_properties(gl_entry_points PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+
 # A crash is reported inside the window's Debug section, and nowhere else: the
 # dead process's journal appears in the page, and no separate crashReport
 # window exists any more (it was built, fixed to be genuinely top-level -- the
@@ -804,6 +815,7 @@ target_include_directories(vocem_avatar_bound PRIVATE
     "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src"
     "${CMAKE_SOURCE_DIR}/third_party")
 target_compile_options(vocem_avatar_bound PRIVATE -Wno-unused-function)
+target_compile_definitions(vocem_avatar_bound PRIVATE VOCEM_VERSION="${PROJECT_VERSION}")
 target_link_libraries(vocem_avatar_bound PRIVATE CURL::libcurl ZLIB::ZLIB Threads::Threads)
 add_test(NAME avatar_bound COMMAND vocem_avatar_bound)
 

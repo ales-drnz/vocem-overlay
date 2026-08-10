@@ -37,6 +37,7 @@
 #include "vocem/panel.h"
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
+#include "vocem/state_poll.h"
 
 // Older Vulkan SDKs defined this in vk_sdk_platform.h, which no longer ships.
 // The whole library is built with hidden visibility, so the three loader entry
@@ -175,53 +176,32 @@ std::unordered_map<VkSwapchainKHR, SwapchainData> g_swapchains;
 
 void* dispatch_key(void* handle) { return *reinterpret_cast<void**>(handle); }
 
-// The daemon may start after the game, so a failed open is retried -- but only
-// every so many presents, because a syscall per frame is exactly the kind of cost
-// this design exists to avoid.
-class StateSource {
-public:
-    const vocem::Snapshot* poll() {
-        if (!reader_.valid()) {
-            if (retry_countdown_ > 0) {
-                --retry_countdown_;
-                return nullptr;
-            }
-            retry_countdown_ = 300;
-            if (!reader_.open()) {
-                return nullptr;
-            }
-            VOCEM_LOG("attached to the vocemd state segment");
-        } else if (--retry_countdown_ <= 0) {
-            // The same cadence, pointed the other way: a mapping outlives the
-            // segment's name, so a daemon that stopped -- or stopped and came
-            // back -- leaves this reader on orphaned pages it would trust
-            // forever. Ask the name whether it still means our mapping; if not,
-            // drop it and let the branch above find the living one.
-            retry_countdown_ = 300;
-            if (!reader_.still_current()) {
-                VOCEM_LOG("state segment replaced or gone: detaching");
-                reader_.close();
-                return nullptr;
-            }
-        }
-        if (!reader_.read(snapshot_)) {
-            static bool logged_read_failure = false;
-            if (!logged_read_failure) {
-                logged_read_failure = true;
-                VOCEM_LOG("state read failed (abi mismatch or writer contention)");
-            }
-            return nullptr;
-        }
-        return &snapshot_;
-    }
+// The eight functions the HDR pipeline borrows from the dispatch, in one
+// place: the same list was filled in by hand on the create path and the
+// destroy path, and a member missed on the destroy copy makes complete()
+// false there -- hdr_pipeline_destroy then returns having destroyed nothing,
+// a pipeline leaked per swapchain rebuild, silently, in a resize loop.
+vocem::HdrDeviceFunctions hdr_functions(const DeviceDispatch& d) {
+    vocem::HdrDeviceFunctions fn;
+    fn.CreateShaderModule = d.CreateShaderModule;
+    fn.DestroyShaderModule = d.DestroyShaderModule;
+    fn.CreateDescriptorSetLayout = d.CreateDescriptorSetLayout;
+    fn.DestroyDescriptorSetLayout = d.DestroyDescriptorSetLayout;
+    fn.CreatePipelineLayout = d.CreatePipelineLayout;
+    fn.DestroyPipelineLayout = d.DestroyPipelineLayout;
+    fn.CreateGraphicsPipelines = d.CreateGraphicsPipelines;
+    fn.DestroyPipeline = d.DestroyPipeline;
+    return fn;
+}
 
-private:
-    vocem::StateReader reader_;
-    vocem::Snapshot snapshot_;
-    int retry_countdown_ = 0;
-};
 
-StateSource g_state;
+
+// The attach/detach/read loop is the shared spelling in vocem/state_poll.h --
+// it existed here and in the GL path, identical to the character, free to
+// drift (and it had: only this side said why a read failed).
+void layer_poll_log(const char* line) { VOCEM_LOG("%s", line); }
+
+vocem::StatePoll g_state{&layer_poll_log};
 
 DeviceData* find_device(void* dispatchable) {
     auto it = g_devices.find(dispatch_key(dispatchable));
@@ -598,18 +578,7 @@ void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, Swapc
     }
     if (sc.pool != VK_NULL_HANDLE) d.DestroyCommandPool(device, sc.pool, nullptr);
     if (sc.render_pass != VK_NULL_HANDLE) d.DestroyRenderPass(device, sc.render_pass, nullptr);
-    {
-        vocem::HdrDeviceFunctions fn;
-        fn.CreateShaderModule = d.CreateShaderModule;
-        fn.DestroyShaderModule = d.DestroyShaderModule;
-        fn.CreateDescriptorSetLayout = d.CreateDescriptorSetLayout;
-        fn.DestroyDescriptorSetLayout = d.DestroyDescriptorSetLayout;
-        fn.CreatePipelineLayout = d.CreatePipelineLayout;
-        fn.DestroyPipelineLayout = d.DestroyPipelineLayout;
-        fn.CreateGraphicsPipelines = d.CreateGraphicsPipelines;
-        fn.DestroyPipeline = d.DestroyPipeline;
-        vocem::hdr_pipeline_destroy(fn, device, sc.hdr);
-    }
+    vocem::hdr_pipeline_destroy(hdr_functions(d), device, sc.hdr);
 
     sc.fences.clear();
     sc.semaphores.clear();
@@ -793,16 +762,7 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
     // draws, with the colours it drew with before this existed, and the log
     // says which happened.
     if (const int mode = vocem::hdr_mode_for(sc.color_space, sc.format)) {
-        vocem::HdrDeviceFunctions fn;
-        fn.CreateShaderModule = d.CreateShaderModule;
-        fn.DestroyShaderModule = d.DestroyShaderModule;
-        fn.CreateDescriptorSetLayout = d.CreateDescriptorSetLayout;
-        fn.DestroyDescriptorSetLayout = d.DestroyDescriptorSetLayout;
-        fn.CreatePipelineLayout = d.CreatePipelineLayout;
-        fn.DestroyPipelineLayout = d.DestroyPipelineLayout;
-        fn.CreateGraphicsPipelines = d.CreateGraphicsPipelines;
-        fn.DestroyPipeline = d.DestroyPipeline;
-        if (vocem::hdr_pipeline_create(fn, dev.device, sc.render_pass, mode,
+        if (vocem::hdr_pipeline_create(hdr_functions(d), dev.device, sc.render_pass, mode,
                                        vocem::hdr_sdr_nits(), sc.hdr)) {
             VOCEM_LOG("colour pipeline ready (mode %d, SDR white %.0f nits)", mode,
                       vocem::hdr_sdr_nits());

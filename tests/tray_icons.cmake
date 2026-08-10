@@ -125,4 +125,33 @@ foreach(pair IN LISTS pairs)
     endif()
 endforeach()
 
-message(STATUS "five tray icons, one radius, token-true, installed and asked for")
+# The picture of the tray (TaskbarPreview.qml) derives its icon from a private
+# copy of the same state-to-name table, and this file used to read Tray.qml
+# only: swapping two states in one copy kept every existing check green, while
+# the preview's whole job is to be right about which picture sits in the row.
+# The two mappings are compared pair by pair, not by the presence of names.
+file(READ "${SOURCE_DIR}/gui/qml/TaskbarPreview.qml" preview)
+string(REGEX REPLACE "//[^\n]*" "" preview "${preview}")
+foreach(source_name IN ITEMS tray preview)
+    string(REGEX MATCHALL "case ConfigBridge\\.[A-Za-z]+: return \"[^\"]+\""
+           hits "${${source_name}}")
+    set(${source_name}_map "")
+    foreach(hit IN LISTS hits)
+        string(REGEX REPLACE "case ConfigBridge\\.([A-Za-z]+): return \"([^\"]+)\"" "\\1=\\2"
+               entry "${hit}")
+        list(APPEND ${source_name}_map "${entry}")
+    endforeach()
+    list(SORT ${source_name}_map)
+endforeach()
+list(LENGTH tray_map tray_pairs)
+if(tray_pairs LESS 4)
+    message(FATAL_ERROR "only ${tray_pairs} state-to-icon pairs read from Tray.qml -- "
+                        "the parse has stopped matching the source")
+endif()
+if(NOT tray_map STREQUAL preview_map)
+    message(FATAL_ERROR "Tray.qml and TaskbarPreview.qml disagree about which state wears "
+                        "which icon:\n  tray:    ${tray_map}\n  preview: ${preview_map}")
+endif()
+
+message(STATUS "five tray icons, one radius, token-true, installed, asked for, "
+               "and the preview's table agrees pair by pair")

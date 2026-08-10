@@ -787,14 +787,15 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
 
 void build_notification(const Snapshot& snapshot, const Config& config, uint32_t width,
                         uint32_t height, AvatarProvider* avatars, double now_seconds) {
-    if (!config.notifications_enabled || snapshot.notification.serial == 0) {
+    // The predicate, not a copy of it: panel.h promises one spelling of
+    // "something to draw" for the paths AND the build functions, and this
+    // function carried a negated duplicate of the whole condition -- including
+    // both boundary comparisons on the age -- that nothing compared.
+    if (!notification_wanted(snapshot, config, now_seconds)) {
         return;
     }
 
     const double age = now_seconds - snapshot.notification.received;
-    if (age < 0.0 || age > config.notification_seconds) {
-        return;
-    }
 
     // In over a quarter of a second, out over three tenths: M3's entrance and
     // exit pair, through the one easing map (see the motion block) -- the

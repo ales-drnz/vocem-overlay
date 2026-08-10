@@ -16,6 +16,15 @@
 
 namespace vocem {
 
+// TASK_COMM_LEN - 1: the longest name /proc/<pid>/comm can hold, which is the
+// truncation every process-name comparison and every record name must respect.
+// It was spelled as a bare 15 in five places (apps.h twice, journal.h, the
+// Flatpak bridge's field bound, the window's desktop-entry guard), free to
+// drift -- and one copy drifting silently drops records or stops recognising a
+// truncated name. Here because this header is the shared floor those files
+// already stand on.
+constexpr size_t kCommLength = 15;
+
 // mkdir -p, by hand, once. It existed in four hand-written copies -- the
 // daemon's auth and avatar writers, the settings writer, the app records --
 // three at 0700 and one at 0755 for no reason anybody could name, which is the

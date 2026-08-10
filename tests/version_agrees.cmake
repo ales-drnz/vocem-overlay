@@ -325,3 +325,27 @@ message(STATUS
     "${local_pkgver}, PKGBUILD ${tagged_pkgver}, .SRCINFO ${srcinfo_pkgver}, "
     "metainfo newest ${metainfo_newest}, and the built window says "
     "${binary_version} (${state})")
+
+# The daemon's User-Agent takes the stated release through VOCEM_VERSION, never
+# a hand-written number: both downloaders carried "vocem-overlay/0.1" from the
+# first release to 0.1.5, because a literal version is a version nobody
+# re-measures. What is refused here is the shape -- any literal
+# "vocem-overlay/<digit>" in the daemon's sources -- so a third download site
+# cannot reintroduce it.
+file(GLOB daemon_sources "${SOURCE_DIR}/daemon/src/*.cpp" "${SOURCE_DIR}/daemon/src/*.h")
+list(LENGTH daemon_sources daemon_source_count)
+if(daemon_source_count LESS 5)
+    message(FATAL_ERROR "only ${daemon_source_count} daemon sources found -- the walk has "
+                        "lost the directory, which is not agreement")
+endif()
+foreach(source IN LISTS daemon_sources)
+    file(READ "${source}" source_text)
+    if(source_text MATCHES "vocem-overlay/[0-9]")
+        message(FATAL_ERROR
+            "${source} spells the User-Agent's version by hand: it must come from "
+            "VOCEM_USER_AGENT (curl_sink.h), which takes the release CMakeLists.txt "
+            "states")
+    endif()
+endforeach()
+message(STATUS "and no daemon source spells the User-Agent's version by hand "
+               "(${daemon_source_count} files checked)")

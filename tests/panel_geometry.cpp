@@ -957,10 +957,45 @@ void toast_fade_carries_raw_colours() {
           "the text outline rides the same fade as the glyphs");
 }
 
+// Which corner the toast actually lands in, for all four values of the
+// setting. The numbering is spelled in four places (config.h's "0 TL, 1 TR,
+// 2 BL, 3 BR", the drawing's right/bottom pairs, the window's two QML tables)
+// and the suite measured only corner 3 -- the one value where right and
+// bottom are both true, so swapping "top right" and "bottom left" would have
+// passed every existing check. What is asserted is the setting's documented
+// meaning against the drawn window's centre, not panel.cpp's arithmetic.
+void toast_corners() {
+    for (int corner = 0; corner < 4; ++corner) {
+        Config config;
+        config.notification_corner = corner;
+        config.notification_colour = kToastSentinel;
+        const float pixels = font_pixel_size(1080, config.scale, config.font_size);
+        ensure_fonts(pixels, config.font_size, config.font_path.c_str(),
+                     config.font_path_strong.c_str());
+        configure_style(config);
+        run_frames(make_snapshot(1, "Voice channel"), config, 1920, 1080, true);
+        ImGuiWindow* toast = ImGui::FindWindowByName("##vocem_toast");
+        const std::string where = "toast corner " + std::to_string(corner);
+        check(toast != nullptr, where + ": the toast is drawn");
+        if (!toast) {
+            continue;
+        }
+        const float centre_x = toast->Pos.x + toast->Size.x * 0.5f;
+        const float centre_y = toast->Pos.y + toast->Size.y * 0.5f;
+        const bool wants_right = corner == 1 || corner == 3;  // config.h: 0 TL, 1 TR, 2 BL, 3 BR
+        const bool wants_bottom = corner == 2 || corner == 3;
+        check((centre_x > 960.0f) == wants_right,
+              where + ": the box sits in the " + (wants_right ? "right" : "left") + " half");
+        check((centre_y > 540.0f) == wants_bottom,
+              where + ": and in the " + (wants_bottom ? "bottom" : "top") + " half");
+    }
+}
+
 void self_check() {
     distinct_tokens();
     placeholder_inside_disc();
     toast_fade_carries_raw_colours();
+    toast_corners();
 
     const uint32_t modes[][2] = {{3840, 2160}, {1920, 1080}, {1280, 720}, {640, 480}};
 

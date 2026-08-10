@@ -137,7 +137,7 @@ bool AvatarCache::download(const std::string& url, std::string& body) {
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "vocem-overlay/0.1");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, VOCEM_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXFILESIZE, 1024L * 1024L);
 

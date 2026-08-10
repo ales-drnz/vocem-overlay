@@ -44,6 +44,7 @@
 #include "vocem/panel.h"
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
+#include "vocem/state_poll.h"
 
 // No image parser in here, on purpose. The cache is raw RGBA at one fixed size
 // (vocem/avatar_rgba.h); the daemon is the only process that ever decodes a PNG.
@@ -131,6 +132,10 @@ FILE* debug_file() {
         }                                                                \
     } while (0)
 
+// The state poll's one-line events, through this path's own log (pid-stamped
+// file logging included). vocem/state_poll.h takes a function pointer so the
+// shared loop does not know either path's macro.
+void gl_poll_log(const char* line) { VOCEM_GLOG("%s", line); }
 
 // Once per process: whether this one is inside a Flatpak sandbox, and if it is,
 // what was done about it.
@@ -727,7 +732,7 @@ public:
             }
         }
 
-        const vocem::Snapshot* snapshot = poll_state();
+        vocem::Snapshot* snapshot = poll_state();
         if (!snapshot) {
             return;
         }
@@ -750,8 +755,9 @@ public:
         // so writing the text into it touches nothing anybody else can see,
         // and forget() above wipes it the moment the toast is over.
         if (toast_frame) {
-            // snapshot_ is this process's own copy -- poll_state() reads the
-            // segment into it -- so filling the body here reaches nobody else.
+            // The snapshot is this process's own copy -- poll_state() reads
+            // the segment into it -- so filling the body here reaches nobody
+            // else.
             const char* words = note_.body_for(snapshot->notification.serial);
             // A toast with a name and a face and no words is the one failure
             // this path can have that looks exactly like success. Said once per
@@ -762,8 +768,8 @@ public:
                            "unreachable from this process",
                            (unsigned long long)snapshot->notification.serial);
             }
-            std::snprintf(snapshot_.notification.body,
-                          sizeof(snapshot_.notification.body), "%s", words);
+            std::snprintf(snapshot->notification.body,
+                          sizeof(snapshot->notification.body), "%s", words);
         } else {
             note_.forget();
         }
@@ -982,35 +988,10 @@ private:
         std::free(pixels);
     }
 
-    const vocem::Snapshot* poll_state() {
-        if (!reader_.valid()) {
-            if (retry_countdown_ > 0) {
-                --retry_countdown_;
-                return nullptr;
-            }
-            retry_countdown_ = 300;
-            if (!reader_.open()) {
-                return nullptr;
-            }
-            VOCEM_GLOG("attached to the vocemd state segment");
-        } else if (--retry_countdown_ <= 0) {
-            // The same cadence, pointed the other way: a mapping outlives the
-            // segment's name, so a daemon that stopped -- or stopped and came
-            // back -- leaves this reader on orphaned pages it would trust
-            // forever. Ask the name whether it still means our mapping; if not,
-            // drop it and let the branch above find the living one.
-            retry_countdown_ = 300;
-            if (!reader_.still_current()) {
-                VOCEM_GLOG("state segment replaced or gone: detaching");
-                reader_.close();
-                return nullptr;
-            }
-        }
-        if (!reader_.read(snapshot_)) {
-            return nullptr;
-        }
-        return &snapshot_;
-    }
+    // One spelling with the Vulkan layer's, in vocem/state_poll.h -- the loop
+    // had drifted apart once already (the layer said why a read failed, this
+    // path did not).
+    vocem::Snapshot* poll_state() { return state_poll_.poll(); }
 
     bool ensure_backend() {
         if (backend_ready_) {
@@ -1137,8 +1118,7 @@ public:
     }
 
 private:
-    vocem::StateReader reader_;
-    vocem::Snapshot snapshot_;
+    vocem::StatePoll state_poll_{&gl_poll_log};
     GlAvatarProvider avatars_;
     vocem::LiveConfig config_;
     // The message's words, held only while its toast is on screen in this
@@ -1158,7 +1138,6 @@ private:
     long frames_drawn_ = 0;
     double last_stat_seconds_ = 0.0;
     vocem::DrawDecision decision_;
-    int retry_countdown_ = 0;
     bool backend_ready_ = false;
     bool captured_ = false;
     int capture_warmup_frames_ = 0;
