@@ -201,36 +201,69 @@ inline std::vector<std::string> desktop_ids_from_cgroup(const std::string& cgrou
     // The leaf unit, which is the one that actually ran: in the D-Bus shape the
     // `app-` piece is the slice around it.
     std::string unit = cgroup.substr(cgroup.find_last_of('/') + 1);
+    bool scope = false;
     for (const char* suffix : {".scope", ".service", ".slice"}) {
         const size_t length = std::strlen(suffix);
         if (unit.size() > length && unit.compare(unit.size() - length, length, suffix) == 0) {
+            scope = (suffix[1] == 's' && suffix[2] == 'c');
             unit.resize(unit.size() - length);
             break;
         }
     }
-    // The random part: `@<RANDOM>` on a service, `-<RANDOM>` on a scope.
-    if (const size_t at = unit.find('@'); at != std::string::npos) {
-        unit.resize(at);
-    } else if (const size_t last = unit.rfind('-'); last != std::string::npos) {
-        unit.resize(last);
-    }
-    if (unit.compare(0, 4, "app-") == 0) {
-        unit = unit.substr(4);
-    }
-    unit = unescaped_unit(unit);
-    if (unit.empty()) {
-        return candidates;
-    }
-    candidates.push_back(unit);
-    // Then the same name with the optional launcher taken off: `gnome-`,
-    // `flatpak-`, and the two pieces D-Bus activation puts in front (`dbus-`, then
-    // the connection's name, `:1.2`).
-    for (int strip = 0; strip < 2; ++strip) {
-        const size_t dash = candidates.back().find('-');
-        if (dash == std::string::npos) {
-            break;
+    // One base's readings: the `app-` prefix off, the escaping out, then the
+    // same name with the optional launcher taken off -- `gnome-`, `flatpak-`,
+    // and the two pieces D-Bus activation puts in front (`dbus-`, then the
+    // connection's name, `:1.2`). Deduplicated, because the two bases below
+    // often agree.
+    const auto offer = [&candidates](std::string base) {
+        if (base.compare(0, 4, "app-") == 0) {
+            base = base.substr(4);
         }
-        candidates.push_back(candidates.back().substr(dash + 1));
+        base = unescaped_unit(base);
+        if (base.empty()) {
+            return;
+        }
+        const auto push = [&candidates](const std::string& value) {
+            for (const std::string& existing : candidates) {
+                if (existing == value) {
+                    return;
+                }
+            }
+            candidates.push_back(value);
+        };
+        push(base);
+        for (int strip = 0; strip < 2; ++strip) {
+            const size_t dash = base.find('-');
+            if (dash == std::string::npos) {
+                break;
+            }
+            base = base.substr(dash + 1);
+            push(base);
+        }
+    };
+    // The random part: `@<RANDOM>` on a service, `-<RANDOM>` on a scope -- and
+    // on a service the whole part is OPTIONAL (systemd's own spelling is
+    // `app[-<launcher>]-<ApplicationID>[@<RANDOM>].service`). With an `@` the
+    // cut is certain. Without one the dash rule is a guess: right for every
+    // scope, where the random part is not optional, and wrong for a service
+    // that simply has none, where it ate everything after the id's first dash
+    // -- `app-org.gnome.Evince.service` read as ["app"] and the whole
+    // desktop-entry signal was dead for that shape. So for a service (or a
+    // slice, which never carries a random part) the unit as it stands is
+    // offered as a second base. Widening is safe for the reason above: a found
+    // entry still has to name this executable before it is believed.
+    std::string stripped = unit;
+    if (const size_t at = stripped.find('@'); at != std::string::npos) {
+        stripped.resize(at);
+        offer(stripped);
+    } else {
+        if (const size_t last = stripped.rfind('-'); last != std::string::npos) {
+            stripped.resize(last);
+        }
+        offer(stripped);
+        if (!scope) {
+            offer(unit);
+        }
     }
     return candidates;
 }
