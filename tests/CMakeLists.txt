@@ -1236,3 +1236,21 @@ add_test(NAME emoji_bank_arrives COMMAND vocem_emoji_bank_arrives)
 set_tests_properties(emoji_bank_arrives PROPERTIES
     ENVIRONMENT "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
 set_tests_properties(emoji_bank_arrives PROPERTIES SKIP_RETURN_CODE 77)
+
+# A skip that exits 0 is a pass nobody looked at. Every window-driving script
+# test above bails out with `message(STATUS "skip ...")` when a precondition is
+# missing -- and the sharpest precondition is "the window ran", so the failure
+# these tests exist to catch (a window that exits non-zero) was exactly the
+# condition that turned them green: only gl_beside_mangohud carried the
+# property, measured on the generated CTestTestfile. This turns that output
+# into ctest's own Skipped state, which the suite's discipline (zero skips on
+# this machine) then refuses instead of counting as a pass. The pattern is
+# `-- skip ` with STATUS's own prefix, not the bare word: two passing tests
+# speak "skipped" in ordinary sentences.
+set(window_script_tests version_agrees)
+if(TARGET vocem-config)
+    list(APPEND window_script_tests debug_section journal_paths live_while_open
+         toast_preview_honest appearance_previews running_without preview_display
+         window_padding empty_views tray_icon_choice display_change_while_open)
+endif()
+set_tests_properties(${window_script_tests} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
