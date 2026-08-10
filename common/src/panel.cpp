@@ -974,8 +974,11 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
                                        IM_COL32(255, 255, 255, static_cast<int>(255 * fade)),
                                        avatar_radius);
         } else {
+            // The fade by hand, exactly as the image above: the placeholder goes
+            // into the draw list as raw colours the pushed style alpha cannot
+            // reach (the panel's rows pass row_alpha here for the same reason).
             draw_avatar_placeholder(draw_list, centre, avatar_radius, theme.avatar_placeholder,
-                                    theme.avatar_mark, 1.0f);
+                                    theme.avatar_mark, fade);
         }
 
         // As in the panel: the picture's box is the picture, and the gap beside it
@@ -986,8 +989,11 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
 
         ImGui::BeginGroup();
         // The same permanent outline as the panel's, from the same switch: one
-        // treatment, one answer, whatever either box's opacity is set to.
-        const float outline = theme.toast_text_outline;
+        // treatment, one answer, whatever either box's opacity is set to. The
+        // strength rides the fade -- the copies bypass the pushed style alpha,
+        // so without this the entrance and the exit showed full-strength ink
+        // around a fading glyph (the panel does the same with row_alpha).
+        const float outline = theme.toast_text_outline * fade;
 
         // The sender is the part that has to be readable at a glance, mid-game,
         // so it gets the heavier weight.
