@@ -2,16 +2,21 @@
 
 The overlay draws inside other applications' processes, so it cannot ask a toolkit
 for a font and must not call fontconfig on the present path. It carries its own --
-three of them, because no single freely licensed font covers what a Discord display
-name and a Discord channel name are written with.
+six of them, because no single freely licensed font covers what a Discord display
+name and a Discord channel name are written with (the symbol trio exists because
+servers decorate their names from symbol-picker sites; the coverage was measured
+against coolsymbol.com's full table, 2026-08-10: 97% drawn, the rest being
+scripts that need shaping and the Private Use Area, both out by decision).
 
 | File | What it carries | Licence |
 | --- | --- | --- |
 | `Inter-Regular.ttf`, `Inter-SemiBold.ttf` | Latin, Greek, Cyrillic, and every symbol Inter has: arrows, stars, ticks, bullets, card suits, fractions | `OFL.txt` |
 | `NotoEmoji.ttf` | every emoji with a single code point, monochrome | `OFL-NotoEmoji.txt` |
-| `NotoSansJP.ttf` | CJK punctuation, the katakana middle dot, fullwidth forms | `OFL-NotoSansJP.txt` |
+| `NotoSansJP.ttf` | CJK punctuation, the kana, Hangul compatibility jamo, box drawing, enclosed/compat CJK, small and fullwidth forms | `OFL-NotoSansJP.txt` |
+| `NotoSansMath.ttf` | mathematical alphanumerics (the "fancy font" alphabets), arrows, APL, math operators | `OFL-NotoSansMath.txt` |
+| `NotoSansSymbols.ttf`, `NotoSansSymbols2.ttf` | circled letters, dingbats, geometric shapes, the symbol blocks the others miss | `OFL-NotoSansSymbols.txt`, `OFL-NotoSansSymbols2.txt` |
 
-All three are under the SIL Open Font License 1.1. The subsets are Modified
+All six are under the SIL Open Font License 1.1. The subsets are Modified
 Versions in the OFL's sense (removing glyphs is modification, per the OFL FAQ),
 which is permitted; the one Reserved Font Name among them is `Source`, declared
 by Noto Sans JP's Adobe copyright line, and nothing here uses that name. The

@@ -757,6 +757,28 @@ target_compile_definitions(vocem_emoji_atlas PRIVATE
     IMGUI_USE_WCHAR32
     IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
 add_test(NAME emoji_atlas COMMAND vocem_emoji_atlas)
+
+# The decoration symbols a server names its channels with have glyphs, pinned
+# one per added block, both weights. "?? ... ??" in a toast is what a miss
+# looks like from inside a game; the file's header carries the measured
+# corpus numbers.
+add_executable(vocem_symbol_coverage
+    symbol_coverage.cpp
+    "${PROJECT_SOURCE_DIR}/common/src/fonts.cpp"
+    "${IMGUI_DIR}/imgui.cpp"
+    "${IMGUI_DIR}/imgui_draw.cpp"
+    "${IMGUI_DIR}/imgui_tables.cpp"
+    "${IMGUI_DIR}/imgui_widgets.cpp"
+)
+target_include_directories(vocem_symbol_coverage PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/common/fonts"
+    "${IMGUI_DIR}"
+)
+target_compile_definitions(vocem_symbol_coverage PRIVATE
+    IMGUI_USE_WCHAR32
+    IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
+add_test(NAME symbol_coverage COMMAND vocem_symbol_coverage)
 set_tests_properties(emoji_atlas PROPERTIES
     ENVIRONMENT "VOCEM_EMOJI_BANK=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba"
     SKIP_RETURN_CODE 77)
