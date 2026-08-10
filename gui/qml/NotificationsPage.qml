@@ -100,7 +100,7 @@ SectionPage {
 
                 SliderRow {
                     accessibleName: qsTr("Show for")
-                    from: 1; to: 20; stepSize: 0.5
+                    from: 1; to: 30; stepSize: 0.5
                     decimals: 1
                     suffix: qsTr(" s")
                     value: root.config.notificationSeconds

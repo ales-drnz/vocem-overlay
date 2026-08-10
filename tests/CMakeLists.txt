@@ -429,6 +429,14 @@ add_test(NAME one_spelling
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/one_spelling.cmake")
 
+# A slider's bounds and the settings file's clamp are the same fact spelled
+# twice; one pair had drifted ("Show for" offered 1-20 over a clamp of 1-30,
+# so a slider touched at 30 silently rewrote the setting). Every SliderRow and
+# SpinRow bound to a config value is held to config.h's clamp for the same key.
+add_test(NAME slider_bounds
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/slider_bounds.cmake")
+
 # The daemon's unit: confined, and confined in ways that actually start. An empty
 # CapabilityBoundingSet on a user service fails to start (exit 218, measured), so
 # its absence is asserted alongside the directives that must be there.
