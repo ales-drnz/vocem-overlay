@@ -15,7 +15,6 @@
 #include <unistd.h>
 
 #include <cstddef>
-#include <cstdio>
 #include <cstring>
 
 #include "vocem/shared_state.h"

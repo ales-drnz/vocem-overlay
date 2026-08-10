@@ -60,34 +60,16 @@ inline float fraction_within(float position, float box, float extent, float inse
     return f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
 }
 
-// The six places the panel can be sent to, in the order the window walks them:
-// the four corners and the middle of either side. The fractions are exact -- 0,
-// 0.5, 1 -- so "top left" is the same pair of numbers every time and the
-// comparison harness stays exact.
-struct AnchorPoint {
-    float x;
-    float y;
-};
-
-inline constexpr AnchorPoint kPanelAnchors[] = {
-    {0.0f, 0.0f}, {1.0f, 0.0f},  // top corners
-    {0.0f, 0.5f}, {1.0f, 0.5f},  // middles of the sides
-    {0.0f, 1.0f}, {1.0f, 1.0f},  // bottom corners
-};
-inline constexpr int kPanelAnchorCount = sizeof(kPanelAnchors) / sizeof(kPanelAnchors[0]);
-
-// The message box is chosen by corner rather than by fraction -- a toast arrives,
-// is read and leaves, and it has never needed the middle of a side. These are the
-// same four fractions its `notification_corner` means, so its anchor marks can be
-// placed by the arithmetic above rather than by a second copy of it.
-inline constexpr AnchorPoint kNotificationAnchors[] = {
-    {0.0f, 0.0f},  // 0: top left
-    {1.0f, 0.0f},  // 1: top right
-    {0.0f, 1.0f},  // 2: bottom left
-    {1.0f, 1.0f},  // 3: bottom right
-};
-inline constexpr int kNotificationAnchorCount =
-    sizeof(kNotificationAnchors) / sizeof(kNotificationAnchors[0]);
+// What is deliberately NOT here: the anchor tables. This header used to carry
+// kPanelAnchors and kNotificationAnchors and claimed the window walked them;
+// nothing anywhere referenced either -- the window's six anchor points live in
+// ScreenMap.qml (in ITS order, left column then right, so the Tab order never
+// depends on where the panel is) and the toast's corners in
+// NotificationScreen.qml, because QML cannot read a C++ header. The arithmetic
+// above is what the two sides genuinely share, and one_placement_inverse.cmake
+// plus tests/panel_geometry.cpp's corner and placement checks are what hold
+// them together. A table that claims to be the one spelling while the real
+// copies live elsewhere is worse than no table.
 
 }  // namespace vocem
 

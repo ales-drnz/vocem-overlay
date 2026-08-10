@@ -15,8 +15,10 @@ import Vocem
 SectionPage {
     id: root
 
+    // notificationPreviewDisplay included for the same reason as the panel
+    // page's: a persisted setting the page edits belongs to its Reset.
     settings: ["notificationCorner", "notificationMargin", "notificationScale",
-               "notificationSeconds"]
+               "notificationSeconds", "notificationPreviewDisplay"]
     title: qsTr("Notifications")
     subtitle: qsTr("Where direct messages and mentions appear, and for how long.")
 

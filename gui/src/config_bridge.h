@@ -608,7 +608,6 @@ private:
     void refreshLiveInstances();
     bool startDaemon();
     void stopDaemon();
-    bool daemonProcessRunning() const;
     QString daemonExecutable() const;
 
     // What the last sweep of the registry found, and the countdown to the next

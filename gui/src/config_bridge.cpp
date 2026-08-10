@@ -900,7 +900,6 @@ QString ConfigBridge::daemonExecutable() const {
     return QFileInfo::exists(sibling) ? QFileInfo(sibling).absoluteFilePath() : QString();
 }
 
-bool ConfigBridge::daemonProcessRunning() const { return attached_; }
 
 bool ConfigBridge::startDaemon() {
     if (systemd_unit_available()) {

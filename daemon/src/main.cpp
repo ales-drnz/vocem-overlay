@@ -13,12 +13,11 @@
 // Authorisation is its own: the daemon asks Discord for a token the first time it
 // connects and stores it. See auth.h for how, and for what that costs us.
 
-#include <time.h>
+#include <unistd.h>
 
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -326,6 +325,12 @@ public:
 
     size_t size() const { return participants_.size(); }
 
+    // The bridge and main() hand the note writer around by reference (its
+    // on_publish hook is wired there). This accessor used to sit as a one-line
+    // public island in the middle of the private data, cutting the member list
+    // in two.
+    vocem::NoteWriter& note() { return note_; }
+
 private:
     void publish() {
         writer_.publish([this](vocem::SharedState& state) {
@@ -388,11 +393,6 @@ private:
     double notification_received_ = 0.0;
     std::string notification_title_;
     vocem::NoteWriter note_;
-
-public:
-    vocem::NoteWriter& note() { return note_; }
-
-private:
     bool note_cleared_ = true;
     std::string notification_avatar_;
     uint64_t self_id_ = 0;

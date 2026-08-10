@@ -79,7 +79,6 @@ constexpr GLenum GL_FRAMEBUFFER_BINDING = 0x8CA6;
 constexpr GLenum GL_VERSION = 0x1F02;
 
 using PFN_glGenTextures = void (*)(GLsizei, GLuint*);
-using PFN_glDeleteTextures = void (*)(GLsizei, const GLuint*);
 using PFN_glBindTexture = void (*)(GLenum, GLuint);
 using PFN_glTexImage2D = void (*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum,
                                   const GLvoid*);
@@ -932,6 +931,48 @@ public:
         ++frames_drawn_;
     }
 
+    // Give back everything that belongs to a GL context, and be ready to build it
+    // again on the next frame that wants one.
+    //
+    // Two callers, one operation, which is why it is one function:
+    //
+    //   * **The application destroyed the context** our objects live in. Every
+    //     texture name and every object inside ImGui's backend refers to something
+    //     that no longer exists, and using one after that is undefined rather than
+    //     merely wrong.
+    //   * **The user switched the overlay off.** Not drawing is not enough: this
+    //     code is a guest in somebody else's process, and a guest that has been
+    //     asked to leave should not still be holding a shader program, a vertex
+    //     buffer and a texture per person in the channel.
+    //
+    // `gl_current` says whether a GL context is current *right now* and safe to
+    // call into. Inside a present hook it is; inside `glXDestroyContext` it is only
+    // if the caller made the dying context current for us, and it says so.
+    void release(bool gl_current) {
+        if (backend_ready_ && gl_current) {
+            ImGui_ImplOpenGL3_Shutdown();
+        }
+        avatars_.forget();
+        backend_ready_ = false;
+        last_frame_seconds_ = 0.0;
+        // A backend that failed against one context deserves a fresh attempt
+        // against the next: the failure was about that context, not about us.
+        failed_ = false;
+        bind_framebuffer_ = nullptr;
+        capture_warmup_frames_ = 0;
+
+        // Without a current context ImGui's backend cannot be shut down, because
+        // shutting it down means deleting GL objects. Its own small heap block is
+        // then leaked once per context destruction -- a hundred-odd bytes, not
+        // once per frame -- and the GL objects it named are gone with the context
+        // regardless. Destroying the ImGui context here is what makes the next
+        // `Init` start from nothing rather than from a half-torn-down backend.
+        if (ImGui::GetCurrentContext()) {
+            ImGui::DestroyContext();
+        }
+    }
+
+
 private:
     // A development aid: with VOCEM_CAPTURE_FRAME set to a path, the first frame
     // that carries the overlay is read back out of the game's own framebuffer and
@@ -1081,48 +1122,6 @@ private:
         return decision_.allowed();
     }
 
-public:
-    // Give back everything that belongs to a GL context, and be ready to build it
-    // again on the next frame that wants one.
-    //
-    // Two callers, one operation, which is why it is one function:
-    //
-    //   * **The application destroyed the context** our objects live in. Every
-    //     texture name and every object inside ImGui's backend refers to something
-    //     that no longer exists, and using one after that is undefined rather than
-    //     merely wrong.
-    //   * **The user switched the overlay off.** Not drawing is not enough: this
-    //     code is a guest in somebody else's process, and a guest that has been
-    //     asked to leave should not still be holding a shader program, a vertex
-    //     buffer and a texture per person in the channel.
-    //
-    // `gl_current` says whether a GL context is current *right now* and safe to
-    // call into. Inside a present hook it is; inside `glXDestroyContext` it is only
-    // if the caller made the dying context current for us, and it says so.
-    void release(bool gl_current) {
-        if (backend_ready_ && gl_current) {
-            ImGui_ImplOpenGL3_Shutdown();
-        }
-        avatars_.forget();
-        backend_ready_ = false;
-        last_frame_seconds_ = 0.0;
-        // A backend that failed against one context deserves a fresh attempt
-        // against the next: the failure was about that context, not about us.
-        failed_ = false;
-        bind_framebuffer_ = nullptr;
-        capture_warmup_frames_ = 0;
-
-        // Without a current context ImGui's backend cannot be shut down, because
-        // shutting it down means deleting GL objects. Its own small heap block is
-        // then leaked once per context destruction -- a hundred-odd bytes, not
-        // once per frame -- and the GL objects it named are gone with the context
-        // regardless. Destroying the ImGui context here is what makes the next
-        // `Init` start from nothing rather than from a half-torn-down backend.
-        if (ImGui::GetCurrentContext()) {
-            ImGui::DestroyContext();
-        }
-    }
-
 private:
     vocem::StatePoll state_poll_{&gl_poll_log};
     GlAvatarProvider avatars_;
@@ -1160,9 +1159,10 @@ GlOverlay& overlay() {
 // GLX
 // ---------------------------------------------------------------------------
 
-using PFN_glXSwapBuffers = void (*)(void*, unsigned long);
+// Only the query is needed here: the swap and dispatcher signatures that used
+// to sit beside it were the deleted hook table's (entry 45), and a leftover
+// signature is what makes growing that table back a two-line change.
 using PFN_glXQueryDrawable = void (*)(void*, unsigned long, int, unsigned int*);
-using PFN_glXGetProcAddress = void* (*)(const unsigned char*);
 
 constexpr int kGlxWidth = 0x801D;
 constexpr int kGlxHeight = 0x801E;
@@ -1190,9 +1190,7 @@ void query_glx_size(void* display, unsigned long drawable, uint32_t& width, uint
 // EGL
 // ---------------------------------------------------------------------------
 
-using PFN_eglSwapBuffers = unsigned int (*)(void*, void*);
-using PFN_eglQuerySurface = unsigned int (*)(void*, void*, int, int*);
-using PFN_eglGetProcAddress = void* (*)(const char*);
+using PFN_eglQuerySurface = unsigned int (*)(void*, void*, int, int*);  // as above: only the query
 
 constexpr int kEglWidth = 0x3057;
 constexpr int kEglHeight = 0x3056;

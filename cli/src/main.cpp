@@ -12,7 +12,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <string>
 
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
