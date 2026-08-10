@@ -395,6 +395,15 @@ int main(int argc, char** argv) {
     }
     check(cleared_after >= 0.0,
           "the words are retired with Discord gone: the clock is the daemon's own");
+    // An upper bound as well as existence. The budget printed above is about
+    // two seconds (the toast's second plus the allowance); the first version of
+    // this file measured 10.1 s and nearly believed it -- the handshake
+    // deadline spent talking to the stub's own leaked listener -- and a check
+    // reading "cleared within the 15 s window" would have passed on that
+    // number too. Six seconds is generous over the budget and still refuses
+    // the deadline class.
+    check(cleared_after >= 0.0 && cleared_after <= 6.0,
+          "and they go on the toast's own budget, not on some deadline's");
     check(!note_name_exists(),
           "and the name is unlinked too, so nothing in the session can open it");
 

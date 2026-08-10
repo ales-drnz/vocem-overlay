@@ -88,10 +88,9 @@ int count_requests() {
 }
 
 // Parent mode: run self in child mode with a chosen environment, read the rate.
-bool child_rate(const char* self, bool disabled, double& rate) {
+bool child_rate(const char* self, const char* environment, double& rate) {
     char command[4400];
-    snprintf(command, sizeof(command), "%s %s --count-requests", disabled ? "VOCEM_DISABLE=1" : "",
-             self);
+    snprintf(command, sizeof(command), "%s %s --count-requests", environment, self);
     FILE* pipe = popen(command, "r");
     if (!pipe) {
         return false;
@@ -154,14 +153,37 @@ int main(int argc, char** argv) {
 
     double disabled = 0.0;
     double declining = 0.0;
-    if (!child_rate(self, true, disabled)) {
+    if (!child_rate(self, "VOCEM_DISABLE=1", disabled)) {
         printf("skip the disabled baseline could not run (no GLX here?)\n");
         return 77;
     }
-    if (!child_rate(self, false, declining)) {
+    // The declining child also logs to a file, which is the positive control:
+    // "declining" and "disabled" make the same silence on the X wire, so
+    // without this the comparison below is satisfied by a library that never
+    // loaded at all (shim_disable.cpp carries the same control for its own
+    // comparison). The line matched is "not drawing in" whole -- entry 54's
+    // probe once matched "drawing in" inside it and reported the opposite.
+    char decline_env[900];
+    char decline_log[700];
+    snprintf(decline_log, sizeof(decline_log), "%s/decline.log", root);
+    snprintf(decline_env, sizeof(decline_env), "VOCEM_DEBUG=1 VOCEM_LOG_FILE=%s", decline_log);
+    if (!child_rate(self, decline_env, declining)) {
         printf("FAIL the active child could not run\n");
         return 1;
     }
+    bool declined_on_record = false;
+    if (FILE* log = fopen(decline_log, "r")) {
+        char line[512];
+        while (fgets(line, sizeof(line), log)) {
+            if (strstr(line, "not drawing in")) {
+                declined_on_record = true;
+                break;
+            }
+        }
+        fclose(log);
+    }
+    check(declined_on_record,
+          "the declining child loaded the overlay and said why it declined");
     printf("     X requests per frame: disabled %.3f, declining %.3f\n", disabled, declining);
     check(declining <= disabled + 0.01,
           "a declined process puts nothing on the X wire the disabled one does not");

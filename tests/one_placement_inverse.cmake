@@ -22,6 +22,15 @@
 # mirroring `fraction_within` -- is the only way back.
 
 file(GLOB_RECURSE qml_files "${SOURCE_DIR}/gui/qml/*.qml")
+# A purely negative test over a glob is a test that passes on an empty set: move
+# the directory and this would go on approving nothing. The floor is well under
+# the real count (34 files today) and exists only to catch that.
+list(LENGTH qml_files qml_count)
+if(qml_count LESS 10)
+    message(FATAL_ERROR "one_placement_inverse: only ${qml_count} QML files found under "
+                        "${SOURCE_DIR}/gui/qml -- the walk has lost the pages, which is "
+                        "not agreement")
+endif()
 
 set(offences "")
 foreach(file IN LISTS qml_files)
@@ -54,3 +63,5 @@ foreach(file IN LISTS qml_files)
             "box below the middle. Use placeWithin().")
     endif()
 endforeach()
+
+message(STATUS "ok one_placement_inverse: ${qml_count} QML files, none divides by a view's extent")

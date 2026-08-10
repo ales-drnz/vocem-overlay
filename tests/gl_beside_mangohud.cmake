@@ -51,39 +51,7 @@ if(NOT EXISTS "${PROBE}" OR NOT EXISTS "${SHIM}" OR NOT EXISTS "${LIBRARY}")
     return()
 endif()
 
-# One run of the probe under a given preload. Returns the foreign-pixel count
-# and how many lines only this overlay writes came out of it.
-function(run_probe preload out_pixels out_ours)
-    execute_process(
-        COMMAND "${PROBE}"
-        RESULT_VARIABLE status
-        OUTPUT_VARIABLE output
-        ERROR_VARIABLE errors
-        TIMEOUT 120
-        ENVIRONMENT_MODIFICATION
-            "LD_PRELOAD=set:${preload}"
-            "VOCEM_SHIM_PRELOADED=set:1"
-            "VOCEM_GL_LIBRARY=set:${LIBRARY}"
-            "VOCEM_DEBUG=set:1"
-            "MANGOHUD=set:1")
-    if(status EQUAL 77)
-        # No display inside this run: the probe says so itself, and a skip is
-        # the honest answer rather than a comparison of two zeroes.
-        set(${out_pixels} "skip" PARENT_SCOPE)
-        set(${out_ours} 0 PARENT_SCOPE)
-        return()
-    endif()
-    set(both "${output}${errors}")
-    if(both MATCHES "foreign pixels:[ \t]*([0-9]+)")
-        set(${out_pixels} "${CMAKE_MATCH_1}" PARENT_SCOPE)
-    else()
-        set(${out_pixels} "none" PARENT_SCOPE)
-    endif()
-    # The two lines nothing else in the process writes.
-    string(REGEX MATCHALL "\\[vocem/gl\\] (OpenGL backend ready|drawing in)" ours "${both}")
-    list(LENGTH ours count)
-    set(${out_ours} "${count}" PARENT_SCOPE)
-endfunction()
+include("${CMAKE_CURRENT_LIST_DIR}/gl_probe_witness.cmake")
 
 run_probe("${SHIM}" alone_pixels alone_ours)
 if(alone_pixels STREQUAL "skip")

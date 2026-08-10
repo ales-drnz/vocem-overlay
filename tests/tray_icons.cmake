@@ -95,19 +95,26 @@ endif()
 
 # And the install rule ships all five beside the application's own icon: an
 # icon that exists only in the repository is a tray that works only here.
+# Matched inside an install(FILES ...) call with the comments stripped first,
+# not as a bare substring of the whole file -- a commented-out install line
+# satisfied unit_hardening's substring match once (entry 77), and this check
+# had the same shape.
 file(READ "${SOURCE_DIR}/CMakeLists.txt" cmake_lists)
+string(REGEX REPLACE "#[^\n]*" "" cmake_lists "${cmake_lists}")
 foreach(pair IN LISTS pairs)
     string(REPLACE "|" ";" pair "${pair}")
     list(GET pair 0 name)
-    if(NOT cmake_lists MATCHES "${name}")
+    if(NOT cmake_lists MATCHES "install\\(FILES[^)]*${name}")
         message(FATAL_ERROR "${name} is not in the install rule -- the packaged "
                             "tray falls back to the generic icon")
     endif()
 endforeach()
 
 # The window must ask for exactly these names. A state whose icon name is
-# misspelled draws the theme's fallback with nothing logged.
+# misspelled draws the theme's fallback with nothing logged. Comments stripped
+# for the same reason as above.
 file(READ "${SOURCE_DIR}/gui/qml/Tray.qml" tray)
+string(REGEX REPLACE "//[^\n]*" "" tray "${tray}")
 foreach(pair IN LISTS pairs)
     string(REPLACE "|" ";" pair "${pair}")
     list(GET pair 0 name)

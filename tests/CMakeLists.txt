@@ -640,29 +640,27 @@ else()
     set_tests_properties(gl_avatar_width32 PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
 endif()
 
-# Beside Steam's own overlay. DESIGN listed this as a declared class never
-# measured: Steam appends gameoverlayrenderer.so to LD_PRELOAD for everything it
-# launches, so in a native GL Steam title both interposers are in the chain, and
-# "both forward, so it should stack" was an expectation. Measured now, in both
-# orders, with the same probe and the same pixel count -- Steam's library hooks
-# glXSwapBuffers AND dlsym, so whichever is first in LD_PRELOAD owns the door and
-# the other must still see the frame. Skipped where Steam is not installed.
+# Beside Steam's own overlay, in both orders, with the log-line witness. The
+# raw-pixel versions of these two tests (gl_beside_steam / gl_under_steam) were
+# the trap gl_beside_mangohud.cmake describes: they counted what ANY interposer
+# drew, so they passed whether Steam's library drew, was missing, or the cached
+# find_file path had gone stale after an uninstall. One script now, both
+# orders, asserting exactly what DESIGN's open-risks entry records as measured:
+# we draw in both orders, so Steam forwards down the chain. Whether Steam's own
+# overlay drew stays unmeasured and said (a probe is not a Steam title).
 find_file(VOCEM_STEAM_OVERLAY gameoverlayrenderer.so
     PATHS "$ENV{HOME}/.steam/root/ubuntu12_64" "$ENV{HOME}/.local/share/Steam/ubuntu12_64"
     NO_DEFAULT_PATH)
 if(VOCEM_STEAM_OVERLAY)
-    # The order Steam actually produces: the session's preload first (ours, from
-    # environment.d), Steam's appended after it.
-    add_test(NAME gl_beside_steam COMMAND vocem_gl_draw_local)
+    add_test(NAME gl_beside_steam
+        COMMAND "${CMAKE_COMMAND}"
+                "-DPROBE=$<TARGET_FILE:vocem_gl_draw_local>"
+                "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+                "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+                "-DSTEAM_OVERLAY=${VOCEM_STEAM_OVERLAY}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_beside_steam.cmake")
     set_tests_properties(gl_beside_steam PROPERTIES
-        ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim>:${VOCEM_STEAM_OVERLAY};VOCEM_SHIM_PRELOADED=1;VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
-        SKIP_RETURN_CODE 77)
-    # And the harder way round, where Steam's hook owns the symbol and ours only
-    # sees the frame if Steam forwards down the chain.
-    add_test(NAME gl_under_steam COMMAND vocem_gl_draw_local)
-    set_tests_properties(gl_under_steam PROPERTIES
-        ENVIRONMENT "LD_PRELOAD=${VOCEM_STEAM_OVERLAY}:$<TARGET_FILE:vocem_gl_shim>;VOCEM_SHIM_PRELOADED=1;VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
-        SKIP_RETURN_CODE 77)
+        SKIP_REGULAR_EXPRESSION "^skip|-- skip ")
 else()
     add_test(NAME gl_beside_steam COMMAND "${CMAKE_COMMAND}" -E echo
         "skip Steam's gameoverlayrenderer.so is not installed here")

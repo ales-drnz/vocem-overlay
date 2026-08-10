@@ -139,7 +139,11 @@ int main(int argc, char** argv) {
 
     check(bank.contains(0x1F525), "and once it arrives the emoji are coloured after all");
     check(!bank.still_arriving(), "with the wait over");
-    check(strstr(bank.path(), vocem::kBridgeEmojiBankName) != nullptr,
+    // The exact path, not a substring: the bridge copy and the host install
+    // share the basename (kBridgeEmojiBankName is "emoji_bank.rgba"), so a
+    // strstr on the name would be satisfied by the host path too and the check
+    // would pass with the sandbox mechanism dead.
+    check(strcmp(bank.path(), target.c_str()) == 0,
           "through the bridge's own copy, which is the only one a sandbox can reach");
 
     std::string cleanup = std::string("rm -rf ") + root;

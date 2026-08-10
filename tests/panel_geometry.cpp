@@ -599,6 +599,10 @@ void verify(const Config& config, uint32_t width, uint32_t height, uint32_t user
     check(m.ring_count == m.avatar_count,
           where + ": every picture wears a ring (" + std::to_string(m.ring_count) + " rings, " +
               std::to_string(m.avatar_count) + " pictures)");
+    // The equality above is satisfied by two empty sets: both counts come from
+    // colour clustering, so one theme-token change could retire the whole
+    // family while the check went on passing on 0 == 0.
+    check(m.avatar_count >= 1, where + ": and there is at least one picture");
 
     // The line under the channel name: the accent bar starts where the content
     // does, the hairline takes over exactly where the bar ends, and the two
