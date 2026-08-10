@@ -89,6 +89,9 @@ private:
         // What is in the file is whatever the sandbox last left there.
         uint32_t sequence = 0;
         long long config_mtime = 0;
+        // The avatars directory's refusal, said once per sandbox rather than
+        // once per tick (mirror_avatars).
+        bool avatars_refused = false;
         // Whether the colour emoji bank has been put in this sandbox. Six
         // megabytes that never change, so it is copied once and only into a
         // sandbox the overlay is actually drawing in.

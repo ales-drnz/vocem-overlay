@@ -533,14 +533,32 @@ void FlatpakBridge::mirror_config(Mirror& mirror) {
 }
 
 void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
+    // Both refusals below are said once per sandbox: this directory is inside
+    // territory the sandbox owns, so a file planted at the avatars name (which
+    // makes the O_DIRECTORY|O_NOFOLLOW open fail) is exactly the hostile shape
+    // the rest of this file refuses out loud -- and a game whose faces never
+    // arrive with an empty log was the one quiet corner of it. Once, because
+    // this runs on the tick and the condition persists.
     if (::mkdirat(mirror.directory, kBridgeAvatarsName, 0700) != 0 && errno != EEXIST) {
+        if (!mirror.avatars_refused) {
+            mirror.avatars_refused = true;
+            LOG("could not create %s in the Flatpak sandbox of %s (%s): its faces stay grey",
+                kBridgeAvatarsName, mirror.id.c_str(), std::strerror(errno));
+        }
         return;
     }
     const int avatars = ::openat(mirror.directory, kBridgeAvatarsName,
                                  O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (avatars < 0) {
+        if (!mirror.avatars_refused) {
+            mirror.avatars_refused = true;
+            LOG("%s in the Flatpak sandbox of %s is not an ordinary directory (%s): "
+                "its faces stay grey",
+                kBridgeAvatarsName, mirror.id.c_str(), std::strerror(errno));
+        }
         return;
     }
+    mirror.avatars_refused = false;
 
     // Only what this state names: at most the people in the channel plus the
     // author of the last message. The picture for a given id and hash never
