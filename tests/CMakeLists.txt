@@ -794,6 +794,21 @@ target_link_libraries(vocem_avatar_decode PRIVATE ZLIB::ZLIB)
 add_test(NAME avatar_decode COMMAND vocem_avatar_decode)
 set_tests_properties(avatar_decode PROPERTIES SKIP_RETURN_CODE 77)
 
+# The cache's memory against the peer that feeds it: request() must stop
+# remembering at the ceiling, because the notification path reaches this
+# container with no bound of its own and the unit carries MemoryMax=128M.
+# Compiles the real avatars.cpp; the worker is stopped before the flood so no
+# network is touched and the reading is the same twice.
+find_package(CURL REQUIRED)
+add_executable(vocem_avatar_bound avatar_bound.cpp
+    "${CMAKE_SOURCE_DIR}/daemon/src/avatars.cpp")
+target_include_directories(vocem_avatar_bound PRIVATE
+    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src"
+    "${CMAKE_SOURCE_DIR}/third_party")
+target_compile_options(vocem_avatar_bound PRIVATE -Wno-unused-function)
+target_link_libraries(vocem_avatar_bound PRIVATE CURL::libcurl ZLIB::ZLIB Threads::Threads)
+add_test(NAME avatar_bound COMMAND vocem_avatar_bound)
+
 # The faces must not change when the decoder does. The daemon decoded with
 # stb_image up to 0.1.0-53 and with Wuffs after it; every other test is blind to
 # that swap, because the cache file has the same name and length whichever
