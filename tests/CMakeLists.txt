@@ -865,6 +865,7 @@ if(TARGET vocemd)
     # RPC connection it will not serve: measured against the packaged 0.1.4-1
     # daemon, 1914 connections in five seconds against 3. Same sandbox as above.
     add_executable(vocem_daemon_reconnect daemon_reconnect.cpp)
+    target_include_directories(vocem_daemon_reconnect PRIVATE "${CMAKE_SOURCE_DIR}/include")
     add_test(NAME daemon_reconnect COMMAND vocem_daemon_reconnect)
     set_tests_properties(daemon_reconnect PROPERTIES
         ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"

@@ -51,20 +51,30 @@
 
 #include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "vocem/note.h"
+#include "vocem/shared_state.h"
 
 namespace vocem_test {
 
 // True when publishing a fake channel here cannot reach anybody: no daemon
-// segment, and none of the segments a live session always carries. `found`
-// receives the name of whatever decided it, for a message that says which.
+// segment, no note segment, and none of the segments a live session always
+// carries. `found` receives the name of whatever decided it, for a message
+// that says which. The two vocem names come from the headers that own them
+// (shm_name, note_shm_name), not from a second spelling here: a segment
+// renamed on one side would otherwise make this guard blind at exactly the
+// moment it matters.
 inline bool shm_is_private(char* found, size_t capacity) {
     if (found && capacity) {
         found[0] = '\0';
     }
     char daemon_segment[64];
-    snprintf(daemon_segment, sizeof(daemon_segment), "vocem-%u", (unsigned)getuid());
+    vocem::shm_name(daemon_segment, sizeof(daemon_segment), (unsigned)getuid());
+    char note_segment[64];
+    vocem::note_shm_name(note_segment, sizeof(note_segment), (unsigned)getuid());
 
     DIR* dir = opendir("/dev/shm");
     if (!dir) {
@@ -77,7 +87,10 @@ inline bool shm_is_private(char* found, size_t capacity) {
         if (!strcmp(name, ".") || !strcmp(name, "..")) {
             continue;
         }
-        const bool is_daemon = !strcmp(name, daemon_segment);
+        // The names from the headers carry the shm "/" prefix; directory
+        // entries do not.
+        const bool is_daemon =
+            !strcmp(name, daemon_segment + 1) || !strcmp(name, note_segment + 1);
         const bool is_session = !strncmp(name, "pulse-", 6) || !strncmp(name, "pipewire", 8) ||
                                 !strncmp(name, "wayland", 7);
         if (is_daemon || is_session) {
@@ -102,6 +115,67 @@ inline void shm_explain_refusal(const char* found) {
            "     that. Run this under bwrap --tmpfs /dev/shm, which the probe\n"
            "     does for itself when it is not told otherwise.\n",
            found && found[0] ? found : "?");
+}
+
+// The whole entry ritual, in one spelling: get inside bwrap with a private
+// /dev/shm (and, for the tests that own a port, a private network), and
+// MEASURE the isolation instead of believing the sentinel. The ritual existed
+// in fifteen hand-written copies beside this header, and five of them trusted
+// `VOCEM_SANDBOXED` alone -- the exact promise the incident above was made of:
+// four of those five start the real vocemd. Returns -1 to proceed (isolation
+// measured), or the exit code to return (77 with no bwrap; 1 when the sandbox
+// cannot be entered or the measurement refuses).
+//
+// Two shapes, each for a reason the other does not have:
+//
+//   * `unshare_net == false`: measure first, re-exec only when /dev/shm is not
+//     private. Inside a sandbox somebody else built, that saves nothing but a
+//     process; the point is that the decision is a look, never the sentinel,
+//     which only tells a second attempt from a first.
+//   * `unshare_net == true`: the sandbox is entered whether or not /dev/shm
+//     already looks private, because these tests bind the RPC port and a
+//     private-looking /dev/shm says nothing about the network -- without the
+//     namespace they would take 6463 from a live Discord. The measurement
+//     still runs after the exec, so a forged sentinel is refused out loud
+//     exactly as before.
+//
+// The exec carries no argv on purpose: none of the fifteen forwarded any, and
+// a probe that needs arguments through the re-exec should pass them in the
+// environment, which bwrap keeps.
+inline int ensure_private_shm(bool unshare_net) {
+    char found[256] = {0};
+    const bool is_private = shm_is_private(found, sizeof(found));
+    if (is_private && !unshare_net) {
+        return -1;
+    }
+    if (getenv("VOCEM_SANDBOXED")) {
+        if (!is_private) {
+            shm_explain_refusal(found);
+            return 1;
+        }
+        return -1;
+    }
+    if (system("command -v bwrap >/dev/null 2>&1") != 0) {
+        printf("skip bwrap is not installed, so the private /dev/shm cannot be built\n");
+        return 77;
+    }
+    char self[4096];
+    const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (n <= 0) {
+        printf("FAIL cannot find my own binary\n");
+        return 1;
+    }
+    self[n] = '\0';
+    setenv("VOCEM_SANDBOXED", "1", 1);
+    if (unshare_net) {
+        execlp("bwrap", "bwrap", "--dev-bind", "/", "/", "--tmpfs", "/dev/shm",
+               "--unshare-net", "--die-with-parent", self, (char*)nullptr);
+    } else {
+        execlp("bwrap", "bwrap", "--dev-bind", "/", "/", "--tmpfs", "/dev/shm",
+               "--die-with-parent", self, (char*)nullptr);
+    }
+    printf("FAIL could not exec bwrap\n");
+    return 1;
 }
 
 }  // namespace vocem_test

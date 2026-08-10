@@ -50,6 +50,7 @@
 
 #include "vocem/note.h"
 #include "vocem/shm.h"
+#include "private_shm.h"
 
 namespace {
 
@@ -208,23 +209,8 @@ int main(int argc, char** argv) {
 
     // Re-execute under bwrap: private /dev/shm so the real daemon's segment is
     // never touched, private network so 6463 is free while Discord runs.
-    if (!getenv("VOCEM_SANDBOXED")) {
-        if (system("command -v bwrap >/dev/null 2>&1") != 0) {
-            printf("skip bwrap is not installed, so the private /dev/shm cannot be built\n");
-            return 77;
-        }
-        char self[4096];
-        const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-        if (n <= 0) {
-            printf("FAIL cannot find my own binary\n");
-            return 1;
-        }
-        self[n] = '\0';
-        setenv("VOCEM_SANDBOXED", "1", 1);
-        execlp("bwrap", "bwrap", "--dev-bind", "/", "/", "--tmpfs", "/dev/shm",
-               "--unshare-net", "--die-with-parent", self, nullptr);
-        printf("FAIL could not exec bwrap\n");
-        return 1;
+    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+        return gate;
     }
 
     alarm(90);  // a stuck handshake must fail, not hang the suite
