@@ -234,6 +234,13 @@ find_library(VOCEM_GL32_LIBRARY vocem_gl
     PATHS "${CMAKE_SOURCE_DIR}/build32/gl" NO_DEFAULT_PATH)
 find_library(VOCEM_GL32_SHIM vocem_gl_shim
     PATHS "${CMAKE_SOURCE_DIR}/build32/gl" NO_DEFAULT_PATH)
+# The 32-bit layer manifest from that same tree, for the cross-width half of
+# layer_manifest_name. A path rather than find_library because it is a .json.
+set(VOCEM_LAYER_MANIFEST32 "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/build32/layer/install/VkLayer_vocem_overlay.x86.json")
+    set(VOCEM_LAYER_MANIFEST32
+        "${CMAKE_SOURCE_DIR}/build32/layer/install/VkLayer_vocem_overlay.x86.json")
+endif()
 
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-m32")
@@ -677,6 +684,50 @@ else()
         "skip Steam's gameoverlayrenderer.so is not installed here")
     set_tests_properties(gl_beside_steam PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
 endif()
+
+# The layer manifest's shared name and its bare soname, which hold each other up:
+# the loader discards one of the two manifests (measured on the host AND inside
+# pressure-vessel, which is where it matters), and the survivor only serves both
+# architectures because the library is named by soname. Changing either alone
+# kills 32-bit games silently with the 64-bit half still passing -- entries
+# 30/33/34's shape. The script's header carries the whole argument, including why
+# copying MangoHud's per-architecture names would be the defect here rather than
+# the fix.
+add_test(NAME layer_manifest_name
+    COMMAND "${CMAKE_COMMAND}"
+            "-DMANIFEST=${CMAKE_BINARY_DIR}/layer/install/VkLayer_vocem_overlay.json"
+            "-DMANIFEST32=${VOCEM_LAYER_MANIFEST32}"
+            "-DLAYER_CMAKE=${CMAKE_SOURCE_DIR}/layer/CMakeLists.txt"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/layer_manifest_name.cmake")
+set_tests_properties(layer_manifest_name PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+
+# And the same pair inside Steam's container, which is where the collapse is a
+# documented defect for other projects and where the reasoning above had never
+# been executed. One instance per width, no window, and the witness is the path
+# the process mapped -- an enumerated layer NAME says nothing about which ABI
+# arrived. Measures the installed layer, because the claim is about the installed
+# pair of manifests; skips without the sniper runtime or without an installation.
+add_executable(vocem_vk_layer_loads vk_layer_loads.cpp)
+target_link_libraries(vocem_vk_layer_loads PRIVATE ${CMAKE_DL_LIBS})
+set(VOCEM_VK_LAYER_LOADS32 "")
+if(VOCEM_HAVE_M32)
+    add_executable(vocem_vk_layer_loads32 vk_layer_loads.cpp)
+    target_compile_options(vocem_vk_layer_loads32 PRIVATE -m32)
+    target_link_options(vocem_vk_layer_loads32 PRIVATE -m32)
+    target_link_libraries(vocem_vk_layer_loads32 PRIVATE ${CMAKE_DL_LIBS})
+    set(VOCEM_VK_LAYER_LOADS32 "$<TARGET_FILE:vocem_vk_layer_loads32>")
+endif()
+find_program(VOCEM_SNIPER run
+    PATHS "$ENV{HOME}/.steam/root/steamapps/common/SteamLinuxRuntime_sniper"
+          "$ENV{HOME}/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper"
+    NO_DEFAULT_PATH)
+add_test(NAME vk_layer_in_container
+    COMMAND "${CMAKE_COMMAND}"
+            "-DPROBE64=$<TARGET_FILE:vocem_vk_layer_loads>"
+            "-DPROBE32=${VOCEM_VK_LAYER_LOADS32}"
+            "-DSNIPER=${VOCEM_SNIPER}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/vk_layer_in_container.cmake")
+set_tests_properties(vk_layer_in_container PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
 
 # The avatar upload's command buffer through the loader contract: a dispatchable
 # object a layer creates is registered with pfnSetDeviceLoaderData or dispatch
