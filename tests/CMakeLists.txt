@@ -979,6 +979,65 @@ target_link_libraries(vocem_hdr_srgb_pixels PRIVATE ${CMAKE_DL_LIBS})
 add_test(NAME hdr_srgb_pixels COMMAND vocem_hdr_srgb_pixels)
 set_tests_properties(hdr_srgb_pixels PROPERTIES SKIP_RETURN_CODE 77)
 
+# The Vulkan present hook, on a real swapchain. Nothing in here ever created one
+# before: hdr_pixels reaches a device and measures the colour arithmetic *inside*
+# the draw on a surfaceless device, so vocem_QueuePresentKHR -- the entry point
+# the whole Vulkan half hangs from -- had no test at all, which entries 70, 88
+# and 114 each say in their own words. The probe presents 45 frames to an
+# off-screen override-redirect window, reads one back and requires pixels it did
+# not paint, with a control pass (VOCEM_DISABLE=1, no layer in the chain) to say
+# what zero looks like. VOCEM_VK_MANIFEST is the build tree's manifest and
+# VOCEM_VK_LIBRARY the library it must resolve to: both manifests carry the same
+# layer name by design, so a run can silently measure the *packaged* layer, and
+# the probe reads /proc/self/maps rather than trusting the loader's choice.
+# Skips 77 without a display, a loader, a presentable device or a readable
+# surface format.
+add_executable(vocem_vk_present_draw vk_present_draw.cpp)
+target_include_directories(vocem_vk_present_draw PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(vocem_vk_present_draw PRIVATE ${CMAKE_DL_LIBS} X11 rt)
+add_test(NAME vk_present_draw COMMAND vocem_vk_present_draw)
+set_tests_properties(vk_present_draw PROPERTIES
+    ENVIRONMENT "VOCEM_VK_MANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json;VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>"
+    SKIP_RETURN_CODE 77)
+
+# The same binary as its own control: VOCEM_DISABLE=1 and the loader refuses the
+# layer on its disable_environment, so the presented frame must be exactly what
+# the probe painted -- nothing mapped, zero foreign pixels. Two claims in one
+# run: that the count above belongs to this overlay rather than to anything else
+# on the machine that draws into a swapchain, and entry 35's promise measured on
+# the Vulkan side, which nothing did before. Runs the scene independently rather
+# than as a child of the measuring pass: a forked control inherits the private
+# /dev/shm, which by then holds `vocem-<uid>` published by its parent, and
+# private_shm.h refuses -- correctly -- because that is the name the live daemon
+# uses.
+add_test(NAME vk_present_disabled COMMAND vocem_vk_present_draw)
+set_tests_properties(vk_present_disabled PROPERTIES
+    ENVIRONMENT "VOCEM_VK_MANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json;VOCEM_DISABLE=1"
+    SKIP_RETURN_CODE 77)
+
+# The same frame at 32 bits, against the 32-bit tree. Roadmap phase 4 said the
+# Vulkan half had "never been seen loading" at this width; it loads (measured on
+# the host and inside Steam's container, vk_layer_in_container), and a frame is
+# the other half of the claim -- the layout arithmetic is floats and ints whose
+# widths differ, and a Proton title is very often the 32-bit binary. Same source,
+# one flag apart, so a difference here is the architecture's and nothing else's,
+# which is the widths.cpp pattern entries 30/33/34 bought.
+if(VOCEM_HAVE_M32 AND EXISTS "${CMAKE_SOURCE_DIR}/build32/dev/VkLayer_vocem_overlay.x86.json")
+    add_executable(vocem_vk_present_draw32 vk_present_draw.cpp)
+    target_compile_options(vocem_vk_present_draw32 PRIVATE -m32)
+    target_link_options(vocem_vk_present_draw32 PRIVATE -m32)
+    target_include_directories(vocem_vk_present_draw32 PRIVATE "${CMAKE_SOURCE_DIR}/include")
+    target_link_libraries(vocem_vk_present_draw32 PRIVATE ${CMAKE_DL_LIBS} X11 rt)
+    add_test(NAME vk_present_draw32 COMMAND vocem_vk_present_draw32)
+    set_tests_properties(vk_present_draw32 PROPERTIES
+        ENVIRONMENT "VOCEM_VK_MANIFEST=${CMAKE_SOURCE_DIR}/build32/dev/VkLayer_vocem_overlay.x86.json;VOCEM_VK_LIBRARY=${CMAKE_SOURCE_DIR}/build32/layer/libvocem_vk.so"
+        SKIP_RETURN_CODE 77)
+else()
+    add_test(NAME vk_present_draw32 COMMAND "${CMAKE_COMMAND}" -E echo
+        "skip no -m32 toolchain or no build32 layer tree")
+    set_tests_properties(vk_present_draw32 PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
+endif()
+
 # The Appearance page previews its presets as four real panels built from the
 # theme each preset would produce (distinct surfaces, one active mark), and
 # Appearance and Spacing carry a live preview of both boxes beside their
