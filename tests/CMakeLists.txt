@@ -685,6 +685,30 @@ else()
     set_tests_properties(gl_beside_steam PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
 endif()
 
+# The OpenGL half inside gamescope, headless. Answers a claim that arrived from
+# outside and was believed here for a day -- that gamescope strips LD_PRELOAD and
+# therefore takes this half away in every gamescope session. It strips one named
+# library (Steam's), not the variable: measured, the shim loads and the same 1058
+# pixels come out. Pinned in the direction it was measured, because gamescope's
+# own WSI layer sits where our present hook does and this is the neighbourhood a
+# gamescope update can reach us through.
+find_program(VOCEM_GAMESCOPE gamescope)
+if(VOCEM_GAMESCOPE)
+    add_test(NAME gl_inside_gamescope
+        COMMAND "${CMAKE_COMMAND}"
+                "-DPROBE=$<TARGET_FILE:vocem_gl_draw_local>"
+                "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+                "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+                "-DGAMESCOPE=${VOCEM_GAMESCOPE}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_inside_gamescope.cmake")
+    set_tests_properties(gl_inside_gamescope PROPERTIES
+        SKIP_REGULAR_EXPRESSION "^skip|-- skip ")
+else()
+    add_test(NAME gl_inside_gamescope COMMAND "${CMAKE_COMMAND}" -E echo
+        "skip gamescope is not installed here")
+    set_tests_properties(gl_inside_gamescope PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
+endif()
+
 # The layer manifest's shared name and its bare soname, which hold each other up:
 # the loader discards one of the two manifests (measured on the host AND inside
 # pressure-vessel, which is where it matters), and the survivor only serves both
