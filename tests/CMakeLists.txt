@@ -1113,6 +1113,33 @@ else()
     set_tests_properties(vk_present_draw32 PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
 endif()
 
+# The Vulkan half inside gamescope, with gamescope's own WSI layer in the chain --
+# the one place a gamescope update can reach us, since its WSI layer replaces
+# swapchain creation and present and our hook is on the present path. The
+# script's header records why its first version was worthless: vk_present_draw
+# builds a deliberately clean chain, and run unchanged under gamescope that
+# cleanliness excluded gamescope's WSI too, so it reported a confident success
+# about a process merely launched by gamescope.
+if(VOCEM_GAMESCOPE)
+    find_file(VOCEM_GAMESCOPE_WSI
+        NAMES VkLayer_FROG_gamescope_wsi.x86_64.json VkLayer_FROG_gamescope_wsi.json
+        PATHS "/usr/share/vulkan/implicit_layer.d" NO_DEFAULT_PATH)
+    add_test(NAME vk_inside_gamescope
+        COMMAND "${CMAKE_COMMAND}"
+                "-DPROBE=$<TARGET_FILE:vocem_vk_present_draw>"
+                "-DMANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json"
+                "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
+                "-DGAMESCOPE=${VOCEM_GAMESCOPE}"
+                "-DWSI_MANIFEST=${VOCEM_GAMESCOPE_WSI}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/vk_inside_gamescope.cmake")
+    set_tests_properties(vk_inside_gamescope PROPERTIES
+        SKIP_REGULAR_EXPRESSION "^skip|-- skip ")
+else()
+    add_test(NAME vk_inside_gamescope COMMAND "${CMAKE_COMMAND}" -E echo
+        "skip gamescope is not installed here")
+    set_tests_properties(vk_inside_gamescope PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
+endif()
+
 # The Appearance page previews its presets as four real panels built from the
 # theme each preset would produce (distinct surfaces, one active mark), and
 # Appearance and Spacing carry a live preview of both boxes beside their
