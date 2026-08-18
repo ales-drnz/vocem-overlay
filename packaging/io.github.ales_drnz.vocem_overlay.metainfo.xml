@@ -85,6 +85,21 @@
        out-of-date release list is not something AppStream can catch, and nothing
        else looked. tests/version_agrees.cmake does now. -->
   <releases>
+    <release version="0.1.6" date="2026-08-18">
+      <description>
+        <p>Fixed</p>
+        <ul>
+          <li>The symbols a server decorates its channel names with are drawn.</li>
+          <li>A game whose systemd unit carries no random part in its name is found again.</li>
+          <li>A monitor switched to another resolution resizes the overlay even while Discord is closed.</li>
+          <li>The "Show for" slider offers every duration the settings file accepts.</li>
+          <li>A message toast fades in whole, placeholder disc and text outline included.</li>
+          <li>Reset restores the two preview-display settings.</li>
+          <li>The daemon stays bounded when messages arrive from a great many different senders.</li>
+          <li>A subscription Discord refuses is named in the log.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-08-09">
       <description>
         <p>Fixed</p>
