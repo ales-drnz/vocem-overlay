@@ -33,7 +33,6 @@
 #include <sys/stat.h>
 
 #include <cstdint>
-#include <cstring>
 
 #include "vocem/shared_state.h"
 

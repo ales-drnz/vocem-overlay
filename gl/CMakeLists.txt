@@ -27,11 +27,12 @@ target_include_directories(vocem_gl PRIVATE
     "${IMGUI_DIR}/backends"
 )
 
-# The interposer must export its hooks; everything else stays hidden so we cannot
-# accidentally shadow an application's own symbols. The hooks carry an explicit
-# visibility attribute, so hiding the rest is what actually holds this to the
-# handful of names the interposition needs -- without it the library exported its
-# entire bundled copy of ImGui.
+# This library has no hooks any more (entry 45 removed its interposed-symbol
+# table; the shim owns all three doors) -- what it exports is exactly the four
+# vocem_gl_* entry points the shim resolves, which carry an explicit visibility
+# attribute. Hiding the rest is what actually holds it to those names: without
+# it the library exported its entire bundled copy of ImGui ahead of any ImGui a
+# game links (entry 16). tests/gl_entry_points.cmake holds the set both ways.
 target_compile_options(vocem_gl PRIVATE -Wall -Wextra)
 set_target_properties(vocem_gl PROPERTIES
     CXX_VISIBILITY_PRESET hidden

@@ -39,6 +39,11 @@ public:
 
     void stop();
 
+    // How many keys are being remembered (cached or in flight). The bound on
+    // this number is a promise (see kAvatarKnownCeiling in avatars.cpp), and a
+    // promise about growth needs an instrument a test can read.
+    size_t tracked() const;
+
 private:
     struct Request {
         uint64_t user_id;
@@ -49,7 +54,7 @@ private:
     bool download(const std::string& url, std::string& body);
 
     std::thread thread_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable wake_;
     std::queue<Request> queue_;
     std::unordered_set<std::string> known_;  // cached or in flight

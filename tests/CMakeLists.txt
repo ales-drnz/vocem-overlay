@@ -234,6 +234,13 @@ find_library(VOCEM_GL32_LIBRARY vocem_gl
     PATHS "${CMAKE_SOURCE_DIR}/build32/gl" NO_DEFAULT_PATH)
 find_library(VOCEM_GL32_SHIM vocem_gl_shim
     PATHS "${CMAKE_SOURCE_DIR}/build32/gl" NO_DEFAULT_PATH)
+# The 32-bit layer manifest from that same tree, for the cross-width half of
+# layer_manifest_name. A path rather than find_library because it is a .json.
+set(VOCEM_LAYER_MANIFEST32 "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/build32/layer/install/VkLayer_vocem_overlay.x86.json")
+    set(VOCEM_LAYER_MANIFEST32
+        "${CMAKE_SOURCE_DIR}/build32/layer/install/VkLayer_vocem_overlay.x86.json")
+endif()
 
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-m32")
@@ -362,6 +369,17 @@ add_test(NAME one_dlsym_version
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/one_dlsym_version.cmake")
 
+# The vocem_gl_* entry points: the names the shim resolves against the symbols
+# the built library exports, both directions, both widths when both are built.
+# A rename on one side is entry 38's failure (loads, hooks, never draws, never
+# says why) and nothing else relates the two files.
+add_test(NAME gl_entry_points
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+            "-DLIBRARY32=${VOCEM_GL32_LIBRARY}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_entry_points.cmake")
+set_tests_properties(gl_entry_points PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+
 # A crash is reported inside the window's Debug section, and nowhere else: the
 # dead process's journal appears in the page, and no separate crashReport
 # window exists any more (it was built, fixed to be genuinely top-level -- the
@@ -428,6 +446,14 @@ add_test(NAME emoji_bank_licence
 add_test(NAME one_spelling
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/one_spelling.cmake")
+
+# A slider's bounds and the settings file's clamp are the same fact spelled
+# twice; one pair had drifted ("Show for" offered 1-20 over a clamp of 1-30,
+# so a slider touched at 30 silently rewrote the setting). Every SliderRow and
+# SpinRow bound to a config value is held to config.h's clamp for the same key.
+add_test(NAME slider_bounds
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/slider_bounds.cmake")
 
 # The daemon's unit: confined, and confined in ways that actually start. An empty
 # CapabilityBoundingSet on a user service fails to start (exit 218, measured), so
@@ -632,34 +658,100 @@ else()
     set_tests_properties(gl_avatar_width32 PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
 endif()
 
-# Beside Steam's own overlay. DESIGN listed this as a declared class never
-# measured: Steam appends gameoverlayrenderer.so to LD_PRELOAD for everything it
-# launches, so in a native GL Steam title both interposers are in the chain, and
-# "both forward, so it should stack" was an expectation. Measured now, in both
-# orders, with the same probe and the same pixel count -- Steam's library hooks
-# glXSwapBuffers AND dlsym, so whichever is first in LD_PRELOAD owns the door and
-# the other must still see the frame. Skipped where Steam is not installed.
+# Beside Steam's own overlay, in both orders, with the log-line witness. The
+# raw-pixel versions of these two tests (gl_beside_steam / gl_under_steam) were
+# the trap gl_beside_mangohud.cmake describes: they counted what ANY interposer
+# drew, so they passed whether Steam's library drew, was missing, or the cached
+# find_file path had gone stale after an uninstall. One script now, both
+# orders, asserting exactly what DESIGN's open-risks entry records as measured:
+# we draw in both orders, so Steam forwards down the chain. Whether Steam's own
+# overlay drew stays unmeasured and said (a probe is not a Steam title).
 find_file(VOCEM_STEAM_OVERLAY gameoverlayrenderer.so
     PATHS "$ENV{HOME}/.steam/root/ubuntu12_64" "$ENV{HOME}/.local/share/Steam/ubuntu12_64"
     NO_DEFAULT_PATH)
 if(VOCEM_STEAM_OVERLAY)
-    # The order Steam actually produces: the session's preload first (ours, from
-    # environment.d), Steam's appended after it.
-    add_test(NAME gl_beside_steam COMMAND vocem_gl_draw_local)
+    add_test(NAME gl_beside_steam
+        COMMAND "${CMAKE_COMMAND}"
+                "-DPROBE=$<TARGET_FILE:vocem_gl_draw_local>"
+                "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+                "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+                "-DSTEAM_OVERLAY=${VOCEM_STEAM_OVERLAY}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_beside_steam.cmake")
     set_tests_properties(gl_beside_steam PROPERTIES
-        ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim>:${VOCEM_STEAM_OVERLAY};VOCEM_SHIM_PRELOADED=1;VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
-        SKIP_RETURN_CODE 77)
-    # And the harder way round, where Steam's hook owns the symbol and ours only
-    # sees the frame if Steam forwards down the chain.
-    add_test(NAME gl_under_steam COMMAND vocem_gl_draw_local)
-    set_tests_properties(gl_under_steam PROPERTIES
-        ENVIRONMENT "LD_PRELOAD=${VOCEM_STEAM_OVERLAY}:$<TARGET_FILE:vocem_gl_shim>;VOCEM_SHIM_PRELOADED=1;VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
-        SKIP_RETURN_CODE 77)
+        SKIP_REGULAR_EXPRESSION "^skip|-- skip ")
 else()
     add_test(NAME gl_beside_steam COMMAND "${CMAKE_COMMAND}" -E echo
         "skip Steam's gameoverlayrenderer.so is not installed here")
     set_tests_properties(gl_beside_steam PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
 endif()
+
+# The OpenGL half inside gamescope, headless. Answers a claim that arrived from
+# outside and was believed here for a day -- that gamescope strips LD_PRELOAD and
+# therefore takes this half away in every gamescope session. It strips one named
+# library (Steam's), not the variable: measured, the shim loads and the same 1058
+# pixels come out. Pinned in the direction it was measured, because gamescope's
+# own WSI layer sits where our present hook does and this is the neighbourhood a
+# gamescope update can reach us through.
+find_program(VOCEM_GAMESCOPE gamescope)
+if(VOCEM_GAMESCOPE)
+    add_test(NAME gl_inside_gamescope
+        COMMAND "${CMAKE_COMMAND}"
+                "-DPROBE=$<TARGET_FILE:vocem_gl_draw_local>"
+                "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+                "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
+                "-DGAMESCOPE=${VOCEM_GAMESCOPE}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/gl_inside_gamescope.cmake")
+    set_tests_properties(gl_inside_gamescope PROPERTIES
+        SKIP_REGULAR_EXPRESSION "^skip|-- skip ")
+else()
+    add_test(NAME gl_inside_gamescope COMMAND "${CMAKE_COMMAND}" -E echo
+        "skip gamescope is not installed here")
+    set_tests_properties(gl_inside_gamescope PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
+endif()
+
+# The layer manifest's shared name and its bare soname, which hold each other up:
+# the loader discards one of the two manifests (measured on the host AND inside
+# pressure-vessel, which is where it matters), and the survivor only serves both
+# architectures because the library is named by soname. Changing either alone
+# kills 32-bit games silently with the 64-bit half still passing -- entries
+# 30/33/34's shape. The script's header carries the whole argument, including why
+# copying MangoHud's per-architecture names would be the defect here rather than
+# the fix.
+add_test(NAME layer_manifest_name
+    COMMAND "${CMAKE_COMMAND}"
+            "-DMANIFEST=${CMAKE_BINARY_DIR}/layer/install/VkLayer_vocem_overlay.json"
+            "-DMANIFEST32=${VOCEM_LAYER_MANIFEST32}"
+            "-DLAYER_CMAKE=${CMAKE_SOURCE_DIR}/layer/CMakeLists.txt"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/layer_manifest_name.cmake")
+set_tests_properties(layer_manifest_name PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+
+# And the same pair inside Steam's container, which is where the collapse is a
+# documented defect for other projects and where the reasoning above had never
+# been executed. One instance per width, no window, and the witness is the path
+# the process mapped -- an enumerated layer NAME says nothing about which ABI
+# arrived. Measures the installed layer, because the claim is about the installed
+# pair of manifests; skips without the sniper runtime or without an installation.
+add_executable(vocem_vk_layer_loads vk_layer_loads.cpp)
+target_link_libraries(vocem_vk_layer_loads PRIVATE ${CMAKE_DL_LIBS})
+set(VOCEM_VK_LAYER_LOADS32 "")
+if(VOCEM_HAVE_M32)
+    add_executable(vocem_vk_layer_loads32 vk_layer_loads.cpp)
+    target_compile_options(vocem_vk_layer_loads32 PRIVATE -m32)
+    target_link_options(vocem_vk_layer_loads32 PRIVATE -m32)
+    target_link_libraries(vocem_vk_layer_loads32 PRIVATE ${CMAKE_DL_LIBS})
+    set(VOCEM_VK_LAYER_LOADS32 "$<TARGET_FILE:vocem_vk_layer_loads32>")
+endif()
+find_program(VOCEM_SNIPER run
+    PATHS "$ENV{HOME}/.steam/root/steamapps/common/SteamLinuxRuntime_sniper"
+          "$ENV{HOME}/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper"
+    NO_DEFAULT_PATH)
+add_test(NAME vk_layer_in_container
+    COMMAND "${CMAKE_COMMAND}"
+            "-DPROBE64=$<TARGET_FILE:vocem_vk_layer_loads>"
+            "-DPROBE32=${VOCEM_VK_LAYER_LOADS32}"
+            "-DSNIPER=${VOCEM_SNIPER}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/vk_layer_in_container.cmake")
+set_tests_properties(vk_layer_in_container PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
 
 # The avatar upload's command buffer through the loader contract: a dispatchable
 # object a layer creates is registered with pfnSetDeviceLoaderData or dispatch
@@ -740,6 +832,28 @@ target_compile_definitions(vocem_emoji_atlas PRIVATE
     IMGUI_USE_WCHAR32
     IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
 add_test(NAME emoji_atlas COMMAND vocem_emoji_atlas)
+
+# The decoration symbols a server names its channels with have glyphs, pinned
+# one per added block, both weights. "?? ... ??" in a toast is what a miss
+# looks like from inside a game; the file's header carries the measured
+# corpus numbers.
+add_executable(vocem_symbol_coverage
+    symbol_coverage.cpp
+    "${PROJECT_SOURCE_DIR}/common/src/fonts.cpp"
+    "${IMGUI_DIR}/imgui.cpp"
+    "${IMGUI_DIR}/imgui_draw.cpp"
+    "${IMGUI_DIR}/imgui_tables.cpp"
+    "${IMGUI_DIR}/imgui_widgets.cpp"
+)
+target_include_directories(vocem_symbol_coverage PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/common/fonts"
+    "${IMGUI_DIR}"
+)
+target_compile_definitions(vocem_symbol_coverage PRIVATE
+    IMGUI_USE_WCHAR32
+    IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
+add_test(NAME symbol_coverage COMMAND vocem_symbol_coverage)
 set_tests_properties(emoji_atlas PROPERTIES
     ENVIRONMENT "VOCEM_EMOJI_BANK=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba"
     SKIP_RETURN_CODE 77)
@@ -786,6 +900,22 @@ target_link_libraries(vocem_avatar_decode PRIVATE ZLIB::ZLIB)
 add_test(NAME avatar_decode COMMAND vocem_avatar_decode)
 set_tests_properties(avatar_decode PROPERTIES SKIP_RETURN_CODE 77)
 
+# The cache's memory against the peer that feeds it: request() must stop
+# remembering at the ceiling, because the notification path reaches this
+# container with no bound of its own and the unit carries MemoryMax=128M.
+# Compiles the real avatars.cpp; the worker is stopped before the flood so no
+# network is touched and the reading is the same twice.
+find_package(CURL REQUIRED)
+add_executable(vocem_avatar_bound avatar_bound.cpp
+    "${CMAKE_SOURCE_DIR}/daemon/src/avatars.cpp")
+target_include_directories(vocem_avatar_bound PRIVATE
+    "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/daemon/src"
+    "${CMAKE_SOURCE_DIR}/third_party")
+target_compile_options(vocem_avatar_bound PRIVATE -Wno-unused-function)
+target_compile_definitions(vocem_avatar_bound PRIVATE VOCEM_VERSION="${PROJECT_VERSION}")
+target_link_libraries(vocem_avatar_bound PRIVATE CURL::libcurl ZLIB::ZLIB Threads::Threads)
+add_test(NAME avatar_bound COMMAND vocem_avatar_bound)
+
 # The faces must not change when the decoder does. The daemon decoded with
 # stb_image up to 0.1.0-53 and with Wuffs after it; every other test is blind to
 # that swap, because the cache file has the same name and length whichever
@@ -823,10 +953,13 @@ endif()
 
 # What a message becomes by the time a game can read it: the real vocemd, driven
 # by a stub Discord RPC, with the segment read back the way a game reads it. The
-# body of a message must stay out of the segment unless the settings say
-# otherwise -- the daemon as shipped in 0.1.0-43 published it unconditionally,
-# and this fails against that binary. Sandboxed under bwrap (private /dev/shm,
-# private network) and skipped where bwrap is missing.
+# body of a message stays out of the segment unconditionally since entry 64 --
+# the words travel through the note segment instead, and the test asserts the
+# segment's body field empty with no setting in the sentence (the "unless the
+# settings say otherwise" that used to stand here described entry 58's switch,
+# which 64 removed). The daemon as shipped in 0.1.0-43 published the body
+# unconditionally, and this fails against that binary. Sandboxed under bwrap
+# (private /dev/shm, private network) and skipped where bwrap is missing.
 if(TARGET vocemd)
     add_executable(vocem_daemon_notification daemon_notification.cpp)
     target_include_directories(vocem_daemon_notification PRIVATE "${CMAKE_SOURCE_DIR}/include")
@@ -842,6 +975,7 @@ if(TARGET vocemd)
     # RPC connection it will not serve: measured against the packaged 0.1.4-1
     # daemon, 1914 connections in five seconds against 3. Same sandbox as above.
     add_executable(vocem_daemon_reconnect daemon_reconnect.cpp)
+    target_include_directories(vocem_daemon_reconnect PRIVATE "${CMAKE_SOURCE_DIR}/include")
     add_test(NAME daemon_reconnect COMMAND vocem_daemon_reconnect)
     set_tests_properties(daemon_reconnect PROPERTIES
         ENVIRONMENT "VOCEM_DAEMON=$<TARGET_FILE:vocemd>"
@@ -919,6 +1053,92 @@ target_compile_definitions(vocem_hdr_srgb_pixels PRIVATE IMGUI_USE_WCHAR32 VOCEM
 target_link_libraries(vocem_hdr_srgb_pixels PRIVATE ${CMAKE_DL_LIBS})
 add_test(NAME hdr_srgb_pixels COMMAND vocem_hdr_srgb_pixels)
 set_tests_properties(hdr_srgb_pixels PROPERTIES SKIP_RETURN_CODE 77)
+
+# The Vulkan present hook, on a real swapchain. Nothing in here ever created one
+# before: hdr_pixels reaches a device and measures the colour arithmetic *inside*
+# the draw on a surfaceless device, so vocem_QueuePresentKHR -- the entry point
+# the whole Vulkan half hangs from -- had no test at all, which entries 70, 88
+# and 114 each say in their own words. The probe presents 45 frames to an
+# off-screen override-redirect window, reads one back and requires pixels it did
+# not paint, with a control pass (VOCEM_DISABLE=1, no layer in the chain) to say
+# what zero looks like. VOCEM_VK_MANIFEST is the build tree's manifest and
+# VOCEM_VK_LIBRARY the library it must resolve to: both manifests carry the same
+# layer name by design, so a run can silently measure the *packaged* layer, and
+# the probe reads /proc/self/maps rather than trusting the loader's choice.
+# Skips 77 without a display, a loader, a presentable device or a readable
+# surface format.
+add_executable(vocem_vk_present_draw vk_present_draw.cpp)
+target_include_directories(vocem_vk_present_draw PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(vocem_vk_present_draw PRIVATE ${CMAKE_DL_LIBS} X11 rt)
+add_test(NAME vk_present_draw COMMAND vocem_vk_present_draw)
+set_tests_properties(vk_present_draw PROPERTIES
+    ENVIRONMENT "VOCEM_VK_MANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json;VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>"
+    SKIP_RETURN_CODE 77)
+
+# The same binary as its own control: VOCEM_DISABLE=1 and the loader refuses the
+# layer on its disable_environment, so the presented frame must be exactly what
+# the probe painted -- nothing mapped, zero foreign pixels. Two claims in one
+# run: that the count above belongs to this overlay rather than to anything else
+# on the machine that draws into a swapchain, and entry 35's promise measured on
+# the Vulkan side, which nothing did before. Runs the scene independently rather
+# than as a child of the measuring pass: a forked control inherits the private
+# /dev/shm, which by then holds `vocem-<uid>` published by its parent, and
+# private_shm.h refuses -- correctly -- because that is the name the live daemon
+# uses.
+add_test(NAME vk_present_disabled COMMAND vocem_vk_present_draw)
+set_tests_properties(vk_present_disabled PROPERTIES
+    ENVIRONMENT "VOCEM_VK_MANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json;VOCEM_DISABLE=1"
+    SKIP_RETURN_CODE 77)
+
+# The same frame at 32 bits, against the 32-bit tree. Roadmap phase 4 said the
+# Vulkan half had "never been seen loading" at this width; it loads (measured on
+# the host and inside Steam's container, vk_layer_in_container), and a frame is
+# the other half of the claim -- the layout arithmetic is floats and ints whose
+# widths differ, and a Proton title is very often the 32-bit binary. Same source,
+# one flag apart, so a difference here is the architecture's and nothing else's,
+# which is the widths.cpp pattern entries 30/33/34 bought.
+if(VOCEM_HAVE_M32 AND EXISTS "${CMAKE_SOURCE_DIR}/build32/dev/VkLayer_vocem_overlay.x86.json")
+    add_executable(vocem_vk_present_draw32 vk_present_draw.cpp)
+    target_compile_options(vocem_vk_present_draw32 PRIVATE -m32)
+    target_link_options(vocem_vk_present_draw32 PRIVATE -m32)
+    target_include_directories(vocem_vk_present_draw32 PRIVATE "${CMAKE_SOURCE_DIR}/include")
+    target_link_libraries(vocem_vk_present_draw32 PRIVATE ${CMAKE_DL_LIBS} X11 rt)
+    add_test(NAME vk_present_draw32 COMMAND vocem_vk_present_draw32)
+    set_tests_properties(vk_present_draw32 PROPERTIES
+        ENVIRONMENT "VOCEM_VK_MANIFEST=${CMAKE_SOURCE_DIR}/build32/dev/VkLayer_vocem_overlay.x86.json;VOCEM_VK_LIBRARY=${CMAKE_SOURCE_DIR}/build32/layer/libvocem_vk.so"
+        SKIP_RETURN_CODE 77)
+else()
+    add_test(NAME vk_present_draw32 COMMAND "${CMAKE_COMMAND}" -E echo
+        "skip no -m32 toolchain or no build32 layer tree")
+    set_tests_properties(vk_present_draw32 PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
+endif()
+
+# The Vulkan half inside gamescope, with gamescope's own WSI layer in the chain --
+# the one place a gamescope update can reach us, since its WSI layer replaces
+# swapchain creation and present and our hook is on the present path. The
+# script's header records why its first version was worthless: vk_present_draw
+# builds a deliberately clean chain, and run unchanged under gamescope that
+# cleanliness excluded gamescope's WSI too, so it reported a confident success
+# about a process merely launched by gamescope.
+if(VOCEM_GAMESCOPE)
+    find_file(VOCEM_GAMESCOPE_WSI
+        NAMES VkLayer_FROG_gamescope_wsi.x86_64.json VkLayer_FROG_gamescope_wsi.json
+        PATHS "/usr/share/vulkan/implicit_layer.d" NO_DEFAULT_PATH)
+    add_test(NAME vk_inside_gamescope
+        COMMAND "${CMAKE_COMMAND}"
+                "-DPROBE=$<TARGET_FILE:vocem_vk_present_draw>"
+                "-DMANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json"
+                "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
+                "-DGAMESCOPE=${VOCEM_GAMESCOPE}"
+                "-DWSI_MANIFEST=${VOCEM_GAMESCOPE_WSI}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/vk_inside_gamescope.cmake")
+    set_tests_properties(vk_inside_gamescope PROPERTIES
+        SKIP_REGULAR_EXPRESSION "^skip|-- skip ")
+else()
+    add_test(NAME vk_inside_gamescope COMMAND "${CMAKE_COMMAND}" -E echo
+        "skip gamescope is not installed here")
+    set_tests_properties(vk_inside_gamescope PROPERTIES SKIP_REGULAR_EXPRESSION "^skip")
+endif()
 
 # The Appearance page previews its presets as four real panels built from the
 # theme each preset would produce (distinct surfaces, one active mark), and
@@ -1212,3 +1432,21 @@ add_test(NAME emoji_bank_arrives COMMAND vocem_emoji_bank_arrives)
 set_tests_properties(emoji_bank_arrives PROPERTIES
     ENVIRONMENT "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
 set_tests_properties(emoji_bank_arrives PROPERTIES SKIP_RETURN_CODE 77)
+
+# A skip that exits 0 is a pass nobody looked at. Every window-driving script
+# test above bails out with `message(STATUS "skip ...")` when a precondition is
+# missing -- and the sharpest precondition is "the window ran", so the failure
+# these tests exist to catch (a window that exits non-zero) was exactly the
+# condition that turned them green: only gl_beside_mangohud carried the
+# property, measured on the generated CTestTestfile. This turns that output
+# into ctest's own Skipped state, which the suite's discipline (zero skips on
+# this machine) then refuses instead of counting as a pass. The pattern is
+# `-- skip ` with STATUS's own prefix, not the bare word: two passing tests
+# speak "skipped" in ordinary sentences.
+set(window_script_tests version_agrees)
+if(TARGET vocem-config)
+    list(APPEND window_script_tests debug_section journal_paths live_while_open
+         toast_preview_honest appearance_previews running_without preview_display
+         window_padding empty_views tray_icon_choice display_change_while_open)
+endif()
+set_tests_properties(${window_script_tests} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")

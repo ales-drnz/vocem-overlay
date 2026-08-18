@@ -110,6 +110,27 @@ Rect cluster(const ImDrawList* list, ImU32 rgb, size_t index) {
     return index < clusters.size() ? clusters[index] : Rect();
 }
 
+// The strongest alpha any vertex of this colour carries, or -1 when the colour
+// is absent. Alpha is where a fade lives (motion never moves geometry), so this
+// is the instrument for asking whether a shape actually rode one.
+int max_alpha(const ImDrawList* list, ImU32 rgb) {
+    int alpha = -1;
+    if (!list) {
+        return alpha;
+    }
+    const ImU32 mask = IM_COL32(255, 255, 255, 0);
+    for (int i = 0; i < list->VtxBuffer.Size; ++i) {
+        const ImDrawVert& vertex = list->VtxBuffer[i];
+        if ((vertex.col & mask) == (rgb & mask)) {
+            const int a = (vertex.col >> IM_COL32_A_SHIFT) & 0xff;
+            if (a > alpha) {
+                alpha = a;
+            }
+        }
+    }
+    return alpha;
+}
+
 ImU32 to_rgb(uint32_t colour) {
     return IM_COL32((colour >> 16) & 0xff, (colour >> 8) & 0xff, colour & 0xff, 255);
 }
@@ -578,6 +599,10 @@ void verify(const Config& config, uint32_t width, uint32_t height, uint32_t user
     check(m.ring_count == m.avatar_count,
           where + ": every picture wears a ring (" + std::to_string(m.ring_count) + " rings, " +
               std::to_string(m.avatar_count) + " pictures)");
+    // The equality above is satisfied by two empty sets: both counts come from
+    // colour clustering, so one theme-token change could retire the whole
+    // family while the check went on passing on 0 == 0.
+    check(m.avatar_count >= 1, where + ": and there is at least one picture");
 
     // The line under the channel name: the accent bar starts where the content
     // does, the hairline takes over exactly where the bar ends, and the two
@@ -868,9 +893,109 @@ void placeholder_inside_disc() {
     }
 }
 
+// A fading toast must fade everything it draws. The surface, the glyphs and a
+// downloaded picture ride the pushed style alpha or an explicit multiplication;
+// the placeholder disc and the text outline enter the draw list as raw colours
+// the style alpha cannot reach, so each has to be multiplied by the fade at its
+// call site -- the rule panel.cpp states for the hairline and the accent bar,
+// and the rule the panel's own rows already follow for exactly these two shapes
+// (row_alpha into draw_avatar_placeholder, outline * row_alpha into the text).
+//
+// Measured relatively, at a moment inside the 0.25 s entrance, against the same
+// shapes at rest: the title's ink is the control that proves a fade is
+// happening at that instant, and the two raw-colour shapes must come down in
+// the same proportion. Nothing restates the fade's formula -- only "in step
+// with the title" is asserted. Against the drawing that passed 1.0f and an
+// unmultiplied strength, both ratios stay at 1.0 while the title's falls.
+void toast_fade_carries_raw_colours() {
+    Config config;
+    config.text_shadow = true;  // the outline exists only when asked for
+    config.notification_colour = kToastSentinel;
+    const float pixels = font_pixel_size(1080, config.scale, config.font_size);
+    ensure_fonts(pixels, config.font_size, config.font_path.c_str(),
+                 config.font_path_strong.c_str());
+    configure_style(config);
+    const Theme theme = theme_for(config);
+    Snapshot snapshot = make_snapshot(1, "Voice channel");
+
+    // The toast is stateless -- a function of its own timestamps -- so one
+    // frame per instant is a measurement, with no motion slots to settle.
+    static double clock = 5000.0;
+    const double ages[] = {1.0, 0.08};  // mid-life, then mid-entrance
+    int title[2] = {-1, -1}, disc[2] = {-1, -1}, outline[2] = {-1, -1};
+    for (int pass = 0; pass < 2; ++pass) {
+        clock += 10.0;
+        snapshot.notification.received = clock - ages[pass];
+        ImGui::GetIO().DisplaySize = ImVec2(1920.0f, 1080.0f);
+        ImGui::GetIO().DeltaTime = 1.0f / 60.0f;
+        ImGui::NewFrame();
+        build_notification(snapshot, config, 1920, 1080, nullptr, clock);
+        ImGui::Render();
+        ImGuiWindow* toast = ImGui::FindWindowByName("##vocem_toast");
+        const ImDrawList* list = toast ? toast->DrawList : nullptr;
+        title[pass] = max_alpha(list, ink(theme.toast_title));
+        disc[pass] = max_alpha(list, ink(theme.avatar_placeholder));
+        outline[pass] = max_alpha(list, ink(theme.text_outline_ink));
+    }
+
+    std::printf("  toast alphas at rest: title %d disc %d outline %d\n", title[0], disc[0],
+                outline[0]);
+    std::printf("  toast alphas mid-entrance: title %d disc %d outline %d\n", title[1], disc[1],
+                outline[1]);
+    check(title[0] > 0 && disc[0] > 0 && outline[0] > 0,
+          "the toast at rest draws title, placeholder and outline");
+    if (title[0] <= 0 || disc[0] <= 0 || outline[0] <= 0) {
+        return;
+    }
+    const float title_ratio = static_cast<float>(title[1]) / static_cast<float>(title[0]);
+    const float disc_ratio = static_cast<float>(disc[1]) / static_cast<float>(disc[0]);
+    const float outline_ratio = static_cast<float>(outline[1]) / static_cast<float>(outline[0]);
+    check(title_ratio < 0.9f, "control: the title's ink is fading mid-entrance");
+    check(std::fabs(disc_ratio - title_ratio) < 0.1f,
+          "the placeholder disc rides the same fade as the glyphs");
+    check(std::fabs(outline_ratio - title_ratio) < 0.1f,
+          "the text outline rides the same fade as the glyphs");
+}
+
+// Which corner the toast actually lands in, for all four values of the
+// setting. The numbering is spelled in four places (config.h's "0 TL, 1 TR,
+// 2 BL, 3 BR", the drawing's right/bottom pairs, the window's two QML tables)
+// and the suite measured only corner 3 -- the one value where right and
+// bottom are both true, so swapping "top right" and "bottom left" would have
+// passed every existing check. What is asserted is the setting's documented
+// meaning against the drawn window's centre, not panel.cpp's arithmetic.
+void toast_corners() {
+    for (int corner = 0; corner < 4; ++corner) {
+        Config config;
+        config.notification_corner = corner;
+        config.notification_colour = kToastSentinel;
+        const float pixels = font_pixel_size(1080, config.scale, config.font_size);
+        ensure_fonts(pixels, config.font_size, config.font_path.c_str(),
+                     config.font_path_strong.c_str());
+        configure_style(config);
+        run_frames(make_snapshot(1, "Voice channel"), config, 1920, 1080, true);
+        ImGuiWindow* toast = ImGui::FindWindowByName("##vocem_toast");
+        const std::string where = "toast corner " + std::to_string(corner);
+        check(toast != nullptr, where + ": the toast is drawn");
+        if (!toast) {
+            continue;
+        }
+        const float centre_x = toast->Pos.x + toast->Size.x * 0.5f;
+        const float centre_y = toast->Pos.y + toast->Size.y * 0.5f;
+        const bool wants_right = corner == 1 || corner == 3;  // config.h: 0 TL, 1 TR, 2 BL, 3 BR
+        const bool wants_bottom = corner == 2 || corner == 3;
+        check((centre_x > 960.0f) == wants_right,
+              where + ": the box sits in the " + (wants_right ? "right" : "left") + " half");
+        check((centre_y > 540.0f) == wants_bottom,
+              where + ": and in the " + (wants_bottom ? "bottom" : "top") + " half");
+    }
+}
+
 void self_check() {
     distinct_tokens();
     placeholder_inside_disc();
+    toast_fade_carries_raw_colours();
+    toast_corners();
 
     const uint32_t modes[][2] = {{3840, 2160}, {1920, 1080}, {1280, 720}, {640, 480}};
 

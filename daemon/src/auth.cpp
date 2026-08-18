@@ -84,7 +84,7 @@ std::string exchange_code_for_token(const std::string& code) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "vocem-overlay/0.1");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, VOCEM_USER_AGENT);
 
     const CURLcode result = curl_easy_perform(curl);
     long status = 0;

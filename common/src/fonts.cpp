@@ -25,7 +25,10 @@ namespace {
 #include "inter_regular.inc"
 #include "inter_semibold.inc"
 #include "noto_emoji.inc"
+#include "noto_math.inc"
 #include "noto_punctuation.inc"
+#include "noto_symbols.inc"
+#include "noto_symbols2.inc"
 
 // The size the panel's spacing constants were tuned against, and the default of
 // the font_size setting. Everything in panel.cpp is a multiple of ui_scale().
@@ -45,12 +48,34 @@ const ImWchar* letter_ranges() {
     static const ImWchar ranges[] = {
         0x0020, 0x00FF,  // Basic Latin, Latin-1 Supplement
         0x0100, 0x024F,  // Latin Extended-A and B
+        0x0250, 0x02FF,  // IPA and the modifier letters (superscript alphabets)
         0x0370, 0x03FF,  // Greek
         0x0400, 0x04FF,  // Cyrillic
+        0x1D00, 0x1DBF,  // phonetic extensions, more of the fancy-name letters
+        0x1F00, 0x1FFF,  // Greek Extended
         // Punctuation, currency, letterlike forms, arrows, mathematics, box
         // drawing, geometric shapes, dingbats: everything Inter draws above the
         // scripts. Stars, ticks, bullets and card suits all live in here.
         0x2000, 0x2BFF,
+        0,
+    };
+    return ranges;
+}
+
+// The three symbol fonts (Noto Sans Math, Symbols, Symbols 2), which exist
+// because Discord servers decorate channel and display names from
+// symbol-picker sites: box fragments, circled letters, the arrows Inter does
+// not carry, and the mathematical alphanumerics the "fancy font" alphabets
+// really are. Merged after Inter -- the merge keeps the glyph already there --
+// and rasterised at the emoji ceiling, for the emoji's own reason: ~2000
+// decorations at 64 px is atlas nobody can afford, and a decoration drawn at
+// 32 px in larger text is the trade the emoji already made.
+const ImWchar* symbol_ranges() {
+    static const ImWchar ranges[] = {
+        0x0660, 0x0669,    // Arabic-Indic digits, which shape alone
+        0x06F0, 0x06F9,    // and their Eastern forms
+        0x2100, 0x2BFF,    // letterlike through misc symbols and arrows
+        0x1D400, 0x1D7FF,  // mathematical alphanumerics
         0,
     };
     return ranges;
@@ -82,8 +107,12 @@ const ImWchar* emoji_ranges() {
 
 const ImWchar* punctuation_ranges() {
     static const ImWchar ranges[] = {
+        0x2500, 0x259F,  // box drawing and block elements, complete in this font
         0x3000, 0x303F,  // CJK punctuation: the brackets and stops
-        0x30FB, 0x30FC,  // the katakana middle dot, which Discord names are full of
+        0x3041, 0x30FF,  // the kana, which decorated names borrow whole
+        0x3131, 0x318E,  // Hangul compatibility jamo, same use
+        0x3200, 0x33FF,  // enclosed and compatibility CJK: circled forms, units
+        0xFE30, 0xFE6F,  // vertical/compat forms and the small form variants
         0xFF01, 0xFF60,  // fullwidth forms
         0,
     };
@@ -96,6 +125,14 @@ const ImWchar* punctuation_ranges() {
 // they are drawn a little smaller than the text around them, which is what a
 // typeface does with them anyway.
 constexpr float kEmojiCeiling = 32.0f;
+
+// The symbol fonts' own ceiling, lower than the emoji's: they carry about
+// 2400 glyphs between them (the mathematical alphanumerics alone are 1024),
+// and at the emoji's 32 px the whole atlas doubled at 4K -- measured,
+// 2048x4096 to 4096x4096, 64 MB of RGBA in somebody's game. At 24 px it
+// stays within the pre-symbol footprint's next step. A name decoration drawn
+// at 24 px inside larger text is the same trade the emoji made at 32.
+constexpr float kSymbolCeiling = 24.0f;
 
 // The ceiling is also the size of the buffer the bank's pixels are resampled
 // into, and `emoji_bank_resample` writes size*size*4 bytes -- so a ceiling above
@@ -526,6 +563,19 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
 
         ImFontConfig merge = config;
         merge.MergeMode = true;
+        // The symbol fonts before the punctuation and the emoji, at their own
+        // ceiling (symbol_ranges says why there is one): Math first -- it has
+        // the best versions of the shared arrows -- then the two Symbols.
+        const float symbol_size = pixel_size < kSymbolCeiling ? pixel_size : kSymbolCeiling;
+        atlas->AddFontFromMemoryCompressedTTF(
+            NotoMath_compressed_data, static_cast<int>(NotoMath_compressed_size),
+            symbol_size, &merge, symbol_ranges());
+        atlas->AddFontFromMemoryCompressedTTF(
+            NotoSymbols2_compressed_data, static_cast<int>(NotoSymbols2_compressed_size),
+            symbol_size, &merge, symbol_ranges());
+        atlas->AddFontFromMemoryCompressedTTF(
+            NotoSymbols_compressed_data, static_cast<int>(NotoSymbols_compressed_size),
+            symbol_size, &merge, symbol_ranges());
         atlas->AddFontFromMemoryCompressedTTF(
             NotoPunctuation_compressed_data,
             static_cast<int>(NotoPunctuation_compressed_size), pixel_size, &merge,

@@ -185,9 +185,6 @@ private:
     // setting: a record written by the injected code, which is why it is refreshed
     // on the timer rather than emitted by an edit.
     Q_PROPERTY(QVariantList applications READ applications NOTIFY applicationsChanged)
-    // A program that ended without unwinding while the overlay was drawing in
-    // it -- a crash, or a forced stop -- told by the journal the injected code
-    // leaves behind (vocem/journal.h). One report at a time; OK moves on.
     // The overlay's live instances: which processes are drawing it *right now*,
     // from the journals the injected code opens at its first drawn frame
     // (vocem/journal.h). The Applications page shows them above everything
@@ -224,7 +221,7 @@ private:
     // confidently wrong -- and there is no numeric comparison for a colour the way
     // there is for a distance, so nothing would have said so.
     //
-    // A map rather than a set of properties because there are thirty of them and
+    // A map rather than a set of properties because there are dozens of them and
     // they are read, never written. The cost is that a mistyped key is `undefined`
     // rather than an error, which is why the previews assert the key set they
     // expect when they are created.
@@ -611,11 +608,8 @@ private:
     void refreshLiveInstances();
     bool startDaemon();
     void stopDaemon();
-    bool daemonProcessRunning() const;
     QString daemonExecutable() const;
 
-    // What the window shows and edits, and what is in the file. They differ while
-    // an edit is waiting for Apply.
     // What the last sweep of the registry found, and the countdown to the next
     // one. Reading a directory of small files twice a second, for a page that is
     // usually not open, would be a waste; a few seconds late is not.
@@ -638,6 +632,10 @@ private:
     bool entries_loaded_ = false;
     bool rescanned_ = false;
 
+    // What the window shows and edits (config_), and what is in the file
+    // (saved_). They differ while an edit is waiting for Apply. This sentence
+    // sat twenty lines up, on applications_, whose own comment follows it --
+    // a comment off its subject reads as a comment about the wrong one.
     vocem::Config config_;
     vocem::Config saved_;
     bool pending_ = false;

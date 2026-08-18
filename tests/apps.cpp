@@ -269,6 +269,14 @@ int main() {
                        "dbus-:1.2-org.kde.LogoutPrompt@0.service",
                    "org.kde.LogoutPrompt"),
           "and so is the next one");
+    // The random part is optional on a service (systemd spells it
+    // `app[-<launcher>]-<ApplicationID>[@<RANDOM>].service`): a unit without it
+    // used to lose everything after the id's first dash to the scope rule, and
+    // the candidate list for the first of these read ["app"].
+    check(reads_as(user + "app.slice/app-org.gnome.Evince.service", "org.gnome.Evince"),
+          "a service with no random part keeps its whole id");
+    check(reads_as(user + "app.slice/app-gnome-org.gnome.Evince.service", "org.gnome.Evince"),
+          "with a launcher in front of it too");
     check(reads_as(user + "app.slice/app-gnome-org.gnome.Evince-12345.scope", "org.gnome.Evince"),
           "the launcher in the middle of the name comes off: GNOME's shape");
     check(reads_as(user + "app.slice/app-gnome-org.gnome.Evince@12345.service", "org.gnome.Evince"),

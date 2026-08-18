@@ -87,6 +87,26 @@ vocem::Config sample() {
     // both keys cannot pass either.
     config.preview_display_panel = "HDMI-A-1";
     config.preview_display_notification = "DP-3";
+    // Every boolean, flipped off its default, and the last keys that sat at
+    // theirs. Thirteen keys had never been round-tripped here or in
+    // config_long_line -- and a key dropped from save() is invisible at its
+    // default: the value loads from a hand-edited file and is silently reset
+    // the next time the window Applies, which is the hidden_apps failure
+    // config.h documents, waiting on twelve booleans.
+    config.enabled = false;
+    config.panel_enabled = false;
+    config.notifications_enabled = false;
+    config.only_speaking = true;
+    config.hide_self = true;
+    config.show_muted_state = false;
+    config.text_shadow = true;
+    config.keep_running = false;
+    config.start_at_login = true;
+    config.tray_voice_icon = false;
+    config.notification_scale = 1.85f;
+    config.font_family = "Test Family";
+    config.font_path = "/tmp/nowhere/regular.ttf";
+    config.font_path_strong = "/tmp/nowhere/bold.ttf";
     return config;
 }
 
@@ -119,6 +139,20 @@ void expect_sample(const vocem::Config& config, const char* context) {
     check_close(config.font_size, 19.0f, "font_size");
     check(config.preview_display_panel == "HDMI-A-1", "preview_display_panel");
     check(config.preview_display_notification == "DP-3", "preview_display_notification");
+    check(!config.enabled, "enabled");
+    check(!config.panel_enabled, "panel_enabled");
+    check(!config.notifications_enabled, "notifications_enabled");
+    check(config.only_speaking, "only_speaking");
+    check(config.hide_self, "hide_self");
+    check(!config.show_muted_state, "show_muted_state");
+    check(config.text_shadow, "text_shadow");
+    check(!config.keep_running, "keep_running");
+    check(config.start_at_login, "start_at_login");
+    check(!config.tray_voice_icon, "tray_voice_icon");
+    check_close(config.notification_scale, 1.85f, "notification_scale");
+    check(config.font_family == "Test Family", "font_family");
+    check(config.font_path == "/tmp/nowhere/regular.ttf", "font_path");
+    check(config.font_path_strong == "/tmp/nowhere/bold.ttf", "font_path_strong");
 }
 
 // Reads the file back as text, because the point is not only that the values

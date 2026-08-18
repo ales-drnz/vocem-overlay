@@ -307,8 +307,8 @@ inline bool journal_process_alive(int pid, const std::string& process) {
     if (char* newline = ::strchr(name, '\n')) {
         *newline = '\0';
     }
-    // comm is truncated to 15 characters by the kernel; compare accordingly.
-    return ::strncmp(name, process.c_str(), 15) == 0;
+    // comm is truncated by the kernel; compare accordingly (kCommLength, paths.h).
+    return ::strncmp(name, process.c_str(), kCommLength) == 0;
 }
 
 #ifdef VOCEM_JOURNAL_SCANNER

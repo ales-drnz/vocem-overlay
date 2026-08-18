@@ -12,7 +12,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <string>
 
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
@@ -65,6 +64,18 @@ void print_snapshot(const vocem::Snapshot& snapshot) {
 int main(int argc, char** argv) {
     const bool watch = argc > 1 && (std::strcmp(argv[1], "--watch") == 0 ||
                                     std::strcmp(argv[1], "-w") == 0);
+    // Anything else on the command line is refused rather than shrugged off:
+    // this is the tool somebody runs while diagnosing, and `vocem --help`,
+    // `vocem -h` or a typo of --watch silently printing one snapshot and
+    // exiting 0 is the wrong failure for exactly that person. The usage text
+    // doubles as the help.
+    if (argc > 1 && !watch) {
+        const bool asked = std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0;
+        std::fprintf(asked ? stdout : stderr,
+                     "usage: vocem [--watch|-w]\n"
+                     "Prints the voice state vocemd is publishing; --watch follows it.\n");
+        return asked ? 0 : 2;
+    }
 
     vocem::StateReader reader;
     if (!reader.open()) {

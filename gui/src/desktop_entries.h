@@ -32,6 +32,8 @@
 
 #include <QDir>
 #include <QDirIterator>
+
+#include "vocem/paths.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
@@ -153,7 +155,7 @@ private:
             if (name.compare(binary, Qt::CaseInsensitive) == 0 ||
                 (!processName.isEmpty() &&
                  name.left(processName.size()).compare(processName, Qt::CaseInsensitive) == 0 &&
-                 name.size() <= 15 + 1)) {
+                 name.size() <= static_cast<int>(vocem::kCommLength) + 1)) {
                 return true;
             }
         }

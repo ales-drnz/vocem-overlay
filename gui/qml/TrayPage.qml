@@ -22,7 +22,10 @@ ScrollablePage {
     id: root
 
     settings: ["trayVoiceIcon"]
-    title: qsTr("System Tray")
+    // The title repeats the words of the sidebar entry it was reached from
+    // (AboutPage states the rule); this one said "System Tray" against the
+    // sidebar's "System tray".
+    title: qsTr("System tray")
     subtitle: qsTr("What the icon in the panel shows. Whichever you choose, it is always the way back to this window.")
 
     // The tray as the panel will draw it, following the choice below on the

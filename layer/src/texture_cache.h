@@ -26,6 +26,7 @@
 
 #include "imgui.h"
 #include "vocem/avatar_key.h"
+#include "vocem/shared_state.h"
 
 namespace vocem {
 
@@ -44,6 +45,11 @@ public:
     // logged, never a crash. 48 covers the 24 panel slots plus toast authors
     // and avatar changes within one session.
     static constexpr uint32_t kMaxAvatarDescriptors = 48;
+    // "48 covers the 24 panel slots" is the sentence above as a fact rather
+    // than prose: raising kMaxUsers without room here would put mid-session
+    // placeholders on faces the panel is entitled to.
+    static_assert(kMaxAvatarDescriptors >= 2 * vocem::kMaxUsers,
+                  "the descriptor budget must cover a full panel with headroom");
     // What the backend's pool must hold: the budget, the font atlas set, and
     // headroom so a rebuild or a future fixed texture cannot land exactly on
     // the edge.

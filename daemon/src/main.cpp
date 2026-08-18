@@ -13,12 +13,11 @@
 // Authorisation is its own: the daemon asks Discord for a token the first time it
 // connects and stores it. See auth.h for how, and for what that costs us.
 
-#include <time.h>
+#include <unistd.h>
 
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -181,6 +180,7 @@ public:
             order_.clear();
             channel_name_.clear();
             in_channel_ = false;
+            ceiling_said_ = false;
         }
         publish();
     }
@@ -194,6 +194,7 @@ public:
         order_.clear();
         channel_name_.clear();
         in_channel_ = false;
+        ceiling_said_ = false;
         publish();
     }
 
@@ -202,6 +203,7 @@ public:
         order_.clear();
         channel_name_ = without_bidi_marks(name);
         in_channel_ = true;
+        ceiling_said_ = false;
         publish();
     }
 
@@ -223,8 +225,16 @@ public:
             // containers without limit and made publish(), which walks `order_`
             // on every event, quadratic in the number of ids ever seen. The
             // segment carries kMaxUsers; a few times that is room for a channel
-            // churning and still a bound.
+            // churning and still a bound. Said in the log once per channel: a
+            // person the panel silently stops showing is otherwise a report
+            // nobody can investigate.
             if (order_.size() >= kParticipantCeiling) {
+                if (!ceiling_said_) {
+                    ceiling_said_ = true;
+                    LOG("participant ceiling reached (%zu ids in '%s'): further joiners are not "
+                        "shown",
+                        order_.size(), channel_name_.c_str());
+                }
                 return;
             }
             participants_.emplace(id, participant);
@@ -315,6 +325,12 @@ public:
 
     size_t size() const { return participants_.size(); }
 
+    // The bridge and main() hand the note writer around by reference (its
+    // on_publish hook is wired there). This accessor used to sit as a one-line
+    // public island in the middle of the private data, cutting the member list
+    // in two.
+    vocem::NoteWriter& note() { return note_; }
+
 private:
     void publish() {
         writer_.publish([this](vocem::SharedState& state) {
@@ -370,17 +386,13 @@ private:
     vocem::AvatarCache& avatars_;
     std::unordered_map<uint64_t, Participant> participants_;
     std::vector<uint64_t> order_;  // preserves Discord's ordering
+    bool ceiling_said_ = false;    // the participant ceiling's once-per-channel log
     std::string channel_name_;
     uint64_t notification_serial_ = 0;
     uint64_t notification_user_ = 0;
     double notification_received_ = 0.0;
     std::string notification_title_;
     vocem::NoteWriter note_;
-
-public:
-    vocem::NoteWriter& note() { return note_; }
-
-private:
     bool note_cleared_ = true;
     std::string notification_avatar_;
     uint64_t self_id_ = 0;
@@ -626,6 +638,17 @@ public:
             session_.set_speaking(parse_id(str_field(data, "user_id")), event == "SPEAKING_START");
             return;
         }
+
+        // Every reply this daemon asks for is handled above; an ERROR reaching
+        // this point is a request Discord refused that nothing was waiting on.
+        // A refused SUBSCRIBE is the sharp case: after one, the panel shows a
+        // room where nobody ever talks, and a refusal that is not logged is
+        // indistinguishable from a room that is simply quiet (entry 38's
+        // silence, on the wire). The dump is the error object Discord sent --
+        // a code and a message, never a user's content.
+        if (event == "ERROR") {
+            LOG("rpc refused %s: %s", command.c_str(), data.dump().c_str());
+        }
     }
 
     bool failed() const { return failed_; }
@@ -799,8 +822,11 @@ int main() {
     };
     // The user's settings, reread on the same live mechanism the overlay uses --
     // one stat() every couple of seconds, a reparse only when the file moved. The
-    // daemon consumes exactly one key: whether a message's text may be published
-    // into the segment at all.
+    // daemon consumes exactly one key: notification_seconds, the toast's
+    // lifetime, which is what the note segment's expiry runs on (the tick
+    // below). The old sentence here described a publish switch that entry 64
+    // removed -- the body field in the segment is unconditionally empty now and
+    // the words travel through the note segment instead.
     vocem::LiveConfig live_config;
     session.set_display_height(vocem::display_height());
     session.set_connected(false);
@@ -833,6 +859,21 @@ int main() {
         // expiry above is not, because it is already a deadline of its own and
         // a second of granularity on top of it is a second of exposure.
         const double now = vocem::monotonic_seconds();
+
+        // The display, on its own slower clock: a mode switch or a plugged
+        // monitor is rare, and four sysfs opens a minute cost nothing. Here and
+        // not in the recv loop, where it lived until 0.1.5: there it ran only
+        // while a Discord connection was up, so a monitor plugged in while
+        // Discord was closed left every running game sized to the old mode
+        // until Discord came back -- the note-expiry defect (the comment above
+        // this lambda) one field along, and the opposite of what
+        // set_display_height's own comment promises.
+        static double display_checked = 0.0;
+        if (now - display_checked >= 60.0) {
+            display_checked = now;
+            session.set_display_height(vocem::display_height());
+        }
+
         if (now - bridge_checked < 1.0) {
             return;
         }
@@ -935,14 +976,7 @@ int main() {
             // left a message's words in /dev/shm whenever Discord went away
             // between the toast and the tick. See `tick` above.
             tick();
-            // The display, on a slower clock: a mode switch or a plugged monitor
-            // is rare, and four sysfs opens a minute cost nothing.
-            static double display_checked = 0.0;
             const double tick_now = vocem::monotonic_seconds();
-            if (tick_now - display_checked >= 60.0) {
-                display_checked = tick_now;
-                session.set_display_height(vocem::display_height());
-            }
             // Which channel we are actually in, asked rather than remembered.
             // Discord announces a move it performs for you; being moved by
             // somebody else is not the client joining anything, and

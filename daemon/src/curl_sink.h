@@ -18,6 +18,16 @@
 #define VOCEM_CURL_SINK_H
 
 #include <cstddef>
+
+// The one User-Agent, beside the one write callback, for the same reason: it
+// existed twice, identical to the character, in the two files of this binary
+// that download anything -- and both copies said 0.1 while the package said
+// 0.1.5, because a hand-written version is a version nobody re-measures
+// (entry 110's shape, in the one string the daemon shows a server it does not
+// control). The number comes from CMakeLists.txt's project(VERSION) through
+// VOCEM_VERSION, the same road the window's About page takes, and
+// tests/version_agrees.cmake holds the definition to the file.
+#define VOCEM_USER_AGENT "vocem-overlay/" VOCEM_VERSION
 #include <string>
 
 namespace vocem {

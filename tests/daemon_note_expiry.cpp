@@ -66,6 +66,7 @@
 
 #include "vocem/note.h"
 #include "vocem/shm.h"
+#include "private_shm.h"
 
 namespace {
 
@@ -261,23 +262,8 @@ int main(int argc, char** argv) {
         return 77;
     }
 
-    if (!getenv("VOCEM_SANDBOXED")) {
-        if (system("command -v bwrap >/dev/null 2>&1") != 0) {
-            printf("skip bwrap is not installed, so the private /dev/shm cannot be built\n");
-            return 77;
-        }
-        char self[4096];
-        const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-        if (n <= 0) {
-            printf("FAIL cannot find my own binary\n");
-            return 1;
-        }
-        self[n] = '\0';
-        setenv("VOCEM_SANDBOXED", "1", 1);
-        execlp("bwrap", "bwrap", "--dev-bind", "/", "/", "--tmpfs", "/dev/shm", "--unshare-net",
-               "--die-with-parent", self, nullptr);
-        printf("FAIL could not exec bwrap\n");
-        return 1;
+    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+        return gate;
     }
 
     alarm(200);  // generous: against the defective daemon both waits run to the end
@@ -409,6 +395,15 @@ int main(int argc, char** argv) {
     }
     check(cleared_after >= 0.0,
           "the words are retired with Discord gone: the clock is the daemon's own");
+    // An upper bound as well as existence. The budget printed above is about
+    // two seconds (the toast's second plus the allowance); the first version of
+    // this file measured 10.1 s and nearly believed it -- the handshake
+    // deadline spent talking to the stub's own leaked listener -- and a check
+    // reading "cleared within the 15 s window" would have passed on that
+    // number too. Six seconds is generous over the budget and still refuses
+    // the deadline class.
+    check(cleared_after >= 0.0 && cleared_after <= 6.0,
+          "and they go on the toast's own budget, not on some deadline's");
     check(!note_name_exists(),
           "and the name is unlinked too, so nothing in the session can open it");
 

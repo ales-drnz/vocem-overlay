@@ -14,7 +14,11 @@ import Vocem
 SectionPage {
     id: root
 
-    settings: ["scale", "screenMargin", "positionX", "positionY"]
+    // panelPreviewDisplay included: it is persisted like any other setting and
+    // it was the one this page edited that Reset could not restore and
+    // atDefaults could not see -- its default* invokable sat unused, which was
+    // the evidence the convention was meant to cover it.
+    settings: ["scale", "screenMargin", "positionX", "positionY", "panelPreviewDisplay"]
     title: qsTr("Panel")
     subtitle: qsTr("Drag the panel to position it, or click an anchor point. A drag released near an anchor snaps to it. A running game follows when you apply.")
 

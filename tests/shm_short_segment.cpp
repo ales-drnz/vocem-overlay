@@ -92,23 +92,8 @@ int main() {
     // Never against the real daemon's segment: this test creates and destroys the
     // very names it publishes under. Re-exec under bwrap, as shm_reattach does;
     // the sentinel is set by this code and never by hand (entry 53).
-    if (!getenv("VOCEM_SANDBOXED")) {
-        if (system("command -v bwrap >/dev/null 2>&1") != 0) {
-            std::printf("skip bwrap is not installed, so the private /dev/shm cannot be built\n");
-            return 77;
-        }
-        char self[4096];
-        const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-        if (n <= 0) {
-            std::printf("FAIL cannot find my own binary\n");
-            return 1;
-        }
-        self[n] = '\0';
-        setenv("VOCEM_SANDBOXED", "1", 1);
-        execlp("bwrap", "bwrap", "--dev-bind", "/", "/", "--tmpfs", "/dev/shm",
-               "--die-with-parent", self, nullptr);
-        std::printf("FAIL could not exec bwrap\n");
-        return 1;
+    if (const int gate = vocem_test::ensure_private_shm(false); gate >= 0) {
+        return gate;
     }
     // Belt and braces: the sentinel says sandboxed, this asks /proc.
     {

@@ -1,3 +1,19 @@
+## [0.1.6] - 18-08-2026
+
+### Fixed
+
+- The symbols a server decorates its channel names with are drawn, instead of the empty boxes that stood in for them.
+- A game whose systemd unit carries no random part in its name is found again. Everything after the first dash of the application id was being discarded.
+- A monitor plugged in, unplugged or switched to another resolution resizes the overlay in running games even while Discord is closed. It used to wait for Discord to come back.
+- The "Show for" slider offers every duration the settings file accepts. It stopped at 20 seconds against a limit of 30, and rewrote a longer setting the moment it was touched.
+- A message toast fades in whole. The placeholder disc and the outline around the text arrived at full strength over a box that was still appearing.
+- Reset restores the two preview-display settings, and their pages notice when everything on them is back to its default.
+- The daemon stays bounded when messages arrive from a great many different senders, and an avatar that never appears says in the log which half of the work failed.
+- A subscription Discord refuses is named in the log, instead of leaving a voice channel where nobody ever seems to speak.
+- A participant left out because the panel is full is named in the log, with the channel and the count.
+- The daemon tells Discord which release it is. The one string it shows a server it does not control said 0.1 whatever the package said.
+- `vocem --help` prints what the tool accepts and succeeds; an unknown argument prints the same on the error output and fails. It used to print one snapshot and succeed either way.
+
 ## [0.1.5] - 9-08-2026
 
 ### Fixed

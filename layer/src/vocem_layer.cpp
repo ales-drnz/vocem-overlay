@@ -8,7 +8,9 @@
 // tracking, semaphore chaining. What gets painted lives in overlay_renderer /
 // common/src/panel.cpp; this file decides where and when, and its design rules
 // are older than any of the drawing:
-//   * Never block in vkQueuePresentKHR. No I/O, no allocation on the hot path.
+//   * Never block in vkQueuePresentKHR. No per-frame I/O, no allocation on the
+//     hot path (the exact shape of that claim, with its measured exceptions,
+//     is at overlay_hidden_here's call site).
 //   * Per-image state is indexed by swapchain image index, never by acquisition
 //     order (MangoHud 0.8.3 fixed exactly this class of bug).
 //   * If anything we need is missing, degrade to a pure pass-through. A layer
@@ -37,6 +39,7 @@
 #include "vocem/panel.h"
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
+#include "vocem/state_poll.h"
 
 // Older Vulkan SDKs defined this in vk_sdk_platform.h, which no longer ships.
 // The whole library is built with hidden visibility, so the three loader entry
@@ -175,53 +178,32 @@ std::unordered_map<VkSwapchainKHR, SwapchainData> g_swapchains;
 
 void* dispatch_key(void* handle) { return *reinterpret_cast<void**>(handle); }
 
-// The daemon may start after the game, so a failed open is retried -- but only
-// every so many presents, because a syscall per frame is exactly the kind of cost
-// this design exists to avoid.
-class StateSource {
-public:
-    const vocem::Snapshot* poll() {
-        if (!reader_.valid()) {
-            if (retry_countdown_ > 0) {
-                --retry_countdown_;
-                return nullptr;
-            }
-            retry_countdown_ = 300;
-            if (!reader_.open()) {
-                return nullptr;
-            }
-            VOCEM_LOG("attached to the vocemd state segment");
-        } else if (--retry_countdown_ <= 0) {
-            // The same cadence, pointed the other way: a mapping outlives the
-            // segment's name, so a daemon that stopped -- or stopped and came
-            // back -- leaves this reader on orphaned pages it would trust
-            // forever. Ask the name whether it still means our mapping; if not,
-            // drop it and let the branch above find the living one.
-            retry_countdown_ = 300;
-            if (!reader_.still_current()) {
-                VOCEM_LOG("state segment replaced or gone: detaching");
-                reader_.close();
-                return nullptr;
-            }
-        }
-        if (!reader_.read(snapshot_)) {
-            static bool logged_read_failure = false;
-            if (!logged_read_failure) {
-                logged_read_failure = true;
-                VOCEM_LOG("state read failed (abi mismatch or writer contention)");
-            }
-            return nullptr;
-        }
-        return &snapshot_;
-    }
+// The eight functions the HDR pipeline borrows from the dispatch, in one
+// place: the same list was filled in by hand on the create path and the
+// destroy path, and a member missed on the destroy copy makes complete()
+// false there -- hdr_pipeline_destroy then returns having destroyed nothing,
+// a pipeline leaked per swapchain rebuild, silently, in a resize loop.
+vocem::HdrDeviceFunctions hdr_functions(const DeviceDispatch& d) {
+    vocem::HdrDeviceFunctions fn;
+    fn.CreateShaderModule = d.CreateShaderModule;
+    fn.DestroyShaderModule = d.DestroyShaderModule;
+    fn.CreateDescriptorSetLayout = d.CreateDescriptorSetLayout;
+    fn.DestroyDescriptorSetLayout = d.DestroyDescriptorSetLayout;
+    fn.CreatePipelineLayout = d.CreatePipelineLayout;
+    fn.DestroyPipelineLayout = d.DestroyPipelineLayout;
+    fn.CreateGraphicsPipelines = d.CreateGraphicsPipelines;
+    fn.DestroyPipeline = d.DestroyPipeline;
+    return fn;
+}
 
-private:
-    vocem::StateReader reader_;
-    vocem::Snapshot snapshot_;
-    int retry_countdown_ = 0;
-};
 
-StateSource g_state;
+
+// The attach/detach/read loop is the shared spelling in vocem/state_poll.h --
+// it existed here and in the GL path, identical to the character, free to
+// drift (and it had: only this side said why a read failed).
+void layer_poll_log(const char* line) { VOCEM_LOG("%s", line); }
+
+vocem::StatePoll g_state{&layer_poll_log};
 
 DeviceData* find_device(void* dispatchable) {
     auto it = g_devices.find(dispatch_key(dispatchable));
@@ -483,6 +465,12 @@ VKAPI_ATTR void VKAPI_CALL vocem_GetDeviceQueue(VkDevice device, uint32_t queueF
         }
     }
     if (!next) {
+        // The same answer as GetDeviceQueue2 below, for the same failure: the
+        // output must be a handle the application can test, not whatever was
+        // on its stack. The two answered this differently once.
+        if (pQueue) {
+            *pQueue = VK_NULL_HANDLE;
+        }
         return;
     }
     next(device, queueFamilyIndex, queueIndex, pQueue);
@@ -504,10 +492,12 @@ VKAPI_ATTR void VKAPI_CALL vocem_GetDeviceQueue2(VkDevice device,
         }
     }
     if (!next) {
-        // The application asked for a function this device does not have -- see
-        // vocem_GetDeviceProcAddr, which no longer hands out our hook for one.
-        // Should it get here anyway, its output must be a handle it can test and
-        // not whatever was on its stack.
+        // The application asked for a function this device does not have.
+        // vocem_GetDeviceProcAddr no longer hands out our hook for one, but
+        // vocem_GetInstanceProcAddr still answers from the intercepted table
+        // before asking the chain -- so this is an ordinary road here, not an
+        // accident (the previous sentence called it one). The output must be a
+        // handle the application can test, not whatever was on its stack.
         if (pQueue) {
             *pQueue = VK_NULL_HANDLE;
         }
@@ -598,18 +588,7 @@ void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, Swapc
     }
     if (sc.pool != VK_NULL_HANDLE) d.DestroyCommandPool(device, sc.pool, nullptr);
     if (sc.render_pass != VK_NULL_HANDLE) d.DestroyRenderPass(device, sc.render_pass, nullptr);
-    {
-        vocem::HdrDeviceFunctions fn;
-        fn.CreateShaderModule = d.CreateShaderModule;
-        fn.DestroyShaderModule = d.DestroyShaderModule;
-        fn.CreateDescriptorSetLayout = d.CreateDescriptorSetLayout;
-        fn.DestroyDescriptorSetLayout = d.DestroyDescriptorSetLayout;
-        fn.CreatePipelineLayout = d.CreatePipelineLayout;
-        fn.DestroyPipelineLayout = d.DestroyPipelineLayout;
-        fn.CreateGraphicsPipelines = d.CreateGraphicsPipelines;
-        fn.DestroyPipeline = d.DestroyPipeline;
-        vocem::hdr_pipeline_destroy(fn, device, sc.hdr);
-    }
+    vocem::hdr_pipeline_destroy(hdr_functions(d), device, sc.hdr);
 
     sc.fences.clear();
     sc.semaphores.clear();
@@ -793,16 +772,7 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
     // draws, with the colours it drew with before this existed, and the log
     // says which happened.
     if (const int mode = vocem::hdr_mode_for(sc.color_space, sc.format)) {
-        vocem::HdrDeviceFunctions fn;
-        fn.CreateShaderModule = d.CreateShaderModule;
-        fn.DestroyShaderModule = d.DestroyShaderModule;
-        fn.CreateDescriptorSetLayout = d.CreateDescriptorSetLayout;
-        fn.DestroyDescriptorSetLayout = d.DestroyDescriptorSetLayout;
-        fn.CreatePipelineLayout = d.CreatePipelineLayout;
-        fn.DestroyPipelineLayout = d.DestroyPipelineLayout;
-        fn.CreateGraphicsPipelines = d.CreateGraphicsPipelines;
-        fn.DestroyPipeline = d.DestroyPipeline;
-        if (vocem::hdr_pipeline_create(fn, dev.device, sc.render_pass, mode,
+        if (vocem::hdr_pipeline_create(hdr_functions(d), dev.device, sc.render_pass, mode,
                                        vocem::hdr_sdr_nits(), sc.hdr)) {
             VOCEM_LOG("colour pipeline ready (mode %d, SDR white %.0f nits)", mode,
                       vocem::hdr_sdr_nits());
@@ -1001,9 +971,19 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // launcher signals answer for, opens every installed desktop entry.
     // Measured by tests/apps_cost on this machine: 2.2-2.4 ms once when it falls
     // through to that last pass, 76-92 us once when a signal answers it, and
-    // 0.9 ns per frame ever after. So rule 8 -- no blocking I/O in
-    // vkQueuePresentKHR -- holds for every frame except the first one, which is
-    // a narrower claim than the one that stood here.
+    // 0.9 ns per frame ever after.
+    //
+    // And "except the first frame" is still not the whole of it, which the
+    // previous version of this comment claimed (the entry-114 shape, one layer
+    // further in). Two steady-state costs also live inside the present, on
+    // their own cadences: current_config() runs LiveConfig::current() -- one
+    // stat() at most every two seconds, a full fopen-and-reparse when the file
+    // moved -- both here and in draw(); and the state poll asks
+    // still_current() (one shm_open, two fstats) every 300 presents. So rule 8
+    // as it holds is: no PER-FRAME blocking I/O, a once-per-process verdict on
+    // the first frame, and a handful of deliberate, cadenced syscalls the
+    // design accepts by name. A claim wider than that is where the next
+    // violation hides (entry 42).
     //
     // Kept that way on purpose, and not because 2.4 ms is small. Nothing can be
     // drawn before the verdict exists, so moving it past the present buys a

@@ -15,8 +15,10 @@ import Vocem
 SectionPage {
     id: root
 
+    // notificationPreviewDisplay included for the same reason as the panel
+    // page's: a persisted setting the page edits belongs to its Reset.
     settings: ["notificationCorner", "notificationMargin", "notificationScale",
-               "notificationSeconds"]
+               "notificationSeconds", "notificationPreviewDisplay"]
     title: qsTr("Notifications")
     subtitle: qsTr("Where direct messages and mentions appear, and for how long.")
 
@@ -100,7 +102,7 @@ SectionPage {
 
                 SliderRow {
                     accessibleName: qsTr("Show for")
-                    from: 1; to: 20; stepSize: 0.5
+                    from: 1; to: 30; stepSize: 0.5
                     decimals: 1
                     suffix: qsTr(" s")
                     value: root.config.notificationSeconds

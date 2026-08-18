@@ -402,12 +402,11 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     ImVec2 position(place_within(config.position_x, last_width, static_cast<float>(width), inset),
                     place_within(config.position_y, last_height, static_cast<float>(height), inset));
 
-    // How many people the display can actually hold. Left to itself, ImGui clamps
-    // an auto-sized window to the viewport and clips whatever does not fit, which
-    // ends the panel on a face cut in half at the bottom edge -- and at a size the
-    // configuration window has no way to predict, since the clamp is ImGui's rather
-    // than ours. Deciding here means the panel always ends on a whole row, says how
-    // many people it left out, and does something the preview can reproduce.
+    // First, how many people the settings ask for at all (the filters), and
+    // the distances a row is built from. The clamp-and-truncate story belongs
+    // to the budget below -- the same paragraph used to stand here too, thirty
+    // lines from the arithmetic it describes, and a reader went looking for
+    // the clamp under the wrong copy.
     const ImGuiStyle& style = ImGui::GetStyle();
     const bool horizontal = config.panel_layout == Config::kLayoutHorizontal;
     // The distance between one person and the next. It is `row_spacing` in both
@@ -787,14 +786,15 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
 
 void build_notification(const Snapshot& snapshot, const Config& config, uint32_t width,
                         uint32_t height, AvatarProvider* avatars, double now_seconds) {
-    if (!config.notifications_enabled || snapshot.notification.serial == 0) {
+    // The predicate, not a copy of it: panel.h promises one spelling of
+    // "something to draw" for the paths AND the build functions, and this
+    // function carried a negated duplicate of the whole condition -- including
+    // both boundary comparisons on the age -- that nothing compared.
+    if (!notification_wanted(snapshot, config, now_seconds)) {
         return;
     }
 
     const double age = now_seconds - snapshot.notification.received;
-    if (age < 0.0 || age > config.notification_seconds) {
-        return;
-    }
 
     // In over a quarter of a second, out over three tenths: M3's entrance and
     // exit pair, through the one easing map (see the motion block) -- the
@@ -974,8 +974,11 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
                                        IM_COL32(255, 255, 255, static_cast<int>(255 * fade)),
                                        avatar_radius);
         } else {
+            // The fade by hand, exactly as the image above: the placeholder goes
+            // into the draw list as raw colours the pushed style alpha cannot
+            // reach (the panel's rows pass row_alpha here for the same reason).
             draw_avatar_placeholder(draw_list, centre, avatar_radius, theme.avatar_placeholder,
-                                    theme.avatar_mark, 1.0f);
+                                    theme.avatar_mark, fade);
         }
 
         // As in the panel: the picture's box is the picture, and the gap beside it
@@ -986,8 +989,11 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
 
         ImGui::BeginGroup();
         // The same permanent outline as the panel's, from the same switch: one
-        // treatment, one answer, whatever either box's opacity is set to.
-        const float outline = theme.toast_text_outline;
+        // treatment, one answer, whatever either box's opacity is set to. The
+        // strength rides the fade -- the copies bypass the pushed style alpha,
+        // so without this the entrance and the exit showed full-strength ink
+        // around a fading glyph (the panel does the same with row_alpha).
+        const float outline = theme.toast_text_outline * fade;
 
         // The sender is the part that has to be readable at a glance, mid-game,
         // so it gets the heavier weight.

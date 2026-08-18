@@ -34,6 +34,9 @@ set_source_files_properties(src/avatars.cpp
 
 # shm_open lives in librt on older glibc and in libc on current ones.
 target_link_libraries(vocemd PRIVATE CURL::libcurl Threads::Threads)
+# The same road the window takes for its About page: the release stated once in
+# project(VERSION), compiled in, so the User-Agent cannot go stale by hand.
+target_compile_definitions(vocemd PRIVATE VOCEM_VERSION="${PROJECT_VERSION}")
 
 find_library(VOCEM_RT_LIBRARY rt)
 if(VOCEM_RT_LIBRARY)

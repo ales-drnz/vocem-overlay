@@ -523,7 +523,6 @@ inline constexpr Preset kPresets[] = {
     {"light", 0xeff0f1, 1.0f},
     {"purple", 0x5865f2, 1.0f},
 };
-inline constexpr int kPresetCount = sizeof(kPresets) / sizeof(kPresets[0]);
 
 // How far outside the picture its decorations reach, and therefore what the row has
 // to reserve for them. Reserved whether or not anyone is speaking or muted: a row

@@ -15,6 +15,7 @@
 
 #include "vocem/avatar_rgba.h"
 #include "curl_sink.h"
+#include "log.h"
 #include "vocem/avatar_file.h"
 #include "vocem/paths.h"
 #include "vocem/shared_state.h"
@@ -24,6 +25,22 @@
 #include "avatar_decode.h"
 
 namespace vocem {
+
+namespace {
+
+// A ceiling on what the RPC port can make this process remember. Every key
+// arrives off the socket -- a voice event's participant or a notification's
+// author -- and nothing removes one until its download fails, so a peer
+// emitting a fresh author id per message grew `known_` (and with it `queue_`,
+// which only ever holds keys `known_` just admitted) without limit, against a
+// unit that carries MemoryMax=128M. The participant path has its own ceiling
+// in main.cpp; this is the same answer for the container both paths land in.
+// The number is far above any real session -- a channel holds kMaxUsers faces
+// and a busy evening of messages is dozens -- so hitting it is a statement
+// about the peer, and it is said in the log once.
+constexpr size_t kAvatarKnownCeiling = 1024;
+
+}  // namespace
 
 AvatarCache::AvatarCache() {
     char dir[512];
@@ -68,6 +85,17 @@ void AvatarCache::request(uint64_t user_id, const std::string& avatar_hash) {
         if (known_.count(key) != 0) {
             return;
         }
+        if (known_.size() >= kAvatarKnownCeiling) {
+            // Said once: silence here would be a face that never arrives with
+            // nothing anywhere explaining why.
+            static bool said = false;
+            if (!said) {
+                said = true;
+                LOG("avatar cache ceiling reached (%zu ids): new faces stay the placeholder",
+                    known_.size());
+            }
+            return;
+        }
         known_.insert(key);
         if (vocem::avatar_file_exists(key.c_str())) {
             return;  // already on disk from a previous session
@@ -75,6 +103,11 @@ void AvatarCache::request(uint64_t user_id, const std::string& avatar_hash) {
         queue_.push({user_id, avatar_hash});
     }
     wake_.notify_one();
+}
+
+size_t AvatarCache::tracked() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return known_.size();
 }
 
 bool AvatarCache::download(const std::string& url, std::string& body) {
@@ -104,7 +137,7 @@ bool AvatarCache::download(const std::string& url, std::string& body) {
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "vocem-overlay/0.1");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, VOCEM_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXFILESIZE, 1024L * 1024L);
 
@@ -187,11 +220,20 @@ void AvatarCache::worker() {
         }
 
         std::string body;
+        const bool fetched = download(url, body);
         const bool stored =
-            download(url, body) &&
+            fetched &&
             avatar_decode_and_store(reinterpret_cast<const unsigned char*>(body.data()),
                                     body.size(), path);
         if (!stored) {
+            // Which half failed is the whole diagnosis -- a CDN that cannot be
+            // reached and a payload that will not decode are different
+            // problems, and the user-visible symptom (a grey disc that never
+            // fills in) is identical for both. auth.cpp names its two failure
+            // modes; this path was the one that did not.
+            LOG("avatar for %llu not %s", static_cast<unsigned long long>(request.user_id),
+                fetched ? "decodable: the CDN's bytes were refused"
+                        : "downloaded: the CDN could not be reached or refused the request");
             // Forget the key so a later attempt can retry; a transient CDN error
             // should not blank someone's avatar for the rest of the session.
             std::lock_guard<std::mutex> guard(mutex_);

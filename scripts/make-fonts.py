@@ -41,6 +41,18 @@ GOOGLE = "https://raw.githubusercontent.com/google/fonts/main/ofl"
 SOURCE = f"{GOOGLE}/inter/Inter%5Bopsz,wght%5D.ttf"
 EMOJI_SOURCE = f"{GOOGLE}/notoemoji/NotoEmoji%5Bwght%5D.ttf"
 PUNCTUATION_SOURCE = f"{GOOGLE}/notosansjp/NotoSansJP%5Bwght%5D.ttf"
+# The three symbol fonts, all OFL like everything above. They exist because a
+# Discord server decorates its channel and display names from symbol-picker
+# sites (the owner's uses coolsymbol.com, whose full symbol table is the corpus
+# these ranges were measured against, 2026-08-10): box drawing, circled
+# letters, fancy math alphabets, arrows beyond Inter's. Measured on that
+# corpus of 3199 distinct codepoints: the shipped trio drew 1674, and the
+# blocks below take the coverage to ~94% -- what stays out is out by decision
+# (whole CJK, scripts that need shaping, and the Private Use Area, where no
+# font of ours could draw the glyph the site means).
+MATH_SOURCE = f"{GOOGLE}/notosansmath/NotoSansMath-Regular.ttf"
+SYMBOLS2_SOURCE = f"{GOOGLE}/notosanssymbols2/NotoSansSymbols2-Regular.ttf"
+SYMBOLS_SOURCE = f"{GOOGLE}/notosanssymbols/NotoSansSymbols%5Bwght%5D.ttf"
 
 # Latin with its extensions, Greek and Cyrillic: what a display name is realistically
 # written in. Then every symbol Inter carries, which is most of the ones a name or a
@@ -48,7 +60,11 @@ PUNCTUATION_SOURCE = f"{GOOGLE}/notosansjp/NotoSansJP%5Bwght%5D.ttf"
 # -- and which used to be left out for no reason but the range list being short.
 # Whole CJK is deliberately absent: it would multiply the atlas size for a case the
 # overlay cannot serve well anyway.
-RANGES = ("U+0020-00FF,U+0100-017F,U+0180-024F,U+0370-03FF,U+0400-04FF,U+2000-2BFF")
+# ...plus IPA and the modifier letters, the phonetic extensions and Greek
+# Extended, which Inter carries and fancy display names use (the superscript
+# alphabets are modifier letters).
+RANGES = ("U+0020-00FF,U+0100-024F,U+0250-02FF,U+0370-03FF,U+0400-04FF,"
+          "U+1D00-1DBF,U+1F00-1FFF,U+2000-2BFF")
 
 # Everything Noto Emoji has, which is every emoji with a single code point. Sequences
 # joined with U+200D -- 👨‍👩‍👧 and the skin tones -- draw as their parts, which is what
@@ -57,7 +73,17 @@ EMOJI_RANGES = None  # the font's whole cmap
 
 # The punctuation a Discord channel name is written with and Inter has none of:
 # CJK punctuation, the katakana middle dot, and the fullwidth forms.
-PUNCTUATION_RANGES = "U+3000-303F,U+30FB-30FC,U+FF01-FF60"
+# The original punctuation, plus what the corpus above actually meets in
+# names: full box drawing and block elements (complete in this font where the
+# symbol fonts carry fragments), the kana, the compatibility jamo, and the
+# enclosed/compatibility CJK blocks (circled ideographs, katakana words).
+# Whole CJK ideographs stay out, as the header says.
+PUNCTUATION_RANGES = ("U+2500-259F,U+3000-303F,U+3041-30FF,U+3131-318E,"
+                      "U+3200-33FF,U+FE30-FE6F,U+FF01-FF60")
+# Arabic-Indic digits (which shape alone), the letterlike and symbol blocks,
+# and the mathematical alphanumerics -- the "fancy font" alphabets.
+MATH_RANGES = "U+0660-0669,U+06F0-06F9,U+2100-2BFF,U+1D400-1D7FF"
+SYMBOL_RANGES = "U+2100-2BFF"
 
 WEIGHTS = ((400, "Regular", "InterRegular", "inter_regular.inc"),
            (600, "SemiBold", "InterSemiBold", "inter_semibold.inc"))
@@ -93,7 +119,9 @@ def subset_static(variable_font: Path, ranges, destination: Path, weight: int = 
     from fontTools.varLib import instancer
 
     font = ttLib.TTFont(variable_font)
-    instancer.instantiateVariableFont(font, {"wght": weight}, inplace=True, updateFontNames=True)
+    if "fvar" in font:
+        instancer.instantiateVariableFont(font, {"wght": weight}, inplace=True,
+                                          updateFontNames=True)
     if ranges is None:
         unicodes = sorted({c for table in font["cmap"].tables for c in table.cmap})
     else:
@@ -119,6 +147,9 @@ def main() -> int:
     variable_font = fetch(SOURCE, FONT_DIR / "Inter-Variable.ttf")
     emoji_font = fetch(EMOJI_SOURCE, FONT_DIR / "NotoEmoji-Variable.ttf")
     punctuation_font = fetch(PUNCTUATION_SOURCE, FONT_DIR / "NotoSansJP-Variable.ttf")
+    math_font = fetch(MATH_SOURCE, FONT_DIR / "NotoSansMath-Regular.ttf")
+    symbols2_font = fetch(SYMBOLS2_SOURCE, FONT_DIR / "NotoSansSymbols2-Regular.ttf")
+    symbols_font = fetch(SYMBOLS_SOURCE, FONT_DIR / "NotoSansSymbols-Variable.ttf")
 
     with tempfile.TemporaryDirectory() as work:
         compressor = Path(work) / "binary_to_compressed_c"
@@ -143,10 +174,19 @@ def main() -> int:
              "NotoEmoji", "noto_emoji.inc")
         emit(subset_static(punctuation_font, PUNCTUATION_RANGES, FONT_DIR / "NotoSansJP.ttf"),
              "NotoPunctuation", "noto_punctuation.inc")
+        emit(subset_static(math_font, MATH_RANGES, FONT_DIR / "NotoSansMath.ttf"),
+             "NotoMath", "noto_math.inc")
+        emit(subset_static(symbols2_font, SYMBOL_RANGES, FONT_DIR / "NotoSansSymbols2.ttf"),
+             "NotoSymbols2", "noto_symbols2.inc")
+        emit(subset_static(symbols_font, SYMBOL_RANGES, FONT_DIR / "NotoSansSymbols.ttf"),
+             "NotoSymbols", "noto_symbols.inc")
 
     variable_font.unlink()
     emoji_font.unlink()
     punctuation_font.unlink()
+    math_font.unlink()
+    symbols2_font.unlink()
+    symbols_font.unlink()
     return 0
 
 

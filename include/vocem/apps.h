@@ -169,9 +169,8 @@ inline bool same_name(const char* candidate, const std::string& name) {
     if (name == candidate) {
         return true;
     }
-    constexpr size_t comm_length = 15;
-    return std::strlen(candidate) > comm_length && name.size() == comm_length &&
-           name.compare(0, comm_length, candidate, comm_length) == 0;
+    return std::strlen(candidate) > kCommLength && name.size() == kCommLength &&
+           name.compare(0, kCommLength, candidate, kCommLength) == 0;
 }
 
 // The application ids a systemd cgroup line can be read as, best first.
@@ -201,36 +200,69 @@ inline std::vector<std::string> desktop_ids_from_cgroup(const std::string& cgrou
     // The leaf unit, which is the one that actually ran: in the D-Bus shape the
     // `app-` piece is the slice around it.
     std::string unit = cgroup.substr(cgroup.find_last_of('/') + 1);
+    bool scope = false;
     for (const char* suffix : {".scope", ".service", ".slice"}) {
         const size_t length = std::strlen(suffix);
         if (unit.size() > length && unit.compare(unit.size() - length, length, suffix) == 0) {
+            scope = (suffix[1] == 's' && suffix[2] == 'c');
             unit.resize(unit.size() - length);
             break;
         }
     }
-    // The random part: `@<RANDOM>` on a service, `-<RANDOM>` on a scope.
-    if (const size_t at = unit.find('@'); at != std::string::npos) {
-        unit.resize(at);
-    } else if (const size_t last = unit.rfind('-'); last != std::string::npos) {
-        unit.resize(last);
-    }
-    if (unit.compare(0, 4, "app-") == 0) {
-        unit = unit.substr(4);
-    }
-    unit = unescaped_unit(unit);
-    if (unit.empty()) {
-        return candidates;
-    }
-    candidates.push_back(unit);
-    // Then the same name with the optional launcher taken off: `gnome-`,
-    // `flatpak-`, and the two pieces D-Bus activation puts in front (`dbus-`, then
-    // the connection's name, `:1.2`).
-    for (int strip = 0; strip < 2; ++strip) {
-        const size_t dash = candidates.back().find('-');
-        if (dash == std::string::npos) {
-            break;
+    // One base's readings: the `app-` prefix off, the escaping out, then the
+    // same name with the optional launcher taken off -- `gnome-`, `flatpak-`,
+    // and the two pieces D-Bus activation puts in front (`dbus-`, then the
+    // connection's name, `:1.2`). Deduplicated, because the two bases below
+    // often agree.
+    const auto offer = [&candidates](std::string base) {
+        if (base.compare(0, 4, "app-") == 0) {
+            base = base.substr(4);
         }
-        candidates.push_back(candidates.back().substr(dash + 1));
+        base = unescaped_unit(base);
+        if (base.empty()) {
+            return;
+        }
+        const auto push = [&candidates](const std::string& value) {
+            for (const std::string& existing : candidates) {
+                if (existing == value) {
+                    return;
+                }
+            }
+            candidates.push_back(value);
+        };
+        push(base);
+        for (int strip = 0; strip < 2; ++strip) {
+            const size_t dash = base.find('-');
+            if (dash == std::string::npos) {
+                break;
+            }
+            base = base.substr(dash + 1);
+            push(base);
+        }
+    };
+    // The random part: `@<RANDOM>` on a service, `-<RANDOM>` on a scope -- and
+    // on a service the whole part is OPTIONAL (systemd's own spelling is
+    // `app[-<launcher>]-<ApplicationID>[@<RANDOM>].service`). With an `@` the
+    // cut is certain. Without one the dash rule is a guess: right for every
+    // scope, where the random part is not optional, and wrong for a service
+    // that simply has none, where it ate everything after the id's first dash
+    // -- `app-org.gnome.Evince.service` read as ["app"] and the whole
+    // desktop-entry signal was dead for that shape. So for a service (or a
+    // slice, which never carries a random part) the unit as it stands is
+    // offered as a second base. Widening is safe for the reason above: a found
+    // entry still has to name this executable before it is believed.
+    std::string stripped = unit;
+    if (const size_t at = stripped.find('@'); at != std::string::npos) {
+        stripped.resize(at);
+        offer(stripped);
+    } else {
+        if (const size_t last = stripped.rfind('-'); last != std::string::npos) {
+            stripped.resize(last);
+        }
+        offer(stripped);
+        if (!scope) {
+            offer(unit);
+        }
     }
     return candidates;
 }
@@ -549,9 +581,13 @@ inline bool is_own_process(const std::string& name) {
 // no configuration in which the overlay belongs on the Steam client's own window,
 // and a default that can be edited away is not a guarantee. `shown_apps` still
 // overrides it, because the user has the last word about their own machine.
+
 // Which of those names this is, or nullptr. The name is kept rather than thrown
 // away: `launcher` on its own is a verdict without its evidence, and the whole
-// point of the `why` field is that a refusal can be read.
+// point of the `why` field is that a refusal can be read. (The long rationale
+// above documents the LIST; this sentence is this function's own contract --
+// the two ran together as one block once, and a reader had to reach this line
+// to learn the block ends in a function returning a string.)
 inline const char* launcher_name(const std::string& name) {
     static const char* const names[] = {
         // Launchers whose own entry is in the games section.
@@ -1234,8 +1270,7 @@ inline std::vector<Application> known_applications() {
         // reads this is the window, and the key is what a flipped switch writes
         // into the settings file, so a corrupt file is not given a row a
         // thousand characters wide to put there.
-        constexpr size_t comm_length = 15;
-        if (!application.key.empty() && application.key.size() <= comm_length &&
+        if (!application.key.empty() && application.key.size() <= kCommLength &&
             !is_own_process(application.key)) {
             applications.push_back(application);
         }
