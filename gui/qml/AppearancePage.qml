@@ -15,7 +15,8 @@ import Vocem
 ScrollablePage {
     id: root
 
-    settings: ["panelLayout", "panelColour", "opacity", "speakingColour", "textIdleColour",
+    settings: ["panelLayout", "panelBox", "panelColour", "opacity", "speakingColour",
+               "textIdleColour",
                "textSpeakingColour", "fontFamily", "fontSize", "avatarSize", "textShadow",
                "showChannelName", "notificationColour", "notificationOpacity",
                "notificationTextColour"]
@@ -54,6 +55,10 @@ ScrollablePage {
             readonly property var themes: root.config.presetThemes
             function presetLabel(id) {
                 switch (id) {
+                // Named for the shape of the box it draws, not for the client
+                // whose overlay wears that shape -- the reason "Purple" is not
+                // named after anybody either.
+                case "pills": return qsTr("Pills");
                 case "dark": return qsTr("Dark");
                 case "light": return qsTr("Light");
                 case "purple": return qsTr("Purple");
@@ -61,9 +66,13 @@ ScrollablePage {
                 }
                 return id;
             }
+            // All three of a preset's writes, because two of them are no longer
+            // enough to tell one chip from another: Pills and Dark are the same
+            // surface at the same opacity, drawn in two different places.
             function isActive(preset) {
                 return Qt.colorEqual(root.config.panelColour, preset.colour) &&
-                       Math.abs(root.config.opacity - preset.opacity) < 0.005;
+                       Math.abs(root.config.opacity - preset.opacity) < 0.005 &&
+                       root.config.panelBox === preset.box;
             }
 
             Layout.fillWidth: true
@@ -128,6 +137,10 @@ ScrollablePage {
                                 Math.round(presetTokens.panelSurface.g * 255) * 256 +
                                 Math.round(presetTokens.panelSurface.b * 255)
                             readonly property real presetOpacity: modelData.opacity
+                            // And where the preset puts that surface, so the
+                            // regression test can tell two chips apart that
+                            // share the other two numbers.
+                            readonly property real presetBox: modelData.box
 
                             // PanelPreview reads one config object. This stands in
                             // for the bridge with the preset's two writes applied
@@ -142,6 +155,7 @@ ScrollablePage {
                                 // would be showing a surface on a shape the
                                 // user does not have.
                                 readonly property int panelLayout: root.config.panelLayout
+                                readonly property int panelBox: chip.modelData.box
                                 readonly property real fontSize: root.config.fontSize
                                 readonly property real rowSpacing: root.config.rowSpacing
                                 readonly property real boxPaddingX: root.config.boxPaddingX
@@ -173,6 +187,7 @@ ScrollablePage {
                             onClicked: {
                                 root.config.panelColour = modelData.colour;
                                 root.config.opacity = modelData.opacity;
+                                root.config.panelBox = modelData.box;
                             }
 
                             contentItem: Column {
@@ -279,6 +294,25 @@ ScrollablePage {
             }
         }
 
+        // Where that background is drawn. Under the layout, because the two are
+        // one question about the panel's shape asked twice -- which way the
+        // people run, and what the surface goes behind -- and above the colour
+        // and the opacity, which are about the surface itself whichever shape it
+        // is on. A ComboBox for the layout's reason: one question with one
+        // answer, shown by the previews beside it.
+        SettingRow {
+            label: qsTr("Box")
+            description: qsTr("What the panel's background is drawn behind.")
+
+            ComboBox {
+                objectName: "panelBoxChoice"
+                model: [qsTr("Whole panel"), qsTr("Names only")]
+                currentIndex: root.config.panelBox
+                onActivated: root.config.panelBox = currentIndex
+                Accessible.name: qsTr("Panel box")
+            }
+        }
+
         SettingRow {
             label: qsTr("Colour")
             description: qsTr("Background of the voice panel.")
@@ -307,7 +341,9 @@ ScrollablePage {
             // one sentence that exists to tell an empty box from a broken one.
             description: root.config.backgroundFaint
                          ? qsTr("Little or no background: names and avatars over the game.")
-                         : qsTr("How solid the panel background is.")
+                         : root.config.panelBox === 1
+                           ? qsTr("How solid the box behind each name is.")
+                           : qsTr("How solid the panel background is.")
 
             SliderRow {
                 accessibleName: qsTr("Panel opacity")

@@ -1395,6 +1395,8 @@ static QVariantMap theme_map(const vocem::Config& config) {
     map["badgeStrokeFactor"] = theme.badge_stroke_factor;
     map["badgeRimStrokeFactor"] = theme.badge_rim_stroke_factor;
     map["badgeAllowanceFactor"] = theme.badge_allowance_factor;
+    map["nameBoxPaddingX"] = theme.name_box_padding_x;
+    map["nameBoxPaddingY"] = theme.name_box_padding_y;
 
     // Already resolved against the text-shadow switch, so a preview reproduces
     // the outline rather than re-deriving whether there is one.
@@ -1408,16 +1410,18 @@ QVariantMap ConfigBridge::overlayTheme() const {
 }
 
 // The theme each preset would produce if clicked, from the settings as they
-// stand now. The two writes here are the same two the preset button makes
-// (AppearancePage.qml): a preset is a surface and an opacity, nothing else,
-// and everything else -- pinned text colours, the outline switch -- passes
-// through, so the preview shows the preset on top of the user's own settings.
+// stand now. The three writes here are the same three the preset button makes
+// (AppearancePage.qml): a preset is a surface, an opacity and where that surface
+// is drawn, nothing else, and everything else -- pinned text colours, the
+// outline switch -- passes through, so the preview shows the preset on top of
+// the user's own settings.
 QVariantList ConfigBridge::presetThemes() const {
     QVariantList list;
     for (const vocem::Preset& preset : vocem::kPresets) {
         vocem::Config preview = config_;
         preview.panel_colour = preset.colour;
         preview.opacity = preset.opacity;
+        preview.panel_box = preset.box;
         list.append(theme_map(preview));
     }
     return list;
@@ -1430,6 +1434,7 @@ QVariantList ConfigBridge::overlayPresets() const {
         entry["id"] = QString::fromLatin1(preset.id);
         entry["colour"] = toColour(preset.colour);
         entry["opacity"] = preset.opacity;
+        entry["box"] = preset.box;
         list.append(entry);
     }
     return list;
@@ -1471,6 +1476,19 @@ void ConfigBridge::setPanelLayout(int value) {
         return;
     }
     config_.panel_layout = value;
+    persist();
+}
+
+// Around everything, or behind the names. Refused rather than clamped for
+// anything else, exactly as the layout is: a value neither of the two is a value
+// nothing in this window can have produced, and rounding it to one of them would
+// make a wrong write look right.
+void ConfigBridge::setPanelBox(int value) {
+    if ((value != vocem::Config::kBoxPanel && value != vocem::Config::kBoxNames) ||
+        value == config_.panel_box) {
+        return;
+    }
+    config_.panel_box = value;
     persist();
 }
 

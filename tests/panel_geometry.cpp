@@ -105,6 +105,33 @@ std::vector<Rect> colour_clusters(const ImDrawList* list, ImU32 rgb) {
     return clusters;
 }
 
+// The surface that is drawn behind a piece of text, whatever shape it is in:
+// the smallest cluster of the surface's own colour that contains the text's ink.
+//
+// One measurement for both of the panel's modes, deliberately. With the box
+// around everything that cluster is the window's background; with the box behind
+// the names it is that name's own pill -- so "where is the surface, relative to
+// this name" is asked once and answered by the drawing rather than by a flag.
+// The smallest, not the first: the window's background wears the same colour
+// when it is drawn, and so does the rim around a state badge.
+Rect surface_around(const ImDrawList* list, ImU32 rgb, const Rect& text) {
+    Rect best;
+    if (!text.valid()) {
+        return best;
+    }
+    for (const Rect& candidate : colour_clusters(list, rgb)) {
+        if (!candidate.valid() || candidate.x0 > text.x0 || candidate.x1 < text.x1 ||
+            candidate.y0 > text.y0 || candidate.y1 < text.y1) {
+            continue;
+        }
+        if (!best.valid() ||
+            candidate.width() * candidate.height() < best.width() * best.height()) {
+            best = candidate;
+        }
+    }
+    return best;
+}
+
 Rect cluster(const ImDrawList* list, ImU32 rgb, size_t index) {
     const std::vector<Rect> clusters = colour_clusters(list, rgb);
     return index < clusters.size() ? clusters[index] : Rect();
@@ -221,6 +248,13 @@ struct Measurement {
     Rect badge;         // the muted badge on the second participant
     Rect channel_text;  // the channel name's ink
     Rect first_name;    // the first participant's name
+    Rect second_name;   // the second participant's, who is the idle one
+    // The surface each of those two sits on: the window's background where the
+    // panel draws a box around everything, that name's own pill where it draws
+    // one behind the names instead.
+    Rect first_surface;
+    Rect second_surface;
+    Rect channel_surface;
     Rect second_avatar;
     Rect separator;
     Rect hairline;      // the stroke just inside the panel's edge
@@ -365,6 +399,12 @@ Measurement measure(const Config& base, uint32_t width, uint32_t height, uint32_
     out.channel_text =
         config.show_channel_name ? cluster(panel_list, ink(theme.text_channel), 0) : Rect();
     out.first_name = cluster(panel_list, ink(theme.text_speaking), 0);
+    // The fixture's second participant is the quiet one, so the idle grey's
+    // first cluster in this list is their name.
+    out.second_name = cluster(panel_list, ink(theme.text_idle), 0);
+    out.first_surface = surface_around(panel_list, to_rgb(kPanelSentinel), out.first_name);
+    out.second_surface = surface_around(panel_list, to_rgb(kPanelSentinel), out.second_name);
+    out.channel_surface = surface_around(panel_list, to_rgb(kPanelSentinel), out.channel_text);
     out.separator = colour_bounds(panel_list, ink(theme.separator));
     out.hairline = colour_bounds(panel_list, ink(theme.panel_hairline));
 
@@ -434,6 +474,10 @@ void print_json(const Measurement& m) {
     print_rect("badge", m.badge);
     print_rect("channel_text", m.channel_text);
     print_rect("first_name", m.first_name);
+    print_rect("second_name", m.second_name);
+    print_rect("first_surface", m.first_surface);
+    print_rect("second_surface", m.second_surface);
+    print_rect("channel_surface", m.channel_surface);
     print_rect("separator", m.separator);
     print_rect("separator_accent", m.separator_accent);
     print_rect("overflow", m.overflow);
@@ -468,9 +512,10 @@ void check_close(float measured, float expected, float tolerance, const std::str
 std::string describe(const Config& config, uint32_t width, uint32_t height, uint32_t users) {
     char buffer[256];
     std::snprintf(buffer, sizeof(buffer),
-                  "%s %ux%u scale %.2f opacity %.2f avatar %.2f margin %.0f padding %.0f/%.0f gap "
-                  "%.0f/%.0f channel %d users %u",
-                  Config::layout_text(config.panel_layout), width, height, config.scale,
+                  "%s/%s %ux%u scale %.2f opacity %.2f avatar %.2f margin %.0f padding %.0f/%.0f "
+                  "gap %.0f/%.0f channel %d users %u",
+                  Config::layout_text(config.panel_layout), Config::box_text(config.panel_box),
+                  width, height, config.scale,
                   config.opacity, config.avatar_size, config.screen_margin, config.box_padding_x,
                   config.box_padding_y, config.avatar_gap, config.row_spacing,
                   config.show_channel_name ? 1 : 0, users);
@@ -631,6 +676,84 @@ void verify(const Config& config, uint32_t width, uint32_t height, uint32_t user
         } else {
             check_close(m.overflow.x0, m.first_name.x0, 1.0f,
                         where + ": the overflow line is aligned with the names");
+        }
+    }
+
+    // Where the surface actually is. Two modes, one measurement (surface_around):
+    // with the box around everything the surface behind a name IS the window's
+    // background, and with the box behind the names it is a pill that hugs that
+    // name and nothing else. Both are asserted against the drawing, so a mode
+    // that quietly drew the other one fails here rather than in a screenshot.
+    const bool names_box = config.panel_box == Config::kBoxNames;
+    if (config.opacity > 0.0f && m.first_name.valid() && panel_fits) {
+        check(m.first_surface.valid(), where + ": the first name is drawn on a surface");
+    }
+    if (m.first_surface.valid() && panel_fits) {
+        if (names_box) {
+            // Strictly inside the box's own rectangle, which is what clips it:
+            // the pill's padding is claimed from the layout precisely so that
+            // the window it is drawn into does not cut its edges off, and at
+            // box_padding 0 -- measured below -- nothing else would stop it.
+            check(m.first_surface.x0 >= m.panel.x0 - slack &&
+                      m.first_surface.x1 <= m.panel.x1 + slack &&
+                      m.first_surface.y0 >= m.panel.y0 - slack &&
+                      m.first_surface.y1 <= m.panel.y1 + slack,
+                  where + ": the name's box stays inside the panel's own rectangle");
+            // A box behind the names is a box behind the names: it must not be
+            // the whole panel, which is what a mode that changed nothing would
+            // measure as.
+            check(m.first_surface.width() < m.panel.width() - 1.0f ||
+                      m.first_surface.height() < m.panel.height() - 1.0f,
+                  where + ": the name's box is smaller than the panel");
+            // It reaches past the glyphs on every side -- a box that ended at
+            // the ink would read as a stripe -- and the name is inside it,
+            // which surface_around already had to find to return it.
+            check(m.first_surface.height() > m.first_name.height(),
+                  where + ": the name's box is taller than the name");
+            check(m.first_surface.width() > m.first_name.width(),
+                  where + ": the name's box is wider than the name");
+        } else {
+            // The other mode says the opposite, and says it as a measurement
+            // rather than by not looking: the surface behind the name is the
+            // box, not something drawn behind the text.
+            check_close(m.first_surface.width(), m.panel.width(), 1.5f,
+                        where + ": the box behind the name is the panel's own box");
+            check_close(m.first_surface.height(), m.panel.height(), 1.5f,
+                        where + ": the box behind the name is the panel's own box, in height");
+        }
+    }
+    // One person's box clear of the next's, in the direction the layout advances:
+    // two translucent pills that overlapped would composite into a darker band
+    // where they met, and a band nobody chose between two rows is exactly what a
+    // pill drawn taller than the row it sits in would produce.
+    //
+    // The tolerance is a whole pixel and not the usual half, because two fills
+    // meet here and each carries its own antialiasing fringe: at the row spacing
+    // 0 with a small avatar the rows are exactly a box apart, which is the case
+    // this is about, and the measured overlap there is 1.00 -- the two fringes
+    // and nothing else. Against a pill that ignored the row (line + padding
+    // drawn into a row of the bare line) the overlap is the padding, four times
+    // that at the default text size.
+    if (names_box && users >= 2 && m.first_surface.valid() && m.second_surface.valid() &&
+        panel_fits) {
+        const float fringe = 1.05f;
+        if (horizontal) {
+            check(m.second_surface.x0 >= m.first_surface.x1 - fringe,
+                  where + ": consecutive name boxes do not overlap");
+        } else {
+            check(m.second_surface.y0 >= m.first_surface.y1 - fringe,
+                  where + ": consecutive name boxes do not overlap");
+        }
+    }
+    // And the channel name gets the same treatment as a participant's: it is a
+    // line of text over the game like any other, and a box that carried the
+    // people but not the room they are in would be two answers to one question.
+    if (names_box && config.show_channel_name && config.opacity > 0.0f && panel_fits &&
+        m.channel_text.valid()) {
+        check(m.channel_surface.valid(), where + ": the channel name has a box behind it too");
+        if (m.channel_surface.valid()) {
+            check(m.channel_surface.y0 >= m.panel.y0 - slack,
+                  where + ": and it stays inside the panel's own rectangle");
         }
     }
 
@@ -1075,13 +1198,30 @@ void self_check() {
         {"padding 48", [](Config& c) { c.box_padding_x = 48.0f; c.box_padding_y = 48.0f; }},
         {"gap 0", [](Config& c) { c.avatar_gap = 0.0f; c.row_spacing = 0.0f; }},
         {"gap 48", [](Config& c) { c.avatar_gap = 48.0f; c.row_spacing = 48.0f; }},
-        // The default hides the channel name and draws no box, so the variants
-        // turn them *on* -- the reverse of what they did when the default was the
-        // other way around. Without these, the channel block, the separator and
-        // the boxed treatments would only ever be measured switched off.
+        // The default hides the channel name, so the variants turn it *on*.
+        // Without these, the channel block and the separator would only ever be
+        // measured switched off.
         {"channel shown", [](Config& c) { c.show_channel_name = true; }},
-        {"boxed", [](Config& c) { c.opacity = 0.88f; c.show_channel_name = true;
-                                  c.text_shadow = true; }},
+        // The box around everything: the default up to 0.1.6, and now a chip.
+        // Both modes have to be measured at both ends of the settings that
+        // interact with them, which is why the pair below is a pair.
+        {"boxed", [](Config& c) { c.panel_box = Config::kBoxPanel; c.opacity = 0.88f;
+                                  c.show_channel_name = true; c.text_shadow = true; }},
+        {"boxed, no padding", [](Config& c) { c.panel_box = Config::kBoxPanel;
+                                              c.opacity = 0.88f; c.box_padding_x = 0.0f;
+                                              c.box_padding_y = 0.0f; }},
+        // The pill's own padding is claimed from the layout, and the setting
+        // that would otherwise hide the claim is the window padding: at zero,
+        // a box drawn outside its item is a box with its edges clipped off.
+        {"names, no padding", [](Config& c) { c.box_padding_x = 0.0f; c.box_padding_y = 0.0f;
+                                              c.show_channel_name = true; }},
+        {"names, no gaps", [](Config& c) { c.avatar_gap = 0.0f; c.row_spacing = 0.0f;
+                                           c.show_channel_name = true; }},
+        {"names, small avatar", [](Config& c) { c.avatar_size = 0.5f; c.font_size = 32.0f;
+                                                c.show_channel_name = true; }},
+        {"names, outlined", [](Config& c) { c.text_shadow = true;
+                                            c.show_channel_name = true; }},
+        {"names, solid", [](Config& c) { c.opacity = 1.0f; c.show_channel_name = true; }},
         {"small text", [](Config& c) { c.font_size = 10.0f; }},
         {"large text", [](Config& c) { c.font_size = 32.0f; }},
         {"message 0.5", [](Config& c) { c.notification_scale = 0.5f; }},
@@ -1096,7 +1236,10 @@ void self_check() {
         {"sideways, spaced", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
                                             c.row_spacing = 48.0f; }},
         {"sideways, boxed", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
+                                           c.panel_box = Config::kBoxPanel;
                                            c.opacity = 0.88f; c.show_channel_name = true; }},
+        {"sideways, names", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
+                                           c.show_channel_name = true; }},
         {"sideways, large", [](Config& c) { c.panel_layout = Config::kLayoutHorizontal;
                                            c.font_size = 32.0f; c.avatar_size = 2.0f; }},
         // Both ends of the setting that *is* the sideways layout's spacing: it
@@ -1228,6 +1371,7 @@ void self_check() {
     // Everything at once, both ways round: settings interact, and the interesting
     // failures are the ones no single slider produces.
     Config maximal;
+    maximal.panel_box = Config::kBoxPanel;
     maximal.scale = 3.0f;
     maximal.avatar_size = 2.0f;
     maximal.opacity = 1.0f;
@@ -1279,6 +1423,10 @@ bool set_field(Config& config, const std::string& key, const std::string& value)
     // the settings file does rather than as a number nobody would recognise.
     else if (key == "panel_layout")
         config.panel_layout = Config::to_layout(value.c_str(), config.panel_layout);
+    // And where that panel's surface is drawn, spelled as the settings file
+    // spells it, for the same reason.
+    else if (key == "panel_box")
+        config.panel_box = Config::to_box(value.c_str(), config.panel_box);
     // The typeface, so the comparison can be run in the font the user picked
     // rather than only in the carried one: the ratio between ImGui's size and
     // Qt's is a property of the file, and that is exactly what a preview drawn

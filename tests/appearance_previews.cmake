@@ -8,11 +8,13 @@
 # Two claims, both about what the window actually builds rather than what its
 # QML promises:
 #
-#   1. The preset row is four real previews (objectName presetPreview), each
+#   1. The preset row is five real previews (objectName presetPreview), each
 #      drawn from the theme its preset would produce -- so each carries a
-#      distinct surface (the dump prints surfaceRgb and presetOpacity for
-#      exactly this check) -- and exactly one of them shows the active mark
-#      (objectName presetActiveMark): the defaults are the transparent preset.
+#      distinct picture (the dump prints surfaceRgb, presetOpacity and presetBox
+#      for exactly this check; two presets share a surface and an opacity and are
+#      told apart by where that surface is drawn) -- and exactly one of them
+#      shows the active mark (objectName presetActiveMark): the defaults are the
+#      pills preset.
 #
 #   2. Appearance and Spacing each carry a live preview of both boxes beside
 #      the controls: appearanceLive/panel, appearanceLive/message,
@@ -33,7 +35,7 @@ set(scratch "${CMAKE_CURRENT_BINARY_DIR}/appearance-previews")
 file(REMOVE_RECURSE "${scratch}")
 file(MAKE_DIRECTORY "${scratch}/config/vocem")
 file(MAKE_DIRECTORY "${scratch}/cache/vocem")
-# Defaults: the default surface and opacity are the transparent preset's, so the
+# Defaults: the default surface, opacity and box are the pills preset's, so the
 # active mark has exactly one honest place to be.
 file(WRITE "${scratch}/config/vocem/config.ini" "")
 
@@ -65,9 +67,9 @@ file(READ "${scratch}/geometry.json" dump)
 string(REGEX MATCHALL "\"item\": \"[^\"]*presetPreview(#[0-9]+)?\"[^\n]*\"visible\": true[^\n]*"
        preset_lines "${dump}")
 list(LENGTH preset_lines preset_count)
-if(NOT preset_count EQUAL 4)
+if(NOT preset_count EQUAL 5)
     message(FATAL_ERROR
-        "expected 4 visible preset previews on the Appearance page, found "
+        "expected 5 visible preset previews on the Appearance page, found "
         "${preset_count} -- the preset row does not preview its presets")
 endif()
 
@@ -80,14 +82,18 @@ foreach(line IN LISTS preset_lines)
     if(NOT line MATCHES "\"presetOpacity\": ([0-9.e+-]+)")
         message(FATAL_ERROR "a preset preview carries no presetOpacity: ${line}")
     endif()
-    list(APPEND surfaces "${rgb}/${CMAKE_MATCH_1}")
+    set(preset_opacity "${CMAKE_MATCH_1}")
+    if(NOT line MATCHES "\"presetBox\": ([0-9.e+-]+)")
+        message(FATAL_ERROR "a preset preview carries no presetBox: ${line}")
+    endif()
+    list(APPEND surfaces "${rgb}/${preset_opacity}/${CMAKE_MATCH_1}")
 endforeach()
 list(REMOVE_DUPLICATES surfaces)
 list(LENGTH surfaces distinct)
-if(NOT distinct EQUAL 4)
+if(NOT distinct EQUAL 5)
     message(FATAL_ERROR
-        "the four preset previews carry only ${distinct} distinct surfaces "
-        "(${surfaces}) -- two presets are being previewed with the same theme")
+        "the five preset previews carry only ${distinct} distinct pictures "
+        "(${surfaces}) -- two presets are being previewed the same way")
 endif()
 
 # ---- exactly one active mark: the defaults are one preset, not two.
@@ -212,6 +218,6 @@ if(NOT built_in_top_width STREQUAL chosen_top_width)
 endif()
 
 message(STATUS
-    "four preset previews with distinct surfaces, one active mark, both live "
+    "five preset previews with distinct pictures, one active mark, both live "
     "previews carry both boxes, and the font menu's built-in row keeps the "
     "built-in face (${built_in_top_width}) when a family is chosen")
