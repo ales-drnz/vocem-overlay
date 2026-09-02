@@ -71,6 +71,10 @@ vocem::Config sample() {
     // (to_layout takes both), and only a round trip through the file catches a
     // word that goes out and does not come home.
     config.panel_layout = vocem::Config::kLayoutHorizontal;
+    // The second setting written as a word, off its default for the same reason
+    // every value here is: a key that fell out of save() would read back as
+    // exactly what was expected of it.
+    config.panel_box = vocem::Config::kBoxPanel;
     // Every spacing key, non-default for the same reason: these sat at their
     // defaults here for as long as the file has existed, so a spacing key that
     // fell out of save() would have read back as exactly the value expected.
@@ -130,6 +134,7 @@ void expect_sample(const vocem::Config& config, const char* context) {
     check(!config.show_channel_name, "show_channel_name");
     check(config.notification_corner == 2, "notification_corner");
     check(config.panel_layout == vocem::Config::kLayoutHorizontal, "panel_layout");
+    check(config.panel_box == vocem::Config::kBoxPanel, "panel_box");
     check_close(config.screen_margin, 23.0f, "screen_margin");
     check_close(config.notification_margin, 41.0f, "notification_margin");
     check_close(config.box_padding_x, 7.0f, "box_padding_x");

@@ -66,6 +66,9 @@ Rectangle {
     // it the same thing; everything else about a person -- the picture, the
     // ring, the badge, the name beside it -- is identical in both.
     readonly property bool horizontal: config.panelLayout === 1
+    // Where the surface is drawn: around everything, or behind each name.
+    // panel.cpp reads the same setting and calls the shape the same thing.
+    readonly property bool nameBox: config.panelBox === 1
     readonly property real paddingX: config.boxPaddingX
     readonly property real paddingY: config.boxPaddingY
     readonly property real avatarGap: config.avatarGap
@@ -84,6 +87,7 @@ Rectangle {
         "separatorAccent", "separatorAccentLength",
         "avatarRadiusFactor", "badgeOffsetFactor", "badgeRadiusFactor",
         "badgeStrokeFactor", "badgeRimStrokeFactor", "badgeAllowanceFactor",
+        "nameBoxPaddingX", "nameBoxPaddingY",
         "panelTextOutline",
     ])
 
@@ -98,6 +102,24 @@ Rectangle {
     // which is what keeps a row from reflowing when somebody starts talking.
     readonly property real ringOffset: root.tokens.ringOffset
     readonly property real ringWidth: Math.max(1, avatarRadius * root.tokens.ringWidthFactor)
+
+    // How far a name's own box reaches past its glyphs, from the theme, and zero
+    // where the surface is drawn around everything instead -- panel.cpp keeps the
+    // same two numbers at zero in that mode, so every distance below is written
+    // once and means the same thing in both.
+    readonly property real nameBoxPadX: nameBox ? root.tokens.nameBoxPaddingX : 0
+    readonly property real nameBoxPadY: nameBox ? root.tokens.nameBoxPaddingY : 0
+    // What one line of text occupies: the line, plus whatever its box reaches
+    // past it. The row is at least this tall, which is what keeps two pills from
+    // overlapping into a darker band where the rows meet.
+    readonly property real textBlock: fontPixels + nameBoxPadY * 2
+
+    // The colour of that box: the panel's own surface at the panel's own
+    // opacity. The setting did not move, the shape it is drawn on did.
+    readonly property color nameBoxColour: Qt.rgba(root.tokens.panelSurface.r,
+                                                   root.tokens.panelSurface.g,
+                                                   root.tokens.panelSurface.b,
+                                                   config.opacity)
 
     // The outline around the text, on the same terms as panel.cpp: permanent
     // while the switch is on, drawn as four offset copies of the text in the
@@ -122,11 +144,11 @@ Rectangle {
     // allowance at 0.375 of the radius lands the picture on a fraction (38.115
     // at the defaults), and the half-unit the overlay rounds up was the largest
     // single divergence in the comparison until this rounded with it.
-    readonly property real rowSize: Math.ceil(Math.max(fontPixels, pictureSize))
+    readonly property real rowSize: Math.ceil(Math.max(textBlock, pictureSize))
 
     // The channel name, the line under it, and the spacing on either side of
     // that line -- plus the one unit the line itself claims of the column.
-    readonly property real channelBlock: config.showChannelName ? fontPixels + rowGap * 2 + 1 : 0
+    readonly property real channelBlock: config.showChannelName ? textBlock + rowGap * 2 + 1 : 0
     readonly property real firstRowY: paddingY + channelBlock
 
     // The overlay's own font, at the size the overlay would draw it. Both halves
@@ -162,8 +184,11 @@ Rectangle {
     // page that shows the panel at all. What keeps it grabbable there is an
     // outline, which is the window's own furniture rather than a claim about the
     // game.
-    color: Qt.rgba(root.tokens.panelSurface.r, root.tokens.panelSurface.g,
-                   root.tokens.panelSurface.b, config.opacity)
+    // ... and nothing at all where that surface is drawn behind the names
+    // instead: the opacity has not gone anywhere, it is on the pills below.
+    color: root.nameBox ? "transparent"
+                        : Qt.rgba(root.tokens.panelSurface.r, root.tokens.panelSurface.g,
+                                  root.tokens.panelSurface.b, config.opacity)
     // panel.cpp: WindowRounding at the reference size, scaled with everything else.
     radius: root.tokens.boxRadius
     antialiasing: true
@@ -195,39 +220,76 @@ Rectangle {
         anchors.bottomMargin: root.paddingY
         spacing: root.rowGap
 
-        Label {
-            objectName: "channelName"
+        // The channel name and, where the panel puts one there, the box behind
+        // it: the box's top-left is where the content starts, the glyphs sit its
+        // padding in, and the item is the whole block tall -- which is the bare
+        // line where there is no box. panel.cpp lays the same block out with the
+        // cursor and a trailing item; here it is an Item, because a Label cannot
+        // be behind itself.
+        Item {
+            objectName: "channelBlock"
             visible: root.config.showChannelName
-            text: root.config.channelName
-            color: root.tokens.textChannel
-
-            // Behind it, one copy per cardinal direction: the same five draws the
-            // overlay makes.
-            Repeater {
-                model: root.outlineStrength > 0.0 ? root.outlineOffsets : []
-
-                Label {
-                    required property var modelData
-                    z: -1
-                    x: modelData[0]
-                    y: modelData[1]
-                    width: parent.width
-                    text: parent.text
-                    font: parent.font
-                    color: Qt.rgba(root.tokens.textOutlineInk.r, root.tokens.textOutlineInk.g,
-                                   root.tokens.textOutlineInk.b, root.outlineStrength)
-                    verticalAlignment: parent.verticalAlignment
-                    elide: parent.elide
-                }
-            }
-            font: root.config.overlayFont(root.textPixels * Theme.pointsPerPixel, true)
-            // A line of text is exactly the font size tall in ImGui, where Qt's own
-            // line box is taller than that. Fixing the height is what keeps
-            // everything below it where the overlay puts it.
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
+            // The name still decides how wide the panel is, box included: a
+            // wrapper that claimed nothing would let a long channel name stop
+            // widening the box, which is a divergence no colour would show.
+            implicitWidth: channelName.implicitWidth + root.nameBoxPadX * 2
             Layout.fillWidth: true
-            Layout.preferredHeight: root.fontPixels
+            Layout.preferredHeight: root.textBlock
+
+            Rectangle {
+                objectName: "channelNameBox"
+                visible: root.nameBox
+                // The advance is ceiled to a whole unit, because ImGui::CalcTextSize
+                // ceils its own before the overlay draws the box from it: a
+                // preview that took the fraction would sit up to a unit inside
+                // the box the game draws, on top of whatever the two text
+                // engines already differ by (measured: 1.0 unit on "User 1" at
+                // the reference size, and it is the engines' -- entry 90).
+                width: Math.min(parent.width,
+                                Math.ceil(channelName.implicitWidth) + root.nameBoxPadX * 2)
+                height: root.textBlock
+                radius: height / 2
+                color: root.nameBoxColour
+                antialiasing: true
+            }
+
+            Label {
+                id: channelName
+
+                objectName: "channelName"
+                x: root.nameBoxPadX
+                y: root.nameBoxPadY
+                width: Math.max(0, parent.width - root.nameBoxPadX * 2)
+                text: root.config.channelName
+                color: root.tokens.textChannel
+
+                // Behind it, one copy per cardinal direction: the same five draws the
+                // overlay makes.
+                Repeater {
+                    model: root.outlineStrength > 0.0 ? root.outlineOffsets : []
+
+                    Label {
+                        required property var modelData
+                        z: -1
+                        x: modelData[0]
+                        y: modelData[1]
+                        width: parent.width
+                        text: parent.text
+                        font: parent.font
+                        color: Qt.rgba(root.tokens.textOutlineInk.r, root.tokens.textOutlineInk.g,
+                                       root.tokens.textOutlineInk.b, root.outlineStrength)
+                        verticalAlignment: parent.verticalAlignment
+                        elide: parent.elide
+                    }
+                }
+                font: root.config.overlayFont(root.textPixels * Theme.pointsPerPixel, true)
+                // A line of text is exactly the font size tall in ImGui, where Qt's own
+                // line box is taller than that. Fixing the height is what keeps
+                // everything below it where the overlay puts it.
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                height: root.fontPixels
+            }
         }
 
         // The line under the channel name, as panel.cpp draws it by hand: the
@@ -273,7 +335,8 @@ Rectangle {
 
                     required property var modelData
 
-                    implicitWidth: root.pictureSize + root.avatarGap + label.implicitWidth
+                    implicitWidth: root.pictureSize + root.avatarGap + label.implicitWidth +
+                                   root.nameBoxPadX * 2
                     implicitHeight: root.rowSize
                     // Upright, a row takes the width of the box so its name can
                     // elide against the far padding; sideways, a person is
@@ -355,17 +418,38 @@ Rectangle {
                         }
                     }
 
+                    // The box behind this name, where the panel draws one there
+                    // rather than around everything: the same surface at the same
+                    // opacity, and a pill because its radius is half its own
+                    // height. Declared before the name so it sits behind it, and
+                    // centred on the row exactly as the name is -- what the
+                    // overlay centres is the text's whole block, of which this is
+                    // the outside.
+                    Rectangle {
+                        objectName: "nameBox"
+                        visible: root.nameBox
+
+                        x: picture.width + root.avatarGap
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.ceil(label.width) + root.nameBoxPadX * 2
+                        height: root.textBlock
+                        radius: height / 2
+                        color: root.nameBoxColour
+                        antialiasing: true
+                    }
+
                     Label {
                         id: label
                         objectName: "name"
 
-                        x: picture.width + root.avatarGap
+                        x: picture.width + root.avatarGap + root.nameBoxPadX
                         // panel.cpp centres the name against the picture rather than
                         // leaving it where ImGui puts an item by default, which is the
                         // top of the row and looked high beside a large avatar.
                         anchors.verticalCenter: parent.verticalCenter
                         width: Math.max(0, Math.min(label.implicitWidth,
-                                                    person.width - picture.width - root.avatarGap))
+                                                    person.width - picture.width -
+                                                        root.avatarGap - root.nameBoxPadX * 2))
                         height: root.fontPixels
                         verticalAlignment: Text.AlignVCenter
 

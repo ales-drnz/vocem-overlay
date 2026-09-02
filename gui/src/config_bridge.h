@@ -95,6 +95,11 @@ private:
     // them. The word is only ever written to the file (Config::layout_text).
     Q_PROPERTY(int panelLayout READ panelLayout WRITE setPanelLayout NOTIFY configChanged)
     Q_PROPERTY(int defaultPanelLayout READ defaultPanelLayout CONSTANT)
+    // 0 the whole panel, 1 behind the names -- Config's own numbers again, for
+    // the same reason: the combo box's index and the setting are one value, and
+    // the word is only ever written to the file (Config::box_text).
+    Q_PROPERTY(int panelBox READ panelBox WRITE setPanelBox NOTIFY configChanged)
+    Q_PROPERTY(int defaultPanelBox READ defaultPanelBox CONSTANT)
     Q_PROPERTY(qreal notificationScale READ notificationScale WRITE setNotificationScale NOTIFY configChanged)
     Q_PROPERTY(qreal screenMargin READ screenMargin WRITE setScreenMargin NOTIFY configChanged)
     // The message's own distance from the edge: the panel's setting moved a box
@@ -365,6 +370,8 @@ public:
     bool panelEnabled() const { return config_.panel_enabled; }
     int panelLayout() const { return config_.panel_layout; }
     int defaultPanelLayout() const { return vocem::Config{}.panel_layout; }
+    int panelBox() const { return config_.panel_box; }
+    int defaultPanelBox() const { return vocem::Config{}.panel_box; }
     qreal notificationScale() const { return config_.notification_scale; }
     qreal screenMargin() const { return config_.screen_margin; }
     qreal notificationMargin() const { return config_.notification_margin; }
@@ -479,6 +486,7 @@ public:
     void setNotificationTextColour(const QString& value);
     void setPanelEnabled(bool value);
     void setPanelLayout(int value);
+    void setPanelBox(int value);
     void setNotificationScale(qreal value);
     void setScreenMargin(qreal value);
     void setNotificationMargin(qreal value);

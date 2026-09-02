@@ -294,6 +294,22 @@ struct Theme {
     // 0.375 beyond the picture's edge.
     float badge_allowance_factor = 0.375f;
 
+    // The box behind one name, when the surface is drawn there instead of around
+    // the whole panel (Config::kBoxNames). How far it reaches past the glyphs, in
+    // reference units; its corner radius is half its own height, which is what
+    // makes it a pill at every text size rather than a rectangle with rounded
+    // corners at one of them -- so there is no radius token here and nothing for
+    // a second consumer to get differently.
+    //
+    // 6 and 2, from the shape the box has to have: the horizontal pad is what
+    // separates the pill's edge from the first glyph's side bearing and is read
+    // beside the picture, the vertical one is the smallest that still leaves a
+    // visible band above and below a line of text at the reference size. The
+    // vertical pad also enters the layout -- the row is at least a pill tall, and
+    // the pill's padding is claimed as well as drawn (panel.cpp says why).
+    float name_box_padding_x = 6.0f;
+    float name_box_padding_y = 2.0f;
+
     // What the outline around the text is made of. The opposite pole of the ramp:
     // dark around pale text, pale around dark text, so on whatever the box fails
     // to cover the glyph still has an edge on its readable side. Its alpha is not
@@ -320,6 +336,10 @@ inline Theme theme_for(const Config& config) {
 
     const bool light_panel = is_light(config.panel_colour);
     const bool light_toast = is_light(config.notification_colour);
+    // Where the surface goes decides two tokens as well as one shape: a panel
+    // whose box is only behind the names has no edge and no line under the
+    // channel name to draw.
+    const bool names_box = config.panel_box == Config::kBoxNames;
 
     theme.panel_surface = hex(config.panel_colour);
     theme.toast_surface = hex(config.notification_colour);
@@ -418,8 +438,18 @@ inline Theme theme_for(const Config& config) {
     // 0xfdfdfd and 0x020202 rather than pure white and black: the channel name
     // owns 0xffffff and the edge hairlines own 0xfefefe / 0x010101 in the same
     // draw list, and the measurement tells shapes apart by colour.
-    theme.separator = light_panel ? hex(0x020202, 38) : hex(0xfdfdfd, 26);
-    theme.separator_accent = hex(0x5865f2);
+    // Both segments carry the alpha of a line that belongs to a box: where the
+    // surface is drawn behind the names only there is no box for a line to be
+    // drawn across, and a full-width hairline floating on the game under a
+    // pill is furniture with nothing to be furniture of. Zero rather than a
+    // condition at the draw, so the drawing, the preview and the measurement
+    // all learn it from the same place -- ImGui and Qt both cull an alpha of
+    // zero, and the line still claims its unit of the column so the two modes
+    // lay out identically.
+    const float line_alpha = names_box ? 0.0f : 1.0f;
+    theme.separator = light_panel ? hex(0x020202, static_cast<uint8_t>(38 * line_alpha))
+                                  : hex(0xfdfdfd, static_cast<uint8_t>(26 * line_alpha));
+    theme.separator_accent = hex(0x5865f2, static_cast<uint8_t>(255 * line_alpha));
 
     // The hairline follows the box's own opacity, premultiplied here rather than
     // at the draw: a panel faded to nothing must take its edge with it, and every
@@ -427,8 +457,13 @@ inline Theme theme_for(const Config& config) {
     // to agree on that without re-deriving it. The 20 is 8% of 255: enough to
     // read as an edge highlight on the dark surface, not enough to read as a
     // border.
+    // ... and by nothing at all where the surface is drawn behind the names
+    // instead: the hairline is the edge of a box, and the pills have no edge of
+    // their own. tests/panel_geometry.cpp reads the same token to decide whether
+    // to expect a stroke, so this is the one place that has to know.
     const auto premultiplied = [&](uint32_t rgb, float alpha) {
-        return hex(rgb, static_cast<uint8_t>(alpha * config.opacity + 0.5f));
+        const float opacity = names_box ? 0.0f : config.opacity;
+        return hex(rgb, static_cast<uint8_t>(alpha * opacity + 0.5f));
     };
     theme.panel_hairline =
         light_panel ? premultiplied(0x010101, 20.0f) : premultiplied(0xfefefe, 20.0f);
@@ -488,11 +523,17 @@ inline Theme theme_for(const Config& config) {
 // purple and transparent to the 4.5:1 floor -- so a preset cannot be added or
 // moved without the measurement following it.
 //
-//   * transparent   -- the default, on the owner's judgement: no box at all, the
-//                      names straight on the game. The surface colour stays the
-//                      dark one so the pale ramp is what lands on the game, and
-//                      so that raising the opacity slider starts from a surface
-//                      that was measured rather than from nothing.
+//   * pills         -- the default: the same #17181c at 88%, drawn behind each
+//                      name and nowhere else. The floor the dark box promises is
+//                      promised where the text is, and the rest of the picture --
+//                      around the pictures, between the rows -- stays the game's.
+//                      Named for the shape and not for the client whose overlay
+//                      wears it, for the reason "purple" is not named either.
+//   * transparent   -- no box at all, the names straight on the game: the
+//                      default up to 0.1.6, kept as a chip. The surface colour
+//                      stays the dark one so the pale ramp is what lands on the
+//                      game, and so that raising the opacity slider starts from a
+//                      surface that was measured rather than from nothing.
 //   * dark          -- #17181c at 88%: the surface whose composite passes the
 //                      4.5:1 floor in every scene; see the notes in config.h.
 //   * light         -- #eff0f1, and solid rather than 88%: a pale box at 88% over
@@ -510,18 +551,29 @@ struct Preset {
     const char* id;
     uint32_t colour;
     float opacity;
+    // And where that surface is drawn (Config::kBoxPanel / kBoxNames). A preset
+    // is three writes now rather than two: two chips can share a colour and an
+    // opacity and still be two different pictures, which is exactly what `pills`
+    // and `dark` are.
+    int box;
 };
-// Four, on the owner's ask. The two Breeze entries are gone -- they were the
-// desktop's own surfaces borrowed for a thing that is read over a game rather
-// than over this desktop, and the dark one sat two hundredths from `dark` while
-// the light one duplicated `light`'s promise. And the purple is named for what it
-// is: the overlay stands in for a Discord client, it does not claim to be one, and
-// a preset named after somebody else's product said otherwise.
+// Five. The two Breeze entries are gone -- they were the desktop's own surfaces
+// borrowed for a thing that is read over a game rather than over this desktop,
+// and the dark one sat two hundredths from `dark` while the light one duplicated
+// `light`'s promise. And the purple is named for what it is: the overlay stands
+// in for a Discord client, it does not claim to be one, and a preset named after
+// somebody else's product said otherwise -- which is why the pill preset is
+// named after its shape and not after the overlay it takes it from.
+//
+// The first entry is the defaults, asserted in tests/theme_contrast.cpp: the
+// three fields here and the three in config.h are one decision, and two
+// spellings of one decision drift.
 inline constexpr Preset kPresets[] = {
-    {"transparent", 0x17181c, 0.0f},
-    {"dark", 0x17181c, 0.88f},
-    {"light", 0xeff0f1, 1.0f},
-    {"purple", 0x5865f2, 1.0f},
+    {"pills", 0x17181c, 0.88f, Config::kBoxNames},
+    {"transparent", 0x17181c, 0.0f, Config::kBoxPanel},
+    {"dark", 0x17181c, 0.88f, Config::kBoxPanel},
+    {"light", 0xeff0f1, 1.0f, Config::kBoxPanel},
+    {"purple", 0x5865f2, 1.0f, Config::kBoxPanel},
 };
 
 // How far outside the picture its decorations reach, and therefore what the row has

@@ -215,11 +215,14 @@ int main() {
     std::printf("Text is held to 4.5:1 and a meaningful shape to 3:1, measured on the\n");
     std::printf("surface composited over the scene rather than on the token alone.\n");
 
-    // The Dark preset and the defaults are two spellings of one decision, and two
-    // spellings drift. Held together here, since config.h cannot include theme.h
-    // to say so itself.
+    // The first preset and the defaults are two spellings of one decision, and
+    // two spellings drift. Held together here, since config.h cannot include
+    // theme.h to say so itself. Three fields now: a preset says where its
+    // surface is drawn as well as what it is, and two chips that share a colour
+    // and an opacity are still two different pictures.
     check(kPresets[0].colour == Config{}.panel_colour &&
-              std::fabs(kPresets[0].opacity - Config{}.opacity) < 0.001f,
+              std::fabs(kPresets[0].opacity - Config{}.opacity) < 0.001f &&
+              kPresets[0].box == Config{}.panel_box,
           "the first preset is the default the overlay opens with");
 
     // Every preset the window offers, from the same table the window reads.
@@ -236,6 +239,13 @@ int main() {
         config.panel_colour = preset.colour;
         config.notification_colour = preset.colour;
         config.opacity = preset.opacity;
+        // Where the surface goes does not change what it composites to -- a pill
+        // behind a name is the same colour at the same opacity as a box around
+        // everything, which is exactly why the default can move onto the pill
+        // and keep the floor the dark box measured. Carried through anyway, so
+        // that a preset which ever did change the palette by where it draws is
+        // measured as it draws.
+        config.panel_box = preset.box;
         // The purple preset is the old look kept for whoever wants it, and it
         // cannot hold the floor: measured, its idle grey reads 2.36:1 on that
         // surface. It is printed rather than promised, as it always was under its

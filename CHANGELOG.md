@@ -1,3 +1,15 @@
+## [0.1.7] - 2-09-2026
+
+### Added
+
+- The voice panel can draw its background behind the names alone, as a rounded box under each one, set by the new Box control on the Appearance page.
+- A fifth preset, Pills, draws it that way, on the same surface and at the same opacity as Dark.
+
+### Changed
+
+- A new installation opens on that preset instead of on Transparent.
+- A settings file from an earlier release keeps its colour and its opacity, and draws them in the new shape.
+
 ## [0.1.6] - 18-08-2026
 
 ### Fixed

@@ -14,7 +14,7 @@ project(vocem-overlay
     # 0.1.4 package's About page read "Version 0.1.0", the metainfo's newest
     # release was 0.1.2, and .SRCINFO said 0.1.2 as well. Four copies of one
     # fact, none of them told when another moved.
-    VERSION 0.1.6
+    VERSION 0.1.7
     DESCRIPTION "Discord voice overlay drawn inside the game, on Linux"
     LANGUAGES CXX
 )

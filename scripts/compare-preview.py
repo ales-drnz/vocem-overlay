@@ -181,6 +181,10 @@ def compare(overlay, window, section, verbose, settings):
     avatar = item("panel/avatar")
     avatar2 = item("panel/avatar#1")
     name = item("panel/name")
+    # The box behind that name, where the panel draws one there. Absent from the
+    # dump in the other mode -- the item is not visible -- and absent from the
+    # table with it, which is the honest shape: there is no pill to compare.
+    name_box = item("panel/nameBox")
     message = item("message")
     message_avatar = item("message/messageAvatar")
     message_title = item("message/messageTitle")
@@ -211,6 +215,11 @@ def compare(overlay, window, section, verbose, settings):
     o_avatar = overlay["avatar"]
     o_avatar2 = overlay["second_avatar"]
     o_name = overlay["first_name"]
+    # The surface behind that name, whatever shape it is in: the window's
+    # background where the box is around everything, the name's own pill where it
+    # is behind the names. Compared only in the second case, which is the one the
+    # preview draws a separate item for.
+    o_name_box = overlay["first_surface"]
     o_toast = overlay["toast"]
     o_toast_avatar = overlay["toast_avatar"]
     o_toast_title = overlay["toast_title"]
@@ -241,6 +250,13 @@ def compare(overlay, window, section, verbose, settings):
         avatar["y"] - panel["y"] if avatar and panel else None)
     row("panel: picture to name (to the ink)", o_name["x"] - (o_avatar["x"] + o_avatar["w"]) + EDGE,
         name["x"] - avatar["x"] - avatar["w"] if name and avatar else None)
+    row("panel: name box width", (o_name_box["w"] - AA) if name_box else None,
+        name_box["w"] if name_box else None)
+    row("panel: name box height", (o_name_box["h"] - AA) if name_box else None,
+        name_box["h"] if name_box else None)
+    row("panel: box edge to the name box",
+        (o_name_box["x"] - o_panel["x"] + EDGE) if name_box else None,
+        name_box["x"] - panel["x"] if name_box and panel else None)
     row("panel: one row to the next",
         (o_avatar2["y"] - o_avatar["y"]) if o_avatar2 else None,
         avatar2["y"] - avatar["y"] if avatar2 and avatar else None)

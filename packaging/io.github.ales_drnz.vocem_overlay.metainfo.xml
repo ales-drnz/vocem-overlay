@@ -85,6 +85,15 @@
        out-of-date release list is not something AppStream can catch, and nothing
        else looked. tests/version_agrees.cmake does now. -->
   <releases>
+    <release version="0.1.7" date="2026-09-02">
+      <description>
+        <p>Added</p>
+        <ul>
+          <li>The voice panel can draw its background behind the names alone, as a rounded box under each one.</li>
+          <li>A fifth preset, Pills, draws it that way, and a new installation opens on it.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.6" date="2026-08-18">
       <description>
         <p>Fixed</p>

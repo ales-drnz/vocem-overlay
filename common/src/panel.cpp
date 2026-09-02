@@ -86,6 +86,18 @@ void text_wrapped_outlined(const Theme& theme, const char* text, ImU32 colour, f
     ImGui::PopStyleColor();
 }
 
+// The box behind one name, when the panel's surface is drawn there rather than
+// around everything (Config::kBoxNames). Decided once a frame in build_panel(),
+// because it is the same box at all three places the panel draws text.
+struct NameBox {
+    bool drawn = false;
+    float pad_x = 0.0f;
+    float pad_y = 0.0f;
+    // The surface, carrying the panel's opacity as its alpha: the box moved, the
+    // two settings that describe it did not.
+    Colour fill;
+};
+
 // --- motion -----------------------------------------------------------------
 //
 // Little and aimed: an in-game overlay that moves is an overlay that distracts.
@@ -127,6 +139,40 @@ uint8_t scaled(uint8_t alpha, float multiplier) {
 ImU32 col_scaled(Colour colour, float multiplier) {
     colour.a = scaled(colour.a, multiplier);
     return col(colour);
+}
+
+// One line of text, with its own box behind it where the panel puts one there
+// and as plain text where it does not.
+//
+// The cursor is the *box's* top-left, not the text's -- a caller that centres a
+// name in its row centres the pill, and the padding is added here -- and the
+// padding is claimed from the layout as well as drawn: a window clips its own
+// draw list, so at box_padding 0 (a real setting, and one panel_geometry
+// measures) a pill drawn outside the items it belongs to loses its edges. The
+// trailing item is the right-hand pad wide and reaches the pill's own bottom,
+// which claims both at once.
+//
+// The radius is half the box's height: a pill at every text size, rather than a
+// rectangle with rounded corners at one of them.
+void text_boxed(const Theme& theme, const NameBox& box, const char* text, ImU32 colour,
+                float outline, float scale, float alpha) {
+    if (!box.drawn) {
+        text_outlined(theme, text, colour, outline, scale);
+        return;
+    }
+    const float line = ImGui::GetTextLineHeight();
+    const ImVec2 start = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(start.x + box.pad_x, start.y + box.pad_y));
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::CalcTextSize(text).x;
+    const float height = line + box.pad_y * 2.0f;
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(at.x - box.pad_x, at.y - box.pad_y),
+        ImVec2(at.x + width + box.pad_x, at.y + line + box.pad_y), col_scaled(box.fill, alpha),
+        height * 0.5f);
+    text_outlined(theme, text, colour, outline, scale);
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::Dummy(ImVec2(box.pad_x, line + box.pad_y));
 }
 
 // The picture of somebody whose picture has not arrived.
@@ -372,11 +418,28 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     // spacing inside its own height as well counted it twice in the pitch.
     const float radius = line_height * theme.avatar_radius_factor * config.avatar_size;
     const float picture = (radius + decoration_allowance(theme, radius, scale)) * 2.0f;
+
+    // Where the surface goes. Rounded through pixels() like every other distance
+    // that adds up into the size of a box, so the preview can follow it exactly.
+    NameBox name_box;
+    name_box.drawn = config.panel_box == Config::kBoxNames;
+    if (name_box.drawn) {
+        name_box.pad_x = pixels(theme.name_box_padding_x * scale);
+        name_box.pad_y = pixels(theme.name_box_padding_y * scale);
+        name_box.fill = theme.panel_surface;
+        name_box.fill.a = static_cast<uint8_t>(config.opacity * 255.0f + 0.5f);
+    }
+    // What one line of text occupies, which is the line itself plus whatever its
+    // own box reaches past it. The row is at least this tall: the pill is drawn
+    // inside the row, so two of them cannot overlap and darken each other where
+    // the rows sit close together.
+    const float text_block = line_height + name_box.pad_y * 2.0f;
+
     // Rounded up to a whole pixel, because ImGui truncates the content extent it
     // fits the window to: a row whose height ended in a fraction left the last one
     // hanging a pixel below the box, which is visible as a clipped avatar wherever
     // the padding is small.
-    const float row = std::ceil(line_height > picture ? line_height : picture);
+    const float row = std::ceil(text_block > picture ? text_block : picture);
 
     // The stored fraction is the panel's top-left, and it is clamped here so the
     // panel cannot leave the screen as its height changes with the number of
@@ -417,7 +480,7 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     // its spacing explicitly at the SameLine rather than through the style.
     const float cell_gap = pixels(config.row_spacing * scale);
     const float channel_block =
-        config.show_channel_name ? ImGui::GetTextLineHeight() + style.ItemSpacing.y * 2.0f : 0.0f;
+        config.show_channel_name ? text_block + style.ItemSpacing.y * 2.0f : 0.0f;
     const float pitch = row + style.ItemSpacing.y;
 
     uint32_t wanted_rows = 0;
@@ -450,14 +513,16 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
         // can carry. Asserted rather than remembered -- a wider channel would
         // leave the line reserving less room than the remark takes.
         static_assert(kMaxUsers < 100, "the overflow remark is measured at two digits");
-        const float remark = cell_gap + ImGui::CalcTextSize("+99 more").x;
+        const float remark =
+            cell_gap + ImGui::CalcTextSize("+99 more").x + name_box.pad_x * 2.0f;
         float used = 0.0f;
         int fitted = 0;
         for (uint32_t i = 0; i < snapshot.user_count; ++i) {
             const User& user = snapshot.users[i];
             if (config.only_speaking && (user.flags & kFlagSpeaking) == 0) continue;
             if (config.hide_self && (user.flags & kFlagSelf) != 0) continue;
-            const float cell = picture + style.ItemSpacing.x + ImGui::CalcTextSize(user.name).x;
+            const float cell = picture + style.ItemSpacing.x + ImGui::CalcTextSize(user.name).x +
+                               name_box.pad_x * 2.0f;
             const float advance = (fitted == 0 ? 0.0f : cell_gap) + cell;
             if (fitted > 0 && used + advance > room) {
                 break;
@@ -485,7 +550,8 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             if (!last) {
                 break;
             }
-            used -= cell_gap + picture + style.ItemSpacing.x + ImGui::CalcTextSize(last->name).x;
+            used -= cell_gap + picture + style.ItemSpacing.x +
+                    ImGui::CalcTextSize(last->name).x + name_box.pad_x * 2.0f;
             --fitted;
         }
         row_budget = fitted > 0 ? fitted : 1;
@@ -525,7 +591,12 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                                         ImVec2(panel_limit, FLT_MAX));
 
     ImVec4 background = ImGui::ColorConvertU32ToFloat4(opaque(theme.panel_surface));
-    background.w = config.opacity;
+    // Nothing at all where the surface is drawn behind the names instead: the
+    // opacity has not gone anywhere, it is on the pills. ImGui culls a fill whose
+    // alpha is exactly zero before emitting a vertex, so this is a box that is
+    // not drawn rather than a box drawn invisibly -- which is what lets the
+    // geometry measurement find the pills by the surface's own colour.
+    background.w = name_box.drawn ? 0.0f : config.opacity;
     ImGui::PushStyleColor(ImGuiCol_WindowBg, background);
 
     const ImGuiWindowFlags flags =
@@ -567,7 +638,8 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             if (fonts().strong) {
                 ImGui::PushFont(fonts().strong);
             }
-            text_outlined(theme, snapshot.channel_name, col(theme.text_channel), outline, scale);
+            text_boxed(theme, name_box, snapshot.channel_name, col(theme.text_channel), outline,
+                       scale, 1.0f);
             if (fonts().strong) {
                 ImGui::PopFont();
             }
@@ -730,8 +802,11 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             // Centred against the picture rather than sitting at the top of the
             // row. ImGui puts an item at the line's top, and with a large avatar
             // the name was visibly high against the face beside it.
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                                 (row - ImGui::GetTextLineHeight()) * 0.5f);
+            // Centred against the picture rather than sitting at the top of the
+            // row -- and what is centred is the text's own block, which is the
+            // line plus its box where there is one, so the pill sits in the
+            // middle of the row and the glyphs sit in the middle of the pill.
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row - text_block) * 0.5f);
 
             // Who is talking, said twice: the ring around the picture, and the
             // name at full strength while everybody else's is greyed. The ring
@@ -750,8 +825,12 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                                                   : theme.text_idle;
             // The joining fade rides on the alpha and on the outline's strength,
             // so the name and its ink arrive together.
-            text_outlined(theme, user.name, col_scaled(name_colour, row_alpha),
-                          outline * row_alpha, scale);
+            // The joining fade carries the box as well: it is a raw colour in the
+            // draw list, like the placeholder disc and the outline's ink, so it
+            // is multiplied at the call rather than left to a style alpha that
+            // cannot reach it.
+            text_boxed(theme, name_box, user.name, col_scaled(name_colour, row_alpha),
+                       outline * row_alpha, scale, row_alpha);
             ++drawn;
         }
 
@@ -766,13 +845,13 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                 // rather than under a picture that is not there: sideways there
                 // is no column of pictures for it to align with.
                 ImGui::SameLine(0.0f, cell_gap);
-                ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                                     (row - ImGui::GetTextLineHeight()) * 0.5f);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row - text_block) * 0.5f);
             } else {
                 ImGui::Dummy(ImVec2(picture, 0.0f));
                 ImGui::SameLine();
             }
-            text_outlined(theme, remainder, col(theme.text_overflow), outline, scale);
+            text_boxed(theme, name_box, remainder, col(theme.text_overflow), outline, scale,
+                       1.0f);
         }
         const ImVec2 size = ImGui::GetWindowSize();
         if (size.x > 1.0f && size.y > 1.0f) {

@@ -95,6 +95,45 @@ struct Config {
         return layout == kLayoutHorizontal ? "horizontal" : "vertical";
     }
 
+    // Where the panel's surface is drawn: around everything, or behind each name
+    // and nothing else -- a pill under the text, the pictures straight on the
+    // game. It is the same surface and the same opacity either way; what changes
+    // is the shape they are put on, which is why this is one setting beside the
+    // colour rather than a second colour of its own.
+    //
+    // "Behind the names" is the default, and the preset the defaults are built
+    // on (kPresets in theme.h): it carries the measured floor where the text
+    // actually is -- 88% of #17181c under the glyphs, the composite
+    // tests/theme_contrast.cpp holds to 4.5:1 -- while leaving the rest of the
+    // picture the player's. The whole-panel box is one chip away and is what
+    // every release up to 0.1.6 drew.
+    //
+    // A word rather than a number, for panel_layout's reason: it has an obvious
+    // spelling in the file. A file from a version that had no such setting has
+    // no key, and gets the pill -- the same answer a fresh install gets, so the
+    // default is one look and not two.
+    static constexpr int kBoxPanel = 0;
+    static constexpr int kBoxNames = 1;
+    int panel_box = kBoxNames;
+
+    // The same reading as to_layout(): the whole word, a number for a file
+    // written by a script, and anything else keeps the current value rather than
+    // moving somebody's box over a typo.
+    static int to_box(const char* text, int fallback) {
+        while (*text == ' ' || *text == '\t') {
+            ++text;
+        }
+        if (std::strcmp(text, "names") == 0 || std::strcmp(text, "1") == 0) {
+            return kBoxNames;
+        }
+        if (std::strcmp(text, "panel") == 0 || std::strcmp(text, "0") == 0) {
+            return kBoxPanel;
+        }
+        return fallback;
+    }
+
+    static const char* box_text(int box) { return box == kBoxNames ? "names" : "panel"; }
+
     // The two boxes are configured independently, in colour and in transparency,
     // because they are not the same thing: the voice panel sits there for the whole
     // session and can afford to be quiet, while a message arrives, has to be read
@@ -137,13 +176,14 @@ struct Config {
     uint32_t text_speaking_colour = kColourAuto;
     uint32_t notification_text_colour = kColourAuto;
 
-    // Zero: the default overlay is the names straight on the game, no box at
-    // all -- the owner's judgement, preferring the lightest possible presence
-    // over the measured floor a surface can promise. The floor is not lost, it
-    // moves: it stays asserted on every preset surface, one chip away in
-    // Appearance, and the Dark chip is the 88% box the composite tables in
-    // tests/theme_contrast.cpp are about.
-    float opacity = 0.0f;         // voice panel background opacity
+    // 88%, and it is the pill behind each name that is drawn at it, not a box
+    // around the whole panel (panel_box above). It was zero -- names straight on
+    // the game, the lightest possible presence -- and that traded the measured
+    // floor away everywhere: the composite tables in tests/theme_contrast.cpp
+    // are about this surface at this opacity, and now they are about what the
+    // default actually draws under its text. The whole picture stays the
+    // player's, because the surface only goes where the words are.
+    float opacity = 0.88f;        // voice panel background opacity
 
     // Below this the background is effectively gone and only the text is left. A
     // legitimate choice, but one the interface has to say out loud: an opacity that
@@ -388,6 +428,8 @@ struct Config {
                 // it, and the default stays what the Discord client looks like.
             } else if (std::strcmp(key, "panel_layout") == 0) {
                 panel_layout = to_layout(value, panel_layout);
+            } else if (std::strcmp(key, "panel_box") == 0) {
+                panel_box = to_box(value, panel_box);
             } else if (std::strcmp(key, "opacity") == 0) {
                 opacity = clamp(to_number(value), 0.0, 1.0);
             } else if (std::strcmp(key, "avatar_size") == 0) {
@@ -481,6 +523,7 @@ struct Config {
         std::fprintf(file, "\n[appearance]\n");
         std::fprintf(file, "scale = %s\n", decimal(scale, 2).c_str());
         std::fprintf(file, "panel_layout = %s\n", layout_text(panel_layout));
+        std::fprintf(file, "panel_box = %s\n", box_text(panel_box));
         std::fprintf(file, "panel_colour = %s\n", colour_text(panel_colour).c_str());
         std::fprintf(file, "speaking_colour = %s\n", colour_text(speaking_colour).c_str());
         std::fprintf(file, "text_idle_colour = %s\n",

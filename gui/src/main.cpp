@@ -104,7 +104,11 @@ void dump_item(QQuickItem* item, const QString& path, QHash<QString, int>& seen,
                                  "implicitWidth", "implicitHeight", "contentWidth", "factor",
                                  // What the preset previews derived, so a check can
                                  // hold each one to a distinct surface.
-                                 "surfaceRgb", "presetOpacity",
+                                 // -- and to a distinct picture, which is not the
+                                 // same claim: two presets can share a surface and
+                                 // an opacity and draw them in two different
+                                 // places.
+                                 "surfaceRgb", "presetOpacity", "presetBox",
                                  // Whether the keyboard can reach it. A bool converts
                                  // to a number, and "every control is reachable
                                  // without a mouse" is otherwise a claim nobody can
