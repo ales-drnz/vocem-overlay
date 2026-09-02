@@ -13,19 +13,19 @@
 # `pacman -Rns vocem-overlay` rather than hunting for leftovers by hand.
 
 pkgname=vocem-overlay
-pkgver=0.1.6
+pkgver=0.1.7
 # Reset with 0.1.0: releases are numbered from here (0.1.1, 0.1.2), and pkgrel
 # rises only to rebuild the same release. The old monotonic counter reached 67.
 #
 # This one is ahead of the tag on purpose: this file builds the working tree, so
-# while 0.1.6 is being written it carries 0.1.6 and its pkgrel rises with each
-# test build. The tag-built PKGBUILD moves to 0.1.6 when the tag exists.
+# while 0.1.7 is being written it carries 0.1.7 and its pkgrel rises with each
+# test build. The tag-built PKGBUILD moves to 0.1.7 when the tag exists.
 #
 # pkgver is not free to be whatever this file says, and it is not free to equal
 # the other PKGBUILD either: it is the release being written, which is what
 # CMakeLists.txt states. tests/version_agrees.cmake holds the two equal, and
 # holds the tag-built PKGBUILD to the newest tag instead.
-pkgrel=2
+pkgrel=1
 pkgdesc="Discord voice overlay drawn inside the game (built from the working tree)"
 arch=('x86_64')
 url="https://github.com/ales-drnz/vocem-overlay"
