@@ -371,15 +371,21 @@ bool looks_like_a_font(const unsigned char* data, size_t size) {
     return directory_fits(0);
 }
 
-void note_emoji_codepoint(uint32_t codepoint) {
+// Whether this codepoint draws from the bank: the remembered verdict, or the
+// one lookup that decides it. Every caller that only wants the noting ignores
+// the answer; the sequence collapse below rewrites a name on it, which is why
+// it is an answer and not only a side effect. False during a sandbox's wait
+// for the bank, and nothing remembered then.
+bool bank_verdict(uint32_t codepoint) {
     // Below the symbols there are no emoji, and Inter's own glyphs win anyway.
     //
     // The floor is deliberate and it is not going up: the bank *does* carry the
     // fourteen codepoints under it -- the digits, `#`, `*`, `©` and `®` -- but
     // they are the bases of keycap sequences, and colouring U+0032 would draw
-    // "User 2" with a keycap in it.
+    // "User 2" with a keycap in it. (A keycap as a whole -- digit, box -- is a
+    // sequence, and draws as one coloured glyph through its key since 0.1.9.)
     if (codepoint < 0x2000 || codepoint > 0x10FFFF) {
-        return;
+        return false;
     }
     // And the other half of the same decision, which was missing: U+20E3 is the
     // box a keycap sequence draws *around* its digit, it is above the floor, and
@@ -388,7 +394,7 @@ void note_emoji_codepoint(uint32_t codepoint) {
     // blue tile. Half an emoji coloured is worse than none: refused here, so a
     // keycap is drawn by one font throughout.
     if (codepoint == 0x20E3) {
-        return;
+        return false;
     }
     long low = 0;
     long high = static_cast<long>(g_seen_count) - 1;
@@ -396,7 +402,7 @@ void note_emoji_codepoint(uint32_t codepoint) {
         const long middle = low + (high - low) / 2;
         const uint32_t entry = g_seen[middle] & ~kSeenInBank;
         if (entry == codepoint) {
-            return;  // seen before, verdict remembered either way
+            return (g_seen[middle] & kSeenInBank) != 0;  // seen before, verdict remembered either way
         }
         if (entry < codepoint) {
             low = middle + 1;
@@ -406,7 +412,7 @@ void note_emoji_codepoint(uint32_t codepoint) {
     }
     if (g_seen_count >= kMaxSeenCodepoints) {
         g_capped = true;
-        return;
+        return false;
     }
     // The one bank lookup this codepoint will ever cost.
     bool in_bank = g_emoji_bank.contains(codepoint);
@@ -418,7 +424,7 @@ void note_emoji_codepoint(uint32_t codepoint) {
     // walk of the seen table per codepoint per frame for at most thirty seconds
     // in a sandbox, and the open behind it is rate-limited to two a second.
     if (!in_bank && g_emoji_bank.still_arriving()) {
-        return;
+        return false;
     }
     // The atlas budget, which is a different question from the one above: past
     // it a new colour emoji stays monochrome, and it is remembered as "not in
@@ -434,6 +440,7 @@ void note_emoji_codepoint(uint32_t codepoint) {
     if (in_bank) {
         ++g_wanted_count;
     }
+    return in_bank;
 }
 
 }  // namespace
@@ -442,16 +449,101 @@ void fonts_note_emoji(const char* utf8_text) {
     if (!utf8_text || !utf8_text[0]) {
         return;
     }
-    utf8_each(utf8_text, [](uint32_t codepoint) { note_emoji_codepoint(codepoint); });
+    utf8_each(utf8_text, [](uint32_t codepoint) { bank_verdict(codepoint); });
 }
 
-void fonts_note_emoji_in(const Snapshot& snapshot) {
-    fonts_note_emoji(snapshot.channel_name);
-    for (uint32_t i = 0; i < snapshot.user_count && i < kMaxUsers; ++i) {
-        fonts_note_emoji(snapshot.users[i].name);
+void fonts_prepare_text(char* text, size_t capacity) {
+    if (!text || !text[0] || capacity == 0) {
+        return;
     }
-    fonts_note_emoji(snapshot.notification.title);
-    fonts_note_emoji(snapshot.notification.body);
+    // The table comes with the bank, and the bank opens on the first codepoint
+    // that could be in it -- so the first walk is the plain noting, which is
+    // what opens it. With no table (none beside the bank, or no bank) that walk
+    // is the whole cost, exactly the pre-0.1.9 one, on every frame.
+    if (g_emoji_bank.sequence_count() == 0) {
+        fonts_note_emoji(text);
+        if (g_emoji_bank.sequence_count() == 0) {
+            return;
+        }
+    }
+    // Decoded once into fixed arrays: the widest field a snapshot has is the
+    // toast's body, and a codepoint per byte is the bound. A string wider than
+    // that is not a snapshot's and is left as it is.
+    constexpr uint32_t kMaxCodepoints = 256;
+    static_assert(kMaxCodepoints >= kNotificationBodyCapacity,
+                  "every snapshot field fits the decode");
+    uint32_t codepoints[kMaxCodepoints];
+    size_t begins[kMaxCodepoints];
+    size_t ends[kMaxCodepoints];
+    uint32_t count = 0;
+    bool wider = false;
+    utf8_each_span(text, [&](uint32_t codepoint, size_t begin, size_t end) {
+        if (count < kMaxCodepoints) {
+            codepoints[count] = codepoint;
+            begins[count] = begin;
+            ends[count] = end;
+            ++count;
+        } else {
+            wider = true;
+        }
+    });
+    if (wider) {
+        fonts_note_emoji(text);
+        return;
+    }
+    // Every byte that is not part of a collapsed sequence is copied as it was,
+    // malformed ones included: the walk skips them and the spans step around
+    // them. A key is four bytes and a sequence is never fewer (its shortest,
+    // a keycap without a selector, is exactly four), so the result is never
+    // longer than the text; the check below is belt to that brace.
+    char out[kMaxCodepoints];
+    size_t written = 0;
+    size_t copied_to = 0;
+    bool changed = false;
+    const size_t length = std::strlen(text);
+    auto copy_raw = [&](size_t upto) -> bool {
+        if (upto < copied_to || written + (upto - copied_to) >= sizeof(out)) {
+            return false;
+        }
+        std::memcpy(out + written, text + copied_to, upto - copied_to);
+        written += upto - copied_to;
+        copied_to = upto;
+        return true;
+    };
+    for (uint32_t i = 0; i < count;) {
+        uint32_t used = 0;
+        const uint32_t key = g_emoji_bank.sequence_key(&codepoints[i], count - i, &used);
+        // The key is asked of the bank the way any codepoint is, and remembered
+        // the same way: past the atlas cap, or with the bank still arriving, it
+        // is refused and the sequence stays its parts -- coloured parts, as
+        // before -- rather than becoming a key no glyph answers to.
+        if (key != 0 && used >= 2 && bank_verdict(key)) {
+            if (!copy_raw(begins[i]) || written + 4 >= sizeof(out)) {
+                fonts_note_emoji(text);
+                return;
+            }
+            written += utf8_put(key, out + written);
+            copied_to = ends[i + used - 1];
+            changed = true;
+            i += used;
+        } else {
+            ++i;
+        }
+    }
+    if (changed && copy_raw(length) && written < capacity) {
+        out[written] = '\0';
+        std::memcpy(text, out, written + 1);
+    }
+    fonts_note_emoji(text);
+}
+
+void fonts_note_emoji_in(Snapshot& snapshot) {
+    fonts_prepare_text(snapshot.channel_name, sizeof(snapshot.channel_name));
+    for (uint32_t i = 0; i < snapshot.user_count && i < kMaxUsers; ++i) {
+        fonts_prepare_text(snapshot.users[i].name, sizeof(snapshot.users[i].name));
+    }
+    fonts_prepare_text(snapshot.notification.title, sizeof(snapshot.notification.title));
+    fonts_prepare_text(snapshot.notification.body, sizeof(snapshot.notification.body));
 }
 
 const char* fonts_font_status() { return g_font_reason; }
@@ -463,6 +555,11 @@ const char* fonts_emoji_status() {
     }
     if (g_capped) {
         return "the colour emoji table is full: further emoji stay monochrome";
+    }
+    // Set only once the bank has opened: a bank without its sequence table
+    // draws every codepoint in colour and every sequence as its parts.
+    if (const char* reason = g_emoji_bank.sequences_reason()) {
+        return reason;
     }
     return nullptr;
 }

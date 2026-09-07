@@ -49,6 +49,10 @@ void check(bool condition, const char* what) {
 // Where the sandbox's copy would be staged from: bound in by the re-exec below,
 // because the compiled-in directory is covered by a tmpfs inside.
 const char* kStaged = "/tmp/vocem-bank-under-test.rgba";
+// And the sequence table beside it, staged under its own unknown name: the
+// bridge copies it into the sandbox BEFORE the bank, and the reader takes it
+// at the moment the bank opens.
+const char* kStagedTable = "/tmp/vocem-sequences-under-test.bin";
 
 }  // namespace
 
@@ -90,6 +94,14 @@ int main(int argc, char** argv) {
         args.push_back("--ro-bind");
         args.push_back(source);
         args.push_back(kStaged);
+        const std::string source_table =
+            std::string(source).substr(0, std::string(source).find_last_of('/') + 1) +
+            vocem::kBridgeEmojiSequencesName;
+        if (::stat(source_table.c_str(), &there) == 0) {
+            args.push_back("--ro-bind");
+            args.push_back(source_table.c_str());
+            args.push_back(kStagedTable);
+        }
         args.push_back("--die-with-parent");
         args.push_back(self);
         args.push_back("--inside");
@@ -126,8 +138,19 @@ int main(int argc, char** argv) {
     check(bank.reason() == nullptr,
           "with nothing reported yet: a reason during the wait may be untrue by the next look");
 
-    // The daemon's tick lands.
+    // The daemon's tick lands: the table first, then the bank, in the bridge's
+    // own order (flatpak_bridge.cpp says why the order is that one).
     const std::string target = app + "/" + vocem::kBridgeEmojiBankName;
+    const std::string table_target = app + "/" + vocem::kBridgeEmojiSequencesName;
+    struct stat staged_table {};
+    const bool table_staged = ::stat(kStagedTable, &staged_table) == 0;
+    if (table_staged) {
+        std::string copy_table = std::string("cp '") + kStagedTable + "' '" + table_target + "'";
+        if (system(copy_table.c_str()) != 0) {
+            printf("skip the sequence table could not be staged into the sandbox\n");
+            return 77;
+        }
+    }
     std::string copy = std::string("cp '") + kStaged + "' '" + target + "'";
     if (system(copy.c_str()) != 0) {
         printf("skip the bank could not be staged into the sandbox\n");
@@ -145,6 +168,19 @@ int main(int argc, char** argv) {
     // would pass with the sandbox mechanism dead.
     check(strcmp(bank.path(), target.c_str()) == 0,
           "through the bridge's own copy, which is the only one a sandbox can reach");
+    // The table beside it was read at that moment, from the same directory.
+    if (table_staged) {
+        printf("     %u sequences read beside the bridge's bank\n", bank.sequence_count());
+        check(bank.sequence_count() > 0 && bank.sequences_reason() == nullptr,
+              "and the sequence table that came across with it was read at the same moment");
+        uint32_t used = 0;
+        const uint32_t lime[] = {0x1F34B, 0x200D, 0x1F7E9};
+        check(bank.sequence_key(lime, 3, &used) >= vocem::kEmojiSequenceKeyFirst && used == 3,
+              "so the lime is one glyph inside the sandbox too");
+    } else {
+        check(bank.sequence_count() == 0 && bank.sequences_reason() != nullptr,
+              "with no table staged, the bank says so rather than staying silent");
+    }
 
     std::string cleanup = std::string("rm -rf ") + root;
     system(cleanup.c_str());

@@ -1,3 +1,9 @@
+## [0.1.9] - unreleased
+
+### Fixed
+
+- Emoji sequences draw as one glyph: the lime, the families, the flags, the keycaps and every other ligature of the font, 2546 glyphs in all. A name with 🍋‍🟩 in it drew a lemon beside a green square.
+
 ## [0.1.8] - 2026-09-07
 
 ### Fixed

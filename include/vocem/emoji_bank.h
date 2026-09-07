@@ -25,12 +25,26 @@
 // avatar cache this file is not input from the internet -- it is installed by
 // the package beside the libraries that read it.
 //
-// Only single-codepoint emoji: ZWJ sequences and flags are GSUB ligatures,
-// which ImGui cannot shape. The sequence is never joined -- but each
-// constituent codepoint that is itself a bank emoji draws as its own COLOUR
-// glyph (measured: a family sequence renders as its separate coloured heads),
-// and only the joiners and the codepoints outside the bank fall to the
-// monochrome font.
+// Two kinds of key. Below U+F0000 a key is the codepoint it draws. From
+// U+F0000 up it is a SEQUENCE key: the glyph of a ZWJ sequence, a flag, a keycap
+// or a tag sequence, which the font reaches only through a GSUB ligature that
+// ImGui cannot shape -- so until 0.1.9 the lime (🍋 + ZWJ + 🟩) drew as a lemon
+// beside a green square, each constituent its own colour glyph, the joiner a
+// blank (entry 142). Which sequence each key stands for is in a second file
+// beside the bank, `emoji_sequences.bin`, in fixed-size records of its own:
+// u32 length, u32 key, kEmojiSequenceMaxLength x u32 codepoints zero-padded,
+// sorted by the codepoint sequence. The table is read whole into static
+// storage when the bank opens, so matching costs no syscall; the text is
+// rewritten -- a known sequence into its key -- before it reaches the atlas
+// (fonts.cpp), where the key is a codepoint like any other bank codepoint.
+//
+// The keys are assigned by the script and mean nothing outside the pair of
+// files written together, which is why the table is a file beside the bank and
+// not a table compiled into the libraries: the layer inside the Flatpak
+// extension and the bank the host package installs are updated separately,
+// and a compiled-in table meeting a bank of another version would draw the
+// wrong picture, silently. A bank without its table still draws every single
+// codepoint in colour and every sequence as its parts, and says so.
 
 #ifndef VOCEM_EMOJI_BANK_H
 #define VOCEM_EMOJI_BANK_H
@@ -64,6 +78,41 @@ constexpr double kBankGiveUpSeconds = 30.0;
 constexpr uint32_t kEmojiBankPixels = 32;
 constexpr uint32_t kEmojiBankRgbaBytes = kEmojiBankPixels * kEmojiBankPixels * 4;
 constexpr uint32_t kEmojiBankRecordBytes = 4 + kEmojiBankRgbaBytes;
+
+// The sequence table's format. The longest sequence in the font is nine
+// codepoints (a kiss with two skin tones, measured by the script); twelve is
+// the record's room, and a record claiming more is a malformed table. Keys
+// start at U+F0000 (plane 15, private use) because no text from Discord
+// carries a codepoint there, so a key can never collide with a character a
+// name spells out; the script leaves the font's own private-use cmap entries
+// out of the bank for the same invariant.
+constexpr uint32_t kEmojiSequenceMaxLength = 12;
+constexpr uint32_t kEmojiSequenceRecordBytes = 4 * (2 + kEmojiSequenceMaxLength);
+constexpr uint32_t kEmojiSequenceKeyFirst = 0xF0000;
+// The table is 4166 records today; a file past this many is refused whole, so
+// the storage below is the bound on what a process spends on it.
+constexpr uint32_t kMaxEmojiSequences = 8192;
+
+struct EmojiSequence {
+    uint32_t length;
+    uint32_t key;
+    uint32_t codepoints[kEmojiSequenceMaxLength];
+};
+static_assert(sizeof(EmojiSequence) == kEmojiSequenceRecordBytes,
+              "the sequence record is read straight into this struct");
+
+// The table's storage: one per process, zero-initialised, never allocated.
+// Every EmojiBank in a process shares it, and fonts.cpp holds exactly one bank;
+// a test that opened two banks with different tables would see the last one's.
+inline EmojiSequence g_emoji_sequence_storage[kMaxEmojiSequences];
+
+// U+FE0E and U+FE0F, the presentation selectors. The font's cmap has neither:
+// a shaper drops them before its ligatures apply, so the table never carries
+// one and the matcher skips them in the text (❤️‍🔥 is 2764 FE0F 200D 1F525 in a
+// name and 2764 200D 1F525 in the table).
+inline bool is_variation_selector(uint32_t codepoint) {
+    return codepoint == 0xFE0E || codepoint == 0xFE0F;
+}
 
 #ifndef VOCEM_EMOJI_BANK_PATH
 #define VOCEM_EMOJI_BANK_PATH "/usr/share/vocem/emoji_bank.rgba"
@@ -199,6 +248,68 @@ public:
         return open() && index_of(codepoint) >= 0;
     }
 
+    // How many sequences the table beside the bank has, and why it has none
+    // when it has none (a literal, or nullptr while the bank is not open or the
+    // table is fine). Zero with the bank open means every sequence draws as its
+    // parts, which is the pre-0.1.9 picture and is said out loud.
+    uint32_t sequence_count() const { return sequence_count_; }
+    const char* sequences_reason() const { return sequences_reason_; }
+
+    // The longest sequence the table knows at the front of `codepoints`, as
+    // its key, with `*consumed` the number of codepoints it covers -- or 0 and
+    // 0 when none starts here. Presentation selectors inside or right after a
+    // match are consumed with it (the table has none, a name may). No syscall:
+    // a binary search on the first codepoint over the loaded table, then the
+    // handful of sequences that start with it. A sequence needs at least two
+    // codepoints, so a lone codepoint never matches, whatever the table says.
+    uint32_t sequence_key(const uint32_t* codepoints, uint32_t count, uint32_t* consumed) const {
+        *consumed = 0;
+        if (sequence_count_ == 0 || count < 2 || is_variation_selector(codepoints[0])) {
+            return 0;
+        }
+        const EmojiSequence* table = g_emoji_sequence_storage;
+        uint32_t low = 0;
+        uint32_t high = sequence_count_;
+        while (low < high) {
+            const uint32_t middle = low + (high - low) / 2;
+            if (table[middle].codepoints[0] < codepoints[0]) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        uint32_t best_key = 0;
+        uint32_t best_used = 0;
+        for (uint32_t i = low; i < sequence_count_ && table[i].codepoints[0] == codepoints[0]; ++i) {
+            const EmojiSequence& sequence = table[i];
+            uint32_t used = 0;
+            uint32_t matched = 0;
+            while (matched < sequence.length && used < count) {
+                if (matched > 0 && is_variation_selector(codepoints[used])) {
+                    ++used;
+                    continue;
+                }
+                if (codepoints[used] != sequence.codepoints[matched]) {
+                    break;
+                }
+                ++used;
+                ++matched;
+            }
+            if (matched == sequence.length && used > best_used) {
+                best_used = used;
+                best_key = sequence.key;
+            }
+        }
+        if (best_key == 0) {
+            return 0;
+        }
+        while (best_used < count && is_variation_selector(codepoints[best_used])) {
+            ++best_used;
+        }
+        *consumed = best_used;
+        return best_key;
+    }
+
     // Copies the glyph's straight RGBA into `out` (kEmojiBankRgbaBytes).
     bool load(uint32_t codepoint, unsigned char* out) {
         if (!open()) {
@@ -233,7 +344,91 @@ private:
         }
         fd_ = fd;
         count_ = static_cast<uint32_t>(info.st_size / kEmojiBankRecordBytes);
+        load_sequences();
         return true;
+    }
+
+    // The table beside the bank that just opened: the same directory, the one
+    // name (kBridgeEmojiSequencesName). Read whole, once, into the static
+    // storage, and checked before it is believed -- a record's length, its key
+    // being a sequence key, no zero or selector among its codepoints, and the
+    // order the search depends on, strictly ascending with no duplicates. A
+    // table that fails any of it is refused whole, with the reason said; the
+    // bank is kept, and sequences draw as their parts, which is what they did
+    // before there was a table. Missing is a reason too, not a silence.
+    void load_sequences() {
+        sequence_count_ = 0;
+        sequences_reason_ = nullptr;
+        char companion[sizeof(path_) + 32];
+        const char* slash = std::strrchr(path_, '/');
+        const int directory = slash ? static_cast<int>(slash - path_ + 1) : 0;
+        std::snprintf(companion, sizeof(companion), "%.*s%s", directory, path_,
+                      kBridgeEmojiSequencesName);
+        const int fd = ::open(companion, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            sequences_reason_ =
+                "no sequence table beside the bank, so emoji sequences draw as their parts";
+            return;
+        }
+        struct stat info{};
+        if (::fstat(fd, &info) != 0 || info.st_size <= 0 ||
+            info.st_size % kEmojiSequenceRecordBytes != 0 ||
+            info.st_size / kEmojiSequenceRecordBytes > kMaxEmojiSequences) {
+            ::close(fd);
+            sequences_reason_ = "the emoji sequence table is not a whole number of records";
+            return;
+        }
+        const uint32_t count = static_cast<uint32_t>(info.st_size / kEmojiSequenceRecordBytes);
+        unsigned char* bytes = reinterpret_cast<unsigned char*>(g_emoji_sequence_storage);
+        size_t have = 0;
+        const size_t want = static_cast<size_t>(info.st_size);
+        while (have < want) {
+            const ssize_t got = ::pread(fd, bytes + have, want - have, static_cast<off_t>(have));
+            if (got <= 0) {
+                break;
+            }
+            have += static_cast<size_t>(got);
+        }
+        ::close(fd);
+        if (have != want) {
+            sequences_reason_ = "the emoji sequence table could not be read whole";
+            return;
+        }
+        // The struct is read from little-endian bytes; the machines this runs
+        // on are little-endian at both widths, and the bank's own keys are read
+        // the same way in index_of.
+        for (uint32_t i = 0; i < count; ++i) {
+            const EmojiSequence& sequence = g_emoji_sequence_storage[i];
+            if (sequence.length < 2 || sequence.length > kEmojiSequenceMaxLength ||
+                sequence.key < kEmojiSequenceKeyFirst || sequence.key > 0x10FFFF) {
+                sequences_reason_ = "the emoji sequence table is malformed";
+                return;
+            }
+            for (uint32_t j = 0; j < sequence.length; ++j) {
+                const uint32_t codepoint = sequence.codepoints[j];
+                if (codepoint == 0 || codepoint > 0x10FFFF || is_variation_selector(codepoint)) {
+                    sequences_reason_ = "the emoji sequence table is malformed";
+                    return;
+                }
+            }
+            if (i > 0 && !sequence_before(g_emoji_sequence_storage[i - 1], sequence)) {
+                sequences_reason_ = "the emoji sequence table is not sorted";
+                return;
+            }
+        }
+        sequence_count_ = count;
+    }
+
+    // Strictly before, in the order the file is sorted in: codepoint by
+    // codepoint, a prefix before what it prefixes, equals never.
+    static bool sequence_before(const EmojiSequence& a, const EmojiSequence& b) {
+        const uint32_t shorter = a.length < b.length ? a.length : b.length;
+        for (uint32_t i = 0; i < shorter; ++i) {
+            if (a.codepoints[i] != b.codepoints[i]) {
+                return a.codepoints[i] < b.codepoints[i];
+            }
+        }
+        return a.length < b.length;
     }
 
     long index_of(uint32_t codepoint) {
@@ -263,6 +458,8 @@ private:
 
     int fd_ = -1;
     uint32_t count_ = 0;
+    uint32_t sequence_count_ = 0;
+    const char* sequences_reason_ = nullptr;
     bool attempted_ = false;
     // The Flatpak retry window: when the first look happened and when the next
     // one is due. Zero until the first look, which is what tells still_arriving()
@@ -328,9 +525,17 @@ inline void emoji_bank_resample(const unsigned char* rgba32, unsigned char* out,
 // and one of those callers hands the value to ImGui as an `ImWchar`. A
 // truncated sequence stops at the NUL, which is read and refused like any other
 // non-continuation byte: the walk never steps past the terminator.
+//
+// utf8_each_span is the same walk telling the visitor WHERE each scalar sits --
+// `visit(codepoint, begin, end)` as byte offsets into `text` -- which is what a
+// caller that rewrites the string in place needs (fonts.cpp collapses a known
+// emoji sequence into its key and copies every other byte, malformed ones
+// included, exactly as it found them). utf8_each is that walk without the
+// offsets, so there is one decoder here and not two.
 template <typename Visit>
-inline void utf8_each(const char* text, Visit visit) {
-    const unsigned char* s = reinterpret_cast<const unsigned char*>(text);
+inline void utf8_each_span(const char* text, Visit visit) {
+    const unsigned char* start = reinterpret_cast<const unsigned char*>(text);
+    const unsigned char* s = start;
     while (*s) {
         uint32_t cp = 0;
         int extra = 0;
@@ -366,9 +571,41 @@ inline void utf8_each(const char* text, Visit visit) {
             ++s;
             continue;
         }
-        visit(cp);
+        visit(cp, static_cast<size_t>(s - start), static_cast<size_t>(p - start));
         s = p;
     }
+}
+
+template <typename Visit>
+inline void utf8_each(const char* text, Visit visit) {
+    utf8_each_span(text, [&](uint32_t cp, size_t, size_t) { visit(cp); });
+}
+
+// The UTF-8 spelling of one scalar into `out` (at least 4 bytes); how many
+// bytes it took. The one encoder, for the one caller that writes a key back
+// into a name.
+inline size_t utf8_put(uint32_t cp, char* out) {
+    unsigned char* o = reinterpret_cast<unsigned char*>(out);
+    if (cp < 0x80) {
+        o[0] = static_cast<unsigned char>(cp);
+        return 1;
+    }
+    if (cp < 0x800) {
+        o[0] = static_cast<unsigned char>(0xC0 | (cp >> 6));
+        o[1] = static_cast<unsigned char>(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        o[0] = static_cast<unsigned char>(0xE0 | (cp >> 12));
+        o[1] = static_cast<unsigned char>(0x80 | ((cp >> 6) & 0x3F));
+        o[2] = static_cast<unsigned char>(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    o[0] = static_cast<unsigned char>(0xF0 | (cp >> 18));
+    o[1] = static_cast<unsigned char>(0x80 | ((cp >> 12) & 0x3F));
+    o[2] = static_cast<unsigned char>(0x80 | ((cp >> 6) & 0x3F));
+    o[3] = static_cast<unsigned char>(0x80 | (cp & 0x3F));
+    return 4;
 }
 
 }  // namespace vocem

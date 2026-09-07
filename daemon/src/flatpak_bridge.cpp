@@ -677,11 +677,18 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
 // before entry 88 -- a fourth thing to carry that nothing carried -- and the
 // same answer.
 //
-// Unlike the settings and the faces this is copied exactly once: six megabytes
-// that never change while the daemon runs. Only into a sandbox the overlay is
-// actually drawing in, so a Flatpak the user has excluded costs nothing, and
-// six megabytes of the runtime directory is a real cost to name rather than
-// spend quietly.
+// Unlike the settings and the faces this is copied exactly once: sixteen
+// megabytes that never change while the daemon runs. Only into a sandbox the
+// overlay is actually drawing in, so a Flatpak the user has excluded costs
+// nothing, and sixteen megabytes of the runtime directory is a real cost to
+// name rather than spend quietly.
+//
+// Two files, in this order: the sequence table first, the bank second. The
+// overlay waits on the BANK (emoji_bank.h: it looks twice a second, and reads
+// the table beside the bank at the moment the bank opens), so a table copied
+// after the bank could land in the half-second the overlay had already read
+// past, and every sequence in that sandbox would draw as its parts for the
+// life of the game. A missing table is copied as missing: the overlay says so.
 void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
     if (mirror.emoji_bank_copied) {
         return;
@@ -691,10 +698,19 @@ void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
     // installed path otherwise. The bridge used to take the installed path
     // alone, so in a dev tree the overlay opened the built bank while the
     // daemon copied nothing and logged a missing file that was not the one
-    // being used.
+    // being used. The table is beside whichever bank that is.
     const char* bank_path = std::getenv("VOCEM_EMOJI_BANK");
     if (!bank_path || !bank_path[0]) {
         bank_path = VOCEM_EMOJI_BANK_PATH;  // not sandboxed: the installed path is right here
+    }
+    std::string table_path = bank_path;
+    const size_t slash = table_path.rfind('/');
+    table_path = (slash == std::string::npos ? std::string() : table_path.substr(0, slash + 1)) +
+                 kBridgeEmojiSequencesName;
+    if (!copy_into(mirror.directory, table_path.c_str(), kBridgeEmojiSequencesName)) {
+        LOG("no emoji sequence table at %s to give the Flatpak sandbox of %s: its emoji "
+            "sequences draw as their parts (%s)", table_path.c_str(), mirror.id.c_str(),
+            std::strerror(errno));
     }
     if (copy_into(mirror.directory, bank_path, kBridgeEmojiBankName)) {
         mirror.emoji_bank_copied = true;

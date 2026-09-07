@@ -309,7 +309,9 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     // design and an emoji that appears only in a message would otherwise
     // never be noted at all. Only noted here; the rebuild happens in
     // process_uploads(), after the present, like every other atlas change.
-    fonts_note_emoji_in(snapshot);
+    // The snapshot is this frame's own copy (the same const_cast the body
+    // above makes), and the noting rewrites an emoji sequence into its key.
+    fonts_note_emoji_in(const_cast<Snapshot&>(snapshot));
 
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();

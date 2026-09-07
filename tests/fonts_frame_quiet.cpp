@@ -4,8 +4,9 @@
 //
 // The frame path reads no files -- measured, not promised.
 //
-// `fonts_note_emoji` runs on every visible string of every drawn frame, on both
-// injected paths, and it is *inside* the present: on Vulkan it is called from
+// `fonts_prepare_text` -- the sequence collapse and the noting behind it --
+// runs on every visible string of every drawn frame, on both injected paths,
+// and it is *inside* the present: on Vulkan it is called from
 // `draw()` while the layer holds its own lock, before the real
 // `vkQueuePresentKHR`. The first sighting of a codepoint that could be a colour
 // emoji costs an `open` of the bank and a binary search of `pread`s -- so the
@@ -41,6 +42,7 @@
 #include <unistd.h>
 
 #include "vocem/fonts.h"
+#include "vocem/shared_state.h"
 
 namespace {
 
@@ -53,6 +55,10 @@ const char* const kStrings[] = {
     "Ale\xE2\x80\x99s laptop",                      // typographic apostrophe: not in the bank
     "nightowl \xE2\xAD\x90 \xE2\x9C\x85",           // star and tick, down among the symbols
     "\xF0\x9F\xA5\xA2 chopsticks",                  // in the bank
+    // Sequences, which since 0.1.9 are collapsed into their keys on the same
+    // path: the lime (lemon, ZWJ, green square) beside a lemon, and a flag.
+    "Fazen\xF0\x9F\x8D\x8B\xE2\x80\x8D\xF0\x9F\x9F\xA9\xF0\x9F\x8D\x8B",
+    "\xF0\x9F\x87\xAE\xF0\x9F\x87\xB9 Marco",             // 🇮🇹
 };
 
 // Kill the process on any file syscall: the same instrument as
@@ -94,9 +100,14 @@ bool forbid_file_syscalls() {
     return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) == 0;
 }
 
+// What a frame does: the snapshot is re-read from the segment, so every string
+// arrives uncollapsed again, and fonts_prepare_text rewrites and notes it. A
+// copy per string per frame here, for the same reason.
 void note_every_string() {
     for (const char* text : kStrings) {
-        vocem::fonts_note_emoji(text);
+        char copy[vocem::kNotificationBodyCapacity];
+        snprintf(copy, sizeof(copy), "%s", text);
+        vocem::fonts_prepare_text(copy, sizeof(copy));
     }
 }
 

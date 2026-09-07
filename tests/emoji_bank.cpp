@@ -15,6 +15,7 @@
 #include <stdlib.h>
 
 #include <initializer_list>
+#include <string>
 
 #include "vocem/emoji_bank.h"
 
@@ -153,6 +154,92 @@ int main() {
         vocem::emoji_bank_resample(glyph, small_scaled, size);
     }
     check(true, "the resample runs at every size between 1 and the bank's own");
+
+    // The sequence table beside the bank (entry 142). The lime is 🍋 + ZWJ +
+    // 🟩, and the font reaches its glyph only through a ligature: without the
+    // table it drew as a lemon beside a green square, which is what the owner
+    // saw. Against the bank shipped in 0.1.8 -- no table beside it -- the
+    // count is zero and every check on it fails.
+    printf("     %u sequences in the table beside the bank%s%s\n", bank.sequence_count(),
+           bank.sequences_reason() ? ": " : "", bank.sequences_reason() ? bank.sequences_reason() : "");
+    check(bank.sequences_reason() == nullptr, "the table beside the bank loads without complaint");
+    check(bank.sequence_count() > 4000, "and holds the font's sequences, thousands of them");
+    uint32_t used = 0;
+    const uint32_t lime_then_lemon[] = {0x1F34B, 0x200D, 0x1F7E9, 0x1F34B};
+    const uint32_t lime = bank.sequence_key(lime_then_lemon, 4, &used);
+    check(lime >= vocem::kEmojiSequenceKeyFirst && used == 3,
+          "the lime is one key covering its three codepoints, and the lemon after it is not swept up");
+    check(bank.contains(lime), "the bank carries the lime's glyph under that key");
+    check(bank.load(lime, glyph) && chroma(glyph, vocem::kEmojiBankPixels * vocem::kEmojiBankPixels) > 60,
+          "and its pixels are colour");
+    check(bank.sequence_key(lime_then_lemon + 3, 1, &used) == 0 && used == 0,
+          "a lemon alone is no sequence");
+    const uint32_t two_lemons[] = {0x1F34B, 0x1F34B};
+    check(bank.sequence_key(two_lemons, 2, &used) == 0, "two lemons with no joiner are two lemons");
+    const uint32_t dangling[] = {0x1F34B, 0x200D};
+    check(bank.sequence_key(dangling, 2, &used) == 0, "a lemon with a dangling joiner is left alone");
+    const uint32_t flags[] = {0x1F1EE, 0x1F1F9, 0x1F1EB, 0x1F1F7};  // 🇮🇹🇫🇷
+    const uint32_t italy = bank.sequence_key(flags, 4, &used);
+    check(italy >= vocem::kEmojiSequenceKeyFirst && used == 2,
+          "a flag is its pair of regional indicators, and the next flag's first letter is not taken");
+    check(bank.sequence_key(flags + 2, 2, &used) != italy && used == 2, "and the second flag is another key");
+    // The presentation selector: the font's cmap has none, a name has plenty.
+    const uint32_t keycap[] = {0x31, 0xFE0F, 0x20E3};
+    const uint32_t bare_keycap[] = {0x31, 0x20E3};
+    const uint32_t one = bank.sequence_key(keycap, 3, &used);
+    check(one >= vocem::kEmojiSequenceKeyFirst && used == 3,
+          "1 + FE0F + keycap is the keycap's key, the selector consumed inside the match");
+    check(bank.sequence_key(bare_keycap, 2, &used) == one && used == 2, "and without the selector it is the same key");
+    const uint32_t digits[] = {0x31, 0x32};
+    check(bank.sequence_key(digits, 2, &used) == 0, "while two digits stay two digits");
+    const uint32_t heart_on_fire[] = {0x2764, 0xFE0F, 0x200D, 0x1F525};
+    check(bank.sequence_key(heart_on_fire, 4, &used) >= vocem::kEmojiSequenceKeyFirst && used == 4,
+          "a heart on fire spelled with the selector, as Discord spells it, is one key");
+    const uint32_t trailing[] = {0x1F1EE, 0x1F1F9, 0xFE0F, 0x41};
+    check(bank.sequence_key(trailing, 4, &used) == italy && used == 3,
+          "a selector right after a match goes with it, and the letter after does not");
+    const uint32_t family[] = {0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467, 0x200D, 0x1F466};
+    check(bank.sequence_key(family, 7, &used) >= vocem::kEmojiSequenceKeyFirst && used == 7,
+          "a family of four is one key seven codepoints long");
+    const uint32_t selector_first[] = {0xFE0F, 0x1F34B};
+    check(bank.sequence_key(selector_first, 2, &used) == 0, "a selector starts nothing");
+
+    // The reader's strictness on the table is the format, as it is on the
+    // bank: a table that is not a whole number of records, or none at all, is
+    // said and not guessed at, and the bank beside it still works. Scratch
+    // copies, tried LAST: every bank in a process shares the table's storage.
+    {
+        char root[] = "/tmp/vocem-emoji-bank-XXXXXX";
+        if (mkdtemp(root)) {
+            const std::string dir = root;
+            const std::string here = getenv("VOCEM_EMOJI_BANK");
+            const std::string table_here =
+                here.substr(0, here.find_last_of('/') + 1) + vocem::kBridgeEmojiSequencesName;
+            const std::string bank_copy = dir + "/emoji_bank.rgba";
+            const std::string table_copy = dir + "/" + vocem::kBridgeEmojiSequencesName;
+            std::string cmd = "ln -s '" + here + "' '" + bank_copy + "'";
+            const bool linked = system(cmd.c_str()) == 0;
+            setenv("VOCEM_EMOJI_BANK", bank_copy.c_str(), 1);
+            {
+                vocem::EmojiBank without;
+                check(linked && without.open(), "a bank with no table beside it still opens");
+                check(without.sequence_count() == 0 && without.sequences_reason() != nullptr,
+                      "and says there is no table rather than staying silent");
+                printf("     %s\n", without.sequences_reason() ? without.sequences_reason() : "(no reason)");
+            }
+            cmd = "head -c 100 '" + table_here + "' > '" + table_copy + "'";
+            if (system(cmd.c_str()) == 0) {
+                vocem::EmojiBank truncated;
+                check(truncated.open(), "a bank beside a truncated table still opens");
+                check(truncated.sequence_count() == 0 && truncated.sequences_reason() != nullptr,
+                      "and a table that is not a whole number of records is refused, with the reason said");
+                printf("     %s\n", truncated.sequences_reason() ? truncated.sequences_reason() : "(no reason)");
+            }
+            setenv("VOCEM_EMOJI_BANK", here.c_str(), 1);
+            cmd = "rm -rf '" + dir + "'";
+            system(cmd.c_str());
+        }
+    }
 
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

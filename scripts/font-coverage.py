@@ -49,8 +49,11 @@ def main() -> int:
     print(f"requested-but-missing codepoints (drawn as '?'): {len(holes)}")
 
     # 2. The bank against the requested emoji ranges: colour emoji that the
-    #    monochrome fallback would not even shape.
-    bank_outside = sorted(cp for cp in bank if not covered(cp, emoji + letters))
+    #    monochrome fallback would not even shape. Keys from U+F0000 up are the
+    #    sequence glyphs (vocem/emoji_bank.h), not codepoints: counted apart.
+    sequence_keys = sum(1 for cp in bank if cp >= 0xF0000)
+    print(f"bank sequence keys (ZWJ sequences, flags, keycaps, tags): {sequence_keys}")
+    bank_outside = sorted(cp for cp in bank if cp < 0xF0000 and not covered(cp, emoji + letters))
     print(f"bank emoji outside every requested range: {len(bank_outside)}"
           + (f" e.g. {[hex(c) for c in bank_outside[:6]]}" if bank_outside else ""))
 

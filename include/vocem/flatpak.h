@@ -65,9 +65,16 @@ inline constexpr const char* kBridgeRequestName = "request";
 // The colour emoji bank. Inside a sandbox the host's /usr is not mounted, so
 // the compiled-in path names the runtime's own /usr and finds nothing -- the
 // same shape as the note being the fourth thing to carry and nothing carrying
-// it. Six megabytes and it never changes, so it is copied once per sandbox and
-// only into one that is actually drawing.
+// it. Sixteen megabytes and it never changes, so it is copied once per sandbox
+// and only into one that is actually drawing.
 inline constexpr const char* kBridgeEmojiBankName = "emoji_bank.rgba";
+// The sequence table that belongs to that bank (vocem/emoji_bank.h): which
+// codepoint sequences its keys from U+F0000 up stand for. The reader looks
+// for it BESIDE the bank under this exact name, wherever the bank was found,
+// so the bridge and the package both put it there, and the bridge copies it
+// before the bank: the bank's arrival is what the reader waits on, and a table
+// arriving after it would never be read.
+inline constexpr const char* kBridgeEmojiSequencesName = "emoji_sequences.bin";
 
 namespace detail {
 // Room for the id parsed out of /.flatpak-info. Namespace scope and

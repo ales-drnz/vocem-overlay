@@ -17,6 +17,7 @@
 #ifndef VOCEM_FONTS_H
 #define VOCEM_FONTS_H
 
+#include <cstddef>
 #include <cstdint>
 
 #include "imgui.h"
@@ -123,12 +124,25 @@ void fonts_note_emoji(const char* utf8_text);
 // past which a new emoji stays monochrome for the rest of the session.
 const char* fonts_emoji_status();
 
+// The noting, and before it the rewriting: an emoji SEQUENCE the bank's table
+// knows -- 🍋‍🟩, a flag, a keycap, a family -- is collapsed in place into the
+// bank key that draws it as one coloured glyph (vocem/emoji_bank.h says what a
+// key is and why the table travels with the bank), and the result is noted.
+// Without a table, or for a key the bank refuses, the text is left exactly as
+// it was and the sequence draws as its coloured parts, which is what it did
+// until 0.1.9. `capacity` is the field's size; the result is never longer
+// than the text. No syscall beyond the noting's own, which is once per
+// codepoint or key for the life of the process (tests/fonts_frame_quiet.cpp).
+void fonts_prepare_text(char* text, size_t capacity);
+
 // The same, over everything a snapshot can put on screen: the channel name,
 // every participant's name, the notification's title and body. One spelling,
 // because both injected paths need exactly this walk and two copies of it
-// would drift (entry 33).
+// would drift (entry 33). The snapshot is the caller's own copy, and it is
+// written to: a collapsed sequence changes the bytes the panel then measures
+// and draws.
 struct Snapshot;
-void fonts_note_emoji_in(const Snapshot& snapshot);
+void fonts_note_emoji_in(Snapshot& snapshot);
 
 }  // namespace vocem
 

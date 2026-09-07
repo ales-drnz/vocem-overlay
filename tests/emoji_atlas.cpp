@@ -15,9 +15,12 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "imgui.h"
+#include "vocem/emoji_bank.h"
 #include "vocem/fonts.h"
+#include "vocem/shared_state.h"
 
 namespace {
 
@@ -108,6 +111,74 @@ int main() {
     // A codepoint the bank does not carry keeps the old behaviour.
     vocem::fonts_note_emoji("\xE2\x80\x99");  // typographic apostrophe
     check(!vocem::ensure_fonts(16.0f, 16.0f), "a non-emoji codepoint rebuilds nothing");
+
+    // A sequence (entry 142): the lime is lemon + ZWJ + green square, and the
+    // font reaches its glyph only through a ligature. Noted as codepoints it
+    // drew as its parts -- two coloured glyphs and a blank -- which is what the
+    // owner saw in a name; prepared, the name carries one key, one glyph wide.
+    // Against the module as it stood, fonts_prepare_text does not exist; against
+    // a bank with no table beside it the name comes back unchanged and the
+    // width check fails.
+    {
+        char name[vocem::kNameCapacity];
+        snprintf(name, sizeof(name), "Fazen\xF0\x9F\x8D\x8B\xE2\x80\x8D\xF0\x9F\x9F\xA9\xF0\x9F\x8D\x8B");
+        char raw[vocem::kNameCapacity];
+        snprintf(raw, sizeof(raw), "%s", name);
+        // The parts first, as the frame before this feature drew them.
+        vocem::fonts_note_emoji(raw);
+        vocem::ensure_fonts(16.0f, 16.0f);
+        const float raw_width = body_now()->CalcTextSizeA(16.0f, 1e9f, 0.0f, raw).x;
+
+        vocem::fonts_prepare_text(name, sizeof(name));
+        check(strlen(name) < strlen(raw), "the lime's three codepoints became one key in the name");
+        uint32_t key = 0;
+        uint32_t codepoints = 0;
+        vocem::utf8_each(name, [&](uint32_t cp) {
+            ++codepoints;
+            if (cp >= vocem::kEmojiSequenceKeyFirst) {
+                key = cp;
+            }
+        });
+        check(key != 0 && codepoints == 7, "Fazen, the lime's key and the lemon: seven codepoints");
+        check(vocem::ensure_fonts(16.0f, 16.0f), "the key rebuilds the atlas like any new emoji");
+        const ImFontGlyph* lime_body = body_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
+        const ImFontGlyph* lime_strong = strong_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
+        check(lime_body && lime_body->Colored, "the lime is a coloured glyph in the body weight");
+        check(lime_strong && lime_strong->Colored, "and in the heavier one");
+        const int lime_chroma = glyph_chroma(body_now(), key);
+        printf("     atlas chroma for the lime: %d\n", lime_chroma);
+        check(lime_chroma > 40, "with colour in its atlas pixels");
+        const float width = body_now()->CalcTextSizeA(16.0f, 1e9f, 0.0f, name).x;
+        printf("     name width: %.1f px as parts, %.1f px as one glyph\n", raw_width, width);
+        check(width < raw_width - 10.0f, "and the name is about one emoji narrower than as parts");
+        // Prepared again -- every frame re-reads the snapshot and prepares it
+        // again -- the collapsed name is left exactly as it is.
+        char again[vocem::kNameCapacity];
+        snprintf(again, sizeof(again), "%s", name);
+        vocem::fonts_prepare_text(again, sizeof(again));
+        check(strcmp(again, name) == 0, "preparing the prepared name changes nothing");
+        // A name with no sequence in it, malformed bytes and all, is untouched.
+        char plain[vocem::kNameCapacity];
+        snprintf(plain, sizeof(plain), "Re\xC0\x80ix \xF0\x9F\x8D\xA3 \xE2\x80\x99");
+        char plain_before[vocem::kNameCapacity];
+        memcpy(plain_before, plain, sizeof(plain));
+        vocem::fonts_prepare_text(plain, sizeof(plain));
+        check(memcmp(plain, plain_before, sizeof(plain)) == 0,
+              "a name without a sequence is byte-for-byte what it was, bad bytes included");
+        // The keycap as a whole is one coloured glyph now; the box alone below
+        // stays uncoloured, so "1" in "User 1" stays a digit.
+        char keycap[8];
+        snprintf(keycap, sizeof(keycap), "1\xEF\xB8\x8F\xE2\x83\xA3");
+        vocem::fonts_prepare_text(keycap, sizeof(keycap));
+        uint32_t keycap_key = 0;
+        vocem::utf8_each(keycap, [&](uint32_t cp) { keycap_key = cp; });
+        check(keycap_key >= vocem::kEmojiSequenceKeyFirst && strlen(keycap) == 4,
+              "1 + FE0F + the box collapses into the keycap's key");
+        vocem::ensure_fonts(16.0f, 16.0f);
+        const ImFontGlyph* keycap_glyph =
+            body_now()->FindGlyphNoFallback(static_cast<ImWchar>(keycap_key));
+        check(keycap_glyph && keycap_glyph->Colored, "and the keycap draws as one coloured glyph");
+    }
 
     // A keycap is drawn by one font or by the other, never half by each.
     //

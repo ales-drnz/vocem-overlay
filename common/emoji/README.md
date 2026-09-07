@@ -1,11 +1,19 @@
 # The colour emoji bank
 
-`emoji_bank.rgba` is the colour emoji the overlay can draw: 1460 single-codepoint
-emoji as raw RGBA records at one fixed 32-pixel size, extracted from the CBDT
-bitmaps of **Noto Color Emoji** by `scripts/make-emoji-bank.py`. The format --
-both ends of it -- lives in `include/vocem/emoji_bank.h`; why the extraction
-happens offline instead of shipping a PNG parser into games is written in
-DESIGN.md ("What the overlay can draw").
+`emoji_bank.rgba` is the colour emoji the overlay can draw: 3985 glyphs as raw
+RGBA records at one fixed 32-pixel size, extracted from the CBDT bitmaps of
+**Noto Color Emoji** by `scripts/make-emoji-bank.py`. 1439 of them are keyed by
+the codepoint they draw; the other 2546 are the glyphs the font reaches only
+through a GSUB ligature -- the ZWJ sequences, the flags, the keycaps, the tag
+sequences -- keyed from U+F0000 up, and `emoji_sequences.bin` beside the bank
+says which of the font's 4166 codepoint sequences each key stands for (fixed
+records: u32 length, u32 key, twelve u32 codepoints zero-padded, sorted by the
+sequence). The two files are one artefact: the keys are this script's, and the
+reader takes the table from beside whichever bank it opened. The format -- both
+ends of it -- lives in `include/vocem/emoji_bank.h`; why the extraction happens
+offline instead of shipping a PNG parser into games, and why the table is a
+file and not code, is written in DESIGN.md ("What the overlay can draw", entry
+142).
 
 ## Licence
 

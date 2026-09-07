@@ -14,7 +14,7 @@ project(vocem-overlay
     # 0.1.4 package's About page read "Version 0.1.0", the metainfo's newest
     # release was 0.1.2, and .SRCINFO said 0.1.2 as well. Four copies of one
     # fact, none of them told when another moved.
-    VERSION 0.1.8
+    VERSION 0.1.9
     DESCRIPTION "Discord voice overlay drawn inside the game, on Linux"
     LANGUAGES CXX
 )
@@ -130,8 +130,10 @@ endif()
 # Only from the 64-bit build: a 32-bit build contributes just its libraries.
 if(VOCEM_BUILD_HOST_TOOLS)
     # The bank is a Modified Version of Noto Color Emoji under the OFL 1.1
-    # (common/emoji/README.md): its licence travels beside it.
-    install(FILES common/emoji/emoji_bank.rgba common/emoji/OFL-NotoColorEmoji.txt
+    # (common/emoji/README.md): its licence travels beside it, and so does its
+    # sequence table, which the reader looks for beside the bank by name.
+    install(FILES common/emoji/emoji_bank.rgba common/emoji/emoji_sequences.bin
+        common/emoji/OFL-NotoColorEmoji.txt
         DESTINATION "${CMAKE_INSTALL_DATADIR}/vocem")
     install(FILES packaging/io.github.ales_drnz.vocem_overlay.desktop
         DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
