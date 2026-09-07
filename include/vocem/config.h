@@ -383,6 +383,77 @@ struct Config {
                static_cast<long long>(info.st_mtim.tv_nsec);
     }
 
+    // Every numeric setting, with its bounds and the precision it is written at:
+    // the one place the file's bounds are stated. load() clamps by this table,
+    // the window's setters clamp by it (Config::clamped), and
+    // tests/slider_bounds.cmake holds every slider on every page to it -- the
+    // setters used to carry their own copies of these numbers, three of them
+    // with no bound at all, which is the drift entry 121 found in the sliders
+    // one file over (entry 136).
+    struct Number {
+        const char* key;
+        float Config::*member;
+        double low;
+        double high;
+        int decimals;
+    };
+    static const Number* numbers(size_t& count) {
+        static const Number table[] = {
+            {"position_x", &Config::position_x, 0.0, 1.0, 4},
+            {"position_y", &Config::position_y, 0.0, 1.0, 4},
+            {"scale", &Config::scale, 0.5, 3.0, 2},
+            {"opacity", &Config::opacity, 0.0, 1.0, 2},
+            {"avatar_size", &Config::avatar_size, 0.5, 2.0, 2},
+            {"notification_seconds", &Config::notification_seconds, 1.0, 30.0, 1},
+            {"notification_opacity", &Config::notification_opacity, 0.0, 1.0, 2},
+            {"notification_scale", &Config::notification_scale, 0.5, 3.0, 2},
+            {"screen_margin", &Config::screen_margin, 0.0, 120.0, 1},
+            {"notification_margin", &Config::notification_margin, 0.0, 120.0, 1},
+            {"font_size", &Config::font_size, 8.0, 48.0, 1},
+            {"box_padding_x", &Config::box_padding_x, 0.0, 48.0, 1},
+            {"box_padding_y", &Config::box_padding_y, 0.0, 48.0, 1},
+            {"avatar_gap", &Config::avatar_gap, 0.0, 48.0, 1},
+            {"row_spacing", &Config::row_spacing, 0.0, 48.0, 1},
+        };
+        count = sizeof(table) / sizeof(table[0]);
+        return table;
+    }
+
+    // `value` held to the bounds of the numeric setting `key`. An unknown key
+    // is a programming error and is answered with the value untouched, so the
+    // caller's own test sees the number it did not expect.
+    static double clamped(const char* key, double value) {
+        size_t count = 0;
+        const Number* table = numbers(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (std::strcmp(table[i].key, key) == 0) {
+                return clamp(value, table[i].low, table[i].high);
+            }
+        }
+        return value;
+    }
+
+    // The three switches the window writes the moment they are clicked, put
+    // on top of the file AS IT STANDS ON DISK: loaded fresh, changed, saved.
+    // The window used to write them over the copy it had loaded at startup --
+    // for a tray application started at login, a copy from the morning -- so
+    // every key edited by hand or by a script since then was silently put
+    // back the next time the overlay was switched off and on (entry 136).
+    // `written`, when given, receives what was saved.
+    static bool write_switches(bool enabled, bool panel_enabled, bool notifications_enabled,
+                               Config* written = nullptr) {
+        Config fresh;
+        fresh.load();
+        fresh.enabled = enabled;
+        fresh.panel_enabled = panel_enabled;
+        fresh.notifications_enabled = notifications_enabled;
+        const bool saved = fresh.save();
+        if (written) {
+            *written = fresh;
+        }
+        return saved;
+    }
+
     void load() {
         std::FILE* file = std::fopen(path().c_str(), "r");
         if (!file) {
@@ -401,13 +472,24 @@ struct Config {
             const char* key = trim(text);
             const char* value = trim(equals + 1);
 
-            if (std::strcmp(key, "position_x") == 0) {
-                position_x = clamp(to_number(value), 0.0, 1.0);
-            } else if (std::strcmp(key, "position_y") == 0) {
-                position_y = clamp(to_number(value), 0.0, 1.0);
-            } else if (std::strcmp(key, "scale") == 0) {
-                scale = clamp(to_number(value), 0.5, 3.0);
-            } else if (std::strcmp(key, "panel_colour") == 0) {
+            // The numbers, by the table above.
+            {
+                size_t count = 0;
+                const Number* table = numbers(count);
+                bool numeric = false;
+                for (size_t i = 0; i < count && !numeric; ++i) {
+                    if (std::strcmp(key, table[i].key) == 0) {
+                        this->*(table[i].member) =
+                            clamp(to_number(value), table[i].low, table[i].high);
+                        numeric = true;
+                    }
+                }
+                if (numeric) {
+                    continue;
+                }
+            }
+
+            if (std::strcmp(key, "panel_colour") == 0) {
                 panel_colour = to_colour(value, panel_colour);
             } else if (std::strcmp(key, "notification_colour") == 0) {
                 notification_colour = to_colour(value, notification_colour);
@@ -430,10 +512,6 @@ struct Config {
                 panel_layout = to_layout(value, panel_layout);
             } else if (std::strcmp(key, "panel_box") == 0) {
                 panel_box = to_box(value, panel_box);
-            } else if (std::strcmp(key, "opacity") == 0) {
-                opacity = clamp(to_number(value), 0.0, 1.0);
-            } else if (std::strcmp(key, "avatar_size") == 0) {
-                avatar_size = clamp(to_number(value), 0.5, 2.0);
             } else if (std::strcmp(key, "keep_running") == 0) {
                 keep_running = as_bool(value);
             } else if (std::strcmp(key, "start_at_login") == 0) {
@@ -447,34 +525,17 @@ struct Config {
             } else if (std::strcmp(key, "notifications_enabled") == 0) {
                 notifications_enabled = as_bool(value);
             } else if (std::strcmp(key, "notification_corner") == 0) {
-                const int parsed = std::atoi(value);
-                notification_corner = (parsed >= 0 && parsed <= 3) ? parsed : 1;
-            } else if (std::strcmp(key, "notification_seconds") == 0) {
-                notification_seconds = clamp(to_number(value), 1.0, 30.0);
-            } else if (std::strcmp(key, "notification_opacity") == 0) {
-                notification_opacity = clamp(to_number(value), 0.0, 1.0);
-            } else if (std::strcmp(key, "notification_scale") == 0) {
-                notification_scale = clamp(to_number(value), 0.5, 3.0);
-            } else if (std::strcmp(key, "screen_margin") == 0) {
-                screen_margin = clamp(to_number(value), 0.0, 120.0);
-            } else if (std::strcmp(key, "notification_margin") == 0) {
-                notification_margin = clamp(to_number(value), 0.0, 120.0);
+                // A number 0-3, or the current value kept: atoi() answers 0 for
+                // a word, and 0 is top-left, so a typo used to move the box to
+                // a corner nobody chose -- unlike panel_layout and panel_box,
+                // whose readers keep the value on a typo. Same rule now.
+                notification_corner = to_corner(value, notification_corner);
             } else if (std::strcmp(key, "font_family") == 0) {
                 font_family = value;
             } else if (std::strcmp(key, "font_path") == 0) {
                 font_path = value;
             } else if (std::strcmp(key, "font_path_strong") == 0) {
                 font_path_strong = value;
-            } else if (std::strcmp(key, "font_size") == 0) {
-                font_size = clamp(to_number(value), 8.0, 48.0);
-            } else if (std::strcmp(key, "box_padding_x") == 0) {
-                box_padding_x = clamp(to_number(value), 0.0, 48.0);
-            } else if (std::strcmp(key, "box_padding_y") == 0) {
-                box_padding_y = clamp(to_number(value), 0.0, 48.0);
-            } else if (std::strcmp(key, "avatar_gap") == 0) {
-                avatar_gap = clamp(to_number(value), 0.0, 48.0);
-            } else if (std::strcmp(key, "row_spacing") == 0) {
-                row_spacing = clamp(to_number(value), 0.0, 48.0);
             } else if (std::strcmp(key, "only_speaking") == 0) {
                 only_speaking = as_bool(value);
             } else if (std::strcmp(key, "hide_self") == 0) {
@@ -654,11 +715,29 @@ private:
         }
         char* end = text + std::strlen(text);
         while (end > text && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ' ||
-                              end[-1] == '\t' || end[-1] == '"')) {
+                              end[-1] == '\t')) {
+            --end;
+        }
+        // A quoted value loses both quotes, not only the closing one: a
+        // `font_path = "/a b/x.ttf"` written by hand used to come back as
+        // `"/a b/x.ttf` and the font quietly fell back to Inter.
+        if (end - text >= 2 && text[0] == '"' && end[-1] == '"') {
+            ++text;
             --end;
         }
         *end = '\0';
         return text;
+    }
+
+    // A corner: 0 to 3, or the current value for anything else.
+    static int to_corner(const char* text, int fallback) {
+        while (*text == ' ' || *text == '\t') {
+            ++text;
+        }
+        if (text[0] >= '0' && text[0] <= '3' && text[1] == '\0') {
+            return text[0] - '0';
+        }
+        return fallback;
     }
 
     // Decimal parsing that ignores LC_NUMERIC entirely, rather than trusting every
@@ -750,7 +829,9 @@ private:
         while (*text == ' ' || *text == '\t') {
             ++text;
         }
-        if (std::strncmp(text, "auto", 4) == 0) {
+        // The whole word, as to_layout() reads its words: "automatic" and
+        // "autox" are not it.
+        if (std::strcmp(text, "auto") == 0) {
             return kColourAuto;
         }
         return to_colour(text, fallback);
@@ -760,9 +841,19 @@ private:
         return colour == kColourAuto ? "auto" : colour_text(colour);
     }
 
+    // true/yes/on/1, in any case: `enabled = True` -- which a hand or a script
+    // plausibly writes -- switched the overlay OFF.
     static bool as_bool(const char* value) {
-        return std::strcmp(value, "true") == 0 || std::strcmp(value, "1") == 0 ||
-               std::strcmp(value, "yes") == 0;
+        char lowered[8] = {0};
+        for (size_t i = 0; i < sizeof(lowered) - 1 && value[i]; ++i) {
+            lowered[i] = static_cast<char>(
+                value[i] >= 'A' && value[i] <= 'Z' ? value[i] - 'A' + 'a' : value[i]);
+        }
+        if (value[0] && std::strlen(value) > sizeof(lowered) - 1) {
+            return false;  // longer than any spelling of yes
+        }
+        return std::strcmp(lowered, "true") == 0 || std::strcmp(lowered, "1") == 0 ||
+               std::strcmp(lowered, "yes") == 0 || std::strcmp(lowered, "on") == 0;
     }
 
     static float clamp(double value, double low, double high) {

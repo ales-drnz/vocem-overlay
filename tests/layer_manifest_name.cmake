@@ -109,8 +109,10 @@ if(MANIFEST32 AND EXISTS "${MANIFEST32}")
         math(EXPR failures "${failures} + 1")
     endif()
 else()
-    message("     (no 32-bit manifest in this tree; the cross-width claim is unmeasured here "
-            "and is verified on the packaged artifacts)")
+    # Said as a skip at the end, once everything measurable here has been held:
+    # the cross-width claim is the one this test exists for, and "unmeasured
+    # here" used to be printed in passing under a green result.
+    set(missing32 "${MANIFEST32}")
 endif()
 
 # --- the Flatpak variant's two halves stay coupled in the source -------------
@@ -137,5 +139,10 @@ endif()
 
 if(failures)
     message(FATAL_ERROR "the layer manifest's two load-bearing properties no longer hold together")
+endif()
+
+if(missing32)
+    message(STATUS "skip ${missing32} is not built: the two widths' manifests were not compared, "
+                   "which is the claim the packaged pair is held to (entry 130)")
 endif()
 message("ok   the shared name and the bare soname hold together")

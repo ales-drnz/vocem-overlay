@@ -18,7 +18,7 @@
 # so its absence is asserted rather than left to be re-added by somebody reading
 # the same recipe.
 
-set(unit "${SOURCE_DIR}/packaging/systemd/vocemd.service")
+set(unit "${SOURCE_DIR}/packaging/systemd/vocemd.service.in")
 if(NOT EXISTS "${unit}")
     message(FATAL_ERROR "no unit at ${unit}")
 endif()
@@ -77,10 +77,21 @@ if(text MATCHES "\n[ \t]*CapabilityBoundingSet=")
         "systemd-run --user), so the daemon would simply never come up")
 endif()
 
-# And the file has to be a unit systemd will actually load.
+# And the file has to be a unit systemd will actually load. The source is a
+# template (ExecStart carries the install prefix since 0.1.8), and systemd
+# wants a file named `.service`: it is instantiated as the package instantiates
+# it, with /usr, into a scratch directory, and that copy is verified.
 find_program(SYSTEMD_ANALYZE systemd-analyze)
 if(SYSTEMD_ANALYZE)
-    execute_process(COMMAND "${SYSTEMD_ANALYZE}" --user verify "${unit}"
+    set(scratch "$ENV{TMPDIR}")
+    if(scratch STREQUAL "")
+        set(scratch "/tmp")
+    endif()
+    set(scratch "${scratch}/vocem-unit-hardening-$ENV{USER}")
+    file(MAKE_DIRECTORY "${scratch}")
+    set(CMAKE_INSTALL_FULL_BINDIR "/usr/bin")
+    configure_file("${unit}" "${scratch}/vocemd.service" @ONLY)
+    execute_process(COMMAND "${SYSTEMD_ANALYZE}" --user verify "${scratch}/vocemd.service"
                     RESULT_VARIABLE status ERROR_VARIABLE errors)
     if(NOT status EQUAL 0)
         message(FATAL_ERROR "systemd-analyze rejects the unit: ${errors}")

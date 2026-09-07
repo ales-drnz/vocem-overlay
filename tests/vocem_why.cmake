@@ -42,6 +42,16 @@
 # with the build directory as their cwd, which is the value being passed anyway
 # -- but run one by hand from the source tree and it writes its scratch there.
 # This one did, once, and left a directory in the repository root.
+# Run through ctest, or with -DCMAKE_CURRENT_BINARY_DIR=<build>/tests: in script
+# mode that variable is the working directory, and a run started from the
+# repository root left its scratch directories in the repository (0.1.7's
+# packaging pass left two, untracked, beside CMakeLists.txt).
+if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/CTestTestfile.cmake")
+    message(FATAL_ERROR
+        "CMAKE_CURRENT_BINARY_DIR is '${CMAKE_CURRENT_BINARY_DIR}', which is not a "
+        "test directory: pass -DCMAKE_CURRENT_BINARY_DIR=<build>/tests, or run this "
+        "through ctest, so the scratch files land in the build tree")
+endif()
 set(work "${WORK_DIR}/vocem-why-test")
 file(REMOVE_RECURSE "${work}")
 file(MAKE_DIRECTORY "${work}/bin")

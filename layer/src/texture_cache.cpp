@@ -12,6 +12,7 @@
 #include "vocem/avatar_file.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/journal.h"
+#include "vocem/overlay_log.h"
 #include "vocem/shared_state.h"
 
 // No image parser in here, on purpose. The cache is raw RGBA at one fixed size
@@ -19,22 +20,8 @@
 // This file carried stb_image for four packages, parsing internet-supplied bytes
 // inside every Vulkan game the layer drew in.
 
-// Read once, as every other component's logger reads it.
-inline bool vocem_texture_debug() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("VOCEM_DEBUG");
-        return env && env[0] == '1';
-    }();
-    return enabled;
-}
-
-#define VOCEM_TLOG(...)                                             \
-    do {                                                            \
-        if (vocem_texture_debug()) {                                \
-            std::fprintf(stderr, "[vocem/texture] " __VA_ARGS__);   \
-            std::fputc('\n', stderr);                               \
-        }                                                           \
-    } while (0)
+// The one logger both paths share (vocem/overlay_log.h), under this file's tag.
+#define VOCEM_TLOG(...) VOCEM_OVERLAY_LOG("vocem/texture", __VA_ARGS__)
 
 namespace vocem {
 
@@ -155,7 +142,7 @@ ImTextureID TextureCache::get(uint64_t user_id, const char* avatar_hash) {
     Pending request;
     request.key = key;
     request.path = path;
-    request.first_asked = avatar_now_seconds();
+    request.wait = AvatarWait::start(avatar_now_seconds());
     pending_.push_back(request);
     return 0;
 }
@@ -170,7 +157,7 @@ void TextureCache::process_pending() {
     const double now = avatar_now_seconds();
     size_t index = pending_.size();
     for (size_t i = 0; i < pending_.size(); ++i) {
-        if (pending_[i].next_attempt <= now) {
+        if (pending_[i].wait.due(now)) {
             index = i;
             break;
         }
@@ -199,11 +186,11 @@ void TextureCache::process_pending() {
     // Not there yet is not the same as broken. Somebody who joins the channel is
     // drawn on the next frame, while the daemon is still downloading their
     // picture; giving up then is what left them a grey disc for the rest of the
-    // session.
+    // session. The policy is vocem/avatar_file.h's, one spelling with the GL
+    // provider.
     if (!avatar_file_exists(request.path.c_str())) {
-        if (now - request.first_asked < kAvatarGiveUpSeconds) {
-            Pending again = request;
-            again.next_attempt = now + kAvatarRetrySeconds;
+        Pending again = request;
+        if (again.wait.missed(now)) {
             pending_.push_back(again);
         } else {
             VOCEM_TLOG("gave up waiting for %s", request.path.c_str());

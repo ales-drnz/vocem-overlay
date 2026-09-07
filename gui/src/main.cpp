@@ -28,6 +28,8 @@
 #include <QHash>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QLockFile>
+#include <QThread>
 #include <QQuickItem>
 #include <QTextStream>
 #include <QQuickWindow>
@@ -35,6 +37,8 @@
 
 #include <cstdlib>
 #include <cstring>
+
+#include "config_bridge.h"
 
 namespace {
 
@@ -67,6 +71,19 @@ QString instance_socket_name() {
     }
     return QString::fromLocal8Bit(runtime) + '/' + name;
 }
+
+// The lock that decides which instance is THE instance, taken before anything
+// else is built. The socket alone could not decide it: the ask ran before the
+// window was built and the listen after, and building the window takes a good
+// fraction of a second -- so two launches inside that window (the autostart at
+// login and a menu click, say) each found nobody listening, each built a
+// window, and each ran removeServer(), the second unlinking the first's
+// socket. Two processes, two tray icons, and the first unreachable by the
+// third launch. A QLockFile is taken in microseconds, before the engine
+// loads; the loser asks the winner to show itself, waiting for the winner's
+// socket to appear if it has not yet. Beside the socket, for the socket's
+// reasons.
+QString instance_lock_name() { return instance_socket_name() + QStringLiteral(".lock"); }
 
 // The geometry of everything the previews draw, as numbers.
 //
@@ -201,16 +218,24 @@ void open_named_popups(QQuickWindow* window, const QString& names) {
     }
 }
 
-bool ask_running_instance_to_show() {
-    QLocalSocket socket;
-    socket.connectToServer(instance_socket_name());
-    if (!socket.waitForConnected(300)) {
-        return false;
+// Asks the instance holding the lock to show itself, waiting up to `wait_ms`
+// for its socket: the holder may still be building its window.
+bool ask_running_instance_to_show(int wait_ms) {
+    const int step_ms = 100;
+    for (int waited = 0;; waited += step_ms) {
+        QLocalSocket socket;
+        socket.connectToServer(instance_socket_name());
+        if (socket.waitForConnected(300)) {
+            socket.write("show");
+            socket.waitForBytesWritten(300);
+            socket.disconnectFromServer();
+            return true;
+        }
+        if (waited >= wait_ms) {
+            return false;
+        }
+        QThread::msleep(step_ms);
     }
-    socket.write("show");
-    socket.waitForBytesWritten(300);
-    socket.disconnectFromServer();
-    return true;
 }
 
 }  // namespace
@@ -290,8 +315,20 @@ int main(int argc, char* argv[]) {
     // alongside whatever else is open.
     const bool taking_screenshots = std::getenv("VOCEM_CONFIG_SCREENSHOT") != nullptr ||
                                     std::getenv("VOCEM_CONFIG_GEOMETRY") != nullptr;
-    if (!taking_screenshots && ask_running_instance_to_show()) {
-        return 0;
+    QLockFile instance_lock(instance_lock_name());
+    if (!taking_screenshots) {
+        // A lock whose holder is gone -- a crash, a kill -- is stale, and
+        // QLockFile knows by the pid written in it; the holder alive means the
+        // one window exists, whether or not it is listening yet.
+        if (!instance_lock.tryLock(0)) {
+            if (instance_lock.removeStaleLockFile()) {
+                instance_lock.tryLock(0);
+            }
+        }
+        if (!instance_lock.isLocked()) {
+            ask_running_instance_to_show(3000);
+            return 0;
+        }
     }
 
     // --hidden is what the autostart entry passes: start behind the tray icon,
@@ -313,9 +350,11 @@ int main(int argc, char* argv[]) {
 
     auto* main_window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
 
-    // Nobody answered, so this instance is the one that listens. removeServer
+    // This instance holds the lock, so it is the one that listens. removeServer
     // clears a socket left behind by a process that died without cleaning up --
     // without it, a crash would make the application unstartable until reboot.
+    // Safe to call because of the lock: the only socket this can unlink is a
+    // dead process's, never a living instance's.
     QLocalServer server;
     if (!taking_screenshots) {
         QLocalServer::removeServer(instance_socket_name());
@@ -432,6 +471,21 @@ int main(int argc, char* argv[]) {
                          [window, path, geometry_file, index, step, walk] {
             if (*index >= walk.size()) {
                 if (geometry_file->isOpen()) {
+                    // What the run cost, in counts (ConfigBridge::counters):
+                    // the last line of the dump, so a test can hold the
+                    // window's idle cost to a number rather than to a clock.
+                    if (auto* bridge = window->findChild<ConfigBridge*>()) {
+                        QTextStream out(geometry_file);
+                        const QVariantMap counters = bridge->counters();
+                        out << "{\"counters\": {";
+                        bool first = true;
+                        for (auto it = counters.constBegin(); it != counters.constEnd(); ++it) {
+                            out << (first ? "" : ", ") << '"' << it.key() << "\": "
+                                << it.value().toLongLong();
+                            first = false;
+                        }
+                        out << "}}\n";
+                    }
                     geometry_file->close();
                 }
                 step->stop();

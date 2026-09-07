@@ -24,9 +24,12 @@
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
+#include <functional>
+
 class QProcess;
 
 #include "desktop_entries.h"
+#include "environment.h"
 
 #include "vocem/apps.h"
 #include "vocem/config.h"
@@ -206,6 +209,10 @@ private:
     Q_PROPERTY(QVariantList crashReports READ crashReports NOTIFY crashReportsChanged)
     Q_PROPERTY(QVariantList journalHistory READ journalHistory NOTIFY journalChanged)
     Q_PROPERTY(int abiVersion READ abiVersion CONSTANT)
+    // Asked of the segment on the slow sweep and remembered, not on every read:
+    // as a bare getter behind stateChanged it cost one shm_open and one pread
+    // per binding per tick -- twice a second, for the life of a tray process
+    // nobody was looking at.
     Q_PROPERTY(int segmentAbiVersion READ segmentAbiVersion NOTIFY stateChanged)
     // The daemon's journald lines, filled by refreshDaemonLog(): running
     // journalctl on a half-second timer would be absurd, so the Debug page
@@ -255,6 +262,11 @@ private:
     // Whether an edit is waiting to be written. What the Apply button is enabled
     // by, and the reason there is one.
     Q_PROPERTY(bool pending READ pending NOTIFY pendingChanged)
+    // Why the last write did not happen, or empty. Apply used to report success
+    // whatever save() answered: with the settings directory unwritable the
+    // button went grey, the previews showed the new values, and the game kept
+    // the old file (entry 136). The edit stays pending until it is written.
+    Q_PROPERTY(QString saveError READ saveError NOTIFY saveErrorChanged)
 
     // Live state, refreshed on a timer.
     Q_PROPERTY(State state READ state NOTIFY stateChanged)
@@ -270,20 +282,20 @@ private:
     Q_PROPERTY(QString configPath READ configPath CONSTANT)
     // The resolution of the display, for the caption on the maps of it. Read from
     // the kernel rather than from Qt -- see the note on the definition. Not
-    // constant: a display that is asleep answers nothing, and the next tick asks
-    // again.
-    Q_PROPERTY(QString screenResolution READ screenResolution NOTIFY stateChanged)
+    // constant: a display that is asleep answers nothing, and the next sweep
+    // asks again. The four display properties share one signal, emitted from
+    // the four-second sweep and only when the enumeration changed: on
+    // stateChanged they were re-read twice a second, whatever the daemon did.
+    Q_PROPERTY(QString screenResolution READ screenResolution NOTIFY displaysChanged)
     // Every connected display, as {name, width, height}, from the same kernel
     // enumeration the caption reads (environment.h) -- so the dropdown beside a
-    // map and the caption inside it cannot disagree. On the caption's cadence
-    // for the caption's reason: a display asleep at startup answers nothing and
-    // is asked again.
-    Q_PROPERTY(QVariantList displays READ displays NOTIFY stateChanged)
+    // map and the caption inside it cannot disagree.
+    Q_PROPERTY(QVariantList displays READ displays NOTIFY displaysChanged)
     // The display height the overlay actually sizes itself from: the largest
     // connected mode, the same number the daemon publishes (vocem/display.h).
     // What lets a map depicting a smaller display say, honestly, how much
     // larger the overlay will look there. Zero where no mode is readable.
-    Q_PROPERTY(int overlayDisplayHeight READ overlayDisplayHeight NOTIFY stateChanged)
+    Q_PROPERTY(int overlayDisplayHeight READ overlayDisplayHeight NOTIFY displaysChanged)
     // The shape of that display, as one number, and zero where no mode can be
     // read. A map with no display chosen stands for the display the overlay is
     // sized for, so it takes its shape from here rather than from `Screen` --
@@ -292,7 +304,7 @@ private:
     // a number compares equal from one tick to the next, where a map of
     // {width, height} is a fresh object every time this is read and would
     // relayout both previews twice a second.
-    Q_PROPERTY(qreal sizingDisplayAspect READ sizingDisplayAspect NOTIFY stateChanged)
+    Q_PROPERTY(qreal sizingDisplayAspect READ sizingDisplayAspect NOTIFY displaysChanged)
     // Which display each map depicts, by connector name; empty means automatic
     // (the largest, which is what the overlay is sized for). Persisted like any
     // other setting: an edit waits for Apply.
@@ -321,7 +333,14 @@ private:
     // say whether the parts that have to be installed are installed -- rather than
     // leaving someone to guess why nothing appears in their game.
     Q_PROPERTY(bool vulkanLayerInstalled READ vulkanLayerInstalled CONSTANT)
-    Q_PROPERTY(bool openglPreloadActive READ openglPreloadActive CONSTANT)
+    // Not constant: half of the answer is a `systemctl --user show-environment`,
+    // asked asynchronously when the window starts and published when it comes
+    // back. As a CONSTANT property the spawn ran synchronously inside the Debug
+    // page's construction, so the first frame waited on systemctl -- up to its
+    // three-second cap (tests/window_startup.cmake). openglPreloadKnown says
+    // whether the answer is in yet; until it is, the page says it is asking.
+    Q_PROPERTY(bool openglPreloadActive READ openglPreloadActive NOTIFY environmentChanged)
+    Q_PROPERTY(bool openglPreloadKnown READ openglPreloadKnown NOTIFY environmentChanged)
     // The overlay's own typeface, and the correction that makes Qt draw it at the
     // size ImGui would. Both previews use these, so what they show is as wide as
     // what the game draws.
@@ -520,6 +539,7 @@ public:
     // The one button. Starts the daemon when it is not running, and asks for
     // authorisation again when Discord refused or the token went stale.
     bool pending() const { return pending_; }
+    QString saveError() const { return save_error_; }
     // Write the edits to the file, where the daemon and any running game will pick
     // them up within two seconds.
     Q_INVOKABLE void apply();
@@ -567,7 +587,16 @@ public:
     }
     QString version() const { return QStringLiteral(VOCEM_VERSION); }
     bool vulkanLayerInstalled() const;
-    bool openglPreloadActive() const;
+    bool openglPreloadActive() const { return opengl_preload_active_; }
+    bool openglPreloadKnown() const { return opengl_preload_known_; }
+    // What this window has cost so far, in counts rather than seconds: how
+    // often it announced a state change, asked the segment its ABI, read the
+    // display tree, walked /proc, swept the registry, walked the desktop
+    // entries, and how many entries the icon lookups examined. The geometry
+    // harness prints them at the end of its walk (main.cpp), and
+    // tests/window_cost.cmake holds them -- a count is the same on every
+    // machine and a clock is not (tests/apps_cost.cpp's rule).
+    Q_INVOKABLE QVariantMap counters() const;
     // The first of these names the session's icon theme actually has, so a window
     // on Adwaita is not left with holes where Breeze's names were. The last is
     // returned unconditionally, so the caller still gets a name to fall over on.
@@ -581,7 +610,7 @@ public:
     QVariantList crashReports() const { return crash_reports_; }
     QVariantList journalHistory() const { return journal_history_; }
     int abiVersion() const { return static_cast<int>(vocem::kAbiVersion); }
-    int segmentAbiVersion() const { return static_cast<int>(vocem::peek_abi_version()); }
+    int segmentAbiVersion() const { return segment_abi_; }
     QString daemonLog() const { return daemon_log_; }
     // A journal's whole text, read on demand: the history list would be heavy
     // carrying every session's text it may never show.
@@ -600,8 +629,17 @@ public:
 signals:
     void configChanged();
     void pendingChanged();
+    void saveErrorChanged();
     void applicationsChanged();
+    // Emitted when what it announces changed -- the state, the sentence, the
+    // hint, the button, the segment's ABI -- and not on every tick. Every
+    // binding on it re-evaluates when it fires; unconditionally, twice a second,
+    // that was the whole Debug and header pages re-read for nothing.
     void stateChanged();
+    // The machine's displays changed: the enumeration, the caption, the height.
+    void displaysChanged();
+    // The asynchronous half of "is the OpenGL preload in place" came back.
+    void environmentChanged();
     void crashReportsChanged();
     void journalChanged();
     void liveInstancesChanged();
@@ -610,13 +648,34 @@ signals:
 private:
     void persist();
     void persistNow();
+    // One numeric setting, held to config.h's bounds by its key (Config::clamped)
+    // rather than by a copy of the numbers here -- there were fifteen copies.
+    void setNumber(const char* key, float vocem::Config::*member, qreal value);
+    // What save() answered, into saveError. True when it was written.
+    bool reportSave(bool saved);
+    // The file as it stands, when it moved under this window: an edit made by
+    // hand or by a script is picked up rather than written over.
+    void reloadIfMoved();
     void refreshState();
+    void refreshDisplays();
     void refreshApplications();
     void refreshCrashReports();
     void refreshLiveInstances();
+    // The two probes the constructor used to run synchronously: whether a unit
+    // exists (`systemctl --user cat`), and whether the user manager carries the
+    // preload (`systemctl --user show-environment`). Each is one spawn, its
+    // answer remembered; a start asked for before the first answer waits for it.
+    void probeUnit();
+    void probePreload();
     bool startDaemon();
-    void stopDaemon();
+    // Asynchronous: `done` runs when the stop has finished (or, past a cap of
+    // twelve seconds -- the unit's TimeoutStopSec plus two -- when it has not).
+    // As a synchronous QProcess::execute this blocked the window for as long as
+    // the daemon took to leave, which is up to that TimeoutStopSec on Quit.
+    void stopDaemon(std::function<void()> done);
     QString daemonExecutable() const;
+    // stateChanged, counted, and only when the announced state moved.
+    void announceState();
 
     // What the last sweep of the registry found, and the countdown to the next
     // one. Reading a directory of small files twice a second, for a page that is
@@ -647,12 +706,51 @@ private:
     vocem::Config config_;
     vocem::Config saved_;
     bool pending_ = false;
+    QString save_error_;
+    // The file's timestamp as last loaded or written, for reloadIfMoved().
+    long long disk_mtime_ = 0;
     vocem::StateReader reader_;
     vocem::Snapshot snapshot_;
     SelfVoice self_voice_ = NotInChannel;
     bool attached_ = false;
     bool busy_ = false;
     QTimer timer_;
+
+    // What stateChanged last announced, so the next tick can tell whether
+    // anything it stands for actually moved.
+    struct Announced {
+        bool busy = false;
+        bool attached = false;
+        int status = -1;
+        bool in_channel = false;
+        uint32_t user_count = 0;
+        int segment_abi = -1;
+        bool operator==(const Announced& other) const {
+            return busy == other.busy && attached == other.attached && status == other.status &&
+                   in_channel == other.in_channel && user_count == other.user_count &&
+                   segment_abi == other.segment_abi;
+        }
+    };
+    Announced announced_;
+    bool announced_once_ = false;
+    int segment_abi_ = 0;
+    // The displays as last announced, for the same reason.
+    QList<vocem::DisplayMode> displays_shown_;
+    QString resolution_shown_;
+
+    // The environment probes (see probeUnit / probePreload). -1 unknown, 0 no, 1 yes.
+    int unit_available_ = -1;
+    bool daemon_start_wanted_ = false;
+    bool opengl_preload_active_ = false;
+    bool opengl_preload_known_ = false;
+    bool quitting_ = false;
+
+    // The counters behind counters().
+    long state_emits_ = 0;
+    long abi_peeks_ = 0;
+    long display_reads_ = 0;
+    long proc_walks_ = 0;
+    long application_sweeps_ = 0;
 };
 
 #endif  // VOCEM_CONFIG_BRIDGE_H

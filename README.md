@@ -36,15 +36,25 @@ it yet.
 
 ### Anywhere else, without root
 
+The prefix is given at configure time, not at install time: two paths -- the
+colour emoji bank's and the overlay library's container fallback -- are compiled
+in from it, and `cmake --install --prefix` moves the files without moving those.
+
 ```bash
 git clone --recurse-submodules https://github.com/ales-drnz/vocem-overlay.git
 cd vocem-overlay
-cmake -S . -B build -G Ninja -DVOCEM_ENABLE_BY_DEFAULT=ON
+cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX=$HOME/.local -DVOCEM_ENABLE_BY_DEFAULT=ON
 cmake --build build
-cmake --install build --prefix ~/.local
-cp packaging/systemd/vocemd.service ~/.config/systemd/user/
+cmake --install build
+install -Dm644 build/packaging/vocemd.service ~/.config/systemd/user/vocemd.service
+install -Dm644 build/packaging/50-vocem.conf ~/.config/environment.d/50-vocem.conf
 systemctl --user enable --now vocemd
 ```
+
+Both installed files are generated with the prefix in them. `~/.local/lib` is on
+no loader's search path, so the environment file also has to name it for the
+Vulkan layer to find its library: add `LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:$HOME/.local/lib`
+to `~/.config/environment.d/50-vocem.conf`, then log out and back in.
 
 For 32-bit games, see [32-bit games](#7-32-bit-games).
 
@@ -55,7 +65,7 @@ For 32-bit games, see [32-bit games](#7-32-bit-games).
 | **Desktop** | any Linux with X11 or Wayland | the overlay is inside the game, so the compositor is not involved |
 | **Graphics** | Vulkan 1.0, or OpenGL 3.0 and OpenGL ES 2.0 | `vulkan-icd-loader`. Both paths can be active at once |
 | **Discord** | the desktop client, running | the browser client exposes no local RPC socket |
-| **Build** | CMake 3.20, C++17, Ninja | plus `vulkan-headers`, `qt6-base`, `qt6-declarative` and `curl` |
+| **Build** | CMake 3.20, C++17, Ninja | plus `vulkan-headers`, `qt6-base`, `qt6-declarative`, `qt6-svg`, `fontconfig` and `curl`; the tests also want `libx11`, `zlib`, `bwrap` and `python3` |
 | **32-bit games** | a `-m32` toolchain and 32-bit Vulkan | `lib32-gcc-libs` and `lib32-vulkan-icd-loader` on Arch |
 
 ---
@@ -318,11 +328,12 @@ sized from the display's height rather than from the game's window.
 
 #### 2.2 Appearance
 
-Four presets: Transparent, Dark, Light and Purple. Colour and opacity are then
-adjustable for both boxes independently, and previewed as you edit.
+Five presets: Pills, Transparent, Dark, Light and Purple. Colour and opacity are
+then adjustable for both boxes independently, and previewed as you edit; the Box
+control says whether the surface goes around the whole panel or behind each name.
 
-The default is **Transparent**: names, pictures, ring and badge straight on the
-game, with no box behind them.
+The default is **Pills**: a rounded box under each name, and the pictures, the
+ring and the badge straight on the game.
 
 #### 2.3 The configuration file
 
@@ -369,13 +380,15 @@ It is the quickest way to tell a daemon problem from a drawing problem. Without
 | :--- | :--- |
 | `VOCEM_DISABLE=1` | switches the overlay off for one process. |
 | `VOCEM_DEBUG=1` | debug log on stderr, from every component. |
-| `VOCEM_LOG_FILE=path` | the OpenGL overlay appends its log to a file as well. For launchers that swallow a game's stderr. |
+| `VOCEM_LOG_FILE=path` | the overlay appends its log to a file as well, both OpenGL and Vulkan. For launchers that swallow a game's stderr. |
 | `VOCEM_HDR_NITS=n` | where the overlay's white lands on an HDR swapchain. Default 203, accepted 40 to 1000. |
 | `VOCEM_FORCE_AUTHORISE=1` | ask Discord for authorisation again. |
 | `VOCEM_EMOJI_BANK=path` | read a colour emoji bank other than the installed one. |
 
-Four more exist for development: `VOCEM_CAPTURE_FRAME`, `VOCEM_GL_LIBRARY`,
-`VOCEM_NO_DLSYM` and `VOCEM`. They are documented in the source.
+More exist for development and for the tests: `VOCEM_CAPTURE_FRAME`,
+`VOCEM_GL_LIBRARY`, `VOCEM_NO_DLSYM`, `VOCEM`, `VOCEM_DRM_ROOT`, and the
+`VOCEM_CONFIG_*` set the settings window's harness reads. They are documented in
+the source.
 
 ### 5. What it costs a game
 
@@ -434,7 +447,7 @@ sandbox.
 
 #### The panel has no background
 
-That is the **Transparent** preset, which is the default. Change it under
+That is the **Pills** preset, which is the default. Change it under
 **Appearance**, or raise **Opacity**.
 
 ---
@@ -471,9 +484,15 @@ cd build && ctest
 For the 32-bit libraries:
 
 ```bash
-cmake -S . -B build32 -G Ninja -DVOCEM_BUILD_HOST_TOOLS=OFF -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_SHARED_LINKER_FLAGS=-m32
+cmake -S . -B build32 -G Ninja -DVOCEM_BUILD_HOST_TOOLS=OFF \
+    -DCMAKE_CXX_FLAGS="$CXXFLAGS -m32" -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS -m32" \
+    -DCMAKE_INSTALL_LIBDIR=lib32 -DVOCEM_LIBDIR_OVERRIDDEN=ON
 cmake --build build32
 ```
+
+The flags are appended to the environment's, not assigned over them, and the
+directory is stated rather than inferred: both are what the PKGBUILDs do, and
+the reason is in DESIGN entry 94.
 
 A test that needs a display, `bwrap`, a GPU or a 32-bit toolchain reports itself
 skipped.
@@ -490,7 +509,7 @@ not, and travel with their own texts, which the package installs beside it under
 
 | | |
 | :--- | :--- |
-| the colour emoji bank in `common/emoji/`, and the embedded font subsets | **OFL 1.1**, as Modified Versions of Noto Color Emoji, Noto Emoji, Noto Sans JP and Inter. Extracting a font's glyphs into another format is modification by the OFL's own definition, so the bank carries the same licence as its source. Noto Sans JP reserves the name "Source", which the subset does not use. |
+| the colour emoji bank in `common/emoji/`, and the embedded font subsets | **OFL 1.1**, as Modified Versions of Noto Color Emoji, Noto Emoji, Noto Sans JP, Noto Sans Math, Noto Sans Symbols, Noto Sans Symbols 2 and Inter. Extracting a font's glyphs into another format is modification by the OFL's own definition, so the bank carries the same licence as its source. Noto Sans JP reserves the name "Source", which the subset does not use. |
 | Dear ImGui, in both injected libraries, and nlohmann/json, in the daemon | **MIT**, with their notices installed beside the rest. |
 | Wuffs in `third_party/wuffs/`, the image decoder inside the daemon | dual **Apache-2.0 or MIT**, taken here under MIT. |
 

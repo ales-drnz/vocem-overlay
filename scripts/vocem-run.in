@@ -24,7 +24,7 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-# The shim, not the overlay itself. It is 25 KB with no C++ runtime behind it, and
+# The shim, not the overlay itself. It is about 14 KB with no C++ runtime behind it, and
 # it dlopens the real library RTLD_LOCAL on the first GL frame -- so a game that
 # never draws pays almost nothing, and the overlay's bundled ImGui never enters the
 # game's global symbol scope. This is the same library the session preloads through

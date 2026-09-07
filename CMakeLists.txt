@@ -14,7 +14,7 @@ project(vocem-overlay
     # 0.1.4 package's About page read "Version 0.1.0", the metainfo's newest
     # release was 0.1.2, and .SRCINFO said 0.1.2 as well. Four copies of one
     # fact, none of them told when another moved.
-    VERSION 0.1.7
+    VERSION 0.1.8
     DESCRIPTION "Discord voice overlay drawn inside the game, on Linux"
     LANGUAGES CXX
 )
@@ -74,11 +74,28 @@ option(VOCEM_BUILD_HOST_TOOLS "Build vocemd, the CLI and the configuration GUI" 
 option(VOCEM_ENABLE_BY_DEFAULT
     "Cover every game with no user action: implicit layer plus session preload" OFF)
 
-# Kept as the old name so existing scripts keep working.
-if(VOCEM_LAYER_ENABLED_BY_DEFAULT)
-    set(VOCEM_ENABLE_BY_DEFAULT ON)
+# Off in a package build: makepkg has no reason to run them, and a missing
+# locale on a build server is not a packaging failure.
+option(VOCEM_BUILD_TESTS "Build the test programs" ON)
+
+# Whether this toolchain can produce a 32-bit binary. Asked once, here, because
+# two directories need the answer: common/ builds the 32-bit twin of the shared
+# objects when it can, and tests/ builds the -m32 test executables against it.
+# The 32-bit injected libraries themselves come from a tree of their own
+# (build32) that ctest does not cover, which is where entries 30/33/34 hid.
+if(VOCEM_BUILD_HOST_TOOLS AND VOCEM_BUILD_TESTS)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-m32")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "-m32")
+    check_cxx_source_compiles("#include <dlfcn.h>\nint main(){return dlvsym(0,\"\",\"\")!=0;}"
+        VOCEM_HAVE_M32)
+    unset(CMAKE_REQUIRED_FLAGS)
+    unset(CMAKE_REQUIRED_LINK_OPTIONS)
 endif()
 
+# What both injected paths, the daemon, the window and the tests share, built
+# once per width; the two injected libraries link it, so it comes first.
+add_subdirectory(common)
 add_subdirectory(layer)
 add_subdirectory(gl)
 
@@ -87,9 +104,6 @@ if(VOCEM_BUILD_HOST_TOOLS)
     add_subdirectory(cli)
     add_subdirectory(gui)
 
-    # Off in a package build: makepkg has no reason to run them, and a missing
-    # locale on a build server is not a packaging failure.
-    option(VOCEM_BUILD_TESTS "Build the test programs" ON)
     if(VOCEM_BUILD_TESTS)
         enable_testing()
         add_subdirectory(tests)
@@ -105,6 +119,11 @@ configure_file(scripts/vocem-run.in "${CMAKE_BINARY_DIR}/vocem-run" @ONLY)
 if(VOCEM_BUILD_HOST_TOOLS)
     install(PROGRAMS "${CMAKE_BINARY_DIR}/vocem-run"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    # The tool for the person whose game has no overlay. Two release notes
+    # announced it and neither PKGBUILD installed it: it existed in the source
+    # tree and nowhere on an installed machine.
+    install(PROGRAMS scripts/vocem-why.sh
+        DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME vocem-why)
 endif()
 
 # --- packaging ---------------------------------------------------------------
@@ -130,9 +149,18 @@ if(VOCEM_BUILD_HOST_TOOLS)
         packaging/icons/io.github.ales_drnz.vocem_overlay-deafened.svg
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
 
-    # Relative destinations: an absolute one would freeze the prefix chosen at
-    # configure time and ignore `cmake --install --prefix`.
-    install(FILES packaging/systemd/vocemd.service
+    # The unit and the session's environment file carry the install prefix in
+    # them (ExecStart, and the shim's path), so they are generated from the
+    # prefix rather than written with /usr in them: the README's install into
+    # ~/.local shipped a unit whose ExecStart named a binary that was not there
+    # (entry 137). Both land in build/packaging, where that recipe copies them
+    # from. The directories below are systemd's own and deliberately not
+    # CMAKE_INSTALL_LIBDIR: systemd reads lib/, never lib64/.
+    configure_file(packaging/systemd/vocemd.service.in
+        "${CMAKE_BINARY_DIR}/packaging/vocemd.service" @ONLY)
+    configure_file(packaging/environment.d/50-vocem.conf.in
+        "${CMAKE_BINARY_DIR}/packaging/50-vocem.conf" @ONLY)
+    install(FILES "${CMAKE_BINARY_DIR}/packaging/vocemd.service"
         DESTINATION "lib/systemd/user")
     install(FILES packaging/systemd/90-vocem.preset
         DESTINATION "lib/systemd/user-preset")
@@ -141,7 +169,7 @@ if(VOCEM_BUILD_HOST_TOOLS)
     # a packaged install ships it: preloading into every process of a session is
     # not something a build tree should do behind the developer's back.
     if(VOCEM_ENABLE_BY_DEFAULT)
-        install(FILES packaging/environment.d/50-vocem.conf
+        install(FILES "${CMAKE_BINARY_DIR}/packaging/50-vocem.conf"
             DESTINATION "lib/environment.d")
     endif()
 

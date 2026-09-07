@@ -15,8 +15,12 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QProcess>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QVariantMap>
+#include <QWindow>
+
+#include <memory>
 
 // The window is the scanner's side of the session journal; the injected code
 // and the daemon are the writers'. Both halves live in the one header
@@ -28,21 +32,6 @@
 
 #include "vocem/paths.h"
 #include "vocem/theme.h"
-
-namespace {
-
-// A packaged install has a systemd user unit; a build tree does not. Preferring
-// systemctl keeps one owner of the process, so the daemon started from here is the
-// same one the session starts at login.
-bool systemd_unit_available() {
-    QProcess probe;
-    probe.start(QStringLiteral("systemctl"),
-                {QStringLiteral("--user"), QStringLiteral("cat"), QStringLiteral("vocemd.service")});
-    probe.waitForFinished(3000);
-    return probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
-}
-
-}  // namespace
 
 QStringList ConfigBridge::fontFamilies() const { return vocem::installed_font_families(); }
 
@@ -81,7 +70,8 @@ QString ConfigBridge::screenResolution() const { return vocem::screen_resolution
 
 // The connected displays, for the dropdown beside each map. From the one
 // enumeration in environment.h; the value is cached there, so a binding
-// re-evaluated on every tick costs a list copy and no /sys walk.
+// re-evaluated costs a list copy and no /sys walk -- and the binding is only
+// re-evaluated when displaysChanged says the enumeration moved.
 QVariantList ConfigBridge::displays() const {
     QVariantList list;
     for (const vocem::DisplayMode& display : vocem::displays()) {
@@ -118,7 +108,98 @@ void ConfigBridge::setNotificationPreviewDisplay(const QString& value) {
     persist();
 }
 bool ConfigBridge::vulkanLayerInstalled() const { return vocem::vulkan_layer_installed(); }
-bool ConfigBridge::openglPreloadActive() const { return vocem::opengl_preload_active(); }
+
+QVariantMap ConfigBridge::counters() const {
+    QVariantMap map;
+    map[QStringLiteral("stateChangedEmits")] = static_cast<qlonglong>(state_emits_);
+    map[QStringLiteral("abiPeeks")] = static_cast<qlonglong>(abi_peeks_);
+    map[QStringLiteral("displayReads")] = static_cast<qlonglong>(display_reads_);
+    map[QStringLiteral("procWalks")] = static_cast<qlonglong>(proc_walks_);
+    map[QStringLiteral("applicationSweeps")] = static_cast<qlonglong>(application_sweeps_);
+    map[QStringLiteral("entryScans")] = static_cast<qlonglong>(desktop_entries_.refreshes());
+    map[QStringLiteral("iconLookups")] = static_cast<qlonglong>(desktop_entries_.lookups());
+    map[QStringLiteral("entriesExamined")] = static_cast<qlonglong>(desktop_entries_.entriesExamined());
+    map[QStringLiteral("desktopEntries")] = desktop_entries_.size();
+    return map;
+}
+
+// Whether the user manager carries the preload, asked of systemctl without
+// waiting for it. The instant half -- this process's own environment -- is
+// answered in the constructor; a hit there is the whole answer and nothing is
+// spawned. Otherwise the spawn runs beside the window's first frame, and the
+// Debug page says it is asking until the answer is in. Capped at three seconds,
+// as the synchronous version was, and "no answer" reads as "not active", as it
+// did -- but off the first frame's path.
+void ConfigBridge::probePreload() {
+    opengl_preload_active_ = vocem::opengl_preload_in_own_environment();
+    if (opengl_preload_active_) {
+        opengl_preload_known_ = true;
+        return;
+    }
+    // A QPointer, not a raw one: the cap fires three seconds later whatever
+    // happened, and the process may have finished and been deleted by then --
+    // the first version dereferenced it from the timer and died there
+    // (SIGSEGV in QProcess::state, measured on the second run of the window).
+    QPointer<QProcess> probe = new QProcess(this);
+    const auto settle = [this, probe](bool active) {
+        if (opengl_preload_known_) {
+            return;  // answered already: by the cap, or by the process
+        }
+        opengl_preload_active_ = active;
+        opengl_preload_known_ = true;
+        if (probe) {
+            probe->deleteLater();
+        }
+        emit environmentChanged();
+    };
+    connect(probe, &QProcess::finished, this, [probe, settle](int code, QProcess::ExitStatus status) {
+        settle(status == QProcess::NormalExit && code == 0 && probe &&
+               vocem::opengl_preload_in_manager_output(probe->readAllStandardOutput()));
+    });
+    connect(probe, &QProcess::errorOccurred, this, [settle] { settle(false); });
+    QTimer::singleShot(3000, this, [probe, settle] {
+        if (probe && probe->state() != QProcess::NotRunning) {
+            probe->kill();
+        }
+        settle(false);
+    });
+    probe->start(QStringLiteral("systemctl"), vocem::opengl_preload_probe_arguments());
+}
+
+// A packaged install has a systemd user unit; a build tree does not. Preferring
+// systemctl keeps one owner of the process, so the daemon started from here is the
+// same one the session starts at login. Asked once, of `systemctl --user cat`,
+// and asynchronously: it used to be a synchronous spawn with a three-second cap
+// in the constructor, before the first frame. A start asked for before the
+// answer is in waits for it (startDaemon).
+void ConfigBridge::probeUnit() {
+    QPointer<QProcess> probe = new QProcess(this);  // a QPointer: see probePreload
+    const auto settle = [this, probe](bool available) {
+        if (unit_available_ >= 0) {
+            return;
+        }
+        unit_available_ = available ? 1 : 0;
+        if (probe) {
+            probe->deleteLater();
+        }
+        if (daemon_start_wanted_) {
+            daemon_start_wanted_ = false;
+            startDaemon();
+        }
+    };
+    connect(probe, &QProcess::finished, this, [settle](int code, QProcess::ExitStatus status) {
+        settle(status == QProcess::NormalExit && code == 0);
+    });
+    connect(probe, &QProcess::errorOccurred, this, [settle] { settle(false); });
+    QTimer::singleShot(3000, this, [probe, settle] {
+        if (probe && probe->state() != QProcess::NotRunning) {
+            probe->kill();
+        }
+        settle(false);
+    });
+    probe->start(QStringLiteral("systemctl"),
+                 {QStringLiteral("--user"), QStringLiteral("cat"), QStringLiteral("vocemd.service")});
+}
 
 QString ConfigBridge::icon(const QStringList& names) const { return vocem::theme_icon(names); }
 
@@ -126,6 +207,7 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     // Registered before any preview asks for it.
     vocem::overlay_fonts();
     config_.load();
+    disk_mtime_ = vocem::Config::mtime();
     // What is on disk wins over what the file remembers: somebody may have removed
     // the entry through their desktop's own startup-applications window, and the
     // switch has to say what is true rather than what was asked for.
@@ -136,6 +218,17 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     timer_.setInterval(500);
     connect(&timer_, &QTimer::timeout, this, &ConfigBridge::refreshState);
     timer_.start();
+    // The two spawns, started and not waited for. The harness runs do not
+    // spawn systemctl either: their answer would be about the build machine's
+    // session, which is not what they measure.
+    const bool harness = qEnvironmentVariableIsSet("VOCEM_CONFIG_GEOMETRY") ||
+                         qEnvironmentVariableIsSet("VOCEM_CONFIG_SCREENSHOT") ||
+                         qEnvironmentVariableIsSet("VOCEM_CONFIG_NO_DAEMON");
+    probePreload();
+    if (!harness) {
+        probeUnit();
+    }
+    refreshDisplays();
     refreshState();
     refreshApplications();
     // The live card has to be right the moment the page opens, not a tick later:
@@ -150,9 +243,10 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     //
     // Not during a harness run: the offscreen geometry dump and the screenshot
     // walk drive this window headless, and a measurement must not reach into
-    // the session's services.
-    if (!attached_ && !qEnvironmentVariableIsSet("VOCEM_CONFIG_GEOMETRY") &&
-        !qEnvironmentVariableIsSet("VOCEM_CONFIG_SCREENSHOT")) {
+    // the session's services. VOCEM_CONFIG_NO_DAEMON says the same for a run
+    // that is not a dump -- tests/single_instance.cmake, which needs the
+    // window's own startup path and none of its services.
+    if (!attached_ && !harness) {
         startDaemon();
     }
 }
@@ -180,10 +274,16 @@ void ConfigBridge::persist() {
 // broken switch. Written straight through, on top of the file as it stands, so a
 // half-finished edit on another page is neither applied nor lost.
 void ConfigBridge::persistNow() {
-    saved_.enabled = config_.enabled;
-    saved_.panel_enabled = config_.panel_enabled;
-    saved_.notifications_enabled = config_.notifications_enabled;
-    saved_.save();
+    // On top of the file as it is NOW, not as it was when this window started:
+    // Config::write_switches loads it fresh, sets the three, and saves.
+    vocem::Config written;
+    const bool saved = vocem::Config::write_switches(config_.enabled, config_.panel_enabled,
+                                                     config_.notifications_enabled, &written);
+    if (reportSave(saved)) {
+        saved_ = written;
+        saved_.start_at_login = config_.start_at_login;
+        disk_mtime_ = vocem::Config::mtime();
+    }
     emit configChanged();
 }
 
@@ -191,14 +291,61 @@ void ConfigBridge::apply() {
     if (!pending_) {
         return;
     }
+    if (!reportSave(config_.save())) {
+        return;  // still pending: the button stays live and the message says why
+    }
     saved_ = config_;
-    saved_.save();
+    disk_mtime_ = vocem::Config::mtime();
     // The autostart entry is a file rather than a line in the settings, so it is
     // made to match here: the setting is the intent, the entry is the effect.
     vocem::set_autostart(config_.start_at_login);
     pending_ = false;
     emit pendingChanged();
     emit configChanged();
+}
+
+bool ConfigBridge::reportSave(bool saved) {
+    const QString error =
+        saved ? QString()
+              : tr("The settings could not be written to %1. Check that the directory exists "
+                   "and is writable.")
+                    .arg(QString::fromStdString(vocem::Config::path()));
+    if (error != save_error_) {
+        save_error_ = error;
+        emit saveErrorChanged();
+    }
+    if (!saved) {
+        qWarning("vocem-config: could not write %s", vocem::Config::path().c_str());
+    }
+    return saved;
+}
+
+void ConfigBridge::reloadIfMoved() {
+    const long long mtime = vocem::Config::mtime();
+    if (mtime == disk_mtime_) {
+        return;
+    }
+    disk_mtime_ = mtime;
+    vocem::Config fresh;
+    fresh.load();
+    fresh.start_at_login = vocem::autostart_enabled();
+    saved_ = fresh;
+    // An edit waiting for Apply keeps the window's copy: Apply means "what the
+    // window shows", and a reload underneath it would take that away. With
+    // nothing pending the window follows the file, as the game does.
+    if (!pending_) {
+        config_ = fresh;
+        emit configChanged();
+    }
+}
+
+void ConfigBridge::setNumber(const char* key, float vocem::Config::*member, qreal value) {
+    const float clamped = static_cast<float>(vocem::Config::clamped(key, value));
+    if (qFuzzyCompare(config_.*member, clamped)) {
+        return;
+    }
+    config_.*member = clamped;
+    persist();
 }
 
 namespace {
@@ -308,7 +455,8 @@ void ConfigBridge::refreshApplications() {
     // comm to fifteen characters, so the record's key -- which came from the
     // same file -- is compared whole.
     QSet<QString> running_now;
-    {
+    if (!found.empty()) {
+        ++proc_walks_;
         const QDir proc(QStringLiteral("/proc"));
         const QStringList pids =
             proc.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
@@ -323,6 +471,7 @@ void ConfigBridge::refreshApplications() {
         }
     }
 
+    ++application_sweeps_;
     QVariantList list;
     for (int attempt = 0; attempt < 2; ++attempt) {
         list.clear();
@@ -400,36 +549,6 @@ void ConfigBridge::setHiddenApps(const QString& value) {
     refreshApplications();
 }
 
-namespace {
-
-// An entry taken out of a comma-separated list, rebuilt rather than cut: an entry
-// can carry spaces around it, and removing "name" from " name , other" by index is
-// how a list ends up with a stray comma in it.
-std::string without(const std::string& list, const std::string& name) {
-    std::string rebuilt;
-    size_t start = 0;
-    while (start <= list.size()) {
-        size_t end = list.find(',', start);
-        if (end == std::string::npos) {
-            end = list.size();
-        }
-        std::string entry = list.substr(start, end - start);
-        const size_t first = entry.find_first_not_of(" \t");
-        const size_t last = entry.find_last_not_of(" \t");
-        entry = first == std::string::npos ? std::string() : entry.substr(first, last - first + 1);
-        if (!entry.empty() && entry != name) {
-            rebuilt += rebuilt.empty() ? entry : "," + entry;
-        }
-        start = end + 1;
-    }
-    return rebuilt;
-}
-
-std::string with(const std::string& list, const std::string& name) {
-    return list.empty() ? name : list + "," + name;
-}
-
-}  // namespace
 
 // The switch beside one application, which says whether the overlay draws there.
 //
@@ -452,12 +571,32 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
         return;
     }
 
-    config_.hidden_apps = without(config_.hidden_apps, key);
-    config_.shown_apps = without(config_.shown_apps, key);
+    // Both spellings a rule may use are taken out: the process name, and the
+    // executable's own name, which config.h says a rule may be written
+    // against and which the list page honours when it reads. The switch used
+    // to remove the process name alone, so a hand-written rule on the
+    // executable's name snapped the box back the moment it was ticked.
+    std::string binary;
+    for (const QVariant& entry : applications_) {
+        const QVariantMap map = entry.toMap();
+        if (map.value(QStringLiteral("name")).toString() == name) {
+            binary = QFileInfo(map.value(QStringLiteral("executable")).toString())
+                         .fileName()
+                         .toStdString();
+            break;
+        }
+    }
+    for (const std::string& spelling : {key, binary}) {
+        if (spelling.empty()) {
+            continue;
+        }
+        config_.hidden_apps = vocem::list_without(config_.hidden_apps, spelling);
+        config_.shown_apps = vocem::list_without(config_.shown_apps, spelling);
+    }
     if (game && !drawn) {
-        config_.hidden_apps = with(config_.hidden_apps, key);
+        config_.hidden_apps = vocem::list_with(config_.hidden_apps, key);
     } else if (!game && drawn) {
-        config_.shown_apps = with(config_.shown_apps, key);
+        config_.shown_apps = vocem::list_with(config_.shown_apps, key);
     }
 
     persist();
@@ -492,7 +631,7 @@ void ConfigBridge::refreshLiveInstances() {
         // Zero-zero for a library from before the counters existed.
         long frames = 0;
         long drawn = 0;
-        if (vocem::journal_read_stat(live.pid, frames, drawn)) {
+        if (vocem::journal_read_stat_beside(live.path, frames, drawn)) {
             entry[QStringLiteral("frames")] = static_cast<qlonglong>(frames);
             entry[QStringLiteral("drawn")] = static_cast<qlonglong>(drawn);
         }
@@ -711,12 +850,49 @@ void ConfigBridge::refreshDaemonLog() {
                        QStringLiteral("-o"), QStringLiteral("short")});
 }
 
+// The machine's displays, re-read and announced only when they changed. They
+// were read once, on first use, and kept for the life of the process -- which
+// for a tray application started at login is the whole session (entry 111);
+// then forgotten on every sweep and re-read by every binding on stateChanged,
+// which fires twice a second. Read here, once per sweep, compared, announced
+// on a signal of their own.
+void ConfigBridge::refreshDisplays() {
+    vocem::forget_displays();
+    ++display_reads_;
+    const QList<vocem::DisplayMode> fresh = vocem::displays();
+    const QString resolution = vocem::screen_resolution();
+    if (fresh == displays_shown_ && resolution == resolution_shown_) {
+        return;
+    }
+    displays_shown_ = fresh;
+    resolution_shown_ = resolution;
+    emit displaysChanged();
+}
+
+void ConfigBridge::announceState() {
+    Announced now;
+    now.busy = busy_;
+    now.attached = attached_;
+    now.status = attached_ ? static_cast<int>(snapshot_.status) : -1;
+    now.in_channel = attached_ && snapshot_.in_channel;
+    now.user_count = attached_ ? snapshot_.user_count : 0;
+    now.segment_abi = segment_abi_;
+    if (announced_once_ && now == announced_) {
+        return;
+    }
+    announced_ = now;
+    announced_once_ = true;
+    ++state_emits_;
+    emit stateChanged();
+}
+
 void ConfigBridge::refreshState() {
     // Every eighth tick: four seconds, which is sooner than anybody can start a
     // game and reach the page it appears on, and rare enough that a list nobody is
     // looking at costs nothing.
     if (--application_ticks_ <= 0) {
         application_ticks_ = 8;
+        reloadIfMoved();
         refreshApplications();
         refreshCrashReports();
         // The live list on the same tick as the rest. It used to be computed
@@ -739,15 +915,22 @@ void ConfigBridge::refreshState() {
         // On this tick and not the twice-a-second one, measured: 141 us per
         // enumeration on this machine, so four seconds is thirty-five parts in
         // a million and still fifteen times more often than the daemon asks.
-        vocem::forget_displays();
+        refreshDisplays();
+        // The segment's ABI, for the Debug page's two-sided question (entry
+        // 60): asked here, once per sweep, rather than by every binding on
+        // every tick. Attached means the reader accepted it, which is our own.
+        ++abi_peeks_;
+        segment_abi_ = attached_ ? static_cast<int>(vocem::kAbiVersion)
+                                 : static_cast<int>(vocem::peek_abi_version());
     }
 
     if (!attached_) {
         attached_ = reader_.open();
         if (!attached_) {
-            emit stateChanged();
+            announceState();
             return;
         }
+        segment_abi_ = static_cast<int>(vocem::kAbiVersion);
     }
     // still_current() as well as read(): unlinking removes the name and not the
     // pages, so after an external stop this mapping would go on reading its
@@ -799,7 +982,7 @@ void ConfigBridge::refreshState() {
         emit selfVoiceChanged();
     }
 
-    emit stateChanged();
+    announceState();
 }
 
 // The one place that decides what is going on. Everything else -- the sentence,
@@ -902,7 +1085,12 @@ QString ConfigBridge::daemonExecutable() const {
 
 
 bool ConfigBridge::startDaemon() {
-    if (systemd_unit_available()) {
+    if (unit_available_ < 0) {
+        // The probe has not answered yet: the start happens when it does.
+        daemon_start_wanted_ = true;
+        return true;
+    }
+    if (unit_available_ == 1) {
         return QProcess::startDetached(QStringLiteral("systemctl"),
                                        {QStringLiteral("--user"), QStringLiteral("start"),
                                         QStringLiteral("vocemd.service")});
@@ -914,30 +1102,69 @@ bool ConfigBridge::startDaemon() {
     return QProcess::startDetached(executable, {});
 }
 
-void ConfigBridge::stopDaemon() {
-    if (systemd_unit_available()) {
-        QProcess::execute(QStringLiteral("systemctl"),
-                          {QStringLiteral("--user"), QStringLiteral("stop"),
-                           QStringLiteral("vocemd.service")});
+void ConfigBridge::stopDaemon(std::function<void()> done) {
+    // One `done`, however the stop ends: by the process finishing, by it never
+    // starting, or by the cap.
+    auto finished = std::make_shared<bool>(false);
+    const auto complete = [finished, done] {
+        if (*finished) {
+            return;
+        }
+        *finished = true;
+        done();
+    };
+    QPointer<QProcess> stop = new QProcess(this);  // a QPointer: see probePreload
+    connect(stop, &QProcess::finished, this, [stop, complete](int, QProcess::ExitStatus) {
+        if (stop) {
+            stop->deleteLater();
+        }
+        complete();
+    });
+    connect(stop, &QProcess::errorOccurred, this, [stop, complete] {
+        if (stop) {
+            stop->deleteLater();
+        }
+        complete();
+    });
+    // The unit's TimeoutStopSec is ten; past twelve the stop is not going to
+    // end and the window must not hang on it.
+    QTimer::singleShot(12000, this, [stop, complete] {
+        if (stop && stop->state() != QProcess::NotRunning) {
+            stop->kill();
+        }
+        complete();
+    });
+    if (unit_available_ == 1) {
+        stop->start(QStringLiteral("systemctl"), {QStringLiteral("--user"), QStringLiteral("stop"),
+                                                  QStringLiteral("vocemd.service")});
         return;
     }
     // No unit to go through, so signal the process directly. SIGTERM: the daemon
     // cleans up its shared memory on the way out.
-    QProcess::execute(QStringLiteral("pkill"), {QStringLiteral("-TERM"),
-                                                QStringLiteral("-x"), QStringLiteral("vocemd")});
+    stop->start(QStringLiteral("pkill"),
+                {QStringLiteral("-TERM"), QStringLiteral("-x"), QStringLiteral("vocemd")});
 }
 
-// Quit, meaning quit. The daemon is stopped first and synchronously --
-// systemctl waits for the stop, the daemon publishes cleared state before it
-// unlinks, and the overlay leaves every running game within about a second
-// (held by tests/daemon_notification.cpp on the backend's side) -- and only
-// then does this process end, so nothing can interleave between "the window is
-// gone" and "the overlay is still up" in the order a user would notice.
-// Reopening the application starts the daemon again (see the constructor), and
-// a game still running reattaches to the new segment by itself.
+// Quit, meaning quit. The daemon is stopped first -- systemctl waits for the
+// stop, the daemon publishes cleared state before it unlinks, and the overlay
+// leaves every running game within about a second (held by
+// tests/daemon_notification.cpp on the backend's side) -- and only then does
+// this process end, so nothing can interleave between "the window is gone" and
+// "the overlay is still up" in the order a user would notice. The wait is
+// asynchronous now: the windows are hidden at once and the process ends when
+// the stop has, where a synchronous stop held a visible, frozen window for as
+// long as the daemon took to leave -- up to its TimeoutStopSec. Reopening the
+// application starts the daemon again (see the constructor), and a game still
+// running reattaches to the new segment by itself.
 void ConfigBridge::quitOverlay() {
-    stopDaemon();
-    QCoreApplication::quit();
+    if (quitting_) {
+        return;
+    }
+    quitting_ = true;
+    for (QWindow* window : QGuiApplication::allWindows()) {
+        window->hide();
+    }
+    stopDaemon([] { QCoreApplication::quit(); });
 }
 
 void ConfigBridge::performAction() {
@@ -946,7 +1173,7 @@ void ConfigBridge::performAction() {
     }
     if (!attached_) {
         busy_ = true;
-        emit stateChanged();
+        announceState();
         startDaemon();
         // The daemon needs a moment to create the segment; the timer picks it up.
         QTimer::singleShot(1500, this, [this] {
@@ -964,16 +1191,16 @@ void ConfigBridge::performAction() {
 // so a restart is part of the operation rather than something the user must do.
 void ConfigBridge::reauthorise() {
     busy_ = true;
-    emit stateChanged();
+    announceState();
 
-    stopDaemon();
-    QFile::remove(QString::fromStdString(vocem::token_path()));
-
-    QTimer::singleShot(800, this, [this] {
-        startDaemon();
-        QTimer::singleShot(1500, this, [this] {
-            busy_ = false;
-            refreshState();
+    stopDaemon([this] {
+        QFile::remove(QString::fromStdString(vocem::token_path()));
+        QTimer::singleShot(800, this, [this] {
+            startDaemon();
+            QTimer::singleShot(1500, this, [this] {
+                busy_ = false;
+                refreshState();
+            });
         });
     });
 }
@@ -1029,37 +1256,17 @@ QVariantList ConfigBridge::participants() const {
     return list;
 }
 
-namespace {
-
-float clamp01(qreal value) {
-    if (value < 0.0) return 0.0f;
-    if (value > 1.0) return 1.0f;
-    return static_cast<float>(value);
-}
-
-}  // namespace
-
 void ConfigBridge::setPositionX(qreal value) {
-    const float clamped = clamp01(value);
-    if (qFuzzyCompare(config_.position_x, clamped)) {
-        return;
-    }
-    config_.position_x = clamped;
-    persist();
+    setNumber("position_x", &vocem::Config::position_x, value);
 }
 
 void ConfigBridge::setPositionY(qreal value) {
-    const float clamped = clamp01(value);
-    if (qFuzzyCompare(config_.position_y, clamped)) {
-        return;
-    }
-    config_.position_y = clamped;
-    persist();
+    setNumber("position_y", &vocem::Config::position_y, value);
 }
 
 void ConfigBridge::setPosition(qreal x, qreal y) {
-    const float new_x = clamp01(x);
-    const float new_y = clamp01(y);
+    const float new_x = static_cast<float>(vocem::Config::clamped("position_x", x));
+    const float new_y = static_cast<float>(vocem::Config::clamped("position_y", y));
     if (qFuzzyCompare(config_.position_x, new_x) && qFuzzyCompare(config_.position_y, new_y)) {
         return;
     }
@@ -1069,19 +1276,11 @@ void ConfigBridge::setPosition(qreal x, qreal y) {
 }
 
 void ConfigBridge::setScale(qreal value) {
-    if (qFuzzyCompare(scale(), value)) {
-        return;
-    }
-    config_.scale = static_cast<float>(value);
-    persist();
+    setNumber("scale", &vocem::Config::scale, value);
 }
 
 void ConfigBridge::setOpacity(qreal value) {
-    if (qFuzzyCompare(opacity(), value)) {
-        return;
-    }
-    config_.opacity = static_cast<float>(value);
-    persist();
+    setNumber("opacity", &vocem::Config::opacity, value);
 }
 
 namespace {
@@ -1196,22 +1395,11 @@ void ConfigBridge::setPanelEnabled(bool value) {
 }
 
 void ConfigBridge::setAvatarSize(qreal value) {
-    if (qFuzzyCompare(avatarSize(), value)) {
-        return;
-    }
-    config_.avatar_size = static_cast<float>(value);
-    persist();
+    setNumber("avatar_size", &vocem::Config::avatar_size, value);
 }
 
 void ConfigBridge::setFontSize(qreal value) {
-    // The same bounds the settings file is read with, so a number typed into the
-    // box and a number edited into the file mean the same thing.
-    const float clamped = value < 8.0 ? 8.0f : (value > 48.0 ? 48.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.font_size, clamped)) {
-        return;
-    }
-    config_.font_size = clamped;
-    persist();
+    setNumber("font_size", &vocem::Config::font_size, value);
 }
 
 // The family, and the files it stands for. Three fields move together because
@@ -1501,81 +1689,35 @@ void ConfigBridge::setNotificationCorner(int value) {
 }
 
 void ConfigBridge::setNotificationSeconds(qreal value) {
-    const float clamped = value < 1.0 ? 1.0f : (value > 30.0 ? 30.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.notification_seconds, clamped)) {
-        return;
-    }
-    config_.notification_seconds = clamped;
-    persist();
+    setNumber("notification_seconds", &vocem::Config::notification_seconds, value);
 }
 
 void ConfigBridge::setNotificationOpacity(qreal value) {
-    const float clamped = clamp01(value);
-    if (qFuzzyCompare(config_.notification_opacity, clamped)) {
-        return;
-    }
-    config_.notification_opacity = clamped;
-    persist();
+    setNumber("notification_opacity", &vocem::Config::notification_opacity, value);
 }
 
 
 void ConfigBridge::setNotificationScale(qreal value) {
-    const float clamped = value < 0.5f ? 0.5f : (value > 3.0f ? 3.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.notification_scale, clamped)) {
-        return;
-    }
-    config_.notification_scale = clamped;
-    persist();
+    setNumber("notification_scale", &vocem::Config::notification_scale, value);
 }
 void ConfigBridge::setNotificationMargin(qreal value) {
-    const float clamped =
-        value < 0.0f ? 0.0f : (value > 120.0f ? 120.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.notification_margin, clamped)) {
-        return;
-    }
-    config_.notification_margin = clamped;
-    persist();
+    setNumber("notification_margin", &vocem::Config::notification_margin, value);
 }
 
 void ConfigBridge::setScreenMargin(qreal value) {
-    const float clamped = value < 0.0f ? 0.0f : (value > 120.0f ? 120.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.screen_margin, clamped)) {
-        return;
-    }
-    config_.screen_margin = clamped;
-    persist();
+    setNumber("screen_margin", &vocem::Config::screen_margin, value);
 }
 void ConfigBridge::setBoxPaddingX(qreal value) {
-    const float clamped = value < 0.0f ? 0.0f : (value > 48.0f ? 48.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.box_padding_x, clamped)) {
-        return;
-    }
-    config_.box_padding_x = clamped;
-    persist();
+    setNumber("box_padding_x", &vocem::Config::box_padding_x, value);
 }
 void ConfigBridge::setBoxPaddingY(qreal value) {
-    const float clamped = value < 0.0f ? 0.0f : (value > 48.0f ? 48.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.box_padding_y, clamped)) {
-        return;
-    }
-    config_.box_padding_y = clamped;
-    persist();
+    setNumber("box_padding_y", &vocem::Config::box_padding_y, value);
 }
 void ConfigBridge::setAvatarGap(qreal value) {
-    const float clamped = value < 0.0f ? 0.0f : (value > 48.0f ? 48.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.avatar_gap, clamped)) {
-        return;
-    }
-    config_.avatar_gap = clamped;
-    persist();
+    setNumber("avatar_gap", &vocem::Config::avatar_gap, value);
 }
 void ConfigBridge::setRowSpacing(qreal value) {
-    const float clamped = value < 0.0f ? 0.0f : (value > 48.0f ? 48.0f : static_cast<float>(value));
-    if (qFuzzyCompare(config_.row_spacing, clamped)) {
-        return;
-    }
-    config_.row_spacing = clamped;
-    persist();
+    setNumber("row_spacing", &vocem::Config::row_spacing, value);
 }
 
 void ConfigBridge::setEnabled(bool value) {

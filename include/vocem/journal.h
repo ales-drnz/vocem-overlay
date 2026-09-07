@@ -41,6 +41,8 @@
 #define VOCEM_JOURNAL_H
 
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -60,8 +62,10 @@ inline std::string journal_dir() {
     if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
         return std::string(xdg) + "/vocem/journal";
     }
+    // No HOME either: /tmp, never the game's own working directory (apps.h
+    // says the same).
     const char* home = std::getenv("HOME");
-    return std::string(home ? home : ".") + "/.cache/vocem/journal";
+    return std::string(home ? home : "/tmp") + "/.cache/vocem/journal";
 }
 
 // Where the crash marker used to write. Scanned for crashes only, so a game
@@ -72,7 +76,42 @@ inline std::string journal_legacy_dir() {
         return std::string(xdg) + "/vocem/crashes";
     }
     const char* home = std::getenv("HOME");
-    return std::string(home ? home : ".") + "/.cache/vocem/crashes";
+    return std::string(home ? home : "/tmp") + "/.cache/vocem/crashes";
+}
+
+// The path a journal's `.stat` file sits at, from the journal's own path:
+// `<x>.running` -> `<x>.stat`, whatever `<x>` is. One spelling, because the
+// journal's name is no longer always the bare pid (journal_begin says why),
+// and the stat file has to follow it wherever it went.
+inline void journal_stat_path_for(const char* journal_path, char* out, size_t capacity) {
+    std::snprintf(out, capacity, "%s", journal_path);
+    if (char* suffix = ::strstr(out, ".running")) {
+        std::snprintf(suffix, capacity - static_cast<size_t>(suffix - out), ".stat");
+    } else if (char* suffix = ::strstr(out, ".done")) {
+        std::snprintf(suffix, capacity - static_cast<size_t>(suffix - out), ".stat");
+    }
+}
+
+// Whether this process can see the whole machine's pids. Inside a pid
+// namespace -- Steam's container, a Flatpak -- /proc shows the sandbox's own
+// processes and nobody else's, so "no /proc/<pid>" says nothing about whether
+// the host process that wrote a journal is alive. Pid 1 is what tells: on the
+// host it is the init system, in a sandbox it is the sandbox's own runner.
+inline bool journal_sees_host_pids() {
+    std::FILE* comm = ::fopen("/proc/1/comm", "r");
+    if (!comm) {
+        return false;
+    }
+    char name[64] = {0};
+    const bool read = ::fgets(name, sizeof(name), comm) != nullptr;
+    ::fclose(comm);
+    if (!read) {
+        return false;
+    }
+    if (char* newline = ::strchr(name, '\n')) {
+        *newline = '\0';
+    }
+    return ::strcmp(name, "systemd") == 0 || ::strcmp(name, "init") == 0;
 }
 
 // How many finished journals the history keeps. Enough to cover a day of
@@ -156,6 +195,15 @@ inline void journal_prune_kind(const std::string& dir, const char* kind, size_t 
             }
         }
         ::unlink(found[oldest].path.c_str());
+        // And the counters beside it: a crashed process left its `.stat`
+        // behind, and nothing removed one whose journal had been pruned --
+        // the directory this walk exists to bound grew with them.
+        char stat_path[560];
+        journal_stat_path_for(found[oldest].path.c_str(), stat_path, sizeof(stat_path));
+        ::unlink(stat_path);
+        char part_path[576];
+        std::snprintf(part_path, sizeof(part_path), "%s.part", stat_path);
+        ::unlink(part_path);
         found.erase(found.begin() + static_cast<long>(oldest));
     }
 }
@@ -169,7 +217,16 @@ inline void journal_prune_kind(const std::string& dir, const char* kind, size_t 
 // limit, and this walk with it.
 inline void journal_prune(const std::string& dir) {
     journal_prune_kind(dir, ".done", 5, false, kJournalHistoryKeep);
-    journal_prune_kind(dir, ".running", 8, true, kJournalHistoryKeep);
+    // Dead `.running` journals are known dead by their pid's absence from
+    // /proc, which is only an answer where /proc shows the host's pids. A
+    // game in Steam's container shares the host's cache directory and sees a
+    // pid namespace of its own: from in there every host game's journal
+    // looked dead, and past the keep the oldest -- a live one, since a
+    // session's start is older than any crash after it -- was unlinked
+    // (entry 135). The host's processes prune; a sandbox's do not.
+    if (journal_sees_host_pids()) {
+        journal_prune_kind(dir, ".running", 8, true, kJournalHistoryKeep);
+    }
 }
 
 }  // namespace detail
@@ -185,10 +242,40 @@ inline void journal_begin(const char* component, const char* process) {
     const std::string dir = journal_dir();
     make_directories(dir);
     detail::journal_prune(dir);
-    std::snprintf(detail::journal_path_buffer(), 512, "%s/%d.running", dir.c_str(),
-                  static_cast<int>(::getpid()));
-    FILE* file = ::fopen(detail::journal_path_buffer(), "w");
+    // Created exclusively, never over a file that is there. `<pid>.running`
+    // used to be fopen(..., "w"), which truncates whatever holds that name: a
+    // pid recycled since a crashed game wrote its journal, or -- the sharper
+    // case -- a game inside Steam's container, whose pid namespace is its own
+    // while its cache directory is the host's, so a container pid of 812
+    // truncated and rewrote the header of the host's live journal 812 and left
+    // the Debug section reporting a crash for a game that was still running
+    // (entry 135). Where the name is taken, the journal takes a suffixed one;
+    // the scanner keys on the header's pid and not on the name. O_NOFOLLOW
+    // and O_CLOEXEC for the reasons the record writer has them (entry 98): a
+    // link at that name must not steer the write, and the descriptor must not
+    // ride into everything the game execs.
+    int descriptor = -1;
+    for (int attempt = 0; attempt < 10 && descriptor < 0; ++attempt) {
+        if (attempt == 0) {
+            std::snprintf(detail::journal_path_buffer(), 512, "%s/%d.running", dir.c_str(),
+                          static_cast<int>(::getpid()));
+        } else {
+            std::snprintf(detail::journal_path_buffer(), 512, "%s/%d-%d.running", dir.c_str(),
+                          static_cast<int>(::getpid()), attempt);
+        }
+        descriptor = ::open(detail::journal_path_buffer(),
+                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (descriptor < 0 && errno != EEXIST) {
+            break;
+        }
+    }
+    if (descriptor < 0) {
+        detail::journal_path_buffer()[0] = '\0';
+        return;
+    }
+    FILE* file = ::fdopen(descriptor, "w");
     if (!file) {
+        ::close(descriptor);
         return;
     }
     ::setvbuf(file, nullptr, _IOLBF, 0);
@@ -228,20 +315,31 @@ inline void journal_stat(long frames, long drawn) {
         detail::journal_owner_pid() != static_cast<int>(::getpid())) {
         return;  // no journal (a declining process), or a forked child's copy
     }
-    const std::string dir = journal_dir();
-    char name[160];
-    std::snprintf(name, sizeof(name), "%s/%d.stat.part", dir.c_str(),
-                  static_cast<int>(::getpid()));
-    FILE* file = ::fopen(name, "w");
+    // Beside the journal, whatever the journal's name turned out to be.
+    char final_name[560];
+    journal_stat_path_for(detail::journal_path_buffer(), final_name, sizeof(final_name));
+    char name[576];
+    std::snprintf(name, sizeof(name), "%s.part", final_name);
+    // Not fopen("w"): a link or a FIFO left at the temporary's name must not
+    // steer or stall a game's frame (entry 98). A leftover of our own from a
+    // crash between write and rename is removed first.
+    ::unlink(name);
+    const int descriptor =
+        ::open(name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (descriptor < 0) {
+        return;
+    }
+    FILE* file = ::fdopen(descriptor, "w");
     if (!file) {
+        ::close(descriptor);
+        ::unlink(name);
         return;
     }
     std::fprintf(file, "frames = %ld\ndrawn = %ld\n", frames, drawn);
     ::fclose(file);
-    char final_name[160];
-    std::snprintf(final_name, sizeof(final_name), "%s/%d.stat", dir.c_str(),
-                  static_cast<int>(::getpid()));
-    ::rename(name, final_name);
+    if (::rename(name, final_name) != 0) {
+        ::unlink(name);
+    }
 }
 
 // The clean end: the journal becomes history rather than evidence. A crash
@@ -265,15 +363,11 @@ inline void journal_end() {
     } else {
         ::unlink(running);
     }
-    // The stat file's path is rebuilt rather than derived from the journal's:
-    // this half already survived the exit path for exactly that reason.
-    char stat_name[520];
-    std::snprintf(stat_name, sizeof(stat_name), "%s", running);
-    if (char* suffix = ::strstr(stat_name, ".running")) {
-        std::snprintf(suffix, sizeof(stat_name) - static_cast<size_t>(suffix - stat_name),
-                      ".stat");
-        ::unlink(stat_name);
-    }
+    // The stat file's path is rebuilt from the journal's char buffer, which is
+    // still itself when the ELF destructor runs (the reason the buffer exists).
+    char stat_name[560];
+    journal_stat_path_for(running, stat_name, sizeof(stat_name));
+    ::unlink(stat_name);
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +527,23 @@ inline std::vector<JournalEntry> journal_history() {
 
 // The counters a drawing process keeps beside its journal. False when the
 // process has not written any (an old library, or the first seconds of one).
+// By the journal's path, because the journal's name is not always the bare
+// pid (journal_begin); the pid-keyed spelling below is for callers that have
+// only that, and it finds the plain name alone.
+inline bool journal_read_stat_beside(const std::string& journal_path, long& frames, long& drawn) {
+    char name[560];
+    journal_stat_path_for(journal_path.c_str(), name, sizeof(name));
+    FILE* file = ::fopen(name, "r");
+    if (!file) {
+        return false;
+    }
+    frames = 0;
+    drawn = 0;
+    const bool read = std::fscanf(file, "frames = %ld\ndrawn = %ld", &frames, &drawn) == 2;
+    ::fclose(file);
+    return read;
+}
+
 inline bool journal_read_stat(int pid, long& frames, long& drawn) {
     char name[160];
     std::snprintf(name, sizeof(name), "%s/%d.stat", journal_dir().c_str(), pid);

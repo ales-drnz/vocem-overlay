@@ -202,7 +202,18 @@ Item {
                     spacing: Theme.smallSpacing
                 }
 
-                Item { Layout.fillWidth: true }
+                // Why the last Apply did not land, between the two buttons:
+                // the file could not be written, and a grey Apply button
+                // used to be the whole of what the window said about it.
+                InlineMessage {
+                    objectName: "saveError"
+                    visible: root.hasSettings && root.config.saveError !== ""
+                    severity: InlineMessage.Severity.Error
+                    text: root.config.saveError
+                    Layout.fillWidth: true
+                }
+
+                Item { Layout.fillWidth: root.config.saveError === "" }
 
                 DialogButtonBox {
                     id: apply

@@ -40,12 +40,15 @@ endfunction()
 # The clamps, from the one place the file's bounds are stated. Whole-file
 # regex, not file(STRINGS): the source is full of semicolons, which CMake
 # treats as list separators and mangles a per-line walk with.
+# The bounds are one table since 0.1.8 -- Config::numbers() -- rows of
+# {"key", &Config::member, low, high, decimals}; load(), the window's setters
+# and this walk all read it.
 file(READ "${SOURCE_DIR}/include/vocem/config.h" config_text)
-string(REGEX MATCHALL "[a-z_]+ = clamp\\(to_number\\(value\\), [0-9.]+f?, [0-9.]+f?\\)"
+string(REGEX MATCHALL "{\"[a-z_]+\", &Config::[a-z_]+, [0-9.]+, [0-9.]+, [0-9]+}"
        clamp_hits "${config_text}")
 set(clamp_count 0)
 foreach(hit IN LISTS clamp_hits)
-    if(hit MATCHES "([a-z_]+) = clamp\\(to_number\\(value\\), ([0-9.]+)f?, ([0-9.]+)f?\\)")
+    if(hit MATCHES "{\"([a-z_]+)\", &Config::[a-z_]+, ([0-9.]+), ([0-9.]+), [0-9]+}")
         set(key "${CMAKE_MATCH_1}")
         to_thousandths("${CMAKE_MATCH_2}" lo)
         to_thousandths("${CMAKE_MATCH_3}" hi)

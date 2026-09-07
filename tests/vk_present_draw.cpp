@@ -60,12 +60,65 @@
 // vkCmdClearColorImage encodes what it is given, and a test that computes the
 // expected grey is a test that can be wrong about the encoding rather than about
 // the overlay. The clear is neutral grey so channel order never enters into it.
+//
+// Three more things the same probe can do, each chosen by the environment so
+// there is one source and not four (the widths.cpp pattern):
+//
+//   * VOCEM_VK_WITNESS_MANIFEST names the manifest of tests/vk_witness_layer.cpp,
+//     which is put into the chain BELOW the overlay's layer and writes down
+//     what the overlay asks of it. After the run the report is read: no wait
+//     inside a present, no submit with a signalled fence, no pipeline bound in
+//     a render pass it is incompatible with -- and at least one submit inside a
+//     present, which is the overlay's own draw and the proof the witness sat
+//     under it rather than over it. Pixels cannot see any of those; the layer
+//     shipped 0.1.7 with all three (DESIGN entry 131).
+//   * VOCEM_VK_SCENARIO=recreate: after the frames the swapchain is recreated
+//     in the OTHER 8-bit format (sRGB where it was UNORM and the reverse), the
+//     old one handed over as oldSwapchain, and the frames run again. The
+//     overlay must draw into the second one too, through a pipeline compatible
+//     with its render pass: ImGui's stock pipeline was built for the first
+//     format, and the witness is what tells a wrong pipeline from a right one.
+//     VOCEM_VK_FORMAT_FIRST=srgb starts with the sRGB format, which is the
+//     direction where the stock pipeline used to be drawn into a UNORM pass.
+//   * VOCEM_VK_SCENARIO=second-device: a second VkDevice is created on the same
+//     adapter and destroyed at once, the way a helper device comes and goes,
+//     and the frames continue. The overlay's backend belongs to the first
+//     device and must survive the second one's death: it used to be torn down
+//     for any device destroyed in the process, and rebuilt -- "backend ready"
+//     twice in the log, and every avatar re-uploaded -- on the next present.
+//     The layer's log goes to this process's stderr, which is duplicated into
+//     a file so the count can be read.
+//   * VOCEM_VK_SCENARIO=in-flight: the frames are chained the way a game chains
+//     them -- acquire signals a semaphore, the clear waits on it and signals
+//     another, the present waits on that, two frames in flight on a fence each,
+//     no idle wait anywhere in the loop. The default loop idles the queue
+//     before and after every present and waits on nothing, so the layer's two
+//     synchronisation moves -- the wait on its own per-image fence when its
+//     previous submit for that image is still in flight, and the substitution
+//     of its own semaphore for the application's in the present -- were
+//     exercised by nothing. With the witness in the chain, every present the
+//     overlay drew must wait on the semaphore the overlay's own submit signalled
+//     and on nothing else, every present it passed through must wait on this
+//     probe's own, and the only wait allowed on the present path is
+//     vkWaitForFences on a fence the overlay itself submitted.
+//   * VOCEM_VK_SCENARIO=flatpak-off: the process wears FLATPAK_ID and an
+//     XDG_RUNTIME_DIR of this test's own, so the layer enters the bridge
+//     (vocem/flatpak.h) and reads its settings from the bridge's copy of
+//     config.ini -- which says `enabled = false`. Nothing is drawn, and the
+//     `request` file the layer writes for the daemon has to say `drawing=0`:
+//     the daemon serves a sandbox that is drawing the channel and every face,
+//     and one that is not its settings and a cleared state. The layer used to
+//     tell it `allowed` where the GL side told it `enabled && allowed`, so a
+//     Flatpak game with the master switch off kept receiving the channel from
+//     a daemon that believed it was drawing (DESIGN entry 138). Against the
+//     layer as shipped in 0.1.8 the file reads `drawing=1`.
 
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <X11/Xlib.h>
@@ -141,7 +194,7 @@ bool mapped_layers(char* vocem_out, size_t capacity) {
     int seen_count = 0;
     bool found = false;
     while (fgets(line, sizeof(line), maps)) {
-        if (!strstr(line, "libVkLayer") && !strstr(line, "libvocem_vk.so") &&
+        if (!strstr(line, "libVkLayer") && !strstr(line, "libvocem_vk") &&
             !strstr(line, "libMangoHud")) {
             continue;
         }
@@ -214,6 +267,8 @@ bool mapped_layers(char* vocem_out, size_t capacity) {
     X(vkDeviceWaitIdle)              \
     X(vkCreateFence)                 \
     X(vkDestroyFence)                \
+    X(vkCreateSemaphore)             \
+    X(vkDestroySemaphore)            \
     X(vkWaitForFences)               \
     X(vkResetFences)                 \
     X(vkCreateBuffer)                \
@@ -274,11 +329,288 @@ void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkIma
 
 }  // namespace
 
+// The wall-clock intervals of this probe's own vkQueuePresentKHR calls, for
+// reading the witness's report against (vk_witness_layer.cpp says why the
+// witness cannot know this itself). `handed_down` is the witness's own
+// `present` stamp inside the interval: the moment the overlay's layer passed
+// the present on. What the layer does BEFORE that moment is on the present
+// path -- rule 8's ground -- and what it does after, before returning to the
+// application, is the post-present phase rule 10 sends the expensive work to.
+// One instrument tells the two apart; a wait after the hand-down is the
+// design working, a wait before it is the fault.
+struct Interval {
+    long long from;
+    long long to;
+    long long handed_down;
+};
+Interval g_presents[256];
+int g_present_count = 0;
+
+long long now_ns() {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<long long>(now.tv_sec) * 1000000000LL + static_cast<long long>(now.tv_nsec);
+}
+
+// Whether `stamp` falls on the present path: inside one of the probe's
+// presents and before the layer handed it down. A present the witness never
+// stamped (it passed through undrawn) counts as a whole.
+bool on_present_path(long long stamp) {
+    for (int i = 0; i < g_present_count; ++i) {
+        const Interval& interval = g_presents[i];
+        if (stamp >= interval.from && stamp <= interval.to) {
+            return interval.handed_down == 0 || stamp < interval.handed_down;
+        }
+    }
+    return false;
+}
+
+bool inside_a_present(long long stamp) {
+    for (int i = 0; i < g_present_count; ++i) {
+        if (stamp >= g_presents[i].from && stamp <= g_presents[i].to) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Reads the witness's `present` stamps into the intervals they fall in.
+void place_hand_downs(const char* path) {
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return;
+    }
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        long long stamp = 0;
+        char word[128] = {0};
+        if (sscanf(line, "%lld %127s", &stamp, word) != 2 || strcmp(word, "present") != 0) {
+            continue;
+        }
+        for (int i = 0; i < g_present_count; ++i) {
+            if (stamp >= g_presents[i].from && stamp <= g_presents[i].to) {
+                g_presents[i].handed_down = stamp;
+                break;
+            }
+        }
+    }
+    fclose(file);
+}
+
+// How many report lines carry `event` (the word after the stamp, compared
+// whole -- "submit" is not "submit-signalled-fence"), how many of those fell
+// inside one of this probe's presents at all, and how many on the present
+// path proper. -1 when the report does not exist.
+long count_events(const char* path, const char* event, long* inside, long* on_path) {
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return -1;
+    }
+    long count = 0;
+    if (inside) {
+        *inside = 0;
+    }
+    if (on_path) {
+        *on_path = 0;
+    }
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        long long stamp = 0;
+        char word[128] = {0};
+        if (sscanf(line, "%lld %127s", &stamp, word) != 2 || strcmp(word, event) != 0) {
+            continue;
+        }
+        ++count;
+        if (inside && inside_a_present(stamp)) {
+            ++*inside;
+        }
+        if (on_path && on_present_path(stamp)) {
+            ++*on_path;
+        }
+    }
+    fclose(file);
+    return count;
+}
+
+// A handle as the witness spells it (a C-style cast reads a pointer and an
+// integer alike; non-dispatchable handles are one or the other by width).
+template <typename Handle>
+unsigned long long handle_value(Handle handle) {
+    return (unsigned long long)handle;
+}
+
+// The semaphores this probe presents with in the in-flight scenario, so the
+// analysis below can tell "the overlay passed the frame through" from "the
+// overlay substituted its own".
+unsigned long long g_own_semaphores[4];
+int g_own_semaphore_count = 0;
+
+// Reads the handles after `key=` in a report line into `out`; how many.
+int parse_handles(const char* line, const char* key, unsigned long long* out, int capacity) {
+    char pattern[32];
+    snprintf(pattern, sizeof(pattern), " %s=", key);
+    const char* at = strstr(line, pattern);
+    if (!at) {
+        return 0;
+    }
+    at += strlen(pattern);
+    int count = 0;
+    while (*at && *at != ' ' && *at != '\n' && count < capacity) {
+        char* end = nullptr;
+        out[count++] = strtoull(at, &end, 16);
+        if (end == at) {
+            break;
+        }
+        at = *end == ',' ? end + 1 : end;
+    }
+    return count;
+}
+
+// What the in-flight scenario holds the chain to, read out of the witness's
+// report against this probe's present intervals:
+//   * a present the overlay drew into (an in-interval submit precedes it) waits
+//     on exactly the semaphore that submit signalled -- the layer's own, and
+//     nothing of the probe's left in the list;
+//   * a present the overlay passed through waits on this probe's own semaphore;
+//   * a wait on the present path is vkWaitForFences on a fence the overlay
+//     itself submitted, and nothing else -- rule 8's "the only wait is on our
+//     own fence", said as a measurement.
+struct ChainReport {
+    long presents_drawn = 0;
+    long presents_passed = 0;
+    long present_mismatches = 0;
+    long own_fence_waits_on_path = 0;
+    long foreign_waits_on_path = 0;
+};
+
+ChainReport analyse_chain(const char* path) {
+    ChainReport out;
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return out;
+    }
+    // The overlay's own submits: fence and signals, per present interval.
+    struct Submit {
+        long long stamp;
+        unsigned long long fence;
+        unsigned long long signals[4];
+        int signal_count;
+    };
+    static Submit submits[4096];
+    int submit_count = 0;
+    char line[1024];
+    // Two passes, because a present line is read against the submits before it
+    // and a wait against the fences submitted before it: the report is in
+    // order, so one pass with a growing table is the same thing.
+    while (fgets(line, sizeof(line), file)) {
+        long long stamp = 0;
+        char word[128] = {0};
+        if (sscanf(line, "%lld %127s", &stamp, word) != 2) {
+            continue;
+        }
+        if (strcmp(word, "submit") == 0) {
+            if (!inside_a_present(stamp) || submit_count >= 4096) {
+                continue;  // the probe's own, outside its presents
+            }
+            Submit& s = submits[submit_count++];
+            s.stamp = stamp;
+            unsigned long long fence = 0;
+            parse_handles(line, "fence", &fence, 1);
+            s.fence = fence;
+            s.signal_count = parse_handles(line, "signals", s.signals, 4);
+            continue;
+        }
+        if (strcmp(word, "present") == 0) {
+            unsigned long long sems[4];
+            const int count = parse_handles(line, "sems", sems, 4);
+            // The overlay's submit inside the same interval, if any.
+            const Submit* drew = nullptr;
+            for (int i = submit_count - 1; i >= 0; --i) {
+                if (submits[i].stamp <= stamp) {
+                    for (int k = 0; k < g_present_count; ++k) {
+                        const Interval& interval = g_presents[k];
+                        if (stamp >= interval.from && stamp <= interval.to &&
+                            submits[i].stamp >= interval.from && submits[i].stamp <= interval.to) {
+                            drew = &submits[i];
+                        }
+                    }
+                    break;
+                }
+            }
+            if (drew) {
+                ++out.presents_drawn;
+                const bool exact = count == 1 && drew->signal_count == 1 &&
+                                   sems[0] == drew->signals[0];
+                if (!exact) {
+                    ++out.present_mismatches;
+                }
+            } else {
+                ++out.presents_passed;
+                bool own = count == 1;
+                if (own) {
+                    own = false;
+                    for (int i = 0; i < g_own_semaphore_count; ++i) {
+                        own = own || g_own_semaphores[i] == sems[0];
+                    }
+                }
+                if (!own) {
+                    ++out.present_mismatches;
+                }
+            }
+            continue;
+        }
+        if (strcmp(word, "wait") == 0 && on_present_path(stamp)) {
+            unsigned long long fences[4];
+            const int count = strstr(line, "vkWaitForFences") ? parse_handles(line, "fences", fences, 4) : 0;
+            bool all_own = count > 0;
+            for (int i = 0; i < count && all_own; ++i) {
+                bool found = false;
+                for (int j = 0; j < submit_count; ++j) {
+                    found = found || submits[j].fence == fences[i];
+                }
+                all_own = found;
+            }
+            if (all_own) {
+                ++out.own_fence_waits_on_path;
+            } else {
+                ++out.foreign_waits_on_path;
+            }
+        }
+    }
+    fclose(file);
+    return out;
+}
+
+// And how many contain it anywhere: the layer's log lines carry a prefix.
+long lines_containing(const char* path, const char* needle) {
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return -1;
+    }
+    long count = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        if (strstr(line, needle)) {
+            ++count;
+        }
+    }
+    fclose(file);
+    return count;
+}
+
 int main() {
     // The control pass is this same binary with the variable set: the loader
     // then refuses the layer on its disable_environment, so nothing of ours is
     // in the chain and the scene must come back empty.
     const bool control = getenv("VOCEM_DISABLE") != nullptr;
+    const char* scenario = getenv("VOCEM_VK_SCENARIO") ? getenv("VOCEM_VK_SCENARIO") : "";
+    const bool recreate = strcmp(scenario, "recreate") == 0;
+    const bool second_device = strcmp(scenario, "second-device") == 0;
+    const bool flatpak_off = strcmp(scenario, "flatpak-off") == 0;
+    const bool in_flight = strcmp(scenario, "in-flight") == 0;
+    const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
+                            strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
+    const char* witness_manifest = getenv("VOCEM_VK_WITNESS_MANIFEST");
 
     if (!getenv("DISPLAY")) {
         skip("no DISPLAY, so no surface to present to");
@@ -321,10 +653,36 @@ int main() {
     const char* slash = strrchr(self, '/');
     const char* own_name = slash ? slash + 1 : "vocem_vk_present_draw";
     char config[900];
-    snprintf(config, sizeof(config), "enabled = true\nshown_apps = %s\n", own_name);
+    snprintf(config, sizeof(config), "enabled = %s\nshown_apps = %s\n",
+             flatpak_off ? "false" : "true", own_name);
     snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     write_file(path, config);
     setenv("XDG_CONFIG_HOME", root, 1);
+    // The sandbox's shape, built rather than described: a runtime directory
+    // with the application's own `app/<id>` in it, which is the one directory
+    // Flatpak bind-mounts host<->sandbox, and the bridge's copy of the settings
+    // where the layer will look for them once it has entered the bridge. The
+    // layer asks /.flatpak-info first and FLATPAK_ID second; bwrap's root is the
+    // host's here, which has no such file.
+    static const char* const kFlatpakId = "io.vocem.test.FlatpakOff";
+    char request_path[900] = {0};
+    if (flatpak_off) {
+        snprintf(path, sizeof(path), "%s/run", root);
+        mkdir(path, 0700);
+        snprintf(path, sizeof(path), "%s/run/app", root);
+        mkdir(path, 0700);
+        snprintf(path, sizeof(path), "%s/run/app/%s", root, kFlatpakId);
+        mkdir(path, 0700);
+        snprintf(path, sizeof(path), "%s/run/app/%s/vocem", root, kFlatpakId);
+        mkdir(path, 0700);
+        snprintf(path, sizeof(path), "%s/run/app/%s/vocem/config.ini", root, kFlatpakId);
+        write_file(path, config);
+        snprintf(request_path, sizeof(request_path), "%s/run/app/%s/vocem/request", root,
+                 kFlatpakId);
+        snprintf(path, sizeof(path), "%s/run", root);
+        setenv("XDG_RUNTIME_DIR", path, 1);
+        setenv("FLATPAK_ID", kFlatpakId, 1);
+    }
     snprintf(path, sizeof(path), "%s/cache", root);
     mkdir(path, 0700);
     setenv("XDG_CACHE_HOME", path, 1);
@@ -384,11 +742,63 @@ int main() {
             cursor = separator ? separator + 1 : nullptr;
         }
     }
+    // The witness, BELOW the overlay. The order of two implicit layers is not
+    // something a manifest's file name decides -- measured both ways, with the
+    // witness's manifest sorting first and last, it came out on top of the
+    // overlay both times (one vkGetDeviceProcAddr query per name reached it,
+    // the loader's own; the overlay's never did). What does decide it is the
+    // loader's override meta-layer: a manifest named VK_LAYER_LUNARG_override
+    // whose component_layers list IS the chain, first entry nearest the
+    // application. Whether that held is what the positive control in the
+    // report says, every run.
+    char witness_report[800] = {0};
+    if (witness_manifest && witness_manifest[0]) {
+        snprintf(destination, sizeof(destination), "%s/layers/witness.json", root);
+        if (!copy_file(witness_manifest, destination)) {
+            printf("FAIL could not copy the witness manifest %s\n", witness_manifest);
+            return 1;
+        }
+        snprintf(destination, sizeof(destination), "%s/layers/VkLayer_override.json", root);
+        write_file(destination,
+                   "{\n"
+                   "    \"file_format_version\": \"1.1.2\",\n"
+                   "    \"layer\": {\n"
+                   "        \"name\": \"VK_LAYER_LUNARG_override\",\n"
+                   "        \"type\": \"GLOBAL\",\n"
+                   "        \"api_version\": \"1.4.350\",\n"
+                   "        \"implementation_version\": \"1\",\n"
+                   "        \"description\": \"vocem test chain: overlay above the witness\",\n"
+                   "        \"component_layers\": [\"VK_LAYER_VOCEM_overlay\", "
+                   "\"VK_LAYER_VOCEM_witness\"],\n"
+                   "        \"disable_environment\": { \"VOCEM_VK_NO_OVERRIDE\": \"1\" }\n"
+                   "    }\n"
+                   "}\n");
+        snprintf(witness_report, sizeof(witness_report), "%s/witness.txt", root);
+        setenv("VOCEM_WITNESS", "1", 1);
+        setenv("VOCEM_WITNESS_REPORT", witness_report, 1);
+        printf("     witness in the chain, reporting to %s\n", witness_report);
+    }
     setenv("VK_IMPLICIT_LAYER_PATH", path, 1);
     // The dev manifest is gated on VOCEM=1 (enable_environment). Where
     // VOCEM_DISABLE is also set the loader refuses the layer regardless, which
     // is the control.
     setenv("VOCEM", "1", 1);
+    // The layer's own log, sent into a file this process can read back, in the
+    // one scenario that counts its lines ("backend ready", second-device).
+    // Only there: vk_inside_gamescope.cmake reads the same log off this
+    // process's stderr for its own witness ("drawing panel:"), and the first
+    // version redirected it unconditionally, which made that test report the
+    // hook drew nothing. VOCEM_VK_KEEP_STDERR=1 leaves stderr alone whatever
+    // the scenario, for reading the loader's own VK_LOADER_DEBUG output by hand.
+    char stderr_log[800];
+    snprintf(stderr_log, sizeof(stderr_log), "%s/stderr.txt", root);
+    if (second_device && !getenv("VOCEM_VK_KEEP_STDERR")) {
+        if (FILE* teed = fopen(stderr_log, "w")) {
+            fflush(stderr);
+            dup2(fileno(teed), 2);
+            fclose(teed);
+        }
+    }
     // Not a hint: MangoHud's layer reads this and would draw into the frame this
     // test counts.
     unsetenv("MANGOHUD");
@@ -565,21 +975,37 @@ int main() {
     // (hdr_srgb_pixels), and gamescope users exercise it by default, which is
     // worth knowing on its own.
     VkSurfaceFormatKHR chosen{};
+    VkSurfaceFormatKHR other{};  // the other 8-bit family, for the recreate scenario
     bool have_format = false;
-    for (int pass = 0; pass < 2 && !have_format; ++pass) {
-        for (uint32_t i = 0; i < format_count && !have_format; ++i) {
-            const bool unorm = formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ||
-                               formats[i].format == VK_FORMAT_R8G8B8A8_UNORM;
-            const bool srgb = formats[i].format == VK_FORMAT_B8G8R8A8_SRGB ||
-                              formats[i].format == VK_FORMAT_R8G8B8A8_SRGB;
-            if ((pass == 0 && unorm) || (pass == 1 && srgb)) {
-                chosen = formats[i];
-                have_format = true;
-            }
+    bool have_other = false;
+    for (uint32_t i = 0; i < format_count; ++i) {
+        const bool unorm = formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ||
+                           formats[i].format == VK_FORMAT_R8G8B8A8_UNORM;
+        const bool srgb = formats[i].format == VK_FORMAT_B8G8R8A8_SRGB ||
+                          formats[i].format == VK_FORMAT_R8G8B8A8_SRGB;
+        // UNORM preferred (the comment above says why), sRGB first only on
+        // request; the other family is kept for the recreate scenario.
+        const bool first = srgb_first ? srgb : unorm;
+        const bool second = srgb_first ? unorm : srgb;
+        if (first && !have_format) {
+            chosen = formats[i];
+            have_format = true;
+        } else if (second && !have_other) {
+            other = formats[i];
+            have_other = true;
         }
+    }
+    if (!have_format && have_other) {
+        // Only one family on offer: it is the first, and there is no other.
+        chosen = other;
+        have_format = true;
+        have_other = false;
     }
     if (!have_format) {
         skip("the surface offers no 8-bit-per-channel format to read back");
+    }
+    if (recreate && !have_other) {
+        skip("the surface offers only one 8-bit format, so there is nothing to recreate into");
     }
 
     const float priority = 1.0f;
@@ -694,52 +1120,221 @@ int main() {
     // and a few more make the count independent of that detail. No semaphores --
     // acquire waits on a fence and the queue is drained between frames, so the
     // ordering this test needs is the simplest kind that is still correct.
-    for (int frame = 0; frame < kFrames; ++frame) {
-        uint32_t index = 0;
-        const VkResult acquired =
-            vk.vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, VK_NULL_HANDLE, fence, &index);
-        if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
-            printf("FAIL vkAcquireNextImageKHR returned %d on frame %d\n", (int)acquired, frame);
+    // A lambda because the recreate and second-device scenarios run it again
+    // on a second swapchain, or after the second device is gone.
+    const auto run_frames = [&](VkSwapchainKHR chain, VkImage* chain_images, int frames) -> bool {
+        for (int frame = 0; frame < frames; ++frame) {
+            uint32_t index = 0;
+            const VkResult acquired =
+                vk.vkAcquireNextImageKHR(device, chain, UINT64_MAX, VK_NULL_HANDLE, fence, &index);
+            if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+                printf("FAIL vkAcquireNextImageKHR returned %d on frame %d\n", (int)acquired,
+                       frame);
+                return false;
+            }
+            vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+            vk.vkResetFences(device, 1, &fence);
+
+            vk.vkResetCommandBuffer(cmd, 0);
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vk.vkBeginCommandBuffer(cmd, &begin);
+            // UNDEFINED as the old layout: the previous contents are of no
+            // interest and discarding them is what a game clearing its frame does.
+            image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+            vk.vkCmdClearColorImage(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    &grey, 1, &whole);
+            image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+            vk.vkEndCommandBuffer(cmd);
+
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &cmd;
+            vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+            vk.vkQueueWaitIdle(queue);
+
+            // The call this whole file exists for: the layer's hook draws here.
+            VkPresentInfoKHR present{};
+            present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            present.swapchainCount = 1;
+            present.pSwapchains = &chain;
+            present.pImageIndices = &index;
+            const long long before = now_ns();
+            const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
+            const long long after = now_ns();
+            if (g_present_count < 256) {
+                g_presents[g_present_count++] = {before, after, 0};
+            }
+            if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
+                printf("FAIL vkQueuePresentKHR returned %d on frame %d\n", (int)presented, frame);
+                return false;
+            }
+            vk.vkQueueWaitIdle(queue);
+            usleep(4000);
+        }
+        return true;
+    };
+    // The chained loop: what a game does. Two frames in flight, each on a fence
+    // of its own; acquire signals a semaphore the clear waits on, the clear
+    // signals one the present waits on, and nothing idles the queue. The layer
+    // substitutes its own semaphore for the present's and waits on its own
+    // per-image fence when its previous submit for that image is still in
+    // flight -- both unexercised by the loop above, which idles before and
+    // after every present and presents with no semaphore at all.
+    const auto run_frames_in_flight = [&](VkSwapchainKHR chain, VkImage* chain_images,
+                                          int frames) -> bool {
+        constexpr int kSlots = 2;
+        VkSemaphore acquired[kSlots] = {};
+        VkSemaphore done[kSlots] = {};
+        VkFence slot_fence[kSlots] = {};
+        VkCommandBuffer slot_cmd[kSlots] = {};
+        VkSemaphoreCreateInfo sem_info{};
+        sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkFenceCreateInfo signalled{};
+        signalled.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        signalled.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        VkCommandBufferAllocateInfo slots_info = cmd_info;
+        slots_info.commandBufferCount = kSlots;
+        vk.vkAllocateCommandBuffers(device, &slots_info, slot_cmd);
+        g_own_semaphore_count = 0;
+        for (int k = 0; k < kSlots; ++k) {
+            vk.vkCreateSemaphore(device, &sem_info, nullptr, &acquired[k]);
+            vk.vkCreateSemaphore(device, &sem_info, nullptr, &done[k]);
+            vk.vkCreateFence(device, &signalled, nullptr, &slot_fence[k]);
+            g_own_semaphores[g_own_semaphore_count++] = handle_value(done[k]);
+            printf("     probe presents with semaphore 0x%llx\n", handle_value(done[k]));
+        }
+        bool ok = true;
+        for (int frame = 0; frame < frames && ok; ++frame) {
+            const int slot = frame % kSlots;
+            // This slot's previous frame, two presents ago, must be done with
+            // its command buffer before it is recorded again -- the probe's own
+            // wait, outside any present.
+            vk.vkWaitForFences(device, 1, &slot_fence[slot], VK_TRUE, UINT64_MAX);
+            vk.vkResetFences(device, 1, &slot_fence[slot]);
+            uint32_t index = 0;
+            const VkResult got = vk.vkAcquireNextImageKHR(device, chain, UINT64_MAX,
+                                                          acquired[slot], VK_NULL_HANDLE, &index);
+            if (got != VK_SUCCESS && got != VK_SUBOPTIMAL_KHR) {
+                printf("FAIL vkAcquireNextImageKHR returned %d on frame %d\n", (int)got, frame);
+                ok = false;
+                break;
+            }
+            vk.vkResetCommandBuffer(slot_cmd[slot], 0);
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vk.vkBeginCommandBuffer(slot_cmd[slot], &begin);
+            image_barrier(slot_cmd[slot], chain_images[index], VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+            vk.vkCmdClearColorImage(slot_cmd[slot], chain_images[index],
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &grey, 1, &whole);
+            image_barrier(slot_cmd[slot], chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+            vk.vkEndCommandBuffer(slot_cmd[slot]);
+
+            const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.waitSemaphoreCount = 1;
+            submit.pWaitSemaphores = &acquired[slot];
+            submit.pWaitDstStageMask = &stage;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &slot_cmd[slot];
+            submit.signalSemaphoreCount = 1;
+            submit.pSignalSemaphores = &done[slot];
+            vk.vkQueueSubmit(queue, 1, &submit, slot_fence[slot]);
+
+            VkPresentInfoKHR present{};
+            present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            present.waitSemaphoreCount = 1;
+            present.pWaitSemaphores = &done[slot];
+            present.swapchainCount = 1;
+            present.pSwapchains = &chain;
+            present.pImageIndices = &index;
+            const long long before = now_ns();
+            const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
+            const long long after = now_ns();
+            if (g_present_count < 256) {
+                g_presents[g_present_count++] = {before, after, 0};
+            }
+            if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
+                printf("FAIL vkQueuePresentKHR returned %d on frame %d\n", (int)presented, frame);
+                ok = false;
+            }
+        }
+        // Outside every present: the probe's own end-of-scene idle, so the
+        // semaphores can be destroyed and the read-back below re-acquire.
+        vk.vkDeviceWaitIdle(device);
+        for (int k = 0; k < kSlots; ++k) {
+            vk.vkDestroySemaphore(device, acquired[k], nullptr);
+            vk.vkDestroySemaphore(device, done[k], nullptr);
+            vk.vkDestroyFence(device, slot_fence[k], nullptr);
+        }
+        return ok;
+    };
+    if (in_flight) {
+        if (!run_frames_in_flight(swapchain, images, kFrames)) {
             return 1;
         }
-        vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-        vk.vkResetFences(device, 1, &fence);
+    } else if (!run_frames(swapchain, images, kFrames)) {
+        return 1;
+    }
 
-        vk.vkResetCommandBuffer(cmd, 0);
-        VkCommandBufferBeginInfo begin{};
-        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vk.vkBeginCommandBuffer(cmd, &begin);
-        // UNDEFINED as the old layout: the previous contents are of no interest
-        // and discarding them is what a game clearing its frame does.
-        image_barrier(cmd, images[index], VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
-        vk.vkCmdClearColorImage(cmd, images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &grey, 1,
-                                &whole);
-        image_barrier(cmd, images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
-        vk.vkEndCommandBuffer(cmd);
-
-        VkSubmitInfo submit{};
-        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &cmd;
-        vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
-        vk.vkQueueWaitIdle(queue);
-
-        // The call this whole file exists for: the layer's hook draws here.
-        VkPresentInfoKHR present{};
-        present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present.swapchainCount = 1;
-        present.pSwapchains = &swapchain;
-        present.pImageIndices = &index;
-        const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
-        if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
-            printf("FAIL vkQueuePresentKHR returned %d on frame %d\n", (int)presented, frame);
+    // ---- The scenarios, before the read-back --------------------------------
+    if (second_device) {
+        // A helper device, made and unmade beside the presenting one. The
+        // overlay's backend lives on `device`; this one has no swapchain, no
+        // frame, and nothing of ours should notice it going.
+        VkDevice helper = VK_NULL_HANDLE;
+        if (vk.vkCreateDevice(gpu, &device_info, nullptr, &helper) != VK_SUCCESS) {
+            printf("FAIL the second device could not be created\n");
             return 1;
         }
-        vk.vkQueueWaitIdle(queue);
-        usleep(4000);
+        auto destroy_helper =
+            reinterpret_cast<PFN_vkDestroyDevice>(vk.vkGetDeviceProcAddr(helper, "vkDestroyDevice"));
+        auto helper_idle =
+            reinterpret_cast<PFN_vkDeviceWaitIdle>(vk.vkGetDeviceProcAddr(helper, "vkDeviceWaitIdle"));
+        if (helper_idle) {
+            helper_idle(helper);
+        }
+        if (destroy_helper) {
+            destroy_helper(helper, nullptr);
+        }
+        printf("     a second device came and went; the frames continue\n");
+        if (!run_frames(swapchain, images, 15)) {
+            return 1;
+        }
+    }
+    if (recreate) {
+        VkSwapchainCreateInfoKHR again = swap_info;
+        again.imageFormat = other.format;
+        again.imageColorSpace = other.colorSpace;
+        again.oldSwapchain = swapchain;
+        VkSwapchainKHR replacement = VK_NULL_HANDLE;
+        if (vk.vkCreateSwapchainKHR(device, &again, nullptr, &replacement) != VK_SUCCESS) {
+            printf("FAIL vkCreateSwapchainKHR for the recreated swapchain (format %d)\n",
+                   (int)other.format);
+            return 1;
+        }
+        vk.vkDeviceWaitIdle(device);
+        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        swapchain = replacement;
+        image_count = 0;
+        vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, nullptr);
+        if (image_count > 8) {
+            image_count = 8;
+        }
+        vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, images);
+        printf("     swapchain recreated: format %d -> %d, %u images\n", (int)chosen.format,
+               (int)other.format, image_count);
+        if (!run_frames(swapchain, images, kFrames)) {
+            return 1;
+        }
     }
 
     // ---- The frame, read back ----------------------------------------------
@@ -846,6 +1441,14 @@ int main() {
         check(foreign == 0,
               "with the layer out of the chain the presented frame is exactly what the game "
               "painted");
+    } else if (flatpak_off) {
+        check(foreign == 0, "with the master switch off in the bridge's settings nothing is drawn");
+    } else if (in_flight) {
+        check(foreign > 500, "the overlay drew into a frame chained through semaphores, two in flight");
+    } else if (recreate) {
+        check(foreign > 500, "the overlay drew into the RECREATED swapchain, in the other format");
+    } else if (second_device) {
+        check(foreign > 500, "the overlay still drew after a second device came and went");
     } else {
         check(foreign > 500, "the overlay drew into a presented swapchain image");
     }
@@ -861,9 +1464,97 @@ int main() {
     vk.vkDestroyInstance(instance, nullptr);
     XCloseDisplay(display);
 
+    // ---- What the chain saw -------------------------------------------------
+    // Read after the instance is gone, so every line the witness had to write
+    // has been written.
+    if (witness_report[0]) {
+        place_hand_downs(witness_report);
+        long submits_inside = 0;
+        long submits_on_path = 0;
+        long waits_inside = 0;
+        long waits_on_path = 0;
+        const long presents = count_events(witness_report, "present", nullptr, nullptr);
+        const long submits =
+            count_events(witness_report, "submit", &submits_inside, &submits_on_path);
+        const long waits = count_events(witness_report, "wait", &waits_inside, &waits_on_path);
+        const long signalled =
+            count_events(witness_report, "submit-signalled-fence", nullptr, nullptr);
+        const long pipelines = count_events(witness_report, "pipeline-created", nullptr, nullptr);
+        const long mismatches =
+            count_events(witness_report, "pipeline-renderpass-mismatch", nullptr, nullptr);
+        printf("     witness: %ld presents; %ld submits, %ld inside a present, %ld of those on the "
+               "present path; %ld waits, %ld inside a present, %ld of those on the present path; "
+               "%ld submits with a signalled fence; %ld pipelines created; %ld pipeline/render "
+               "pass mismatches\n",
+               presents, submits, submits_inside, submits_on_path, waits, waits_inside,
+               waits_on_path, signalled, pipelines, mismatches);
+        check(presents > 0, "the witness saw the presents at all");
+        check(pipelines > 0,
+              "and a pipeline being created, which only the overlay does: it sat BELOW the "
+              "overlay's layer");
+        check(submits_on_path > 0,
+              "the overlay's own submit fell on the present path, so the intervals are the "
+              "right instrument");
+        if (in_flight) {
+            // With frames in flight the layer's wait on its OWN fence is allowed
+            // to block, and is the one wait rule 8 allows; what the chain saw
+            // is held to that sentence rather than to "no wait at all".
+            const ChainReport chain = analyse_chain(witness_report);
+            printf("     chain: %ld presents drawn (waiting on the overlay's semaphore), %ld passed "
+                   "through (waiting on the probe's), %ld mismatched; on the present path %ld "
+                   "waits on the overlay's own fence and %ld on anything else\n",
+                   chain.presents_drawn, chain.presents_passed, chain.present_mismatches,
+                   chain.own_fence_waits_on_path, chain.foreign_waits_on_path);
+            check(chain.presents_drawn > 0,
+                  "the witness saw presents the overlay had drawn into and handed down");
+            check(chain.present_mismatches == 0,
+                  "every drawn present waits on exactly the semaphore the overlay's submit "
+                  "signalled, and every pass-through on the probe's own");
+            check(chain.foreign_waits_on_path == 0,
+                  "the only wait on the present path is vkWaitForFences on a fence the overlay "
+                  "itself submitted (rule 8)");
+        } else {
+            check(waits_on_path == 0,
+                  "no queue, device or fence wait ran on the present path (rules 8 and 10): what "
+                  "waits, waits after the present was handed down");
+        }
+        check(signalled == 0, "no fence was handed to vkQueueSubmit already signalled");
+        check(mismatches == 0,
+              "no pipeline was bound in a render pass it was not built against");
+    }
+    if (flatpak_off) {
+        // What the layer told the daemon. The request is the bridge's whole
+        // contract from this side: `pid=` says the bridge was entered at all
+        // (the positive control), `drawing=` says whether the daemon will serve
+        // this sandbox the channel and the faces or a cleared state.
+        char body[2048] = {0};
+        if (FILE* request = fopen(request_path, "r")) {
+            const size_t read = fread(body, 1, sizeof(body) - 1, request);
+            body[read] = '\0';
+            fclose(request);
+        }
+        printf("     the bridge request reads: %s", body[0] ? body : "(no request file)\n");
+        check(strstr(body, "pid=") != nullptr,
+              "the layer entered the bridge and wrote its request");
+        check(strstr(body, "drawing=0\n") != nullptr && strstr(body, "drawing=1") == nullptr,
+              "and told the daemon it is NOT drawing: the master switch is off, so the daemon "
+              "serves this sandbox a cleared state rather than the channel");
+    }
+    if (second_device) {
+        fflush(stderr);
+        const long ready = lines_containing(stderr_log, "backend ready");
+        printf("     the layer said \"backend ready\" %ld time(s)\n", ready);
+        check(ready == 1,
+              "the backend was built once: a helper device's death did not tear it down");
+    }
+
+    // VOCEM_VK_KEEP_ROOT=1 keeps the scratch directory -- the witness report
+    // and the layer's log above all -- for reading by hand.
     char cleanup[800];
     snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
-    if (system(cleanup) != 0) {
+    if (getenv("VOCEM_VK_KEEP_ROOT")) {
+        printf("     (the scratch root %s is kept)\n", root);
+    } else if (system(cleanup) != 0) {
         printf("     (the scratch root %s outlived the test)\n", root);
     }
 

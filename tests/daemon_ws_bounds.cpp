@@ -30,6 +30,11 @@
 //      on every chunk, so a peer that announced 64 KiB and then sent one byte
 //      every two seconds held recv open indefinitely -- the same defect the
 //      handshake loop had been fixed for, left in place one function away.
+//   5. RFC 6455 section 5.2: a reserved bit set with no extension negotiated
+//      fails the connection. The bits were never looked at.
+//   6. A binary message this client does not read, sent fragmented: its
+//      continuations were appended to the text buffer, so the next text message
+//      arrived with somebody else's bytes in front of it (section 5.4).
 //
 // Each case runs in its own forked child so a wedged client cannot hang the run.
 
@@ -482,6 +487,116 @@ int slow_frame_body() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// 5. A reserved bit with no extension to mean it.
+
+int reserved_bit() {
+    uint16_t port = 0;
+    const int listen_fd = listener(port);
+    if (listen_fd < 0) {
+        std::fprintf(stderr, "no loopback listener\n");
+        return kFail;
+    }
+
+    const pid_t child = ::fork();
+    if (child == 0) {
+        ::close(listen_fd);
+        vocem::WebSocket socket;
+        if (!socket.connect("127.0.0.1", port, "/", "http://localhost")) {
+            ::_exit(kFail);
+        }
+        std::string out;
+        const vocem::WebSocket::Result result = socket.recv(out, 1500);
+        if (result != vocem::WebSocket::Result::Closed) {
+            std::fprintf(stderr, "  recv returned %d, not Closed\n", static_cast<int>(result));
+            ::_exit(kFail);
+        }
+        ::_exit(0);
+    }
+
+    const int server = ::accept(listen_fd, nullptr, nullptr);
+    ::close(listen_fd);
+    if (server < 0 || !accept_upgrade(server)) {
+        ::kill(child, SIGKILL);
+        ::waitpid(child, nullptr, 0);
+        std::fprintf(stderr, "the upgrade did not complete\n");
+        return kFail;
+    }
+
+    // A text frame with RSV1 set: what a peer that negotiated permessage-deflate
+    // would send, and nothing was negotiated.
+    std::vector<uint8_t> bytes = frame(true, 0x1, "{}");
+    bytes[0] |= 0x40;
+    send_all(server, bytes);
+    const int status = reap(child, 4000);
+    ::close(server);
+
+    if (status != 0) {
+        std::fprintf(stderr,
+                     "FAIL a frame with a reserved bit set was read as an ordinary message\n");
+        return kFail;
+    }
+    std::fprintf(stderr, "  a reserved bit: connection closed\n");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 6. A fragmented binary message, then a text message.
+
+int binary_then_text() {
+    uint16_t port = 0;
+    const int listen_fd = listener(port);
+    if (listen_fd < 0) {
+        std::fprintf(stderr, "no loopback listener\n");
+        return kFail;
+    }
+
+    const pid_t child = ::fork();
+    if (child == 0) {
+        ::close(listen_fd);
+        vocem::WebSocket socket;
+        if (!socket.connect("127.0.0.1", port, "/", "http://localhost")) {
+            ::_exit(kFail);
+        }
+        std::string out;
+        const vocem::WebSocket::Result result = socket.recv(out, 3000);
+        if (result != vocem::WebSocket::Result::Message) {
+            std::fprintf(stderr, "  recv returned %d, not Message\n", static_cast<int>(result));
+            ::_exit(kFail);
+        }
+        if (out != "{\"text\":1}") {
+            std::fprintf(stderr, "  the text message came back as '%s'\n", out.c_str());
+            ::_exit(kFail);
+        }
+        ::_exit(0);
+    }
+
+    const int server = ::accept(listen_fd, nullptr, nullptr);
+    ::close(listen_fd);
+    if (server < 0 || !accept_upgrade(server)) {
+        ::kill(child, SIGKILL);
+        ::waitpid(child, nullptr, 0);
+        std::fprintf(stderr, "the upgrade did not complete\n");
+        return kFail;
+    }
+
+    // Binary, in two frames, then one whole text message.
+    send_all(server, frame(false, 0x2, "BIN"));
+    send_all(server, frame(true, 0x0, "ARY"));
+    send_all(server, frame(true, 0x1, "{\"text\":1}"));
+    const int status = reap(child, 4000);
+    ::close(server);
+
+    if (status != 0) {
+        std::fprintf(stderr,
+                     "FAIL a binary message's continuations were glued onto the text message "
+                     "that followed\n");
+        return kFail;
+    }
+    std::fprintf(stderr, "  binary then text: the text message arrived whole and alone\n");
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -495,9 +610,11 @@ int main() {
     failures += oversized_control(true, "a 200-byte ping") != 0;
     failures += oversized_control(false, "a ping with FIN clear") != 0;
     failures += slow_frame_body() != 0;
+    failures += reserved_bit() != 0;
+    failures += binary_then_text() != 0;
 
     if (failures != 0) {
-        std::fprintf(stderr, "%d of 6 hostile-peer cases failed\n", failures);
+        std::fprintf(stderr, "%d of 8 hostile-peer cases failed\n", failures);
         return kFail;
     }
     std::fprintf(stderr, "the client bounds the message, honours its deadline, and refuses "

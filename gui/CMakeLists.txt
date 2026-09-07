@@ -106,8 +106,10 @@ target_include_directories(vocem-config PRIVATE
     src
 )
 
-target_link_libraries(vocem-config PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets
-                                           Fontconfig::Fontconfig)
+# vocem_common: the application registry's reader and the palette (theme_for),
+# which the window reads through the same objects the overlay draws with.
+target_link_libraries(vocem-config PRIVATE vocem_common Qt6::Quick Qt6::QuickControls2
+                                           Qt6::Widgets Fontconfig::Fontconfig)
 
 target_compile_options(vocem-config PRIVATE -Wall -Wextra)
 target_compile_definitions(vocem-config PRIVATE VOCEM_VERSION="${PROJECT_VERSION}")

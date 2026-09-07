@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "vocem/apps.h"
+#include "vocem/paths.h"
 
 namespace {
 
@@ -128,6 +129,18 @@ int main() {
     // A list somebody typed.
     check(listed("steam, discord , code", "discord"), "spaces around an entry are ignored");
     check(listed("steam,,discord", "discord"), "an empty entry does not end the search");
+
+    // The list edited by the window's switches, through the same walker.
+    using vocem::list_with;
+    using vocem::list_without;
+    check(list_without(" name , other", "name") == "other",
+          "an entry comes out rebuilt, with no stray comma");
+    check(list_without("a,b,c", "b") == "a,c", "from the middle");
+    check(list_without("a,b,c", "z") == "a,b,c", "and a name that is not there changes nothing");
+    check(list_without("only", "only").empty(), "the last entry leaves an empty list");
+    check(list_with("", "x") == "x", "the first entry needs no comma");
+    check(list_with("a,b", "c") == "a,b,c", "a later one does");
+    check(list_with("a,b", "b") == "a,b", "and an entry already listed is not listed twice");
 
     // What the kernel gives us. TASK_COMM_LEN is 16 including the terminator, so a
     // long executable arrives cut to fifteen characters and the rule has to be
@@ -332,9 +345,89 @@ int main() {
     check(entry.try_exec == "probe", "and its TryExec");
     check(entry.categories == "Game;ActionGame;", "and its categories");
     check(exec_names(entry.exec, "probe", "probe"), "which together name the program");
+    // The three fields the window reads from the same parser (it carried a
+    // second one, whose first-word rule entry 96 had retired here).
+    check(entry.icon.empty() && entry.wm_class.empty() && !entry.no_display,
+          "an entry without Icon, StartupWMClass or NoDisplay says so");
+    if (std::FILE* written = std::fopen(scratch.c_str(), "w")) {
+        std::fprintf(written,
+                     "[Desktop Entry]\nType=Application\nIcon=probe-icon\nIcon[it]=altro\n"
+                     "StartupWMClass=ProbeWindow\nNoDisplay=True\nExec=probe\n");
+        std::fclose(written);
+    }
+    const vocem::detail::Entry hidden = read_entry(scratch);
+    check(hidden.icon == "probe-icon", "Icon is read, and the plain key only");
+    check(hidden.wm_class == "ProbeWindow", "StartupWMClass is read");
+    check(hidden.no_display, "NoDisplay=True is read whatever its case");
+
+    // The words of an Exec that could be the program, which is what exec_names
+    // walks and what the window indexes its entries by: options, field codes
+    // and env's assignments left out, a quoted word unquoted and never split.
+    using vocem::detail::exec_program_names;
+    const std::vector<std::string> words =
+        exec_program_names("env \"WINEPREFIX=/home/a/.wine\" /usr/bin/mangohud wine start "
+                           "\"/opt/My Game/game.exe\" %f --fast");
+    check(words == std::vector<std::string>{"env", "mangohud", "wine", "start", "game.exe"},
+          "the program words of an Exec, as file names, in order");
+    check(exec_program_names("").empty(), "and none from an empty line");
+
+    // One argument as an Exec line carries it: the autostart entry wrote the
+    // window's own path bare, so a path with a space in it was two arguments
+    // and a `%` in it a field code.
+    using vocem::detail::desktop_exec_quoted;
+    check(desktop_exec_quoted("/usr/bin/vocem-config") == "/usr/bin/vocem-config",
+          "a plain path is written as it is");
+    check(desktop_exec_quoted("/opt/My Tools/vocem-config") == "\"/opt/My Tools/vocem-config\"",
+          "a space puts the argument in double quotes");
+    check(desktop_exec_quoted("/opt/100%/vocem") == "/opt/100%%/vocem",
+          "a percent is doubled, or it is a field code");
+    check(desktop_exec_quoted("/opt/a\"b $c `d/vocem") ==
+              "\"/opt/a\\\"b \\$c \\`d/vocem\"",
+          "a quote, a dollar and a backtick are escaped inside the quotes");
+    check(desktop_exec_quoted("/opt/back\\slash x") == "\"/opt/back\\\\\\\\slash x\"",
+          "and a backslash four times, the value escape before the quoting one");
     check(!read_entry("/bin/sh").found, "an executable is not a desktop entry");
     check(!read_entry(scratch + "-absent").found, "and neither is a file that is not there");
     std::remove(scratch.c_str());
+
+    // What a desktop entry's reader must never do, inside somebody's first
+    // frame: wait, or read without end. Both shapes are one mkfifo or one
+    // symlink in a data directory the user can write to, and the file manager
+    // hands over an executable as GIO_LAUNCHED_DESKTOP_FILE, which is the same
+    // reader on 20 MB of ELF. Each asked in a child with an alarm on it, so
+    // "it never came back" is a result (the flatpak_bridge_hostile shape).
+    {
+        const auto comes_back = [](const std::string& path) {
+            std::fflush(stdout);
+            const pid_t child = ::fork();
+            if (child == 0) {
+                ::alarm(5);
+                const vocem::detail::Entry entry = read_entry(path);
+                ::_exit(entry.found ? 2 : 0);
+            }
+            int status = 0;
+            ::waitpid(child, &status, 0);
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        };
+        const std::string fifo = scratch + "-fifo.desktop";
+        check(::mkfifo(fifo.c_str(), 0600) == 0, "a FIFO can be left where an entry goes");
+        check(comes_back(fifo), "and the reader comes back from it rather than waiting");
+        std::remove(fifo.c_str());
+        const std::string zero = scratch + "-zero.desktop";
+        check(::symlink("/dev/zero", zero.c_str()) == 0, "a link to /dev/zero can be left there");
+        check(comes_back(zero), "and the reader refuses it rather than reading for ever");
+        std::remove(zero.c_str());
+        std::string huge_path = scratch + "-huge.desktop";
+        if (std::FILE* huge = std::fopen(huge_path.c_str(), "w")) {
+            std::fprintf(huge, "[Desktop Entry]\nExec=huge\n");
+            for (int i = 0; i < 2 * 1024; ++i) {
+                std::fprintf(huge, "%01023d\n", i);
+            }
+            std::fclose(huge);
+        }
+        check(comes_back(huge_path), "and a file larger than any entry is not read");
+        std::remove(huge_path.c_str());
+    }
 
     // The entry that runs this program, which is the one signal nobody hands
     // over: it is looked for, and it is what a game started from a terminal or a
@@ -357,6 +450,13 @@ int main() {
     };
     write_entry(applications + "/alone.desktop", "/opt/alone/alone %U", "Game;ActionGame;");
     write_entry(applications + "/sub/nested.desktop", "nestedgame", "Game;");
+    // wine's shape: applications/wine/Programs/<Folder>/<Game>.desktop, three
+    // directories down, with a dash in a directory's own name -- the cap used
+    // to be two, counted in dashes of the id prefix.
+    ::mkdir((applications + "/wine").c_str(), 0700);
+    ::mkdir((applications + "/wine/Programs").c_str(), 0700);
+    ::mkdir((applications + "/wine/Programs/Epic-Games").c_str(), 0700);
+    write_entry(applications + "/wine/Programs/Epic-Games/deep.desktop", "wine deepgame.exe", "Game;");
     write_entry(applications + "/one.desktop", "python3 /usr/share/one/main.py", "Game;");
     write_entry(applications + "/two.desktop", "python3 /usr/share/two/main.py", "Utility;");
     write_entry(applications + "/tool.desktop", "/usr/bin/toolish", "Utility;");
@@ -368,6 +468,10 @@ int main() {
           "one entry names it and calls it a game, which is the whole case for looking");
     check(entry_that_runs_this("nestedgame", "nestedgame") == "sub-nested.desktop",
           "and an entry in a subdirectory is found under the id its path makes");
+    check(entry_that_runs_this("deepgame.exe", "deepgame.exe") ==
+              "wine-Programs-Epic-Games-deep.desktop",
+          "three directories down, where wine puts a prefix's programs, with a dash in a "
+          "directory's name");
     check(entry_that_runs_this("python3", "python3").empty(),
           "an interpreter is named by more than one entry and settles nothing");
     check(entry_that_runs_this("toolish", "toolish").empty(),
@@ -387,6 +491,10 @@ int main() {
 
     std::remove((applications + "/alone.desktop").c_str());
     std::remove((applications + "/sub/nested.desktop").c_str());
+    std::remove((applications + "/wine/Programs/Epic-Games/deep.desktop").c_str());
+    ::rmdir((applications + "/wine/Programs/Epic-Games").c_str());
+    ::rmdir((applications + "/wine/Programs").c_str());
+    ::rmdir((applications + "/wine").c_str());
     std::remove((applications + "/one.desktop").c_str());
     std::remove((applications + "/two.desktop").c_str());
     std::remove((applications + "/tool.desktop").c_str());
@@ -487,6 +595,35 @@ int main() {
     // Once per process, however many times it is called: this sits in a draw path.
     vocem::record_application("vulkan");
     check(vocem::known_applications().size() == 1, "recorded once, not once per frame");
+
+    // A record written from what a launcher put in the environment, where a
+    // newline is a second line: `HEROIC_APP_NAME` is copied into the reason
+    // whole, and a reason with "\nname = other" in it gave the window a second
+    // row keyed `other`, which a flipped switch wrote into the settings file.
+    // Written on behalf of somebody else, which is the writer's other caller.
+    {
+        vocem::Application hostile;
+        hostile.key = "hostile";
+        hostile.executable = "/opt/x";
+        hostile.api = "vulkan";
+        hostile.looks_like_game = true;
+        hostile.reason = "heroic:Game\nname = other\ngame = true";
+        vocem::write_application_record(hostile);
+        const std::vector<vocem::Application> records = vocem::known_applications();
+        bool other = false;
+        std::string reason;
+        for (const vocem::Application& record : records) {
+            other = other || record.key == "other";
+            if (record.key == "hostile") {
+                reason = record.reason;
+            }
+        }
+        check(records.size() == 2, "a reason with a newline in it is one record, not two");
+        check(!other, "and no record keyed by the line inside it");
+        check(reason == "heroic:Game?name = other?game = true",
+              "the reason is one line with the newlines marked");
+        std::remove((directory + "/vocem/apps/hostile").c_str());
+    }
 
     // What the window is handed when a record is not one. These files are read
     // from a directory anything in the session can write to, at every tick, and

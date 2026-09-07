@@ -110,8 +110,15 @@ private:
     void mirror_avatars(Mirror& mirror, const SharedState& state);
     void mirror_emoji_bank(Mirror& mirror);
 
+    // How many sandboxes this daemon will serve at once. Far above any real
+    // machine's count of running Flatpak games, and a bound on what a process
+    // that can create directories under $XDG_RUNTIME_DIR/app can make this
+    // daemon hold (rescan() says what each one costs).
+    static constexpr size_t kMirrorCeiling = 32;
+
     int applications_ = -1;  // $XDG_RUNTIME_DIR/app
     bool runtime_missing_said_ = false;  // the no-XDG_RUNTIME_DIR refusal, said once
+    bool ceiling_said_ = false;          // the mirror ceiling's refusal, said once
     std::vector<Mirror> mirrors_;
 };
 

@@ -1,0 +1,265 @@
+# Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+# All rights reserved.
+# Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+#
+# The shapes a test in this directory takes, each spelled once.
+#
+# tests/CMakeLists.txt ran to 1600 lines before this file existed: sixty-odd
+# add_executable blocks each naming ${CMAKE_SOURCE_DIR}/include, nine identical
+# fifteen-line "ImGui core + defines" blocks, eleven -m32 twins each repeating
+# their flags and their skip fallback, and the skip discipline of entry 123 in
+# five spellings of SKIP_REGULAR_EXPRESSION. A test added by copying its
+# neighbour copied whichever spelling the neighbour had -- which is how twelve
+# window tests came to report a skip as a pass (entry 123), and how a
+# 32-bit twin could be built with flags the shipped shim does not have.
+#
+#   vocem_test(<name> ...)        an executable vocem_<name> and the test <name>
+#   vocem_test_run(<name> ...)    another test on an executable already built
+#   vocem_m32_twin(<name> ...)    the same sources at -m32, or an honest skip
+#   vocem_script_test(<name> ...) a cmake -P script, with the one skip spelling
+#   vocem_skip(<name> <reason>)   a test that only says why it did not run
+#
+# Two rules every shape carries. A skip is exit code 77 from a compiled probe
+# and the STATUS-prefixed `-- skip ` line from a script or a fallback -- never
+# the bare word, which two passing tests speak in sentences. And a 32-bit
+# twin links the 32-bit build of whatever its 64-bit original links
+# (vocem_common32, the -m32 ImGui core), so a difference between the two is the
+# architecture's and nothing else's (the widths.cpp pattern, entries 30/33/34).
+
+set(IMGUI_DIR "${PROJECT_SOURCE_DIR}/third_party/imgui")
+
+# Where the 32-bit injected libraries are built. A tree of its own, configured
+# with -m32 and tests off (CLAUDE.md); ctest does not cover it, so the tests
+# that need its artefacts name them here and resolve them WHEN THEY RUN --
+# a find_library at configure time made a build32 created afterwards invisible
+# and one deleted afterwards a stale path (with_build32.cmake).
+set(VOCEM_BUILD32_DIR "${CMAKE_SOURCE_DIR}/build32" CACHE PATH
+    "The -m32 build tree whose injected libraries the 32-bit probes run against")
+
+# --- Dear ImGui's core, once per width ---------------------------------------
+# Object libraries: a test that draws links the four core units and gets the
+# include directory and the three definitions with them. The definitions are
+# the ones every ImGui in this project is built under (gl/, layer/, common/):
+# IMGUI_USE_WCHAR32 changes the width of every glyph index, so an object built
+# without it beside one built with it would be a silent layout mismatch.
+# Third-party code is built with -w so its output does not drown ours.
+function(_vocem_imgui_core target)
+    add_library(${target} OBJECT
+        "${IMGUI_DIR}/imgui.cpp"
+        "${IMGUI_DIR}/imgui_draw.cpp"
+        "${IMGUI_DIR}/imgui_tables.cpp"
+        "${IMGUI_DIR}/imgui_widgets.cpp")
+    target_include_directories(${target} PUBLIC "${IMGUI_DIR}")
+    target_compile_definitions(${target} PUBLIC
+        IMGUI_USE_WCHAR32 IMGUI_DISABLE_FILE_FUNCTIONS IMGUI_DISABLE_DEBUG_TOOLS)
+    target_compile_options(${target} PRIVATE -w ${ARGN})
+    set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endfunction()
+
+_vocem_imgui_core(vocem_imgui_core)
+if(VOCEM_HAVE_M32)
+    _vocem_imgui_core(vocem_imgui_core_m32 -m32)
+endif()
+
+# --- a test that only says why it did not run --------------------------------
+# ctest's own Skipped state, which the suite's discipline (zero skips on this
+# machine) refuses instead of counting as a pass. `-- skip ` is STATUS's own
+# prefix, so a script's message(STATUS "skip ...") and this echo are one
+# spelling.
+function(vocem_skip name reason)
+    add_test(NAME ${name} COMMAND "${CMAKE_COMMAND}" -E echo "-- skip ${reason}")
+    set_tests_properties(${name} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+endfunction()
+
+# The keywords vocem_test and vocem_m32_twin share.
+set(_VOCEM_TEST_FLAGS SKIP IMGUI NO_TEST)
+set(_VOCEM_TEST_ONE TIMEOUT)
+set(_VOCEM_TEST_MANY SOURCES LINK ENV ARGS DEFINES INCLUDE COMPILE_OPTIONS LINK_OPTIONS BUILD32)
+
+# The one definition behind vocem_test and vocem_m32_twin.
+#
+#   SOURCES         default <name>.cpp
+#   LINK            libraries; vocem_common becomes vocem_common32 at -m32
+#   IMGUI           link the ImGui core of this width (and take its defines)
+#   ENV             the test's environment, one KEY=VALUE per item
+#   ARGS            arguments to the executable
+#   DEFINES, INCLUDE, COMPILE_OPTIONS, LINK_OPTIONS -- as the target properties
+#   SKIP            the probe exits 77 to say it could not measure here
+#   TIMEOUT         seconds
+#   NO_TEST         build the executable only (a probe another test drives)
+#   BUILD32 <files> the test needs these artefacts of the 32-bit tree: it runs
+#                   through with_build32.cmake, which looks for them at run time
+#                   and skips out loud when they are not there
+function(_vocem_define name m32)
+    cmake_parse_arguments(PARSE_ARGV 2 T
+        "${_VOCEM_TEST_FLAGS}" "${_VOCEM_TEST_ONE}" "${_VOCEM_TEST_MANY}")
+    if(T_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "vocem_test(${name}): unknown arguments ${T_UNPARSED_ARGUMENTS}")
+    endif()
+    set(target vocem_${name})
+    if(NOT T_SOURCES)
+        set(T_SOURCES ${name}.cpp)
+    endif()
+    add_executable(${target} ${T_SOURCES})
+    target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}/include" ${T_INCLUDE})
+    if(T_DEFINES)
+        target_compile_definitions(${target} PRIVATE ${T_DEFINES})
+    endif()
+    if(T_COMPILE_OPTIONS)
+        target_compile_options(${target} PRIVATE ${T_COMPILE_OPTIONS})
+    endif()
+    if(T_LINK_OPTIONS)
+        target_link_options(${target} PRIVATE ${T_LINK_OPTIONS})
+    endif()
+    set(libraries ${T_LINK})
+    if(m32)
+        target_compile_options(${target} PRIVATE -m32)
+        target_link_options(${target} PRIVATE -m32)
+        list(TRANSFORM libraries REPLACE "^vocem_common$" "vocem_common32")
+        if(T_IMGUI)
+            list(APPEND libraries vocem_imgui_core_m32)
+        endif()
+    elseif(T_IMGUI)
+        list(APPEND libraries vocem_imgui_core)
+    endif()
+    if(libraries)
+        target_link_libraries(${target} PRIVATE ${libraries})
+    endif()
+    if(T_NO_TEST)
+        return()
+    endif()
+
+    if(T_BUILD32)
+        add_test(NAME ${name}
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DPROBE=$<TARGET_FILE:${target}>"
+                    "-DREQUIRES=${T_BUILD32}"
+                    "-DENV=${T_ENV}"
+                    "-DARGS=${T_ARGS}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/with_build32.cmake")
+        set_tests_properties(${name} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+    else()
+        add_test(NAME ${name} COMMAND ${target} ${T_ARGS})
+        if(T_ENV)
+            set_tests_properties(${name} PROPERTIES ENVIRONMENT "${T_ENV}")
+        endif()
+        if(T_SKIP)
+            set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endif()
+    if(T_TIMEOUT)
+        set_tests_properties(${name} PROPERTIES TIMEOUT ${T_TIMEOUT})
+    endif()
+endfunction()
+
+# An executable vocem_<name> and the test <name> that runs it. Keywords above.
+function(vocem_test name)
+    set_property(GLOBAL PROPERTY VOCEM_TEST_ARGS_${name} "${ARGN}")
+    set_property(GLOBAL PROPERTY VOCEM_TEST_DEFINED_${name} ON)
+    _vocem_define(${name} OFF ${ARGN})
+endfunction()
+
+# Another test on an executable vocem_test already built: the same probe under
+# another environment or with other arguments.
+#   TARGET <name>   the vocem_test whose executable runs (default: <name>)
+#   ENV, ARGS, SKIP, TIMEOUT as above; DEPENDS as the test property
+function(vocem_test_run name)
+    cmake_parse_arguments(PARSE_ARGV 1 R "SKIP" "TARGET;TIMEOUT" "ENV;ARGS;DEPENDS")
+    if(R_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "vocem_test_run(${name}): unknown arguments ${R_UNPARSED_ARGUMENTS}")
+    endif()
+    if(NOT R_TARGET)
+        message(FATAL_ERROR "vocem_test_run(${name}) needs TARGET")
+    endif()
+    add_test(NAME ${name} COMMAND vocem_${R_TARGET} ${R_ARGS})
+    if(R_ENV)
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT "${R_ENV}")
+    endif()
+    if(R_SKIP)
+        set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    if(R_TIMEOUT)
+        set_tests_properties(${name} PROPERTIES TIMEOUT ${R_TIMEOUT})
+    endif()
+    if(R_DEPENDS)
+        set_tests_properties(${name} PROPERTIES DEPENDS "${R_DEPENDS}")
+    endif()
+endfunction()
+
+# The same sources as vocem_test(<name>) at -m32: executable vocem_<name>32,
+# test <name>32, every library swapped for its 32-bit build. Without a 32-bit
+# toolchain the test exists and reports itself skipped, so a machine that
+# measures one width only says so in ctest rather than passing vacuously.
+#   ENV <items>      replaces the original's environment (a shim of the other
+#                    width, the 32-bit tree's library)
+#   BUILD32 <files>  the 32-bit tree's artefacts this width needs (see above)
+function(vocem_m32_twin name)
+    cmake_parse_arguments(PARSE_ARGV 1 O "" "" "ENV;BUILD32")
+    if(O_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "vocem_m32_twin(${name}): unknown arguments ${O_UNPARSED_ARGUMENTS}")
+    endif()
+    get_property(defined GLOBAL PROPERTY VOCEM_TEST_DEFINED_${name})
+    if(NOT defined)
+        message(FATAL_ERROR "vocem_m32_twin(${name}): no vocem_test(${name}) to twin")
+    endif()
+    get_property(stored GLOBAL PROPERTY VOCEM_TEST_ARGS_${name})
+    cmake_parse_arguments(T "${_VOCEM_TEST_FLAGS}" "${_VOCEM_TEST_ONE}" "${_VOCEM_TEST_MANY}" ${stored})
+    if(NOT VOCEM_HAVE_M32)
+        if(NOT T_NO_TEST)
+            vocem_skip(${name}32
+                "no 32-bit toolchain, so ${name} is measured at one width only -- "
+                "the width that has failed invisibly three times (entries 30/33/34)")
+        endif()
+        return()
+    endif()
+    if(DEFINED O_ENV)
+        set(T_ENV ${O_ENV})
+    endif()
+    if(DEFINED O_BUILD32)
+        set(T_BUILD32 ${O_BUILD32})
+    endif()
+    if(NOT T_SOURCES)
+        set(T_SOURCES ${name}.cpp)
+    endif()
+    set(args SOURCES ${T_SOURCES})
+    foreach(keyword IN LISTS _VOCEM_TEST_MANY)
+        if(NOT keyword STREQUAL "SOURCES" AND T_${keyword})
+            list(APPEND args ${keyword} ${T_${keyword}})
+        endif()
+    endforeach()
+    foreach(flag IN LISTS _VOCEM_TEST_FLAGS)
+        if(T_${flag})
+            list(APPEND args ${flag})
+        endif()
+    endforeach()
+    if(T_TIMEOUT)
+        list(APPEND args TIMEOUT ${T_TIMEOUT})
+    endif()
+    _vocem_define(${name}32 ON ${args})
+endfunction()
+
+# A test that is a cmake -P script. Every script gets SOURCE_DIR and
+# CMAKE_CURRENT_BINARY_DIR (the window-driving ones refuse to run without a
+# test directory, entry 137); ARGS adds the rest as -DNAME=value. The skip
+# spelling is set here, once, for every script -- entry 123 is what its
+# absence cost.
+#   SCRIPT <file>   default <name>.cmake, in this directory
+function(vocem_script_test name)
+    cmake_parse_arguments(PARSE_ARGV 1 S "" "SCRIPT;TIMEOUT" "ARGS")
+    if(S_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "vocem_script_test(${name}): unknown arguments ${S_UNPARSED_ARGUMENTS}")
+    endif()
+    if(NOT S_SCRIPT)
+        set(S_SCRIPT ${name}.cmake)
+    endif()
+    add_test(NAME ${name}
+        COMMAND "${CMAKE_COMMAND}"
+                "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+                "-DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                ${S_ARGS}
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/${S_SCRIPT}")
+    set_tests_properties(${name} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+    if(S_TIMEOUT)
+        set_tests_properties(${name} PROPERTIES TIMEOUT ${S_TIMEOUT})
+    endif()
+endfunction()

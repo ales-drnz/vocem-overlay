@@ -12,8 +12,6 @@ add_library(vocem_vk SHARED
     src/overlay_renderer.cpp
     src/texture_cache.cpp
     src/hdr_pipeline.cpp
-    "${PROJECT_SOURCE_DIR}/common/src/panel.cpp"
-    "${PROJECT_SOURCE_DIR}/common/src/fonts.cpp"
     "${IMGUI_DIR}/imgui.cpp"
     "${IMGUI_DIR}/imgui_draw.cpp"
     "${IMGUI_DIR}/imgui_tables.cpp"
@@ -63,11 +61,13 @@ set_target_properties(vocem_vk PROPERTIES
 target_include_directories(vocem_vk PRIVATE
     ${Vulkan_INCLUDE_DIRS}
     "${PROJECT_SOURCE_DIR}/include"
-    "${PROJECT_SOURCE_DIR}/common/fonts"
     "${IMGUI_DIR}"
     "${IMGUI_DIR}/backends"
 )
-target_link_libraries(vocem_vk PRIVATE Threads::Threads)
+# common/CMakeLists.txt: the panel, the fonts, the registry and the palette,
+# built once per width with the visibility and the ImGui definitions this
+# target needs them to have.
+target_link_libraries(vocem_vk PRIVATE vocem_common Threads::Threads)
 
 target_compile_options(vocem_vk PRIVATE
     -Wall -Wextra
@@ -95,6 +95,9 @@ target_compile_definitions(vocem_vk PRIVATE
     IMGUI_USE_WCHAR32
     IMGUI_DISABLE_FILE_FUNCTIONS
     IMGUI_DISABLE_DEBUG_TOOLS
+    # No abort() reachable from ImGui inside a game whatever the build type:
+    # gl/CMakeLists.txt says why.
+    "IM_ASSERT(_EXPR)=((void)0)"
 )
 
 # --- manifest -------------------------------------------------------------

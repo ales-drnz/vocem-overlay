@@ -43,7 +43,8 @@
 #include "vocem/fonts.h"
 #include "vocem/journal.h"
 #include "vocem/live_config.h"
-#include "vocem/note.h"
+#include "vocem/overlay_log.h"
+#include "vocem/overlay_session.h"
 #include "vocem/panel.h"
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
@@ -92,80 +93,15 @@ using PFN_glEnable = void (*)(GLenum);
 using PFN_glDisable = void (*)(GLenum);
 using PFN_glGetString = const unsigned char* (*)(GLenum);
 
-bool debug_enabled() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("VOCEM_DEBUG");
-        return env && env[0] == '1';
-    }();
-    return enabled;
-}
-
-// Where the debug log can actually be read. stderr is the natural home, but a
-// launcher that pipes its child's stderr into an internal pane swallows it --
-// the Minecraft launcher does, measured: the game's fd 2 is a pipe the launcher
-// never writes anywhere readable. With VOCEM_LOG_FILE set the same lines are
-// appended there too, one open per process, line-buffered, pid on every line
-// because every GL process in the session shares the one file.
-FILE* debug_file() {
-    static FILE* file = []() -> FILE* {
-        const char* path = std::getenv("VOCEM_LOG_FILE");
-        if (!path || !path[0]) {
-            return nullptr;
-        }
-        FILE* opened = std::fopen(path, "a");
-        if (opened) {
-            setvbuf(opened, nullptr, _IOLBF, 0);
-        }
-        return opened;
-    }();
-    return file;
-}
-
-#define VOCEM_GLOG(...)                                                  \
-    do {                                                                 \
-        if (debug_enabled()) {                                           \
-            std::fprintf(stderr, "[vocem/gl] " __VA_ARGS__);             \
-            std::fputc('\n', stderr);                                    \
-        }                                                                \
-        if (FILE* vocem_log = debug_file()) {                            \
-            std::fprintf(vocem_log, "[vocem/gl %d] ", (int)getpid());    \
-            std::fprintf(vocem_log, __VA_ARGS__);                        \
-            std::fputc('\n', vocem_log);                                 \
-        }                                                                \
-    } while (0)
+// One logger for both injected paths (vocem/overlay_log.h): VOCEM_DEBUG on
+// stderr, VOCEM_LOG_FILE appended with the pid, both read once. The tag is
+// what tests/gl_probe_witness.cmake matches our lines by.
+#define VOCEM_GLOG(...) VOCEM_OVERLAY_LOG("vocem/gl", __VA_ARGS__)
 
 // The state poll's one-line events, through this path's own log (pid-stamped
 // file logging included). vocem/state_poll.h takes a function pointer so the
 // shared loop does not know either path's macro.
 void gl_poll_log(const char* line) { VOCEM_GLOG("%s", line); }
-
-// Once per process: whether this one is inside a Flatpak sandbox, and if it is,
-// what was done about it.
-//
-// It says so either way it can fail, because the failure is invisible
-// otherwise: a game whose overlay never found the bridge behaves exactly like a
-// game the overlay was never asked to draw in.
-void enter_flatpak_bridge_once() {
-    static bool asked = false;
-    if (asked) {
-        return;
-    }
-    asked = true;
-    const char* id = vocem::flatpak_app_id();
-    if (!id) {
-        return;  // on the host, where everything is where it has always been
-    }
-    if (vocem::enter_flatpak_bridge()) {
-        char root[512];
-        vocem::bridge_root(root, sizeof(root));
-        VOCEM_GLOG("inside the Flatpak sandbox of %s: state, settings and avatars come from %s",
-                   id, root);
-        return;
-    }
-    VOCEM_GLOG("inside the Flatpak sandbox of %s but could not ask vocemd for a bridge: "
-               "no XDG_RUNTIME_DIR, or its app directory is not writable. There will be no "
-               "overlay in this process.", id);
-}
 
 bool overlay_disabled() {
     static const bool disabled = [] {
@@ -192,14 +128,17 @@ bool overlay_disabled() {
 // game. The overlay is loaded, is detected, says it is drawing, and is not there.
 void* real_dlsym(void* handle, const char* name) {
     using PFN_dlsym = void* (*)(void*, const char*);
-    static PFN_dlsym real = [] {
+    // A null is not remembered -- the shim's rule, applied here too: a static
+    // initialised once from a failed lookup would answer null for the life
+    // of the process, and the whole point of looking rather than assuming
+    // (real_dlsym.h) is lost if the first look is the only one.
+    static PFN_dlsym real = nullptr;
+    if (!real) {
         static const char* const versions[] = VOCEM_DLSYM_VERSIONS;
-        PFN_dlsym found = nullptr;
-        for (unsigned i = 0; i < sizeof(versions) / sizeof(versions[0]) && !found; ++i) {
-            found = reinterpret_cast<PFN_dlsym>(dlvsym(RTLD_NEXT, "dlsym", versions[i]));
+        for (unsigned i = 0; i < sizeof(versions) / sizeof(versions[0]) && !real; ++i) {
+            real = reinterpret_cast<PFN_dlsym>(dlvsym(RTLD_NEXT, "dlsym", versions[i]));
         }
-        return found;
-    }();
+    }
     return real ? real(handle, name) : nullptr;
 }
 
@@ -255,22 +194,28 @@ Fn next_symbol(const char* name) {
 // the application reveals it, and a null must not outlive that moment.
 void* dispatcher_symbol(const char* name) {
     using PFN_lookup = void* (*)(const char*);
+    static PFN_lookup glx_arb = nullptr;
     static PFN_lookup glx = nullptr;
     static PFN_lookup egl = nullptr;
+    if (!glx_arb) {
+        glx_arb = reinterpret_cast<PFN_lookup>(real_dlsym(RTLD_DEFAULT, "glXGetProcAddressARB"));
+    }
+    // Both GLX spellings, because each of the shim's dispatcher slots is
+    // filled by the application's own resolution of THAT name (the dlsym
+    // door): a loader that asks only for the plain glXGetProcAddress leaves
+    // the ARB slot empty, and asking the ARB export alone would find nothing
+    // in exactly that process.
     if (!glx) {
-        glx = reinterpret_cast<PFN_lookup>(real_dlsym(RTLD_DEFAULT, "glXGetProcAddressARB"));
+        glx = reinterpret_cast<PFN_lookup>(real_dlsym(RTLD_DEFAULT, "glXGetProcAddress"));
     }
     if (!egl) {
         egl = reinterpret_cast<PFN_lookup>(real_dlsym(RTLD_DEFAULT, "eglGetProcAddress"));
     }
-    if (glx) {
-        if (void* found = glx(name)) {
-            return found;
-        }
-    }
-    if (egl) {
-        if (void* found = egl(name)) {
-            return found;
+    for (PFN_lookup lookup : {glx_arb, glx, egl}) {
+        if (lookup) {
+            if (void* found = lookup(name)) {
+                return found;
+            }
         }
     }
     return nullptr;
@@ -403,9 +348,15 @@ private:
 // exists to avoid.
 class SrgbWriteGuard {
 public:
-    SrgbWriteGuard(PFN_glIsEnabled is_enabled, PFN_glEnable enable, PFN_glDisable disable, int es)
+    // `es` is 0 for desktop GL, or the OpenGL ES major version; `major` is the
+    // desktop GL major version. GL_FRAMEBUFFER_SRGB is core from 3.0
+    // (ARB_framebuffer_sRGB before it), and asking a 2.1 context about it is
+    // GL_INVALID_ENUM in the game's queue, once per frame -- the fault
+    // PixelStoreGuard's comment says this class exists to avoid.
+    SrgbWriteGuard(PFN_glIsEnabled is_enabled, PFN_glEnable enable, PFN_glDisable disable, int es,
+                   int major)
         : enable_(enable) {
-        if (es != 0 || !is_enabled || !enable || !disable) {
+        if (es != 0 || major < 3 || !is_enabled || !enable || !disable) {
             return;
         }
         was_enabled_ = is_enabled(kFramebufferSrgb) != 0;
@@ -432,8 +383,9 @@ private:
 
 class GlAvatarProvider : public vocem::AvatarProvider {
 public:
-    bool resolve(int es_version) {
+    bool resolve(int es_version, int gl_major) {
         es_ = es_version;
+        gl_major_ = gl_major;
         if (resolved_) {
             return true;
         }
@@ -470,7 +422,20 @@ public:
     // For the overlay's own draw: the sRGB write state is the game's, and the
     // overlay's colours are already encoded.
     SrgbWriteGuard srgb_write_guard() const {
-        return SrgbWriteGuard(is_enabled_, enable_, disable_, es_);
+        return SrgbWriteGuard(is_enabled_, enable_, disable_, es_, gl_major_);
+    }
+
+    // The two things the framebuffer retarget in draw() needs, ES-aware: the
+    // target to bind and the binding to read back. GL_FRAMEBUFFER binds BOTH
+    // the draw and the read framebuffer, and GL_FRAMEBUFFER_BINDING reads the
+    // draw one, so binding GL_FRAMEBUFFER to 0 and putting "the binding" back
+    // restored the draw side and left the read side pointing at whatever the
+    // overlay drew into -- a game that presents by blitting from its own
+    // read framebuffer had that binding clobbered every frame (rule 12).
+    // Desktop GL and ES 3 have the two targets; ES 2 has only the one, where
+    // there is nothing else to clobber.
+    GLenum draw_framebuffer_target() const {
+        return es_ == 2 ? GL_FRAMEBUFFER : 0x8CA9;  // GL_DRAW_FRAMEBUFFER
     }
 
     // Called once per drawn frame, before the panel is built: the budget below is
@@ -494,7 +459,7 @@ public:
         // Waiting for a file that has not appeared: nothing to do until its next
         // look is due, and stat() on every frame for every face is not free.
         auto waiting = waiting_.find(key);
-        if (waiting != waiting_.end() && vocem::avatar_now_seconds() < waiting->second.next_attempt) {
+        if (waiting != waiting_.end() && !waiting->second.due(vocem::avatar_now_seconds())) {
             return 0;
         }
 
@@ -524,14 +489,15 @@ public:
         const double now = vocem::avatar_now_seconds();
         if (!vocem::avatar_file_exists(path)) {
             // `waiting` is the lookup from above: the map has not changed since.
+            // The policy -- look again in half a second, give up after thirty --
+            // is vocem/avatar_file.h's, one spelling with the Vulkan cache.
             if (waiting == waiting_.end()) {
-                waiting_.emplace(key, Waiting{now, now + vocem::kAvatarRetrySeconds});
-            } else if (now - waiting->second.first_asked >= vocem::kAvatarGiveUpSeconds) {
+                waiting = waiting_.emplace(key, vocem::AvatarWait::start(now)).first;
+            }
+            if (!waiting->second.missed(now)) {
                 VOCEM_GLOG("gave up waiting for %s", path);
                 waiting_.erase(waiting);
                 textures_.emplace(key, static_cast<ImTextureID>(0));
-            } else {
-                waiting->second.next_attempt = now + vocem::kAvatarRetrySeconds;
             }
             return 0;
         }
@@ -629,19 +595,28 @@ private:
     PFN_glEnable enable_ = nullptr;
     PFN_glDisable disable_ = nullptr;
     int es_ = 0;  // 0 desktop GL, otherwise the OpenGL ES major version
+    int gl_major_ = 0;  // the desktop GL major version, 0 when unknown or ES
     std::unordered_map<vocem::AvatarKey, ImTextureID, vocem::AvatarKeyHash> textures_;
 
     // Faces the daemon has been asked for and has not finished fetching.
-    struct Waiting {
-        double first_asked = 0.0;
-        double next_attempt = 0.0;
-    };
-    std::unordered_map<vocem::AvatarKey, Waiting, vocem::AvatarKeyHash> waiting_;
+    std::unordered_map<vocem::AvatarKey, vocem::AvatarWait, vocem::AvatarKeyHash> waiting_;
 };
 
 // ---------------------------------------------------------------------------
 // Overlay state, one per process
 // ---------------------------------------------------------------------------
+
+// The context the backend's GL objects live in, and the display it belongs
+// to. Read by the two teardown hooks below before they touch anything, which
+// is why these are plain globals rather than members: a process that never
+// built a backend -- every browser and compositor of the session, which get
+// our eglDestroyContext hook through the dispatcher door -- must be able to
+// answer "not mine" without constructing the overlay, let alone making a
+// dying context current on the calling thread. Written under g_gl_lock;
+// read with the atomic builtins so the hooks can look before they lock.
+void* g_owner_context = nullptr;
+void* g_owner_display = nullptr;
+int g_owner_egl = 0;
 
 class GlOverlay {
 public:
@@ -655,7 +630,9 @@ public:
 
     // Draws into the current framebuffer. Called from the swap hooks, before the
     // real swap: whatever we add lands in the frame about to be shown.
-    void draw(SizeQuery query_size, void* display, void* handle) {
+    // `egl` says which window system the present came through: the owner
+    // context is remembered by the same API's "get current" call.
+    void draw(SizeQuery query_size, void* display, void* handle, bool egl) {
         if (overlay_disabled()) {
             return;
         }
@@ -664,7 +641,7 @@ public:
         // segment, config.ini and the avatar cache are all on the far side of
         // the sandbox, and this is what points the three lookups at the copies
         // the daemon puts where they can be reached (vocem/flatpak.h).
-        enter_flatpak_bridge_once();
+        session_.enter_flatpak_bridge_once();
 
         // One stat() every couple of seconds, not per frame.
         const vocem::Config& config = config_.current();
@@ -691,22 +668,16 @@ public:
         // Turning it off releases the GL state rather than merely skipping the
         // drawing -- see `release()`. Turning it back on costs one frame, in which
         // the backend is built again from nothing.
-        const bool want = config.enabled && decide(config);
-        // Inside a Flatpak, tell the daemon. It adopted this sandbox before the
-        // settings could be read, because the settings arrive across the bridge;
-        // this is where it learns whether the overlay actually belongs here, and
-        // whether to keep sending the channel and the faces at all.
-        vocem::flatpak_bridge_drawing(want);
-        if (want && drawing_ != 1) {
+        // The decision, its evidence and the word to the daemon across the
+        // bridge are one spelling with the Vulkan layer's now
+        // (vocem/overlay_session.h).
+        const bool want = config.enabled && session_.decide(config);
+        if (want) {
             // The session's journal (vocem/journal.h): opened at the first
             // frame the overlay draws in this process, closed into history on
             // a clean exit by the destructor below -- and left behind, still
             // `.running`, by a crash, which is the detection.
-            vocem::journal_begin("opengl", vocem::process_name().c_str());
-            char note[300];
-            std::snprintf(note, sizeof(note), "drawing: %s",
-                          vocem::game_verdict().reason.c_str());
-            vocem::journal_note(note);
+            session_.journal_begin_once();
         }
         if (drawing_ >= 0 && want != (drawing_ == 1)) {
             VOCEM_GLOG("%s in '%s'", want ? "switched on" : "switched off",
@@ -728,14 +699,7 @@ public:
         // seconds. The write is two file syscalls and a rename -- inside the
         // budget this side already spends on the avatar path (entry 52) and
         // throttled far below it; the counting itself is two integers.
-        ++frames_seen_;
-        {
-            const double stat_now = vocem::monotonic_seconds();
-            if (stat_now - last_stat_seconds_ >= 5.0) {
-                last_stat_seconds_ = stat_now;
-                vocem::journal_stat(frames_seen_, frames_drawn_);
-            }
-        }
+        session_.frame_seen();
 
         vocem::Snapshot* snapshot = poll_state();
         if (!snapshot) {
@@ -750,7 +714,7 @@ public:
         const bool panel_frame = vocem::panel_wanted(*snapshot, config);
         const bool toast_frame = vocem::notification_wanted(*snapshot, config, now);
         if (!panel_frame && !toast_frame) {
-            note_.forget();
+            session_.note_forget();
             return;
         }
         // The message's words, fetched only now: this process has decided it
@@ -762,23 +726,15 @@ public:
         if (toast_frame) {
             // The snapshot is this process's own copy -- poll_state() reads
             // the segment into it -- so filling the body here reaches nobody
-            // else.
-            const char* words = note_.body_for(snapshot->notification.serial);
-            // A toast with a name and a face and no words is the one failure
-            // this path can have that looks exactly like success. Said once per
-            // message, never per frame.
-            if (words[0] == '\0' && said_empty_note_ != snapshot->notification.serial) {
-                said_empty_note_ = snapshot->notification.serial;
-                VOCEM_GLOG("message %llu has no words here: the note segment is empty or "
-                           "unreachable from this process",
-                           (unsigned long long)snapshot->notification.serial);
-            }
-            std::snprintf(snapshot->notification.body,
-                          sizeof(snapshot->notification.body), "%s", words);
+            // else. A message that arrived without its words is said once, in
+            // the session (the one failure this path has that looks like
+            // success).
+            std::snprintf(snapshot->notification.body, sizeof(snapshot->notification.body),
+                          "%s", session_.note_words(snapshot->notification.serial));
         } else {
-            note_.forget();
+            session_.note_forget();
         }
-        if (!ensure_backend()) {
+        if (!ensure_backend(egl)) {
             return;
         }
         // Only now is the drawable's size worth two X round trips: every path
@@ -805,19 +761,11 @@ public:
 
         ImGuiIO& io = ImGui::GetIO();
         io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
-        // The measured time since the last presented frame, as on the Vulkan side:
-        // this used to be a hardcoded 1/60, defensible while nothing animated and
-        // wrong now that the panel animates -- a 144 Hz game would run the motion
-        // at 2.4x and a 30 Hz one at half speed. Same guards as the layer: the
-        // first frame has no predecessor, and a stalled game must not feed ImGui a
-        // zero step. The clock is a member and release() zeroes it, so the frame
-        // that brings the overlay back does not measure the whole absence as one
-        // animation step. `now` is the frame's one clock, taken above.
-        {
-            const double delta = last_frame_seconds_ > 0.0 ? now - last_frame_seconds_ : 1.0 / 60.0;
-            last_frame_seconds_ = now;
-            io.DeltaTime = delta > 0.0001 ? static_cast<float>(delta) : 1.0f / 60.0f;
-        }
+        // The measured time since the last presented frame, one spelling with
+        // the Vulkan side (vocem/overlay_session.h); release() resets it, so the
+        // frame that brings the overlay back does not measure the whole absence
+        // as one animation step. `now` is the frame's one clock, taken above.
+        io.DeltaTime = session_.delta_time(now);
 
         // Rasterise the atlas at the size this drawable needs. Unlike the Vulkan
         // side there is nothing to defer to: replacing a GL texture is immediate,
@@ -858,31 +806,9 @@ public:
             ImGui_ImplOpenGL3_CreateFontsTexture();
         }
 
-        // Why there are no colour emoji, said once per process: a feature that
-        // quietly does not happen reads exactly like one nobody asked for, which
-        // is the lesson entry 38 cost four packages.
-        {
-            static const char* said = nullptr;
-            if (const char* status = vocem::fonts_emoji_status(); status != said) {
-                said = status;
-                if (status) {
-                    VOCEM_GLOG("no colour emoji: %s", status);
-                }
-            }
-        }
-
-        // And why the text is not in the font the settings name, on the same
-        // terms: the overlay falls back to its own Inter, which looks like a
-        // setting that was never applied unless the log says otherwise.
-        {
-            static const char* said_font = nullptr;
-            if (const char* status = vocem::fonts_font_status(); status != said_font) {
-                said_font = status;
-                if (status) {
-                    VOCEM_GLOG("drawing in the built-in font: %s", status);
-                }
-            }
-        }
+        // Why there are no colour emoji, and why the text is not in the font
+        // the settings name: said once per change, the same way on both paths.
+        session_.say_font_statuses();
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui::NewFrame();
@@ -904,12 +830,15 @@ public:
         // discarded, and the overlay is invisible for a reason nothing reports.
         // Restored immediately, like every other piece of state this touches
         // (rule 12).
+        // The DRAW target alone where the API has one (GlAvatarProvider says
+        // what binding GL_FRAMEBUFFER to 0 did to the READ side).
         GLint previous_framebuffer = 0;
+        const GLenum draw_target = avatars_.draw_framebuffer_target();
         const bool retarget = bind_framebuffer_ && avatars_.get_integer();
         if (retarget) {
             avatars_.get_integer()(GL_FRAMEBUFFER_BINDING, &previous_framebuffer);
             if (previous_framebuffer != 0) {
-                bind_framebuffer_(GL_FRAMEBUFFER, 0);
+                bind_framebuffer_(draw_target, 0);
             }
         }
 
@@ -924,11 +853,11 @@ public:
         }
 
         if (retarget && previous_framebuffer != 0) {
-            bind_framebuffer_(GL_FRAMEBUFFER, static_cast<GLuint>(previous_framebuffer));
+            bind_framebuffer_(draw_target, static_cast<GLuint>(previous_framebuffer));
         }
 
         capture_if_asked(width, height);
-        ++frames_drawn_;
+        session_.frame_drawn();
     }
 
     // Give back everything that belongs to a GL context, and be ready to build it
@@ -954,7 +883,8 @@ public:
         }
         avatars_.forget();
         backend_ready_ = false;
-        last_frame_seconds_ = 0.0;
+        forget_owner();
+        session_.reset_clock();
         // A backend that failed against one context deserves a fresh attempt
         // against the next: the failure was about that context, not about us.
         failed_ = false;
@@ -972,6 +902,18 @@ public:
         }
     }
 
+    // Whether the backend lives in `context` on `display` -- or, with a null
+    // context (eglTerminate), anywhere on `display`.
+    static bool owns(void* display, void* context, bool egl) {
+        void* owner = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
+        if (!owner || __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) != (egl ? 1 : 0)) {
+            return false;
+        }
+        if (!context) {
+            return __atomic_load_n(&g_owner_display, __ATOMIC_ACQUIRE) == display;
+        }
+        return owner == context;
+    }
 
 private:
     // A development aid: with VOCEM_CAPTURE_FRAME set to a path, the first frame
@@ -1040,7 +982,7 @@ private:
     // path did not).
     vocem::Snapshot* poll_state() { return state_poll_.poll(); }
 
-    bool ensure_backend() {
+    bool ensure_backend(bool egl) {
         if (backend_ready_) {
             return true;
         }
@@ -1074,75 +1016,130 @@ private:
         // unnoticed.
         const char* glsl_version = nullptr;
         int es_version = 0;  // 0 desktop GL, otherwise the OpenGL ES major version
-        if (PFN_glGetString get_string = gl_symbol<PFN_glGetString>("glGetString")) {
-            if (const char* version = reinterpret_cast<const char*>(get_string(GL_VERSION))) {
-                if (std::strncmp(version, "OpenGL ES 2", 11) == 0) {
-                    glsl_version = "#version 100";
-                    es_version = 2;
-                } else if (std::strncmp(version, "OpenGL ES", 9) == 0) {
-                    glsl_version = "#version 300 es";
-                    es_version = 3;
-                }
-                VOCEM_GLOG("context: %s", version);
+        int gl_major = 0;    // the desktop GL major version, for what a context can be asked
+        const auto read_version = [&]() -> bool {
+            PFN_glGetString get_string = gl_symbol<PFN_glGetString>("glGetString");
+            if (!get_string) {
+                return false;
             }
-        }
+            const char* version = reinterpret_cast<const char*>(get_string(GL_VERSION));
+            if (!version) {
+                return false;
+            }
+            if (std::strncmp(version, "OpenGL ES 2", 11) == 0) {
+                glsl_version = "#version 100";
+                es_version = 2;
+            } else if (std::strncmp(version, "OpenGL ES", 9) == 0) {
+                glsl_version = "#version 300 es";
+                es_version = 3;
+            } else if (version[0] >= '1' && version[0] <= '9') {
+                gl_major = version[0] - '0';  // "4.6.0 NVIDIA 580.82.07"
+            }
+            VOCEM_GLOG("context: %s", version);
+            return true;
+        };
+        const bool version_known = read_version();
 
         if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
             VOCEM_GLOG("ImGui OpenGL3 backend failed to initialise");
             failed_ = true;
             return false;
         }
-        avatars_.resolve(es_version);
+        // Asked again after Init where the first ask found nothing: in a game
+        // that never resolved a dispatcher of its own (this project's own GLX
+        // probes are that game), the third road has nothing to forward to
+        // until ImGui's loader resolves glXGetProcAddressARB through the
+        // dlsym door and the shim remembers it -- which Init has just done.
+        // The GLSL version is settled by then, but the GL major, which gates
+        // what the context may be asked (SrgbWriteGuard), still needs the
+        // answer.
+        if (!version_known) {
+            read_version();
+        }
+        // The backend's GL objects -- shader, buffers and the font texture --
+        // built HERE, not left to its NewFrame. draw() replaces the font
+        // texture explicitly once ensure_fonts() has rasterised the atlas at
+        // the size this output needs, and it did so on the first frame before
+        // NewFrame had built the device objects; NewFrame then built them,
+        // font texture included, over the one draw() had just made. One whole
+        // atlas -- 16 to 64 MB of RGBA at the sizes fonts.cpp measures --
+        // orphaned per backend build: per overlay toggle, per context
+        // recreation, for the life of the game's context. The comment above
+        // the replace used to claim the objects "already exist by now"; this is
+        // what makes it true. tests/gl_draw_local.cpp counts the textures.
+        avatars_.resolve(es_version, gl_major);
+        {
+            // Under the pixel-store guard, exactly as draw() keeps the backend's
+            // font upload: CreateFontsTexture zeroes GL_UNPACK_ROW_LENGTH and
+            // never restores it, and this call is what makes it now. The first
+            // version of this block ran it bare, and gl_unpack_state caught the
+            // game's row length at 0 the same minute.
+            const PixelStoreGuard unpack = avatars_.pixel_store_guard();
+            if (!ImGui_ImplOpenGL3_CreateDeviceObjects()) {
+                VOCEM_GLOG("ImGui OpenGL3 backend could not create its GL objects");
+                ImGui_ImplOpenGL3_Shutdown();
+                failed_ = true;
+                return false;
+            }
+        }
         // Resolved once, beside the rest: a context without it is older than
         // framebuffer objects, in which case there is nothing to retarget.
         bind_framebuffer_ = gl_symbol<PFN_glBindFramebuffer>("glBindFramebuffer");
+        // Whose context this backend now lives in, so that the teardown hooks
+        // can tell that context's death from any other's (see them below).
+        remember_owner(egl);
         backend_ready_ = true;
         VOCEM_GLOG("OpenGL backend ready");
         vocem::journal_note("OpenGL backend ready");
         return true;
     }
 
-    // Does the overlay belong here, according to the configuration as it stands?
-    // The policy -- lists re-walked only when edited, the game verdict decided
-    // once -- lives in vocem/draw_decision.h, shared with the Vulkan layer.
-    bool decide(const vocem::Config& config) {
-        if (decision_.refresh(config)) {
-            // The evidence, not just the verdict: a game that is missed has to
-            // be a case somebody can read off one line of the log.
-            if (decision_.allowed()) {
-                VOCEM_GLOG("drawing in '%s': %s", vocem::process_name().c_str(),
-                           vocem::game_verdict().reason.c_str());
-            } else {
-                VOCEM_GLOG("not drawing in '%s': %s (%s)", vocem::process_name().c_str(),
-                           vocem::looks_like_game() ? "on the hidden list"
-                                                    : "does not look like a game",
-                           vocem::game_verdict().reason.c_str());
+private:
+    // Asked once, when the backend comes up, of the API the present arrived
+    // through: which context is current right now is the one the backend's
+    // objects were just created in.
+    void remember_owner(bool egl) {
+        using PFN_current = void* (*)();
+        void* context = nullptr;
+        void* display = nullptr;
+        if (egl) {
+            if (auto current = gl_symbol<PFN_current>("eglGetCurrentContext")) {
+                context = current();
+            }
+            if (auto current = gl_symbol<PFN_current>("eglGetCurrentDisplay")) {
+                display = current();
+            }
+        } else {
+            if (auto current = gl_symbol<PFN_current>("glXGetCurrentContext")) {
+                context = current();
+            }
+            if (auto current = gl_symbol<PFN_current>("glXGetCurrentDisplay")) {
+                display = current();
             }
         }
-        return decision_.allowed();
+        __atomic_store_n(&g_owner_display, display, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_owner_egl, egl ? 1 : 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_owner_context, context, __ATOMIC_RELEASE);
+        VOCEM_GLOG("backend belongs to %s context %p", egl ? "EGL" : "GLX", context);
     }
 
-private:
+    void forget_owner() {
+        __atomic_store_n(&g_owner_context, static_cast<void*>(nullptr), __ATOMIC_RELEASE);
+        __atomic_store_n(&g_owner_display, static_cast<void*>(nullptr), __ATOMIC_RELEASE);
+    }
+
     vocem::StatePoll state_poll_{&gl_poll_log};
     GlAvatarProvider avatars_;
     vocem::LiveConfig config_;
-    // The message's words, held only while its toast is on screen in this
-    // process (vocem/note.h).
-    vocem::NoteReader note_;
-    uint64_t said_empty_note_ = 0;
-    // When the previous frame was presented, for ImGui's DeltaTime. Zero until
-    // the first frame, and zeroed again on release() so the frame that brings
-    // the overlay back does not measure the whole time it was away as one step.
-    double last_frame_seconds_ = 0.0;
+    // The bookkeeping both injected paths keep alike -- the bridge, the
+    // decision, the journal, the frame counters, the toast's words, the frame
+    // clock (vocem/overlay_session.h). This side calls all of it inline, in the
+    // present hook, which is its rule (entry 52's budget); the layer spreads
+    // the same calls over its two phases.
+    vocem::OverlaySession session_{"opengl", "vocem/gl"};
     // What the last frame concluded about whether the overlay belongs here, so the
     // moment it changes can be noticed. -1 until the first frame has asked.
     int drawing_ = -1;
-    // Presents the overlay was willing to draw in, and frames it actually
-    // painted: the Debug section's counters, kept in the journal's stat file.
-    long frames_seen_ = 0;
-    long frames_drawn_ = 0;
-    double last_stat_seconds_ = 0.0;
-    vocem::DrawDecision decision_;
     bool backend_ready_ = false;
     bool captured_ = false;
     int capture_warmup_frames_ = 0;
@@ -1151,8 +1148,14 @@ private:
 };
 
 GlOverlay& overlay() {
-    static GlOverlay instance;
-    return instance;
+    // Never destroyed. A function-local object would be destroyed at exit(),
+    // which a game may call from any thread while its render thread is still
+    // inside draw() under the lock: the maps and the state poll would be torn
+    // down under it. Nothing in here needs a destructor to run -- the journal
+    // is closed by the ELF destructor at the end of this file, and every GL
+    // object dies with the game's context -- so the instance is simply left.
+    static GlOverlay* instance = new GlOverlay;
+    return *instance;
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,7 +1265,7 @@ VOCEM_EXPORT void vocem_gl_present_glx(void* display, unsigned long drawable) {
         [](void* dpy, void* handle, uint32_t& w, uint32_t& h) {
             query_glx_size(dpy, reinterpret_cast<unsigned long>(handle), w, h);
         },
-        display, reinterpret_cast<void*>(drawable));
+        display, reinterpret_cast<void*>(drawable), false);
 }
 
 VOCEM_EXPORT void vocem_gl_present_egl(void* display, void* surface) {
@@ -1271,7 +1274,7 @@ VOCEM_EXPORT void vocem_gl_present_egl(void* display, void* surface) {
         [](void* dpy, void* handle, uint32_t& w, uint32_t& h) {
             query_egl_size(dpy, handle, w, h);
         },
-        display, surface);
+        display, surface, true);
 }
 
 // A GL context is going away, and everything we built lives in one.
@@ -1291,6 +1294,21 @@ VOCEM_EXPORT void vocem_gl_present_egl(void* display, void* surface) {
 // the driver is entitled to do anything at all with a stale name, and mostly it
 // draws nothing.
 VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
+    // Only the context the backend lives in. Every context a game destroys
+    // used to reach the release below -- a loader thread's helper context, a
+    // splash screen's, SDL's probe context -- and the dance underneath made
+    // the dying one current with the drawing one's drawable, deleted the
+    // backend's names in a context that never held them, and left the next
+    // frame to rebuild the whole backend (an atlas rasterised again, every
+    // face uploaded again) for a context that had never been touched. And it
+    // reached here in every process that ever presented, browsers included,
+    // whether or not a backend existed at all. Asked before the lock and
+    // before the overlay is so much as constructed: "not mine" costs one
+    // atomic load. tests/gl_draw_local.cpp destroys a second context and
+    // counts the rebuilds.
+    if (!GlOverlay::owns(display, context, false)) {
+        return;
+    }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
     vocem::journal_note("GLX context destroyed");
     using PFN_glXGetCurrentContext = void* (*)();
@@ -1334,6 +1352,13 @@ VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
 // with our objects gone; `eglTerminate` takes the whole display with it, so there
 // is nothing to make current and nothing to put back.
 VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
+    // As above: the backend's own context, or -- with no context, which is
+    // eglTerminate -- the backend's own display. Anything else is somebody
+    // else's business, including every EGL context Chromium's ANGLE creates
+    // and destroys in a browser that will never draw a frame of ours.
+    if (!GlOverlay::owns(display, context, true)) {
+        return;
+    }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
     using PFN_eglGetCurrentContext = void* (*)();
     using PFN_eglGetCurrentSurface = void* (*)(int);

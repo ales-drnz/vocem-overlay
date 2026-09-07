@@ -34,17 +34,32 @@
 
 namespace vocem {
 
-// The largest connected output's mode height under `drm_root`, or 0 when none
-// can be read. Parameterised for the tests; callers use display_height().
-inline uint32_t display_height_under(const char* drm_root) {
+// One connected, enabled output and its preferred mode.
+struct DisplayModeInfo {
+    char name[64];  // the connector, card<N>- prefix stripped: "DP-2", "HDMI-A-1"
+    uint32_t width;
+    uint32_t height;
+};
+
+// Every connected, enabled connector with a readable mode under `drm_root`, in
+// directory order, at most `capacity` of them; returns how many. The one
+// reader of the tree: the daemon takes its height from it and the settings
+// window its list of displays -- the window carried a second reader in Qt
+// (gui/src/environment.h), which asked `enabled` while this one did not,
+// until entry 135 made the two agree by hand; one spelling now.
+inline int read_display_modes(const char* drm_root, DisplayModeInfo* out, int capacity) {
     DIR* drm = ::opendir(drm_root);
     if (!drm) {
         return 0;
     }
-    uint32_t best = 0;
+    int count = 0;
     while (dirent* entry = ::readdir(drm)) {
+        if (count >= capacity) {
+            break;
+        }
         // Connectors are card<N>-<name>; the bare card<N> and renderD* are not.
-        if (std::strncmp(entry->d_name, "card", 4) != 0 || !std::strchr(entry->d_name, '-')) {
+        const char* dash = std::strchr(entry->d_name, '-');
+        if (std::strncmp(entry->d_name, "card", 4) != 0 || !dash) {
             continue;
         }
         char path[512];
@@ -60,6 +75,20 @@ inline uint32_t display_height_under(const char* drm_root) {
         if (!connected) {
             continue;
         }
+        // Connected is not switched on: a display disabled in the desktop's
+        // own settings still says `connected`, and only `enabled` says whether
+        // anything is scanned out to it. Absent -- an old kernel, a fabricated
+        // tree -- reads as enabled.
+        std::snprintf(path, sizeof(path), "%s/%s/enabled", drm_root, entry->d_name);
+        if (FILE* enabled = ::fopen(path, "r")) {
+            char answer[16] = {0};
+            const bool on = ::fgets(answer, sizeof(answer), enabled) &&
+                            std::strncmp(answer, "enabled", 7) == 0;
+            ::fclose(enabled);
+            if (!on) {
+                continue;
+            }
+        }
         std::snprintf(path, sizeof(path), "%s/%s/modes", drm_root, entry->d_name);
         FILE* modes = ::fopen(path, "r");
         if (!modes) {
@@ -72,12 +101,35 @@ inline uint32_t display_height_under(const char* drm_root) {
         // is "slightly large", the same trade largest-wins already makes.
         unsigned width = 0;
         unsigned height = 0;
-        if (std::fscanf(modes, "%ux%u", &width, &height) == 2 && height > best) {
-            best = height;
-        }
+        const bool read = std::fscanf(modes, "%ux%u", &width, &height) == 2;
         ::fclose(modes);
+        if (!read || width == 0 || height == 0) {
+            continue;
+        }
+        DisplayModeInfo& mode = out[count++];
+        std::snprintf(mode.name, sizeof(mode.name), "%s", dash + 1);
+        mode.width = width;
+        mode.height = height;
     }
     ::closedir(drm);
+    return count;
+}
+
+// How many connectors a tree can have before the enumeration stops counting.
+// A machine has a handful; sixteen is more than any desktop board carries.
+inline constexpr int kMaxDisplayModes = 16;
+
+// The largest connected output's mode height under `drm_root`, or 0 when none
+// can be read. Parameterised for the tests; callers use display_height().
+inline uint32_t display_height_under(const char* drm_root) {
+    DisplayModeInfo modes[kMaxDisplayModes];
+    const int count = read_display_modes(drm_root, modes, kMaxDisplayModes);
+    uint32_t best = 0;
+    for (int i = 0; i < count; ++i) {
+        if (modes[i].height > best) {
+            best = modes[i].height;
+        }
+    }
     return best;
 }
 

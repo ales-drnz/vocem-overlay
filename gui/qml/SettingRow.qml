@@ -94,6 +94,10 @@ Item {
 
             Label {
                 text: root.label
+                // Plain: a row's label is a process name or a record's field,
+                // which is somebody else's text, and AutoText would draw a
+                // name that looks like markup as markup.
+                textFormat: Text.PlainText
                 elide: Text.ElideRight
                 Layout.fillWidth: true
             }

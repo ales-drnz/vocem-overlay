@@ -6,6 +6,8 @@ find_package(CURL REQUIRED)
 
 add_executable(vocemd
     src/main.cpp
+    src/session.cpp
+    src/rpc_client.cpp
     src/websocket.cpp
     src/avatars.cpp
     src/auth.cpp
@@ -23,7 +25,8 @@ target_compile_options(vocemd PRIVATE -Wall -Wextra)
 # destruction of a std::mutex held by AvatarCache's queue at -O2. The warning
 # points at standard library internals, not at our code, so it is silenced for
 # this translation unit only rather than project-wide.
-set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS "-Wno-array-bounds")
+set_source_files_properties(src/main.cpp src/session.cpp src/rpc_client.cpp
+    PROPERTIES COMPILE_OPTIONS "-Wno-array-bounds")
 
 # The vendored decoder (Wuffs, via avatar_decode.h) compiles a number of helpers
 # this build does not call, since the module list is broader than one call site
@@ -33,7 +36,10 @@ set_source_files_properties(src/avatars.cpp
     PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
 
 # shm_open lives in librt on older glibc and in libc on current ones.
-target_link_libraries(vocemd PRIVATE CURL::libcurl Threads::Threads)
+# vocem_common for the application record the bridge writes on a sandboxed
+# game's behalf (vocem/apps.h); a static library, so nothing of the panel or
+# the fonts comes with it.
+target_link_libraries(vocemd PRIVATE vocem_common CURL::libcurl Threads::Threads)
 # The same road the window takes for its About page: the release stated once in
 # project(VERSION), compiled in, so the User-Agent cannot go stale by hand.
 target_compile_definitions(vocemd PRIVATE VOCEM_VERSION="${PROJECT_VERSION}")

@@ -110,8 +110,13 @@ public:
         if (!state_) {
             return;
         }
-        uint32_t seq = state_->sequence.load(std::memory_order_relaxed);
-        state_->sequence.store(seq + 1, std::memory_order_release);  // odd: writing
+        // Odd: writing. A read-modify-write with acquire semantics on this
+        // side, not a release store: a release store lets the writes that
+        // follow it be hoisted above it, and the data of a seqlock hoisted
+        // above the odd count is a torn read no reader can detect. Harmless on
+        // x86, where stores are not reordered with stores; written for the
+        // model rather than the machine.
+        const uint32_t seq = state_->sequence.fetch_add(1, std::memory_order_acq_rel);
         std::atomic_thread_fence(std::memory_order_release);
 
         mutate(*state_);
@@ -229,6 +234,19 @@ public:
 
     // Lock-free consistent read. Bounded retries: a writer crashing mid-update
     // must not spin a game's render thread forever.
+    // A word on what this is in the C++ memory model, so nobody "fixes" it: the
+    // copies below read plain fields another process may be writing at that
+    // moment, which is a data race by the letter of the standard. It is the
+    // seqlock's own shape -- the copy is allowed to be torn, and the sequence
+    // compared across it (acquire load before, acquire fence and load after,
+    // against a writer that fetch_adds with acq_rel and fences its stores) is
+    // what says whether it was; a torn copy is retried, never trusted. Making
+    // the fields atomic would buy nothing the check does not already give and
+    // would put a relaxed atomic load per byte on the present path. Measured
+    // rather than argued (tests/shared_state_layout.cpp at both widths, the
+    // segment crossed between them; shm_reattach and shm_short_segment for the
+    // lifecycle), and the writer's side of the same contract is StateWriter::
+    // publish above.
     bool read(Snapshot& out) const {
         if (!state_ || state_->abi_version != kAbiVersion) {
             return false;

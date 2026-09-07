@@ -58,10 +58,16 @@
 
 #include <string>
 
-#include "vocem/shm.h"
+#include "discord_stub.h"
 #include "private_shm.h"
+#include "vocem/shm.h"
 
 namespace {
+
+// The stub Discord is tests/discord_stub.h's; this file carried a copy.
+using vocem_test::monotonic;
+using vocem_test::recv_text;
+using vocem_test::send_text;
 
 int failures = 0;
 
@@ -69,104 +75,6 @@ void check(bool condition, const char* what) {
     printf("%s %s\n", condition ? "ok  " : "FAIL", what);
     if (!condition) {
         ++failures;
-    }
-}
-
-double monotonic() {
-    timespec ts{};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1e9;
-}
-
-// --------------------------------------------------------------- WebSocket
-// The same minimal server tests/daemon_notification.cpp uses: frames from the
-// daemon are masked, replies go out unmasked.
-
-bool write_all(int fd, const void* data, size_t length) {
-    const char* p = static_cast<const char*>(data);
-    while (length > 0) {
-        const ssize_t n = write(fd, p, length);
-        if (n <= 0) {
-            return false;
-        }
-        p += n;
-        length -= static_cast<size_t>(n);
-    }
-    return true;
-}
-
-bool send_text(int fd, const std::string& payload) {
-    std::string frame;
-    frame.push_back(static_cast<char>(0x81));
-    if (payload.size() < 126) {
-        frame.push_back(static_cast<char>(payload.size()));
-    } else {
-        frame.push_back(126);
-        frame.push_back(static_cast<char>((payload.size() >> 8) & 0xFF));
-        frame.push_back(static_cast<char>(payload.size() & 0xFF));
-    }
-    frame += payload;
-    return write_all(fd, frame.data(), frame.size());
-}
-
-bool recv_text(int fd, std::string& buffer, std::string& out, double deadline) {
-    for (;;) {
-        if (buffer.size() >= 2) {
-            const uint8_t b0 = static_cast<uint8_t>(buffer[0]);
-            const uint8_t b1 = static_cast<uint8_t>(buffer[1]);
-            const uint8_t opcode = b0 & 0x0F;
-            const bool masked = (b1 & 0x80) != 0;
-            size_t length = b1 & 0x7F;
-            size_t offset = 2;
-            if (length == 126) {
-                if (buffer.size() < 4) {
-                    goto need_more;
-                }
-                length = (static_cast<size_t>(static_cast<uint8_t>(buffer[2])) << 8) |
-                         static_cast<uint8_t>(buffer[3]);
-                offset = 4;
-            } else if (length == 127) {
-                return false;
-            }
-            const size_t mask_bytes = masked ? 4 : 0;
-            if (buffer.size() >= offset + mask_bytes + length) {
-                std::string payload = buffer.substr(offset + mask_bytes, length);
-                if (masked) {
-                    for (size_t i = 0; i < payload.size(); ++i) {
-                        payload[i] = static_cast<char>(payload[i] ^ buffer[offset + (i & 3)]);
-                    }
-                }
-                buffer.erase(0, offset + mask_bytes + length);
-                if (opcode == 0x1) {
-                    out = payload;
-                    return true;
-                }
-                if (opcode == 0x8) {
-                    return false;
-                }
-                continue;
-            }
-        }
-    need_more:
-        const double remaining = deadline - monotonic();
-        if (remaining <= 0) {
-            return false;
-        }
-        timeval tv{};
-        tv.tv_sec = static_cast<time_t>(remaining);
-        tv.tv_usec = static_cast<suseconds_t>((remaining - static_cast<double>(tv.tv_sec)) * 1e6);
-        fd_set set;
-        FD_ZERO(&set);
-        FD_SET(fd, &set);
-        if (select(fd + 1, &set, nullptr, nullptr, &tv) <= 0) {
-            return false;
-        }
-        char chunk[4096];
-        const ssize_t n = read(fd, chunk, sizeof(chunk));
-        if (n <= 0) {
-            return false;
-        }
-        buffer.append(chunk, static_cast<size_t>(n));
     }
 }
 
@@ -263,15 +171,8 @@ int main() {
     }
     write_file((base + "/state/vocem/token").c_str(), "test-token\n");
 
-    const int listener = socket(AF_INET, SOCK_STREAM, 0);
-    const int one = 1;
-    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(6463);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-        listen(listener, 1) != 0) {
+    const int listener = vocem_test::listen_on(6463);
+    if (listener < 0) {
         printf("FAIL cannot listen on 6463 -- is the sandbox missing --unshare-net?\n");
         return 1;
     }
@@ -294,18 +195,7 @@ int main() {
     }
 
     std::string buffer;
-    {
-        char c = 0;
-        while (buffer.find("\r\n\r\n") == std::string::npos && read(fd, &c, 1) == 1) {
-            buffer.push_back(c);
-        }
-        buffer.clear();
-        const char* reply =
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            "Sec-WebSocket-Accept: stub\r\n\r\n";
-        write_all(fd, reply, strlen(reply));
-    }
+    check(vocem_test::accept_upgrade(fd), "and upgraded");
 
     send_text(fd, R"({"cmd":"DISPATCH","evt":"READY","data":{"v":1},"nonce":null})");
 

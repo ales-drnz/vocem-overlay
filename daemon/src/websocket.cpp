@@ -218,6 +218,13 @@ bool WebSocket::connect(const char* host, uint16_t port, const std::string& path
         close();
         return false;
     }
+    // Sec-WebSocket-Accept is deliberately not checked. It proves that the
+    // peer read our key, which against a loopback peer whose owner the daemon
+    // has already identified by uid (peer_identity.h) establishes nothing
+    // more; checking it would cost a SHA-1 in a daemon that has no other use
+    // for one. The nonce is still random because the RFC requires a key and
+    // some servers refuse a fixed one. Written down so the omission reads as
+    // a decision and not an oversight.
     return true;
 }
 
@@ -335,6 +342,15 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
         const bool masked = (head[1] & 0x80) != 0;
         uint64_t length = head[1] & 0x7F;
 
+        // RSV1-3 are for extensions, and none was negotiated: RFC 6455
+        // section 5.2 says a peer that sets one anyway has failed the
+        // connection. They went unchecked -- bounded, since the payload is
+        // still capped, but a peer speaking a protocol this client does not
+        // is not a peer to go on reading.
+        if ((head[0] & 0x70) != 0) {
+            return Result::Closed;
+        }
+
         if (length == 126) {
             uint8_t ext[2];
             if (!read_exact(ext, 2, frame_by)) return Result::Closed;
@@ -389,7 +405,22 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
                 send_frame(kOpClose, nullptr, 0, frame_by);
                 return Result::Closed;
             case kOpText:
+                // A text frame while another message's continuations are still
+                // expected is a protocol error (section 5.4); a fresh message
+                // simply starts.
+                pending_.clear();
+                pending_is_text_ = true;
+                [[fallthrough]];
             case kOpContinuation:
+                // A continuation of something that was not text -- a binary
+                // message this client does not read -- is dropped with it,
+                // rather than glued onto the next text message: the first
+                // version appended every continuation, so a binary frame
+                // followed by its continuations became the start of whatever
+                // text came next.
+                if (!pending_is_text_) {
+                    continue;
+                }
                 // A message is the concatenation of its frames, so capping the
                 // frame capped nothing: a peer that never sets FIN can send 64 KiB
                 // at a time forever. The whole message gets the frame's ceiling.
@@ -400,11 +431,17 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
                 if (fin) {
                     out = std::move(pending_);
                     pending_.clear();
+                    pending_is_text_ = false;
                     return Result::Message;
                 }
                 continue;
             default:
-                continue;  // binary and reserved opcodes are not used by the RPC
+                // Binary and reserved opcodes are not used by the RPC. A binary
+                // message's own continuations are refused above through the
+                // flag, so they cannot become part of a text message.
+                pending_.clear();
+                pending_is_text_ = false;
+                continue;
         }
     }
 }

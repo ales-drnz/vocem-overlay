@@ -386,6 +386,51 @@ void FlatpakBridge::write_record_for(Mirror& mirror, const Request& request) {
         mirror.id.c_str(), request.why.c_str());
 }
 
+namespace {
+
+// A Flatpak application id, as flatpak's own flatpak_is_valid_name() has
+// it: at least two elements separated by dots, each starting with a letter
+// or an underscore and made of letters, digits, '_' and '-', at most 255
+// bytes in all. Nothing else creates a directory under $XDG_RUNTIME_DIR/app
+// that this daemon should look inside.
+bool looks_like_app_id(const char* id) {
+    size_t length = 0;
+    int elements = 0;
+    bool element_start = true;
+    for (const char* c = id; *c; ++c, ++length) {
+        if (*c == '.') {
+            if (element_start) {
+                return false;  // an empty element
+            }
+            element_start = true;
+            continue;
+        }
+        const bool letter = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || *c == '_';
+        const bool digit = *c >= '0' && *c <= '9';
+        if (element_start) {
+            if (!letter) {
+                return false;
+            }
+            ++elements;
+            element_start = false;
+        } else if (!letter && !digit && *c != '-') {
+            return false;
+        }
+    }
+    return elements >= 2 && !element_start && length <= 255;
+}
+
+// A directory name for the log: anything a dirent can hold, one line.
+std::string printable_id(const char* id) {
+    std::string out;
+    for (const char* c = id; *c && out.size() < 64; ++c) {
+        out.push_back((*c >= 0x20 && *c != 0x7F) ? *c : '?');
+    }
+    return out;
+}
+
+}  // namespace
+
 void FlatpakBridge::rescan() {
     if (applications_ < 0 && !start()) {
         return;
@@ -432,9 +477,34 @@ void FlatpakBridge::rescan() {
                 break;
             }
         }
-        if (!known) {
-            adopt(entry->d_name);
+        if (known) {
+            continue;
         }
+        // The two bounds on who gets served, refused out loud (entry 134).
+        // A directory under $XDG_RUNTIME_DIR/app can be made by any process
+        // of the user's -- a sandbox with the xdg-run/app grant included --
+        // and every mirror costs two descriptors, a six-megabyte emoji bank
+        // and a share of every publish: without a ceiling a few hundred
+        // asking directories exhausted this process's descriptors, after
+        // which the socket, /proc/net/tcp and the segment itself all failed
+        // to open. A Flatpak application id is reverse-DNS -- letters,
+        // digits, '.', '_' and '-', at least one dot -- and a name that is
+        // not one was never made by Flatpak.
+        if (mirrors_.size() >= kMirrorCeiling) {
+            if (!ceiling_said_) {
+                ceiling_said_ = true;
+                LOG("not serving the Flatpak sandbox of %s: %zu sandboxes are already served, "
+                    "which is the ceiling",
+                    printable_id(entry->d_name).c_str(), mirrors_.size());
+            }
+            continue;
+        }
+        if (!looks_like_app_id(entry->d_name)) {
+            LOG("not serving %s: not the shape of a Flatpak application id",
+                printable_id(entry->d_name).c_str());
+            continue;
+        }
+        adopt(entry->d_name);
     }
     ::closedir(handle);
 }

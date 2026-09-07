@@ -16,4 +16,4 @@
 # being started -- so one line covers 32-bit and 64-bit games.
 #
 # To switch the overlay off for a single process, set VOCEM_DISABLE=1.
-LD_PRELOAD=${LD_PRELOAD}:/usr/$$LIB/libvocem_gl_shim.so
+LD_PRELOAD=${LD_PRELOAD}:@CMAKE_INSTALL_PREFIX@/$$LIB/libvocem_gl_shim.so

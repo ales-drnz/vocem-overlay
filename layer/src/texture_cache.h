@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "vocem/avatar_file.h"
 #include "vocem/avatar_key.h"
 #include "vocem/shared_state.h"
 
@@ -138,8 +139,7 @@ private:
     struct Pending {
         AvatarKey key;
         std::string path;
-        double first_asked = 0.0;
-        double next_attempt = 0.0;
+        AvatarWait wait;
     };
 
     std::vector<Pending> pending_;

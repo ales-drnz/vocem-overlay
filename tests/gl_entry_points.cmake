@@ -39,10 +39,15 @@ if(asked_count LESS 4)
                         "the parse has stopped matching the source, which is not agreement")
 endif()
 
-foreach(library "${LIBRARY}" "${LIBRARY32}")
-    if(NOT EXISTS "${library}")
-        continue()
-    endif()
+# The 64-bit library first, and the 32-bit one only where its tree was built:
+# a missing 32-bit half is a skip said at the end, AFTER the 64-bit half has
+# been held, so a fault at 64 bits still fails and one width measured is still
+# reported as one width measured rather than as both.
+set(libraries "${LIBRARY}")
+if(LIBRARY32 AND EXISTS "${LIBRARY32}")
+    list(APPEND libraries "${LIBRARY32}")
+endif()
+foreach(library IN LISTS libraries)
     execute_process(COMMAND nm -D --defined-only "${library}"
                     OUTPUT_VARIABLE symbols RESULT_VARIABLE status)
     if(NOT status EQUAL 0)
@@ -67,3 +72,8 @@ foreach(library "${LIBRARY}" "${LIBRARY32}")
     endforeach()
     message(STATUS "ok ${library}: exactly the ${asked_count} names the shim resolves")
 endforeach()
+
+if(LIBRARY32 AND NOT EXISTS "${LIBRARY32}")
+    message(STATUS "skip ${LIBRARY32} is not built: the names were held at one width only, "
+                   "and the 32-bit half is the one that has failed invisibly (entries 30/33/34)")
+endif()

@@ -6,8 +6,6 @@ set(IMGUI_DIR "${PROJECT_SOURCE_DIR}/third_party/imgui")
 
 add_library(vocem_gl SHARED
     src/vocem_gl.cpp
-    "${PROJECT_SOURCE_DIR}/common/src/panel.cpp"
-    "${PROJECT_SOURCE_DIR}/common/src/fonts.cpp"
     "${IMGUI_DIR}/imgui.cpp"
     "${IMGUI_DIR}/imgui_draw.cpp"
     "${IMGUI_DIR}/imgui_tables.cpp"
@@ -22,7 +20,6 @@ set_target_properties(vocem_gl PROPERTIES OUTPUT_NAME vocem_gl)
 
 target_include_directories(vocem_gl PRIVATE
     "${PROJECT_SOURCE_DIR}/include"
-    "${PROJECT_SOURCE_DIR}/common/fonts"
     "${IMGUI_DIR}"
     "${IMGUI_DIR}/backends"
 )
@@ -42,6 +39,13 @@ target_compile_definitions(vocem_gl PRIVATE
     IMGUI_USE_WCHAR32
     IMGUI_DISABLE_FILE_FUNCTIONS
     IMGUI_DISABLE_DEBUG_TOOLS
+    # ImGui's IM_ASSERT is assert() (imgui.h), 387 of them in the units that
+    # go into this library, every one an abort() in somebody's game if it
+    # fires (rule 7). The packaging compiles them out with NDEBUG; a Debug
+    # build of this tree did not, and a build type is not the place to keep a
+    # rule. Stated here instead, for this target alone: the tests keep their
+    # asserts.
+    "IM_ASSERT(_EXPR)=((void)0)"
 )
 
 set_source_files_properties(
@@ -53,7 +57,11 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-w"
 )
 
-target_link_libraries(vocem_gl PRIVATE ${CMAKE_DL_LIBS})
+# The panel, the fonts, the application registry and the palette, compiled
+# once per width in common/ (common/CMakeLists.txt says what the objects agree
+# on -- hidden visibility above all, or the archive's symbols would be exported
+# past the four entry points).
+target_link_libraries(vocem_gl PRIVATE vocem_common ${CMAKE_DL_LIBS})
 
 # --- shim -------------------------------------------------------------------
 # The only library that gets preloaded. Kept deliberately tiny: it is mapped into

@@ -409,12 +409,20 @@ int main() {
     fn.CreateGraphicsPipelines = vk.vkCreateGraphicsPipelines;
     fn.DestroyPipeline = vk.vkDestroyPipeline;
 
-    // ---- The degrade path: an unrecognised space routes to no pipeline ----
+    // ---- The degrade path: an unrecognised space routes to the identity ----
+    // Mode 0 is unconverted colours, and since entry 131 it is a pipeline of
+    // the swapchain's own rather than "keep the stock one": the stock pipeline
+    // is compatible with the first swapchain's render pass alone, and a later
+    // swapchain in another format needs one built against its own.
     check(vocem::hdr_mode_for(VK_COLOR_SPACE_DOLBYVISION_EXT) == 0,
-          "unrecognised colour space routes to mode 0 (stock pipeline)");
-    vocem::HdrPipeline none;
-    check(!vocem::hdr_pipeline_create(fn, device, render_pass, 0, 203.0f, none),
-          "mode 0 builds no pipeline: the caller keeps the stock one");
+          "unrecognised colour space routes to mode 0 (unconverted)");
+    vocem::HdrPipeline identity;
+    check(vocem::hdr_pipeline_create(fn, device, render_pass, 0, 203.0f, identity) &&
+              identity.pipeline != VK_NULL_HANDLE,
+          "mode 0 builds the identity pipeline, against this render pass");
+    vocem::hdr_pipeline_destroy(fn, device, identity);
+    check(!vocem::hdr_pipeline_create(fn, device, render_pass, 7, 203.0f, identity),
+          "and a mode that does not exist builds nothing");
 
     // ---- Offscreen target ------------------------------------------------
     VkImageCreateInfo image_info{};

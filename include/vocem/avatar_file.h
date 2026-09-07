@@ -40,6 +40,37 @@ inline double avatar_now_seconds() {
     return monotonic_seconds();
 }
 
+// The wait for one face that has not arrived: when it was first asked for and
+// when to look again. The two numbers above were one spelling already; the
+// loop around them was not -- the GL provider kept a `Waiting` map and the
+// Vulkan cache a `Pending` queue, each re-deriving the same three decisions
+// (look now?, look again in half a second, give up after thirty). One object,
+// both caches; plain arithmetic on the stack, nothing allocated.
+struct AvatarWait {
+    double first_asked = 0.0;
+    // The first look is immediate: somebody who joins is drawn on the next
+    // frame and their picture may already be there.
+    double next_attempt = 0.0;
+
+    static AvatarWait start(double now) { return AvatarWait{now, now}; }
+
+    // Whether this frame should look at all. A stat() on every frame for every
+    // face is not free, and this runs inside somebody's game.
+    bool due(double now) const { return now >= next_attempt; }
+
+    // The file was not there. True while it is worth looking again -- the next
+    // look scheduled -- and false once the download has had its thirty seconds:
+    // a picture that has not arrived by then is not going to, and the face
+    // stays the placeholder for the session.
+    bool missed(double now) {
+        if (now - first_asked >= kAvatarGiveUpSeconds) {
+            return false;
+        }
+        next_attempt = now + kAvatarRetrySeconds;
+        return true;
+    }
+};
+
 }  // namespace vocem
 
 #endif  // VOCEM_AVATAR_FILE_H

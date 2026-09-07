@@ -17,9 +17,14 @@
 // there by the host and a file created there by the sandbox each appear on the
 // other side, and a MAP_SHARED mapping of the same file reports the same st_dev
 // and st_ino on both sides and sees the other side's writes live. So the pages
-// are the same pages, and the shared state's seqlock, its fixed layout and its
-// kAbiVersion cross the boundary unchanged -- this is a second *name* for the
-// segment, not a second transport with a contract of its own.
+// are the same pages, and the shared state's fixed layout and its kAbiVersion
+// cross the boundary unchanged. What does NOT cross unchanged is the seqlock's
+// counter: the daemon writes the mirror rather than mapping it (a truncated
+// mapping is SIGBUS in the one process holding the Discord connection), so the
+// sequence a sandbox reads is the daemon's own count for that mirror, spelled
+// in four pwrite()s (flatpak_bridge.cpp), and a second daemon would lie where
+// the canonical segment's shared atomic would not. Entry 86 corrected this
+// paragraph's earlier claim; the paragraph took until 0.1.8 to follow.
 //
 // It is a bridge and not a broadcast. The daemon does not write into every
 // sandbox on the machine: the overlay inside a game creates `vocem/request` in

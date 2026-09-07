@@ -30,7 +30,8 @@ void check(bool condition, const char* what) {
     }
 }
 
-void connector(const char* root, const char* name, const char* status, const char* modes) {
+void connector(const char* root, const char* name, const char* status, const char* modes,
+               const char* enabled = nullptr) {
     char path[600];
     snprintf(path, sizeof(path), "%s/%s", root, name);
     mkdir(path, 0700);
@@ -38,6 +39,13 @@ void connector(const char* root, const char* name, const char* status, const cha
     if (FILE* f = fopen(path, "w")) {
         fputs(status, f);
         fclose(f);
+    }
+    if (enabled) {
+        snprintf(path, sizeof(path), "%s/%s/enabled", root, name);
+        if (FILE* f = fopen(path, "w")) {
+            fputs(enabled, f);
+            fclose(f);
+        }
     }
     if (modes) {
         snprintf(path, sizeof(path), "%s/%s/modes", root, name);
@@ -85,6 +93,18 @@ int main() {
     // the others answered.
     connector(root, "card1-DP-4", "connected\n", nullptr);
     check(vocem::display_height_under(root) == 2880, "a connected output with no modes is skipped");
+
+    // Connected is not switched on. A display disabled in the desktop's own
+    // settings still says `connected`; `enabled` is what says it is scanned
+    // out to. The window's reader asked both and this one asked one, so a
+    // monitor switched off sized the overlay in the game and not in the
+    // preview of it. The largest of the ENABLED outputs wins; one that says
+    // nothing about it (the trees above) is taken as on.
+    connector(root, "card1-DP-5", "connected\n", "7680x4320\n", "disabled\n");
+    check(vocem::display_height_under(root) == 2880,
+          "a connected display that is switched off does not size the overlay");
+    connector(root, "card1-DP-6", "connected\n", "6016x3384\n", "enabled\n");
+    check(vocem::display_height_under(root) == 3384, "and one switched on does");
 
     char cleanup[700];
     snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);

@@ -12,31 +12,16 @@
 
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
-#include "vocem/apps.h"
 #include "vocem/clock.h"
 #include "vocem/journal.h"
 #include "vocem/fonts.h"
+#include "vocem/overlay_log.h"
 #include "vocem/panel.h"
 
 // Failures in here are silent by design in release builds -- the overlay simply
-// does not appear -- so they must be traceable when VOCEM_DEBUG is set.
-// The env is read once, as every other component's logger reads it: this
-// macro used to ask getenv on every log line.
-inline bool vocem_render_debug() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("VOCEM_DEBUG");
-        return env && env[0] == '1';
-    }();
-    return enabled;
-}
-
-#define VOCEM_RLOG(...)                                            \
-    do {                                                           \
-        if (vocem_render_debug()) {                                \
-            std::fprintf(stderr, "[vocem/render] " __VA_ARGS__);   \
-            std::fputc('\n', stderr);                              \
-        }                                                          \
-    } while (0)
+// does not appear -- so they must be traceable when VOCEM_DEBUG is set. The
+// one logger both paths share (vocem/overlay_log.h), under this file's tag.
+#define VOCEM_RLOG(...) VOCEM_OVERLAY_LOG("vocem/render", __VA_ARGS__)
 
 namespace vocem {
 namespace {
@@ -97,6 +82,11 @@ OverlayRenderer& renderer() {
     return instance;
 }
 
+OverlaySession& session() {
+    static OverlaySession instance("vulkan", "vocem");
+    return instance;
+}
+
 bool OverlayRenderer::load_vulkan_functions(const RendererTarget& target) {
     // The context is refreshed on every call, ahead of the early return below.
     // resolve_function reads it at call time, so a stale device here is not a
@@ -124,14 +114,23 @@ bool OverlayRenderer::load_vulkan_functions(const RendererTarget& target) {
 }
 
 bool OverlayRenderer::prepare(const RendererTarget& target) {
+    std::lock_guard<std::mutex> guard(lock_);
+    if (backend_ready_) {
+        return true;
+    }
+    if (failed_) {
+        return false;  // said once below; not retried per present
+    }
     if (!target.device || !target.render_pass || !target.gdpa || !target.gipa) {
         VOCEM_RLOG("incomplete target: device=%p render_pass=%p gdpa=%p gipa=%p",
                    (void*)target.device, (void*)target.render_pass, (void*)target.gdpa,
                    (void*)target.gipa);
+        failed_ = true;
         return false;
     }
 
     if (!load_vulkan_functions(target)) {
+        failed_ = true;
         return false;
     }
 
@@ -159,10 +158,15 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
     // caller only reaches prepare() when ready() is false, so a "target
     // changed" comparison in here could never run -- one lived here for months,
     // dead, under a comment promising swapchain-recreate handling. A new device
-    // arrives through vocem_DestroyDevice -> shutdown(); a recreated swapchain
-    // keeps working because its new render pass is compatible by Vulkan's own
-    // rules, not because anything in here notices.
-    if (!backend_ready_) {
+    // arrives through vocem_DestroyDevice -> shutdown(). A recreated swapchain
+    // does NOT come back here, and its render pass is compatible with the
+    // stock pipeline built below only while its format is the one recorded in
+    // format_: the layer builds a pipeline of its own per swapchain and asks
+    // format() before ever drawing with the stock one (a comment here used to
+    // say "compatible by Vulkan's own rules", which is true of a resize and
+    // false of a format change -- HDR switched off in a game's settings, an
+    // sRGB swapchain replaced by a UNORM one).
+    {
         ImGui_ImplVulkan_InitInfo info{};
         info.ApiVersion = VK_API_VERSION_1_1;
         info.Instance = target.instance;
@@ -171,8 +175,10 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         info.QueueFamily = target.queue_family;
         info.Queue = target.queue;
         info.RenderPass = target.render_pass;
-        info.MinImageCount = target.image_count < 2 ? 2 : target.image_count;
-        info.ImageCount = info.MinImageCount;
+        // The ring, sized once for more images than any swapchain has rather
+        // than for this swapchain's count (kRingSlots says why).
+        info.MinImageCount = 2;
+        info.ImageCount = kRingSlots;
         info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
         // Let the backend own its descriptor pool: one less thing for the layer
         // to allocate and destroy alongside the swapchain. Sized from the avatar
@@ -199,23 +205,36 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         if (!ImGui_ImplVulkan_Init(&info) || g_backend_failed) {
             VOCEM_RLOG("ImGui_ImplVulkan_Init failed");
             ImGui_ImplVulkan_Shutdown();
+            failed_ = true;
             return false;
         }
-        VOCEM_RLOG("backend ready (%u images, queue family %u)", info.ImageCount,
+        // The font atlas, uploaded HERE, in the post-present phase, and not
+        // left to the backend's NewFrame. ImGui 1.90.1 moved the upload out of
+        // Init and into the first NewFrame ("automatically called by NewFrame()
+        // the first time"), and NewFrame runs inside draw() -- inside
+        // vkQueuePresentKHR, under the layer's lock -- where the upload's
+        // vkQueueSubmit and vkQueueWaitIdle are exactly what rule 10 keeps out
+        // of the present. The comment at the top of draw_overlay() went on
+        // saying initialisation happens after the present while the atlas was
+        // being uploaded inside it; tests/vk_witness_layer.cpp is what sees a
+        // queue wait inside a present now.
+        if (!ImGui_ImplVulkan_CreateFontsTexture() || g_backend_failed) {
+            VOCEM_RLOG("font atlas upload failed");
+            ImGui_ImplVulkan_Shutdown();
+            failed_ = true;
+            return false;
+        }
+        VOCEM_RLOG("backend ready (%u ring slots, queue family %u)", info.ImageCount,
                    target.queue_family);
         // The session's journal (vocem/journal.h): opened at the first frame
         // the overlay draws in this process, closed into history on a clean
         // exit by the layer's destructor -- and left behind, still `.running`,
         // by a crash, which is the detection.
-        vocem::journal_begin("vulkan", vocem::process_name().c_str());
-        {
-            char note[300];
-            std::snprintf(note, sizeof(note), "drawing: %s",
-                          vocem::game_verdict().reason.c_str());
-            vocem::journal_note(note);
-        }
+        session().journal_begin_once();
         vocem::journal_note("Vulkan backend ready");
         backend_ready_ = true;
+        device_ = target.device;
+        format_ = target.format;
 
         if (!avatar_adapter_) {
             static Adapter adapter(textures_);
@@ -234,6 +253,7 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
 
 void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snapshot,
                            uint32_t width, uint32_t height, VkPipeline pipeline) {
+    std::lock_guard<std::mutex> guard(lock_);
     if (!backend_ready_) {
         return;
     }
@@ -242,10 +262,8 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
 
     const double now = monotonic_seconds();
-    const double delta = last_frame_seconds_ > 0.0 ? now - last_frame_seconds_ : 1.0 / 60.0;
-    last_frame_seconds_ = now;
-    // A stalled or hitching game must not feed ImGui a zero or negative step.
-    io.DeltaTime = delta > 0.0001 ? static_cast<float>(delta) : 1.0f / 60.0f;
+    // The measured time since the previous frame, one spelling with the GL side.
+    io.DeltaTime = session().delta_time(now);
 
     // What the atlas should be built at for this output. The rebuild itself cannot
     // happen here -- it destroys the texture the previous frames are still using --
@@ -305,10 +323,11 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     ImGui::Render();
 
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer, pipeline);
-    ++frames_drawn_;
+    session().frame_drawn();
 }
 
 void OverlayRenderer::process_uploads() {
+    std::lock_guard<std::mutex> guard(lock_);
     if (!backend_ready_) {
         return;
     }
@@ -316,11 +335,7 @@ void OverlayRenderer::process_uploads() {
     // The Debug section's frame and draw counters. This is the post-present
     // phase, where file work is allowed; the write itself happens at most once
     // every few seconds.
-    ++frames_seen_;
-    if (const double now = monotonic_seconds(); now - last_stat_seconds_ >= 5.0) {
-        last_stat_seconds_ = now;
-        journal_stat(frames_seen_, frames_drawn_);
-    }
+    session().frame_seen();
 
     // Resolution changed, or the user moved the size slider: rasterise the atlas
     // again at the new size instead of stretching the old one. Safe here and only
@@ -338,36 +353,18 @@ void OverlayRenderer::process_uploads() {
         }
     }
 
-    // Why there are no colour emoji, said once. A feature that quietly does not
-    // happen reads exactly like one nobody asked for.
-    if (const char* status = fonts_emoji_status(); status != emoji_status_said_) {
-        emoji_status_said_ = status;
-        if (status) {
-            VOCEM_RLOG("no colour emoji: %s", status);
-        }
-    }
-
-    // And why the text is not in the font the settings name.
-    if (const char* status = fonts_font_status(); status != font_status_said_) {
-        font_status_said_ = status;
-        if (status) {
-            VOCEM_RLOG("drawing in the built-in font: %s", status);
-        }
-    }
+    // Why there are no colour emoji, and why the text is not in the font the
+    // settings name: said once per change, the same way on both paths.
+    session().say_font_statuses();
 
     // The words for the toast the next frame will draw. Here rather than in
-    // draw(): this is the phase where file work is allowed.
+    // draw(): this is the phase where file work is allowed. A message that
+    // arrived without them is said once, in the session.
     if (wanted_note_serial_ != 0) {
         std::snprintf(note_body_, sizeof(note_body_), "%s",
-                      note_.body_for(wanted_note_serial_));
-        if (note_body_[0] == '\0' && said_empty_note_ != wanted_note_serial_) {
-            said_empty_note_ = wanted_note_serial_;
-            VOCEM_RLOG("message %llu has no words here: the note segment is empty or "
-                       "unreachable from this process",
-                       (unsigned long long)wanted_note_serial_);
-        }
+                      session().note_words(wanted_note_serial_));
     } else if (note_body_[0] != '\0') {
-        note_.forget();
+        session().note_forget();
         std::memset(note_body_, 0, sizeof(note_body_));
     }
 
@@ -375,9 +372,14 @@ void OverlayRenderer::process_uploads() {
 }
 
 void OverlayRenderer::shutdown() {
+    std::lock_guard<std::mutex> guard(lock_);
+    shutdown_locked();
+}
+
+void OverlayRenderer::shutdown_locked() {
     // The next device's first frame must not measure the gap between devices as
     // one animation step.
-    last_frame_seconds_ = 0.0;
+    session().reset_clock();
     textures_.shutdown();
     if (backend_ready_) {
         ImGui_ImplVulkan_Shutdown();
@@ -388,8 +390,12 @@ void OverlayRenderer::shutdown() {
         context_ready_ = false;
     }
     // The next prepare() belongs to a different device, so the backend's function
-    // table is loaded again rather than kept from the destroyed one.
+    // table is loaded again rather than kept from the destroyed one -- and a
+    // failure against the old device says nothing about the new one.
     functions_loaded_ = false;
+    failed_ = false;
+    device_ = VK_NULL_HANDLE;
+    format_ = VK_FORMAT_UNDEFINED;
 }
 
 }  // namespace vocem

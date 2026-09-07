@@ -27,7 +27,7 @@ float hdr_sdr_nits() {
 
 bool hdr_pipeline_create(const HdrDeviceFunctions& fn, VkDevice device, VkRenderPass render_pass,
                          int mode, float sdr_nits, HdrPipeline& out) {
-    if (!fn.complete() || mode == 0) {
+    if (!fn.complete() || mode < 0 || mode > 3) {
         return false;
     }
 

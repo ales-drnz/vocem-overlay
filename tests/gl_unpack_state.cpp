@@ -101,6 +101,24 @@ using PFN_glGetError = unsigned int (*)();
 using PFN_glGenBuffers = void (*)(int, unsigned int*);
 using PFN_glBindBuffer = void (*)(unsigned int, unsigned int);
 using PFN_glBufferData = void (*)(unsigned int, long, const void*, unsigned int);
+using PFN_glGenFramebuffers = void (*)(int, unsigned int*);
+using PFN_glBindFramebuffer = void (*)(unsigned int, unsigned int);
+using PFN_glGenRenderbuffers = void (*)(int, unsigned int*);
+using PFN_glBindRenderbuffer = void (*)(unsigned int, unsigned int);
+using PFN_glRenderbufferStorage = void (*)(unsigned int, unsigned int, int, int);
+using PFN_glFramebufferRenderbuffer = void (*)(unsigned int, unsigned int, unsigned int,
+                                               unsigned int);
+
+// The two framebuffer targets and their bindings. GL_FRAMEBUFFER binds both;
+// the overlay used to bind it to 0 for its draw and put "the binding" back,
+// which restored the draw side and left the read side pointing at the window.
+constexpr unsigned int kReadFramebuffer = 0x8CA8;
+constexpr unsigned int kDrawFramebuffer = 0x8CA9;
+constexpr unsigned int kReadFramebufferBinding = 0x8CAA;
+constexpr unsigned int kDrawFramebufferBinding = 0x8CA6;
+constexpr unsigned int kRenderbuffer = 0x8D41;
+constexpr unsigned int kColorAttachment0 = 0x8CE0;
+constexpr unsigned int kRgba8 = 0x8058;
 
 constexpr unsigned int kUnpackRowLength = 0x0CF2;
 constexpr unsigned int kUnpackSkipRows = 0x0CF3;
@@ -208,9 +226,22 @@ int main() {
     auto* gen_buffers = reinterpret_cast<PFN_glGenBuffers>(dlsym(gl, "glGenBuffers"));
     auto* bind_buffer = reinterpret_cast<PFN_glBindBuffer>(dlsym(gl, "glBindBuffer"));
     auto* buffer_data = reinterpret_cast<PFN_glBufferData>(dlsym(gl, "glBufferData"));
+    auto* gen_framebuffers =
+        reinterpret_cast<PFN_glGenFramebuffers>(dlsym(gl, "glGenFramebuffers"));
+    auto* bind_framebuffer =
+        reinterpret_cast<PFN_glBindFramebuffer>(dlsym(gl, "glBindFramebuffer"));
+    auto* gen_renderbuffers =
+        reinterpret_cast<PFN_glGenRenderbuffers>(dlsym(gl, "glGenRenderbuffers"));
+    auto* bind_renderbuffer =
+        reinterpret_cast<PFN_glBindRenderbuffer>(dlsym(gl, "glBindRenderbuffer"));
+    auto* renderbuffer_storage =
+        reinterpret_cast<PFN_glRenderbufferStorage>(dlsym(gl, "glRenderbufferStorage"));
+    auto* framebuffer_renderbuffer =
+        reinterpret_cast<PFN_glFramebufferRenderbuffer>(dlsym(gl, "glFramebufferRenderbuffer"));
     if (!choose || !create || !make_current || !destroy || !swap || !clear_colour || !clear ||
         !pixel_store || !get_integer || !get_error || !gen_buffers || !bind_buffer ||
-        !buffer_data) {
+        !buffer_data || !gen_framebuffers || !bind_framebuffer || !gen_renderbuffers ||
+        !bind_renderbuffer || !renderbuffer_storage || !framebuffer_renderbuffer) {
         printf("FAIL a GL function did not resolve off the private handle\n");
         return 1;
     }
@@ -247,6 +278,23 @@ int main() {
     pixel_store(kUnpackSkipRows, kGameSkipRows);
     pixel_store(kUnpackSkipPixels, kGameSkipPixels);
     pixel_store(kUnpackAlignment, kGameAlignment);
+    // And its framebuffers: one bound for reading, another for drawing, the
+    // shape of a game that composes its frame in an object of its own and
+    // blits it to the window. The overlay retargets its draw to the window
+    // and must put BOTH bindings back as they were.
+    unsigned int read_fbo = 0;
+    unsigned int draw_fbo = 0;
+    for (unsigned int* fbo : {&read_fbo, &draw_fbo}) {
+        unsigned int storage = 0;
+        gen_renderbuffers(1, &storage);
+        bind_renderbuffer(kRenderbuffer, storage);
+        renderbuffer_storage(kRenderbuffer, kRgba8, W, H);
+        gen_framebuffers(1, fbo);
+        bind_framebuffer(kDrawFramebuffer, *fbo);
+        framebuffer_renderbuffer(kDrawFramebuffer, kColorAttachment0, kRenderbuffer, storage);
+    }
+    bind_framebuffer(kReadFramebuffer, read_fbo);
+    bind_framebuffer(kDrawFramebuffer, draw_fbo);
     while (get_error() != 0) {
     }  // the game's queue starts empty, so anything in it afterwards is ours
 
@@ -260,22 +308,31 @@ int main() {
     // ---- what GL has to say about it.
     const unsigned int error = get_error();
     int row_length = -1, skip_rows = -1, skip_pixels = -1, alignment = -1, bound = -1;
+    int read_bound = -1, draw_bound = -1;
     get_integer(kUnpackRowLength, &row_length);
     get_integer(kUnpackSkipRows, &skip_rows);
     get_integer(kUnpackSkipPixels, &skip_pixels);
     get_integer(kUnpackAlignment, &alignment);
     get_integer(kPixelUnpackBufferBinding, &bound);
+    get_integer(kReadFramebufferBinding, &read_bound);
+    get_integer(kDrawFramebufferBinding, &draw_bound);
     const long uploads = uploads_reported(log_path);
 
     printf("     after the overlay drew: error 0x%04x, row length %d, skip %d/%d, alignment %d, "
-           "unpack buffer %d, uploads %ld\n",
-           error, row_length, skip_rows, skip_pixels, alignment, bound, uploads);
+           "unpack buffer %d, read framebuffer %d (was %u), draw framebuffer %d (was %u), "
+           "uploads %ld\n",
+           error, row_length, skip_rows, skip_pixels, alignment, bound, read_bound, read_fbo,
+           draw_bound, draw_fbo, uploads);
 
     check(error == 0, "the overlay pushed no GL error into the game's queue");
     check(row_length == kGameRowLength && skip_rows == kGameSkipRows &&
               skip_pixels == kGameSkipPixels && alignment == kGameAlignment,
           "the game's pixel-store state is exactly as it left it");
     check(bound == static_cast<int>(pbo), "and its pixel-unpack buffer is still bound");
+    check(draw_bound == static_cast<int>(draw_fbo),
+          "its draw framebuffer is bound again after the overlay drew into the window");
+    check(read_bound == static_cast<int>(read_fbo),
+          "and its READ framebuffer was never touched: the two bindings are two bindings");
     check(uploads > 0, "and the picture did upload, rather than being quietly skipped");
 
     make_current(display, 0, nullptr);

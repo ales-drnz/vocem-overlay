@@ -83,13 +83,38 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Only a terminal is cleared: piped into a file, the escape sequences were
+    // the file's every fourth line.
+    const bool clear_screen = watch && isatty(1);
+
     do {
+        // A mapping outlives the segment's name (vocem/shm.h): after a daemon
+        // restart --watch went on printing the cleared state the old daemon
+        // left, for ever, and never saw the new one -- the one situation a
+        // person watches this for. Asked on every tick, which is what the
+        // reader's own note asks of its callers.
+        if (reader.valid() && !reader.still_current()) {
+            reader.close();
+        }
+        if (!reader.valid() && !reader.open()) {
+            if (!watch) {
+                std::fprintf(stderr, "vocemd is not running (no shared state segment)\n");
+                return 1;
+            }
+            if (clear_screen) {
+                std::printf("\033[2J\033[H");
+            }
+            std::printf("vocemd is not running (no shared state segment)\n");
+            std::fflush(stdout);
+            usleep(250 * 1000);
+            continue;
+        }
         vocem::Snapshot snapshot;
         if (!reader.read(snapshot)) {
             std::fprintf(stderr, "could not read a consistent snapshot\n");
             return 1;
         }
-        if (watch) {
+        if (clear_screen) {
             std::printf("\033[2J\033[H");  // clear, home
         }
         print_snapshot(snapshot);

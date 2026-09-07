@@ -10,9 +10,12 @@
 // WebSocket handshake and then drops it. The daemon reset its backoff the
 // moment the socket connected, so a session that ended without ever getting
 // anywhere was followed by an immediate reconnect, and the immediate reconnect
-// by another: measured against the packaged 0.1.4-1 daemon, 1914 connections in
-// five seconds where the fixed one makes 3 -- and 1914 is what this stub could
-// serve, not what the daemon could ask for, so the real figure is higher.
+// by another: measured against the packaged 0.1.3-7 daemon, 2215 connections in
+// five seconds where the fixed one makes 3 -- and 2215 is what this stub could
+// serve, not what the daemon could ask for, so the real figure is higher. (This
+// header and entry 103 used to name 0.1.4-1 and 1914: re-measured on
+// 2026-09-07, the packaged 0.1.4-1 already carries the fix and makes 3, so the
+// figure had come from a build before the tag. The exemplar is 0.1.3-7.)
 //
 // It is not a hypothetical peer. Discord's own client closes an RPC connection
 // it will not serve -- a rejected origin, a client_id it does not know, a
@@ -43,9 +46,14 @@
 #include <unistd.h>
 
 #include <string>
+
+#include "discord_stub.h"
 #include "private_shm.h"
 
 namespace {
+
+// The stub's clock and listener are tests/discord_stub.h's; this file carried a copy.
+using vocem_test::monotonic;
 
 int failures = 0;
 
@@ -54,12 +62,6 @@ void check(bool condition, const char* what) {
     if (!condition) {
         ++failures;
     }
-}
-
-double monotonic() {
-    timespec ts{};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1e9;
 }
 
 void write_file(const std::string& path, const char* contents) {
@@ -124,15 +126,8 @@ int main() {
     // waiting on an authorisation prompt nobody is there to accept.
     write_file(base + "/state/vocem/token", "test-token\n");
 
-    const int listener = socket(AF_INET, SOCK_STREAM, 0);
-    const int one = 1;
-    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(6463);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-        listen(listener, 64) != 0) {
+    const int listener = vocem_test::listen_on(6463);
+    if (listener < 0) {
         printf("FAIL cannot listen on 6463 -- is the sandbox missing --unshare-net?\n");
         return 1;
     }
@@ -170,7 +165,7 @@ int main() {
     printf("  %d connections in %.0f seconds\n", connections, window);
     check(connections >= 1, "the daemon did reach the port at all");
     // The bound is generous on purpose: what is being refused is a busy loop,
-    // not a particular schedule. Measured: 3 with the backoff, 1914 without it.
+    // not a particular schedule. Measured: 3 with the backoff, 2215 without it.
     check(connections <= 12, "and a peer that drops the session is backed off, not hammered");
 
     kill(daemon_pid, SIGTERM);

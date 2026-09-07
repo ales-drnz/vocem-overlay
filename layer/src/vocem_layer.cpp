@@ -36,6 +36,8 @@
 #include "vocem/journal.h"
 #include "vocem/draw_decision.h"
 #include "vocem/flatpak.h"
+#include "vocem/overlay_log.h"
+#include "vocem/overlay_session.h"
 #include "vocem/panel.h"
 #include "vocem/shared_state.h"
 #include "vocem/shm.h"
@@ -51,24 +53,12 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// Logging. Off unless VOCEM_DEBUG=1, so release runs stay silent.
+// Logging. Off unless VOCEM_DEBUG=1, so release runs stay silent; the one
+// logger both injected paths share (vocem/overlay_log.h), so VOCEM_LOG_FILE
+// reaches a Vulkan game under a launcher that swallows its stderr too.
 // ---------------------------------------------------------------------------
 
-bool debug_enabled() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("VOCEM_DEBUG");
-        return env && env[0] == '1';
-    }();
-    return enabled;
-}
-
-#define VOCEM_LOG(...)                                    \
-    do {                                                  \
-        if (debug_enabled()) {                            \
-            std::fprintf(stderr, "[vocem] " __VA_ARGS__); \
-            std::fputc('\n', stderr);                     \
-        }                                                 \
-    } while (0)
+#define VOCEM_LOG(...) VOCEM_OVERLAY_LOG("vocem", __VA_ARGS__)
 
 // ---------------------------------------------------------------------------
 // Dispatch tables. Only the entry points we actually call are stored; adding a
@@ -157,6 +147,26 @@ struct SwapchainData {
 
     bool usable = false;   // false => pass through untouched
     bool attempted = false;  // only try to build resources once per swapchain
+    // A journal line the build wants written, held until the post-present
+    // phase: the build runs inside the present, and a journal write is a file
+    // syscall (rule 8).
+    bool colour_note_pending = false;
+    // "Not drawing here, and why", said once per swapchain rather than per
+    // frame, for each of the pass-through reasons draw_overlay() can find.
+    bool said_pass_through = false;
+
+    // Whether anything of ours was ever submitted on this swapchain. What
+    // decides if tearing it down needs to wait for the device: a swapchain
+    // whose build failed before its first submit has nothing in flight, and a
+    // vkDeviceWaitIdle for it is a stall inside the present for nothing.
+    bool ever_submitted() const {
+        for (uint8_t flag : submitted) {
+            if (flag) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 struct DeviceData {
@@ -167,6 +177,12 @@ struct DeviceData {
     DeviceDispatch disp;
     PFN_vkSetDeviceLoaderData set_device_loader_data = nullptr;
     std::unordered_map<VkQueue, uint32_t> queue_families;
+    // The capabilities of every queue family, indexed by family, asked once at
+    // device creation. The overlay records a render pass into a command pool
+    // on the family the game presents from; a family without GRAPHICS cannot
+    // take one, and nothing used to ask. Empty when the query was unavailable,
+    // in which case the family is taken on trust as it always was.
+    std::vector<VkQueueFlags> family_flags;
 };
 
 // The loader hands us dispatchable handles; keying on the raw pointer is the
@@ -244,41 +260,13 @@ VkLayerDeviceCreateInfo* find_device_chain_info(const VkDeviceCreateInfo* info,
 // Instance
 // ---------------------------------------------------------------------------
 
-// Once per process: whether this one is inside a Flatpak sandbox, and if it is,
-// what was done about it.
-//
-// It says so either way it can fail, because the failure is invisible
-// otherwise: a game whose overlay never found the bridge behaves exactly like a
-// game the overlay was never asked to draw in.
-void enter_flatpak_bridge_once() {
-    static bool asked = false;
-    if (asked) {
-        return;
-    }
-    asked = true;
-    const char* id = vocem::flatpak_app_id();
-    if (!id) {
-        return;  // on the host, where everything is where it has always been
-    }
-    if (vocem::enter_flatpak_bridge()) {
-        char root[512];
-        vocem::bridge_root(root, sizeof(root));
-        VOCEM_LOG("inside the Flatpak sandbox of %s: state, settings and avatars come from %s", id,
-                  root);
-        return;
-    }
-    VOCEM_LOG("inside the Flatpak sandbox of %s but could not ask vocemd for a bridge: no "
-              "XDG_RUNTIME_DIR, or its app directory is not writable. There will be no overlay "
-              "in this process.", id);
-}
-
 VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
                                                     const VkAllocationCallbacks* pAllocator,
                                                     VkInstance* pInstance) {
     // Before anything derives a path: the configuration and the state are both
     // on the far side of the sandbox when the game is a Flatpak, and this is
     // where the three lookups get pointed at the bridge (vocem/flatpak.h).
-    enter_flatpak_bridge_once();
+    vocem::session().enter_flatpak_bridge_once();
 
     VkLayerInstanceCreateInfo* link = find_instance_chain_info(pCreateInfo, VK_LAYER_LINK_INFO);
     if (!link || !link->u.pLayerInfo) {
@@ -335,6 +323,9 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
 // Device
 // ---------------------------------------------------------------------------
 
+// Defined with the swapchain code below; vocem_DestroyDevice needs it first.
+void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, SwapchainData& sc);
+
 VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateDevice(VkPhysicalDevice physicalDevice,
                                                   const VkDeviceCreateInfo* pCreateInfo,
                                                   const VkAllocationCallbacks* pAllocator,
@@ -377,6 +368,22 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateDevice(VkPhysicalDevice physicalDevic
         auto it = g_instances.find(dispatch_key(physicalDevice));
         if (it != g_instances.end()) {
             data.instance = it->second.instance;
+        }
+    }
+    // What each queue family can do, so a present on a family that cannot take
+    // a render pass is left alone rather than recorded into. Asked through the
+    // instance chain, once, here -- never on the present path.
+    if (auto family_properties = reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+            next_gipa(data.instance, "vkGetPhysicalDeviceQueueFamilyProperties"))) {
+        uint32_t count = 0;
+        family_properties(physicalDevice, &count, nullptr);
+        if (count > 0 && count < 64) {
+            std::vector<VkQueueFamilyProperties> properties(count);
+            family_properties(physicalDevice, &count, properties.data());
+            data.family_flags.reserve(count);
+            for (const VkQueueFamilyProperties& family : properties) {
+                data.family_flags.push_back(family.queueFlags);
+            }
         }
     }
 
@@ -437,15 +444,37 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateDevice(VkPhysicalDevice physicalDevic
 
 VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
                                                const VkAllocationCallbacks* pAllocator) {
-    vocem::journal_note("device destroyed; renderer shutting down");
     PFN_vkDestroyDevice destroy = nullptr;
     {
         std::lock_guard<std::mutex> guard(g_lock);
-        vocem::renderer().shutdown();
         auto it = g_devices.find(dispatch_key(device));
         if (it != g_devices.end()) {
             destroy = it->second.disp.DestroyDevice;
+            // Whatever of ours still lives on this device goes with it: a game
+            // that destroys its device with a swapchain still registered here
+            // would otherwise leave an entry whose handle the driver is free
+            // to hand out again for the next swapchain -- with `attempted`
+            // and `usable` already true and resources on a device that no
+            // longer exists.
+            for (auto sc = g_swapchains.begin(); sc != g_swapchains.end();) {
+                if (sc->second.device == device) {
+                    destroy_swapchain_resources(it->second.disp, device, sc->second);
+                    sc = g_swapchains.erase(sc);
+                } else {
+                    ++sc;
+                }
+            }
             g_devices.erase(it);
+        }
+        // Only the renderer's OWN device takes the renderer down with it. This
+        // used to shut it down for any device destroyed in the process: a
+        // helper device a game creates beside its main one -- a video decoder,
+        // a launcher-side probe, a second adapter -- tore down the pipeline,
+        // the descriptor pool and every avatar of the device that was still
+        // presenting, with no wait for the command buffers reading them.
+        if (vocem::renderer().device() == device) {
+            vocem::journal_note("device destroyed; renderer shutting down");
+            vocem::renderer().shutdown();
         }
     }
     if (destroy) {
@@ -571,7 +600,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateSwapchainKHR(VkDevice device,
 
 // Caller must hold g_lock.
 void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, SwapchainData& sc) {
-    if (d.DeviceWaitIdle) {
+    // Only when something of ours may still be executing. The failed-build
+    // path reaches here from inside the present, before anything was ever
+    // submitted, and a device-wide wait there is a stall in somebody's frame
+    // for nothing (rule 8).
+    if (d.DeviceWaitIdle && sc.ever_submitted()) {
         d.DeviceWaitIdle(device);
     }
     for (VkFence fence : sc.fences) {
@@ -755,31 +788,41 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
             return false;
         }
 
-        // Created signalled so the first frame does not wait on a fence that
-        // was never submitted.
+        // Unsignalled. The `submitted` flag is what keeps the first frame from
+        // waiting on a fence nothing will signal; the fence used to be created
+        // signalled for that purpose as well, and with the flag guarding both
+        // the wait AND the reset, the first submit for every image then took a
+        // fence that was still signalled -- VUID-vkQueueSubmit-fence-00063,
+        // once per image per swapchain, under a comment that had outlived the
+        // flag it was written before.
         VkFenceCreateInfo fence_info{};
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         if (d.CreateFence(dev.device, &fence_info, nullptr, &sc.fences[i]) != VK_SUCCESS) {
             return false;
         }
     }
 
-    // A swapchain the stock pipeline would paint wrongly on gets the converting
-    // one (hdr_pipeline.h) -- for its colour space, or for a format that
-    // carries the sRGB encoding itself, which is the ordinary case and not an
-    // HDR one. Failure is not failure of the overlay: the stock pipeline still
-    // draws, with the colours it drew with before this existed, and the log
-    // says which happened.
-    if (const int mode = vocem::hdr_mode_for(sc.color_space, sc.format)) {
-        if (vocem::hdr_pipeline_create(hdr_functions(d), dev.device, sc.render_pass, mode,
-                                       vocem::hdr_sdr_nits(), sc.hdr)) {
+    // Every swapchain gets a pipeline of its own, built against its own render
+    // pass (hdr_pipeline.h): the converting one for a colour space or a format
+    // that needs it, the identity for everything else. Not only the converting
+    // cases, as it was: ImGui's stock pipeline is built once, against the
+    // FIRST swapchain's render pass, and a later swapchain in another format --
+    // HDR switched off in the game's settings, an sRGB attachment replaced by
+    // a UNORM one -- would have had it drawn into an incompatible render pass.
+    // Failure is not failure of the overlay: draw_overlay() still uses the
+    // stock pipeline where the format matches the one it was built for, and
+    // passes the frame through where it does not, saying so in the log.
+    const int mode = vocem::hdr_mode_for(sc.color_space, sc.format);
+    if (vocem::hdr_pipeline_create(hdr_functions(d), dev.device, sc.render_pass, mode,
+                                   vocem::hdr_sdr_nits(), sc.hdr)) {
+        if (mode != 0) {
             VOCEM_LOG("colour pipeline ready (mode %d, SDR white %.0f nits)", mode,
                       vocem::hdr_sdr_nits());
-            vocem::journal_note("colour pipeline ready");
-        } else {
-            VOCEM_LOG("colour pipeline unavailable: drawing with unconverted colours");
+            sc.colour_note_pending = true;
         }
+    } else {
+        VOCEM_LOG("own pipeline unavailable (mode %d): the stock one draws where the format "
+                  "allows, otherwise nothing", mode);
     }
 
     sc.usable = true;
@@ -789,7 +832,10 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
 
 // Record and submit the overlay for one image. Returns the semaphore the
 // present must wait on, or VK_NULL_HANDLE to leave the present untouched.
-// Caller must hold g_lock.
+// Caller must hold g_lock. Every call down the chain in here goes through a
+// pointer vkGetDeviceProcAddr resolved for the layer below, never through the
+// loader's trampolines -- which is what makes holding the lock safe against
+// rule 9's deadlock (the loader re-entering this layer from the top).
 // A present waiting on more semaphores than this passes through undrawn: the
 // submit's stage list is a stack array, sized for the one or two semaphores a
 // real present waits on, so the drawn path never allocates.
@@ -833,7 +879,10 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
 
     // Initialisation happens after the present returns, never here: ImGui's
     // Vulkan backend uploads its font atlas with vkQueueWaitIdle, and blocking on
-    // the queue from inside a queue operation deadlocks the driver.
+    // the queue from inside a queue operation is a stall at best. That upload
+    // is made in prepare() explicitly, because the backend's NewFrame -- which
+    // draw() below calls, inside this present -- would otherwise make it here
+    // the first time (overlay_renderer.cpp says how that was found).
     if (!vocem::renderer().ready()) {
         return VK_NULL_HANDLE;
     }
@@ -845,6 +894,32 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
         logged_first_draw = true;
         VOCEM_LOG("drawing panel: %u user(s) in '%s'", snapshot->user_count,
                   snapshot->channel_name);
+    }
+
+    // Which pipeline draws this frame: the swapchain's own, or the backend's
+    // stock one where this swapchain's format is the one it was built for.
+    // Neither is a frame left alone, said once (rule 7 over a wrong picture).
+    VkPipeline pipeline = sc.hdr.pipeline;
+    if (pipeline == VK_NULL_HANDLE && sc.format != vocem::renderer().format()) {
+        if (!sc.said_pass_through) {
+            sc.said_pass_through = true;
+            VOCEM_LOG("not drawing into this swapchain: format %d has no pipeline of its own "
+                      "and the stock one was built for format %d",
+                      static_cast<int>(sc.format), static_cast<int>(vocem::renderer().format()));
+        }
+        return VK_NULL_HANDLE;
+    }
+    // The backend cycles a fixed ring of vertex buffers, one slot per draw,
+    // and a slot must not come round while a command buffer for an older
+    // image still reads it: the ring covers a swapchain of up to kRingSlots
+    // images and no more (overlay_renderer.h says why it cannot grow).
+    if (sc.command_buffers.size() > vocem::OverlayRenderer::kRingSlots) {
+        if (!sc.said_pass_through) {
+            sc.said_pass_through = true;
+            VOCEM_LOG("not drawing into this swapchain: %zu images exceed the %u-slot ring",
+                      sc.command_buffers.size(), vocem::OverlayRenderer::kRingSlots);
+        }
+        return VK_NULL_HANDLE;
     }
 
     VkCommandBuffer cmd = sc.command_buffers[image_index];
@@ -875,7 +950,7 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     rp_begin.renderArea.extent = sc.extent;
     d.CmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
-    vocem::renderer().draw(cmd, *snapshot, sc.extent.width, sc.extent.height, sc.hdr.pipeline);
+    vocem::renderer().draw(cmd, *snapshot, sc.extent.width, sc.extent.height, pipeline);
 
     d.CmdEndRenderPass(cmd);
     if (d.EndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -928,27 +1003,15 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
 // swapchain resources at the next present -- the same cost the first frame
 // always paid; hiding one skips the drawing without releasing anything, which
 // is what the Vulkan enabled switch has always done (entry 37's footnote).
+//
+// The decision, its evidence in the log and the word to the daemon across the
+// bridge are the session's (vocem/overlay_session.h), one spelling with the GL
+// side -- which is where this side's omission showed: it told the daemon
+// `allowed` where the GL side told it `enabled && allowed`, so a Flatpak game
+// with the master switch off kept receiving the channel and every face from a
+// daemon that believed it was drawing (entry 138).
 bool overlay_hidden_here() {
-    static vocem::DrawDecision decision;
-    if (decision.refresh(vocem::renderer().current_config())) {
-        // The evidence, not just the verdict: a game that is missed has to be a
-        // case somebody can read off one line of the log.
-        if (decision.allowed()) {
-            VOCEM_LOG("drawing in '%s': %s", vocem::process_name().c_str(),
-                      vocem::game_verdict().reason.c_str());
-        } else {
-            VOCEM_LOG("not drawing in '%s': %s (%s)", vocem::process_name().c_str(),
-                      vocem::looks_like_game() ? "on the hidden list"
-                                               : "does not look like a game",
-                      vocem::game_verdict().reason.c_str());
-        }
-    }
-    // Inside a Flatpak, tell the daemon. It adopted this sandbox before the
-    // settings could be read, because the settings arrive across the bridge;
-    // this is where it learns whether the overlay actually belongs here, and
-    // whether to keep sending the channel and the faces at all.
-    vocem::flatpak_bridge_drawing(decision.allowed());
-    return !decision.allowed();
+    return !vocem::session().decide(vocem::renderer().current_config());
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
@@ -1020,6 +1083,25 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                 auto family_it = dev->queue_families.find(queue);
                 uint32_t family =
                     family_it == dev->queue_families.end() ? UINT32_MAX : family_it->second;
+                // A family that cannot take a render pass -- a compute or a
+                // transfer queue presenting, which the specification allows --
+                // gets the frame back untouched, and so does a swapchain
+                // presented from a family other than the one its command pool
+                // was built on: a pool's buffers may only be submitted to its
+                // own family. Nothing used to ask either question.
+                const bool graphics =
+                    family == UINT32_MAX || family >= dev->family_flags.size() ||
+                    (dev->family_flags[family] & VK_QUEUE_GRAPHICS_BIT) != 0;
+                if (!graphics || (sc.attempted && sc.queue_family != family)) {
+                    if (!sc.said_pass_through) {
+                        sc.said_pass_through = true;
+                        VOCEM_LOG("not drawing into this swapchain: presented on queue family %u, "
+                                  "which %s", family,
+                                  graphics ? "is not the family its command pool was built on"
+                                           : "has no graphics capability");
+                    }
+                    family = UINT32_MAX;
+                }
 
                 if (!sc.attempted && family != UINT32_MAX) {
                     if (!build_swapchain_resources(*dev, sc, pPresentInfo->pSwapchains[0], family)) {
@@ -1027,13 +1109,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                     }
                 }
 
-                if (sc.usable) {
+                if (sc.usable && family != UINT32_MAX) {
                     if (!vocem::renderer().ready()) {
                         needs_init = true;
                         pending_target.instance = dev->instance;
                         pending_target.physical_device = dev->physical_device;
                         pending_target.device = dev->device;
                         pending_target.render_pass = sc.render_pass;
+                        pending_target.format = sc.format;
                         pending_target.queue = queue;
                         pending_target.queue_family = sc.queue_family;
                         pending_target.image_count = static_cast<uint32_t>(sc.images.size());
@@ -1073,11 +1156,24 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         vocem::record_application("vulkan");
     }
 
+    // The journal line a build inside the present held back (rule 8): a file
+    // write, done here where file work is allowed.
+    if (drawable) {
+        std::lock_guard<std::mutex> guard(g_lock);
+        auto it = g_swapchains.find(pPresentInfo->pSwapchains[0]);
+        if (it != g_swapchains.end() && it->second.colour_note_pending) {
+            it->second.colour_note_pending = false;
+            vocem::journal_note("colour pipeline ready");
+        }
+    }
+
     // Safe here: the present has returned, so the queue is ours to block on. Costs
     // one stall on the first frame that has something to draw, once per swapchain.
     if (needs_init && !vocem::renderer().ready()) {
         // Deliberately unlocked: prepare() resolves entry points through the
-        // chain, and the loader can route those back into this layer.
+        // chain, and the loader can route those back into this layer. Its
+        // answer is remembered inside: a failure is said once and not retried
+        // on every present.
         vocem::renderer().prepare(pending_target);
     } else if (vocem::renderer().ready()) {
         // Avatar uploads submit and wait on a fence, so they belong here too.
@@ -1156,14 +1252,39 @@ vocem_GetDeviceProcAddr(VkDevice device, const char* pName) {
 
 VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 vocem_GetInstanceProcAddr(VkInstance instance, const char* pName) {
+    // What the loader and the application ask this entry for, by name, when
+    // VOCEM_TRACE_PROCADDR=1: the measurement behind the note below on which
+    // names are answered from the table before the chain is asked.
+    static const bool trace = [] {
+        const char* env = std::getenv("VOCEM_TRACE_PROCADDR");
+        return env && env[0] == '1';
+    }();
+    if (trace) {
+        VOCEM_LOG("gipa %s %s", instance ? "instance" : "null", pName);
+    }
     if (std::strcmp(pName, "vkGetInstanceProcAddr") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(vocem_GetInstanceProcAddr);
     }
     if (std::strcmp(pName, "vkGetDeviceProcAddr") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(vocem_GetDeviceProcAddr);
     }
-    if (PFN_vkVoidFunction func = find_intercepted(pName)) {
-        return func;
+    // The instance-level names are answered from the table before the chain
+    // is asked, and have to be: the loader asks for vkCreateInstance with a
+    // null instance, before there is a chain to ask. The device-level names in
+    // the same table follow vocem_GetDeviceProcAddr's rule instead (entry 70):
+    // asked with an instance, the chain answers first and our hook stands in
+    // only for a function the chain has. Measured with VOCEM_TRACE_PROCADDR on
+    // one probe run: the loader asks this entry 107 names, every one with a
+    // real instance, and none of them is a device-level name of ours -- so the
+    // order was never wrong in practice, and is right now for an application
+    // that asks vkGetInstanceProcAddr(instance, "vkQueuePresentKHR") itself,
+    // which the specification allows.
+    const bool device_level = std::strcmp(pName, "vkCreateInstance") != 0 &&
+                              std::strcmp(pName, "vkDestroyInstance") != 0 &&
+                              std::strcmp(pName, "vkCreateDevice") != 0;
+    PFN_vkVoidFunction ours = find_intercepted(pName);
+    if (ours && !device_level) {
+        return ours;
     }
     if (instance == VK_NULL_HANDLE) {
         return nullptr;
@@ -1176,7 +1297,11 @@ vocem_GetInstanceProcAddr(VkInstance instance, const char* pName) {
             next = it->second.GetInstanceProcAddr;
         }
     }
-    return next ? next(instance, pName) : nullptr;
+    PFN_vkVoidFunction below = next ? next(instance, pName) : nullptr;
+    if (ours && below) {
+        return ours;
+    }
+    return below;
 }
 
 // Required by the loader: without this the layer will not load at all. Version 2

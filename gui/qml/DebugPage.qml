@@ -102,7 +102,11 @@ SectionPage {
         // ---- the one banner, and only when it is earned
         InlineMessage {
             objectName: "debugBanner"
-            visible: !root.healthy
+            // Not before the preload question is answered: half of it is a
+            // systemctl asked asynchronously, and a banner that appeared for the
+            // moment before the answer arrived would be the fallback answering
+            // for whatever else went wrong -- the shape entry 108 removed here.
+            visible: root.config.openglPreloadKnown && !root.healthy
             Layout.fillWidth: true
             severity: root.abiMismatch ? InlineMessage.Severity.Error
                                        : InlineMessage.Severity.Warning
@@ -192,15 +196,19 @@ SectionPage {
 
                         SettingRow {
                             label: qsTr("OpenGL preload")
-                            description: root.config.openglPreloadActive
-                                         ? qsTr("Active in this session.")
-                                         : qsTr("Not in this session's environment. It reaches "
-                                                + "new sessions at the next login.")
+                            description: !root.config.openglPreloadKnown
+                                         ? qsTr("Asking the session's service manager.")
+                                         : root.config.openglPreloadActive
+                                           ? qsTr("Active in this session.")
+                                           : qsTr("Not in this session's environment. It reaches "
+                                                  + "new sessions at the next login.")
 
                             Label {
-                                text: root.config.openglPreloadActive ? qsTr("Ready")
-                                                                      : qsTr("Next login")
-                                color: root.config.openglPreloadActive ? Theme.online : Theme.busy
+                                text: !root.config.openglPreloadKnown ? qsTr("Checking")
+                                      : root.config.openglPreloadActive ? qsTr("Ready")
+                                                                        : qsTr("Next login")
+                                color: !root.config.openglPreloadKnown ? Theme.busy
+                                       : root.config.openglPreloadActive ? Theme.online : Theme.busy
                                 font.bold: true
                             }
                         }
@@ -407,6 +415,7 @@ SectionPage {
                                     Label {
                                         objectName: row.crashed ? "debugCrash" : "debugSession"
                                         text: row.entry.process
+                                        textFormat: Text.PlainText
                                         font.bold: true
                                         elide: Text.ElideRight
                                         Layout.fillWidth: true

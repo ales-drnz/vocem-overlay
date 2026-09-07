@@ -68,6 +68,9 @@ private:
 
     int fd_ = -1;
     std::string pending_;  // accumulates fragmented messages
+    // Whether `pending_` is the start of a TEXT message. A binary message's
+    // continuations are not appended to it (recv() says why).
+    bool pending_is_text_ = false;
 };
 
 }  // namespace vocem

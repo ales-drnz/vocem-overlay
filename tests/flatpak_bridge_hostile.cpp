@@ -20,6 +20,7 @@
 // No shared segment and no bwrap: the state is a struct on the stack, which is
 // all FlatpakBridge is given. Nothing here can reach the running daemon.
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -355,6 +356,66 @@ int main() {
         struct stat info {};
         check(stat((elsewhere + "/" + (slash ? slash + 1 : leaf)).c_str(), &info) != 0,
               "and no avatar is written into the directory the link pointed at");
+    }
+
+    // 7. More sandboxes asking than any machine runs. Every mirror costs two
+    //    descriptors, a copy of the emoji bank and a share of every publish;
+    //    a process that can create directories under $XDG_RUNTIME_DIR/app --
+    //    which the xdg-run/app grant hands a sandbox -- could make two
+    //    thousand of them, and the daemon adopted every one until its own
+    //    descriptors ran out and the socket, /proc/net/tcp and the segment
+    //    stopped opening (entry 134). Counted rather than assumed: the
+    //    daemon's descriptor table before and after.
+    {
+        sandbox.reset(root, "org.example.Many0");
+        const int asking = 2000;
+        for (int i = 0; i < asking; ++i) {
+            const std::string dir =
+                sandbox.runtime + "/app/org.example.Many" + std::to_string(i) + "/" +
+                vocem::kBridgeDirName;
+            make_directories(dir);
+            write_file(dir + "/" + vocem::kBridgeRequestName, "pid=1\ndrawing=1\n");
+        }
+        const auto open_descriptors = [] {
+            long count = 0;
+            if (DIR* handle = opendir("/proc/self/fd")) {
+                while (readdir(handle)) {
+                    ++count;
+                }
+                closedir(handle);
+            }
+            return count;
+        };
+        const long before = open_descriptors();
+        vocem::FlatpakBridge bridge;
+        bridge.start();
+        bridge.rescan();
+        const long after = open_descriptors();
+        printf("     %d sandboxes asking: %zu served, %ld descriptors open before and %ld after\n",
+               asking, bridge.served(), before, after);
+        check(bridge.served() <= 32, "the daemon serves at most its ceiling of sandboxes");
+        check(after - before <= 2 * 32 + 2,
+              "and holds at most two descriptors per served one, however many asked");
+        bridge.stop();
+    }
+
+    // 8. A directory whose name is not a Flatpak application id. Flatpak makes
+    //    reverse-DNS names and nothing else; a process making anything else
+    //    under $XDG_RUNTIME_DIR/app is not a sandbox this daemon should look
+    //    inside.
+    {
+        sandbox.reset(root, "org.example.Shape");
+        for (const char* odd : {"noDots", "with space.x", "..", "a\x01b.c", "-.-"}) {
+            const std::string dir =
+                sandbox.runtime + "/app/" + odd + "/" + vocem::kBridgeDirName;
+            make_directories(dir);
+            write_file(dir + "/" + vocem::kBridgeRequestName, "pid=1\ndrawing=1\n");
+        }
+        vocem::FlatpakBridge bridge;
+        bridge.start();
+        bridge.rescan();
+        check(bridge.served() == 0,
+              "a directory that is not the shape of an application id is not adopted");
     }
 
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");

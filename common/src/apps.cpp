@@ -1,0 +1,937 @@
+// Copyright © 2026 & onwards, Alessandro Di Ronza <ales.drnz@gmail.com>.
+// All rights reserved.
+// Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
+//
+// The part of vocem/apps.h that reads and writes files: the desktop-entry
+// search behind the verdict, the record each process writes of itself, and the
+// window's reader of those records. None of it runs at frame rate -- the verdict
+// is worked out once per process and the record written once -- so none of it
+// needs to be in the header every consumer compiles. The header keeps the
+// per-frame surface (draw_here, listed, the cached process name) and the verdict
+// itself, which is what the injected code calls; this file is what the verdict
+// calls, once, and what the window and the daemon call to read and write the
+// registry.
+//
+// Compiled once per width into vocem_common (common/CMakeLists.txt) and linked
+// into both injected libraries, the daemon, the window and the tests. Still
+// dependency-free: the in-game side must not pull in a library to do this.
+
+#include "vocem/apps.h"
+
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cctype>
+#include <cstring>
+#include <ctime>
+
+#include "vocem/flatpak.h"
+#include "vocem/paths.h"
+
+namespace vocem {
+
+namespace detail {
+
+std::string read_first_line(const char* path) {
+    std::FILE* file = std::fopen(path, "r");
+    if (!file) {
+        return {};
+    }
+    char buffer[512] = {};
+    const char* read = std::fgets(buffer, sizeof(buffer), file);
+    std::fclose(file);
+    if (!read) {
+        return {};
+    }
+    std::string value(buffer);
+    while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::string basename_of(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// A file name that cannot escape the directory it is meant to be in. Process
+// names come from whatever is running and are not to be trusted with a path.
+// scripts/vocem-why.sh spells the same rule to find the record by name.
+std::string sanitised(const std::string& name) {
+    std::string out;
+    out.reserve(name.size());
+    for (const char character : name) {
+        const bool safe = (character >= 'a' && character <= 'z') ||
+                          (character >= 'A' && character <= 'Z') ||
+                          (character >= '0' && character <= '9') || character == '.' ||
+                          character == '-' || character == '_';
+        out.push_back(safe ? character : '_');
+    }
+    if (out.empty() || out == "." || out == "..") {
+        out = "unknown";
+    }
+    return out;
+}
+
+// A systemd unit name, with the escaping systemd puts in it taken back out.
+//
+// The dash is the separator in a unit name, so a dash that is part of a name is
+// written `\x2d`. Every application id with a dash in it therefore arrives from
+// `/proc/self/cgroup` spelled wrong, and the entry is looked for under a name no
+// file has: found in the field, in a record that said
+// `no-entry:io.github.plrigaux.sysd\x2dmanager` when the entry is plainly
+// `io.github.plrigaux.sysd-manager`. It was not a rare shape either -- a dash in an
+// id is ordinary, and every one of them was silently unrecognised.
+//
+// `\xNN` is the whole of the escaping that matters here; anything else is left
+// alone rather than guessed at, and a truncated escape at the end of the string is
+// left as it stands.
+std::string unescaped_unit(const std::string& name) {
+    if (name.find("\\x") == std::string::npos) {
+        return name;
+    }
+    const auto digit = [](char character) -> int {
+        if (character >= '0' && character <= '9') return character - '0';
+        if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+        if (character >= 'A' && character <= 'F') return character - 'A' + 10;
+        return -1;
+    };
+    std::string out;
+    out.reserve(name.size());
+    for (size_t i = 0; i < name.size(); ++i) {
+        const int high = i + 3 < name.size() && name[i] == '\\' && name[i + 1] == 'x'
+                             ? digit(name[i + 2])
+                             : -1;
+        const int low = high >= 0 ? digit(name[i + 3]) : -1;
+        if (low >= 0) {
+            out.push_back(static_cast<char>(high * 16 + low));
+            i += 3;
+        } else {
+            out.push_back(name[i]);
+        }
+    }
+    return out;
+}
+
+// Two process names that are the same name, allowing for where the kernel cut one
+// of them.
+//
+// /proc/self/comm is TASK_COMM_LEN - 1 = fifteen characters, so anything longer
+// arrives cut: `minecraft-launcher` as `minecraft-launc`, `steamwebhelper.exe` as
+// `steamwebhelper.`. The cut form is only compared against a candidate long enough
+// to have been cut, so that no short name gains a prefix match it should not have.
+bool same_name(const char* candidate, const std::string& name) {
+    if (name == candidate) {
+        return true;
+    }
+    return std::strlen(candidate) > kCommLength && name.size() == kCommLength &&
+           name.compare(0, kCommLength, candidate, kCommLength) == 0;
+}
+
+// The application ids a systemd cgroup line can be read as, best first.
+//
+// systemd's own `DESKTOP_ENVIRONMENTS.md` spells the unit
+// `app[-<launcher>]-<ApplicationID>[@<RANDOM>].service` and
+// `app[-<launcher>]-<ApplicationID>-<RANDOM>.scope`, and says the id "can be
+// retrieved by stripping the prefix and postfix". The prefix has an optional
+// launcher inside it and this code used to keep it, which cost two things
+// measured on this machine: a D-Bus-activated application is a unit *inside* an
+// `app-dbus-...` slice, so Telegram's record read
+// `no-entry:dbus-:1.2-org.telegram.desktop.slice/dbus-:1.2-org.telegram.desktop`
+// and the logout greeter's the same; and GNOME writes
+// `app-gnome-<id>-<pid>.scope`, where the whole desktop-entry signal was dead
+// before it started.
+//
+// Which reading is right cannot be decided from the string, so this returns them
+// in order and the caller tries each against the entries on disk. Widening it is
+// safe because an entry still has to name this executable before it is believed --
+// the guard in `game_verdict` -- and a wrong id that passes that guard is not
+// wrong in any way that shows.
+std::vector<std::string> desktop_ids_from_cgroup(const std::string& cgroup) {
+    std::vector<std::string> candidates;
+    if (cgroup.find("/app-") == std::string::npos) {
+        return candidates;
+    }
+    // The leaf unit, which is the one that actually ran: in the D-Bus shape the
+    // `app-` piece is the slice around it.
+    std::string unit = cgroup.substr(cgroup.find_last_of('/') + 1);
+    bool scope = false;
+    for (const char* suffix : {".scope", ".service", ".slice"}) {
+        const size_t length = std::strlen(suffix);
+        if (unit.size() > length && unit.compare(unit.size() - length, length, suffix) == 0) {
+            scope = (suffix[1] == 's' && suffix[2] == 'c');
+            unit.resize(unit.size() - length);
+            break;
+        }
+    }
+    // One base's readings: the `app-` prefix off, the escaping out, then the
+    // same name with the optional launcher taken off -- `gnome-`, `flatpak-`,
+    // and the two pieces D-Bus activation puts in front (`dbus-`, then the
+    // connection's name, `:1.2`). Deduplicated, because the two bases below
+    // often agree.
+    const auto offer = [&candidates](std::string base) {
+        if (base.compare(0, 4, "app-") == 0) {
+            base = base.substr(4);
+        }
+        base = unescaped_unit(base);
+        if (base.empty()) {
+            return;
+        }
+        const auto push = [&candidates](const std::string& value) {
+            for (const std::string& existing : candidates) {
+                if (existing == value) {
+                    return;
+                }
+            }
+            candidates.push_back(value);
+        };
+        push(base);
+        for (int strip = 0; strip < 2; ++strip) {
+            const size_t dash = base.find('-');
+            if (dash == std::string::npos) {
+                break;
+            }
+            base = base.substr(dash + 1);
+            push(base);
+        }
+    };
+    // The random part: `@<RANDOM>` on a service, `-<RANDOM>` on a scope -- and
+    // on a service the whole part is OPTIONAL (systemd's own spelling is
+    // `app[-<launcher>]-<ApplicationID>[@<RANDOM>].service`). With an `@` the
+    // cut is certain. Without one the dash rule is a guess: right for every
+    // scope, where the random part is not optional, and wrong for a service
+    // that simply has none, where it ate everything after the id's first dash
+    // -- `app-org.gnome.Evince.service` read as ["app"] and the whole
+    // desktop-entry signal was dead for that shape. So for a service (or a
+    // slice, which never carries a random part) the unit as it stands is
+    // offered as a second base. Widening is safe for the reason above: a found
+    // entry still has to name this executable before it is believed.
+    std::string stripped = unit;
+    if (const size_t at = stripped.find('@'); at != std::string::npos) {
+        stripped.resize(at);
+        offer(stripped);
+    } else {
+        if (const size_t last = stripped.rfind('-'); last != std::string::npos) {
+            stripped.resize(last);
+        }
+        offer(stripped);
+        if (!scope) {
+            offer(unit);
+        }
+    }
+    return candidates;
+}
+
+// Where entries live: the user's directory first, then the system ones, in the
+// order the Base Directory Specification gives them.
+std::vector<std::string> desktop_roots() {
+    std::vector<std::string> roots;
+    if (const char* home = std::getenv("XDG_DATA_HOME"); home && *home) {
+        roots.emplace_back(home);
+    } else if (const char* base = std::getenv("HOME"); base && *base) {
+        roots.emplace_back(std::string(base) + "/.local/share");
+    }
+    const char* dirs = std::getenv("XDG_DATA_DIRS");
+    const std::string list = dirs && *dirs ? dirs : "/usr/local/share:/usr/share";
+    size_t start = 0;
+    while (start <= list.size()) {
+        size_t end = list.find(':', start);
+        if (end == std::string::npos) {
+            end = list.size();
+        }
+        if (end > start) {
+            roots.emplace_back(list.substr(start, end - start));
+        }
+        start = end + 1;
+    }
+    return roots;
+}
+
+// The entry with this id.
+//
+// An id is a path with the separators turned into dashes: the specification says
+// to "make its full path relative to the $XDG_DATA_DIRS component in which the
+// desktop file is installed, remove the 'applications/' prefix, and turn '/' into
+// '-'", so `/usr/share/applications/foo/bar.desktop` is `foo-bar.desktop`. Going
+// back the other way is a guess, because a dash in an id may be a dash or may be
+// a directory, so each is tried in turn, left to right. This is not academic:
+// wine writes the entries for the programs it installs under
+// `applications/wine/Programs/`, so a game installed in a prefix has an id with
+// two directories in it, and looking only for the flat name found nothing.
+std::string find_desktop_entry(const std::string& reference) {
+    if (!reference.empty() && reference.front() == '/') {
+        return reference;
+    }
+    if (reference.empty()) {
+        return {};
+    }
+    std::string file =
+        reference.size() > 8 && reference.compare(reference.size() - 8, 8, ".desktop") == 0
+            ? reference
+            : reference + ".desktop";
+
+    const std::vector<std::string> roots = desktop_roots();
+    size_t dash = std::string::npos;
+    for (;;) {
+        for (const std::string& root : roots) {
+            const std::string path = root + "/applications/" + file;
+            struct stat info {};
+            if (::stat(path.c_str(), &info) == 0) {
+                return path;
+            }
+        }
+        dash = file.find('-', dash == std::string::npos ? 0 : dash + 1);
+        if (dash == std::string::npos) {
+            return {};
+        }
+        file[dash] = '/';
+    }
+}
+
+Entry read_entry(const std::string& path) {
+    Entry entry;
+    // Opened the way the record writer and the journal scanner open things in
+    // directories other people write to (entry 98, entry 62): no following a
+    // link, no waiting on a FIFO, and nothing read until fstat has said this
+    // is a regular file of a size a desktop entry can have. This runs inside
+    // somebody's game, on its first frame, under the layer's lock -- and it
+    // is handed paths from three places that are not the project's own:
+    // every `.desktop` under a data directory the user can write to, the
+    // file GIO_LAUNCHED_DESKTOP_FILE names (measured: the executable itself,
+    // when a game is started from the file manager -- 20 MB of ELF read line
+    // by line for an Exec= that was never there), and a cgroup leaf whose
+    // escaping can spell a slash. A fopen() with none of this read a symlink
+    // to /dev/zero for ever, because a run of NULs reads as an empty line
+    // (entry 135).
+    const int descriptor =
+        ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (descriptor < 0) {
+        return entry;
+    }
+    struct stat info {};
+    if (::fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode) ||
+        info.st_size > kMaxEntryBytes) {
+        ::close(descriptor);
+        return entry;
+    }
+    std::FILE* file = ::fdopen(descriptor, "r");
+    if (!file) {
+        ::close(descriptor);
+        return entry;
+    }
+    bool inside = false;
+    char line[1024];
+    long consumed = 0;
+    while (std::fgets(line, sizeof(line), file)) {
+        // The size was checked before the read, and the file could have
+        // grown since; the bound is on what is read, not on what was there.
+        consumed += static_cast<long>(std::strlen(line));
+        if (consumed > kMaxEntryBytes) {
+            break;
+        }
+        std::string text(line);
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
+            text.pop_back();
+        }
+        if (!text.empty() && text.front() == '[') {
+            if (inside) {
+                break;  // the group ended, and everything wanted is behind us
+            }
+            inside = text == "[Desktop Entry]";
+            entry.found = entry.found || inside;
+            continue;
+        }
+        if (!inside) {
+            continue;
+        }
+        for (const auto& field : {std::pair<const char*, std::string*>{"Exec", &entry.exec},
+                                  {"TryExec", &entry.try_exec},
+                                  {"Categories", &entry.categories},
+                                  {"Icon", &entry.icon},
+                                  {"StartupWMClass", &entry.wm_class}}) {
+            const size_t length = std::strlen(field.first);
+            if (text.size() > length && text.compare(0, length, field.first) == 0 &&
+                text[length] == '=') {
+                *field.second = text.substr(length + 1);
+            }
+        }
+        // Only the plain keys: a localised Icon[xx] is a different key and not
+        // one to be picked up by accident (the `=` right after the name above
+        // is what keeps it out). NoDisplay and Hidden mean "not an application
+        // to show", which the verdict does not care about and the window does.
+        for (const char* key : {"NoDisplay=", "Hidden="}) {
+            const size_t length = std::strlen(key);
+            if (text.compare(0, length, key) == 0) {
+                std::string value = text.substr(length);
+                for (char& c : value) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                entry.no_display = entry.no_display || value == "true";
+            }
+        }
+    }
+    std::fclose(file);
+    return entry;
+}
+
+// Whether an entry's `Exec` or `TryExec` line names this program.
+//
+// The first word of `Exec` is not the program often enough to matter, and taking
+// only the first word is how a program whose entry starts a wrapper was told it
+// belonged to somebody else. Measured against this machine's own entries:
+// `"/usr/lib/REAPER/reaper" %F` is quoted, so the first word ended in a quote and
+// matched nothing; `/usr/bin/env systemctl start ...` and `/bin/sh -c "..."` and
+// `env "WINEPREFIX=..." wine start ...` all name a wrapper first; the Mojang
+// launcher's entry is `minecraft-launcher.sh` while the process behind it is
+// `minecraft-launcher`; and the Steam client's entry on this machine reads
+// `/usr/bin/mangohud /usr/bin/steam %U`.
+//
+// So every word is considered, minus the ones that cannot be a program: options,
+// the specification's field codes (`%U`, `%f`), and the `VAR=value` assignments
+// `env` takes in front of a command. A quoted word is unquoted but never split:
+// what is inside `sh -c "..."` is a script, not an argument list, and guessing at
+// it would be exactly the widening this guard exists to prevent.
+std::vector<std::string> exec_program_names(const std::string& exec) {
+    std::vector<std::string> names;
+    size_t index = 0;
+    while (index < exec.size()) {
+        while (index < exec.size() && (exec[index] == ' ' || exec[index] == '\t')) {
+            ++index;
+        }
+        std::string token;
+        if (index < exec.size() && (exec[index] == '"' || exec[index] == '\'')) {
+            const char quote = exec[index++];
+            while (index < exec.size() && exec[index] != quote) {
+                if (exec[index] == '\\' && index + 1 < exec.size()) {
+                    ++index;
+                }
+                token.push_back(exec[index++]);
+            }
+            if (index < exec.size()) {
+                ++index;
+            }
+        } else {
+            while (index < exec.size() && exec[index] != ' ' && exec[index] != '\t') {
+                token.push_back(exec[index++]);
+            }
+        }
+        if (token.empty() || token.front() == '-' || token.front() == '%') {
+            continue;
+        }
+        if (const size_t equals = token.find('='); equals != std::string::npos) {
+            const size_t slash = token.find('/');
+            if (slash == std::string::npos || slash > equals) {
+                continue;  // an environment assignment, not a program
+            }
+        }
+        const std::string name = basename_of(token);
+        if (!name.empty()) {
+            names.push_back(name);
+        }
+    }
+    return names;
+}
+
+bool exec_names(const std::string& exec, const std::string& binary, const std::string& comm) {
+    for (const std::string& name : exec_program_names(exec)) {
+        if ((!binary.empty() && name == binary) || same_name(name.c_str(), comm)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The Desktop Entry Specification's Exec key: an argument containing a
+// reserved character -- space, tab, newline, the quotes, the backslash and the
+// shell's own metacharacters -- is enclosed in double quotes, inside which a
+// double quote, a backtick, a dollar sign and a backslash are escaped with a
+// backslash. The backslash escape is applied to the *value* first ("the general
+// escape rule for values of type string ... is applied before the quoting
+// rule"), so a literal backslash inside the quotes is written four times. And
+// a literal percent is `%%` everywhere, quoted or not, or it is read as a field
+// code. Written for the one argument this project writes (the window's own
+// path, in the autostart entry), and held by tests/apps.cpp.
+std::string desktop_exec_quoted(const std::string& argument) {
+    static const char* const reserved = " \t\n\"'\\><~|&;$*?#()`";
+    const bool quote = argument.empty() || argument.find_first_of(reserved) != std::string::npos;
+    std::string out;
+    out.reserve(argument.size() + 8);
+    if (quote) {
+        out.push_back('"');
+    }
+    for (const char c : argument) {
+        if (quote && (c == '"' || c == '`' || c == '$')) {
+            out.push_back('\\');
+            out.push_back(c);
+        } else if (quote && c == '\\') {
+            out.append("\\\\\\\\");
+        } else if (c == '%') {
+            out.append("%%");
+        } else {
+            out.push_back(c);
+        }
+    }
+    if (quote) {
+        out.push_back('"');
+    }
+    return out;
+}
+
+// Whether a `Categories=` line puts this entry in the games section.
+//
+// Whole entries between the semicolons, never a substring: `Game` is a main
+// category in the menu specification's registry, and every game subcategory in
+// the additional registry -- `ActionGame`, `RolePlaying`, `Shooter`, `Simulation`,
+// `Emulator` and the rest -- names `Game` as the category it is used with. So
+// requiring the main one loses no real entry and stops anything that merely
+// contains the four letters from counting.
+//
+// Two entries in the same registry mean the opposite of a game and are refused
+// even when `Game` is beside them: `LauncherStore`, "a place to browse and install
+// games or a launcher for a game or games", and `GameTool`, "companion apps for
+// games, such as addon managers, remote play clients or other tools". That is what
+// a store front and an addon manager are supposed to write about themselves. In
+// practice almost none of them do -- which is what `is_launcher` is for -- but an
+// entry that is honest about it should be believed.
+//
+// `Games`, in the plural, is not in the registry at all. It is what Discord writes
+// into the entries it generates for the games it detects, and there is one of those
+// on this machine, so it is read as `Game`.
+bool categories_say_game(const std::string& categories) {
+    bool game = false;
+    bool refused = false;
+    each_entry(categories, ';', [&](size_t from, size_t to) {
+        const std::string entry = categories.substr(from, to - from);
+        if (entry == "LauncherStore" || entry == "GameTool") {
+            refused = true;
+            return false;
+        }
+        if (entry == "Game" || entry == "Games") {
+            game = true;
+        }
+        return true;
+    });
+    return game && !refused;
+}
+
+// The installed entry that runs this program, when exactly one kind of entry
+// names it and that kind is a game.
+//
+// This is the last thing asked and the only signal nobody handed over: the other
+// three are somebody saying so -- a launcher through the environment, the game
+// through its own arguments, the session through the scope it started us in. A
+// game started from a terminal, from a script, or by hand has none of those, and
+// that was written down as "not found, by design". It is findable: the entries are
+// on disk, and one of them may name this executable.
+//
+// What makes it safe is the second half of the rule: **exactly one** entry may
+// name this program, and it has to be a game. An entry naming it is not enough,
+// because entries name interpreters and wrappers -- a `Categories=Game` entry
+// reading `Exec=python3 /usr/share/foo/main.py` would otherwise make every Python
+// program on the machine a game. Measured here, that is not a hypothetical: the
+// thirty per-game entries Steam writes all read `Exec=steam steam://rungameid/…`
+// and all say `Game`, so "every entry that names it is a game" was true of the
+// name `steam` itself. One entry, and one only, is the rule that held.
+//
+// Duplicate ids across the data directories are one entry, not two: the
+// specification says the first in `$XDG_DATA_DIRS` order is the one used, and the
+// user's copy of a system entry is the ordinary case.
+//
+// Costs one pass over the installed entries, once, in the process that pays it:
+// measured here at 2.2-2.7 ms over four runs for the 251 entries of this machine
+// -- the whole verdict, of which this pass is nearly all -- in the same frame that
+// already writes the record. It is only reached by processes that got no answer
+// from anywhere else, which on this machine is the compositor, the portals and the
+// probes -- everything with an entry of its own has already been decided by it.
+std::string entry_that_runs_this(const std::string& binary, const std::string& comm) {
+    if (binary.empty() && comm.empty()) {
+        return {};
+    }
+    // Entries live in subdirectories too -- wine's are two deep -- and an id
+    // spells those directories with dashes, so the search is over the tree and
+    // the answer is the id rather than the path.
+    struct Directory {
+        std::string path;
+        std::string prefix;  // the id prefix everything inside carries
+        int depth;           // how many directories below applications/
+    };
+    std::vector<Directory> pending;
+    for (const std::string& root : desktop_roots()) {
+        pending.push_back({root + "/applications", std::string(), 0});
+    }
+    std::vector<std::string> naming;  // the distinct ids that name this program
+    std::string found;                // the id of the one that says Game
+    for (size_t at = 0; at < pending.size() && naming.size() < 2; ++at) {
+        DIR* handle = ::opendir(pending[at].path.c_str());
+        if (!handle) {
+            continue;
+        }
+        while (const dirent* item = ::readdir(handle)) {
+            const std::string name = item->d_name;
+            if (name.empty() || name.front() == '.') {
+                continue;
+            }
+            const std::string path = pending[at].path + "/" + name;
+            if (name.size() < 9 || name.compare(name.size() - 8, 8, ".desktop") != 0) {
+                struct stat info {};
+                // A directory, whose name becomes part of every id inside it.
+                // Three levels down: wine writes its entries under
+                // `applications/wine/Programs/<Folder>/`, which is three, and
+                // the cap used to be two -- counted, moreover, in dashes of the
+                // id prefix rather than in directories, so a directory called
+                // `Epic-Games` spent a level of its own (entry 135). lstat, so
+                // a link out of the tree is not walked (entry 98's shape).
+                if (::lstat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode) &&
+                    pending[at].depth < 3) {
+                    pending.push_back({path, pending[at].prefix + name + "-", pending[at].depth + 1});
+                }
+                continue;
+            }
+            const Entry entry = read_entry(path);
+            if (!entry.found || (!exec_names(entry.exec, binary, comm) &&
+                                 !exec_names(entry.try_exec, binary, comm))) {
+                continue;
+            }
+            const std::string id = pending[at].prefix + name;
+            if (std::find(naming.begin(), naming.end(), id) != naming.end()) {
+                continue;  // the same id in two data directories is one entry
+            }
+            naming.push_back(id);
+            if (naming.size() > 1) {
+                break;  // named by more than one: not specific enough to go on
+            }
+            if (categories_say_game(entry.categories)) {
+                found = id;
+            }
+        }
+        ::closedir(handle);
+    }
+    return naming.size() == 1 ? found : std::string();
+}
+
+// Minecraft, read off the game's own arguments, because there is nowhere else.
+//
+// Every Minecraft client is a JVM. Measured here with a small probe that printed
+// its own three files: `/proc/self/comm` is `java`, `/proc/self/exe` is
+// `/usr/lib/jvm/java-17-openjdk/bin/java`, and the command line is the only one of
+// the three that says which program this is. Neither of the first two can tell
+// Minecraft from any other Java application, and the truncation to fifteen
+// characters never even comes into it.
+//
+// Prism and the other MultiMC forks put the instance in the environment and are
+// caught before this; Mojang's own launcher puts nothing there. What it does pass,
+// like every other launcher, are the arguments the game itself parses:
+// `--assetIndex` and `--gameDir`. Those come from the version manifest rather than
+// from the launcher, so they survive Forge and Fabric -- whose own main class
+// replaces `net.minecraft.client.main.Main`, which is why that name is not what is
+// looked for here.
+//
+// **This one was read and not measured.** No Minecraft was launched on this
+// machine; the argument list is the wiki's. That is why it takes two arguments
+// together and not one, and why a Minecraft that still goes unrecognised says so
+// in its record instead of leaving somebody guessing.
+//
+// `cmdline` is /proc/self/cmdline as it comes: arguments separated by NUL.
+bool cmdline_says_minecraft(const std::string& cmdline) {
+    bool asset_index = false;
+    bool game_dir = false;
+    size_t start = 0;
+    while (start < cmdline.size()) {
+        size_t end = cmdline.find('\0', start);
+        if (end == std::string::npos) {
+            end = cmdline.size();
+        }
+        const std::string argument = cmdline.substr(start, end - start);
+        if (argument == "--assetIndex") {
+            asset_index = true;
+        } else if (argument == "--gameDir") {
+            game_dir = true;
+        }
+        start = end + 1;
+    }
+    return asset_index && game_dir;
+}
+
+// The arguments this process was started with. Read once, off the present path,
+// like everything else here. A command line can be long -- a Minecraft class path
+// is thousands of characters -- so this reads to the end rather than a line.
+std::string read_cmdline() {
+    std::FILE* file = std::fopen("/proc/self/cmdline", "rb");
+    if (!file) {
+        return {};
+    }
+    std::string out;
+    char buffer[4096];
+    size_t read = 0;
+    while ((read = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        out.append(buffer, read);
+    }
+    std::fclose(file);
+    return out;
+}
+
+}  // namespace detail
+
+namespace {
+
+std::string apps_directory() {
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+        return std::string(xdg) + "/vocem/apps";
+    }
+    // No HOME either: a game started by a service. The fallback used to be
+    // the game's own working directory, which is the one place a record must
+    // not be written; /tmp is where the avatar path already falls back to.
+    const char* home = std::getenv("HOME");
+    return std::string(home ? home : "/tmp") + "/.cache/vocem/apps";
+}
+
+// A field as it is written into a record: one line, no control characters,
+// no longer than a record's reader keeps (it reads 1023 bytes of a line and
+// treats the rest as a fresh line). The daemon's bridge writes the same
+// record for a sandboxed game and refuses these things at the field (
+// flatpak_bridge.cpp); the writer inside the process had no rule, and every
+// field here comes from the environment or from /proc -- a HEROIC_APP_NAME
+// with a newline in it wrote a second key into the file, and the window read
+// it as a row (entry 135).
+std::string one_line(const std::string& value, size_t cap) {
+    std::string out;
+    out.reserve(value.size() < cap ? value.size() : cap);
+    for (const char c : value) {
+        if (out.size() >= cap) {
+            break;
+        }
+        const unsigned char byte = static_cast<unsigned char>(c);
+        out.push_back(byte < 0x20 || byte == 0x7F ? '?' : c);
+    }
+    return out;
+}
+
+}  // namespace
+
+// Write down that the overlay was loaded here. Once per process, and expensive
+// exactly once: /proc/self/comm, /proc/self/exe, /proc/self/cmdline, a desktop
+// entry, a mkdir and a file written and renamed.
+//
+// The Vulkan layer calls it after the present has returned. The OpenGL side calls
+// it from inside the swap hook, on the first presented frame, which is not "off
+// the present path" however the sentence above used to read: it is one frame that
+// costs more than the rest, in the frame where a game is still starting up.
+//
+// Recorded whether or not the overlay is allowed to draw here, because a process
+// that has been excluded is exactly the one somebody may want to find in the list
+// and let back in.
+void record_application(const char* api) {
+    // Once. Atomic, because the Vulkan layer calls this outside its lock, after
+    // the present, and a game presenting two swapchains from two threads
+    // reaches here twice at once: two writers of one record sharing one
+    // temporary name, where the second's O_EXCL failure unlinked the first's
+    // live temporary.
+    static int done = 0;
+    if (__atomic_exchange_n(&done, 1, __ATOMIC_ACQ_REL)) {
+        return;
+    }
+
+    const std::string& name = process_name();
+    if (name.empty() || is_own_process(name) ||
+        is_own_process(detail::basename_of(process_executable()))) {
+        return;
+    }
+
+    write_application_record(
+        {name, process_executable(), api, launched_from_desktop_entry(), steam_app_id(), 0,
+         game_verdict().game, game_verdict().reason});
+
+    // Inside a Flatpak the file that was just written is in the sandbox's own
+    // cache, where the window that exists to show it cannot reach: the same
+    // record goes to the daemon across the bridge, and the daemon writes the
+    // record on the host's side. A no-op everywhere else.
+    flatpak_bridge_record(name.c_str(), process_executable().c_str(), api,
+                          game_verdict().game, game_verdict().reason.c_str());
+}
+
+// Write one record, for this process or -- when the daemon is doing it on behalf
+// of a sandbox that cannot reach the host's cache -- for somebody else's.
+//
+// One spelling of the file's shape, because two would drift: the reader below is
+// the only other place that knows it.
+void write_application_record(const Application& application) {
+    const std::string directory = apps_directory();
+    // One mkdir -p for the whole project (vocem/paths.h) -- this used to be its
+    // own loop at 0755 while every sibling created 0700, for no reason anybody
+    // could name.
+    make_directories(directory);
+
+    const std::string path = directory + "/" + detail::sanitised(application.key);
+    // The temporary carries the pid, and is created exclusively.
+    //
+    // The record's name is the process name, so two writers of one name are
+    // ordinary rather than exotic: every Minecraft is `java` and every Chromium
+    // GPU process -- including the ones inside Proton -- is `CrGpuMain`, and both
+    // are in this machine's registry. A shared temporary name is two processes
+    // writing one file, which is the thing rename() was there to prevent.
+    //
+    // O_EXCL|O_NOFOLLOW rather than fopen: this is a path in a directory anything
+    // in the session can write to, and a symlink left at that name would send the
+    // write elsewhere while a FIFO would block open() -- inside somebody else's
+    // first frame, which is the one place this code must never wait.
+    const std::string temporary = path + ".tmp." + std::to_string(::getpid());
+    int descriptor = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                            0600);
+    if (descriptor < 0) {
+        // Ours, from a process with this pid that died before the rename.
+        ::unlink(temporary.c_str());
+        descriptor = ::open(temporary.c_str(),
+                            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    }
+    if (descriptor < 0) {
+        return;
+    }
+    std::FILE* file = ::fdopen(descriptor, "w");
+    if (!file) {
+        ::close(descriptor);
+        ::unlink(temporary.c_str());
+        return;
+    }
+    // The same bounds the daemon's bridge writer applies to a sandbox's record
+    // (flatpak_bridge.cpp: a name is at most a comm, an executable 512, a
+    // reason 256), one line each.
+    std::fprintf(file, "name = %s\n", one_line(application.key, kCommLength).c_str());
+    std::fprintf(file, "executable = %s\n", one_line(application.executable, 512).c_str());
+    std::fprintf(file, "api = %s\n", one_line(application.api, 16).c_str());
+    std::fprintf(file, "game = %s\n", application.looks_like_game ? "true" : "false");
+    // Beside the verdict, the evidence for it. A game the overlay stayed out of is
+    // then a record somebody can read -- `not-ours:minecraft-launcher` says which
+    // entry was found and why it was not believed -- rather than a switch that has
+    // to be flipped without knowing what it is working around.
+    std::fprintf(file, "why = %s\n", one_line(application.reason, 256).c_str());
+    if (!application.desktop.empty()) {
+        std::fprintf(file, "desktop = %s\n", one_line(application.desktop, 512).c_str());
+    }
+    if (!application.steam_app_id.empty()) {
+        std::fprintf(file, "steam = %s\n", one_line(application.steam_app_id, 32).c_str());
+    }
+    std::fprintf(file, "seen = %ld\n",
+                 application.seen > 0 ? application.seen : static_cast<long>(std::time(nullptr)));
+    std::fclose(file);
+    if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+    }
+}
+
+// Everything written down so far, for the configuration window. Not for the
+// injected code: it reads a directory and opens every file in it.
+std::vector<Application> known_applications() {
+    std::vector<Application> applications;
+    const std::string directory = apps_directory();
+    DIR* handle = ::opendir(directory.c_str());
+    if (!handle) {
+        return applications;
+    }
+    while (const dirent* entry = ::readdir(handle)) {
+        const std::string file_name = entry->d_name;
+        if (file_name == "." || file_name == "..") {
+            continue;
+        }
+        // A record being written right now, which rename() is about to replace --
+        // `<name>.tmp.<pid>`, and `<name>.tmp` from the versions that had one
+        // temporary per name and could leave one behind.
+        if (file_name.find(".tmp.") != std::string::npos ||
+            (file_name.size() > 4 && file_name.compare(file_name.size() - 4, 4, ".tmp") == 0)) {
+            continue;
+        }
+
+        // A record is a regular file the overlay wrote. Anything else here --
+        // a symlink above all -- is not ours and is not opened. The journal
+        // scanner grew this guard after it followed one and put its contents in
+        // the window; this directory is the same tree, on the same four-second
+        // tick from the same window, and never got it.
+        const std::string path = directory + "/" + file_name;
+        struct stat info {};
+        if (::lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) {
+            continue;
+        }
+
+        std::FILE* file = std::fopen(path.c_str(), "r");
+        if (!file) {
+            continue;
+        }
+        Application application;
+        char line[1024];
+        while (std::fgets(line, sizeof(line), file)) {
+            char* equals = std::strchr(line, '=');
+            if (!equals) {
+                continue;
+            }
+            *equals = '\0';
+            char* key = line;
+            char* value = equals + 1;
+            while (*key == ' ' || *key == '\t') ++key;
+            for (char* end = key + std::strlen(key); end > key && (end[-1] == ' ' || end[-1] == '\t');
+                 --end) {
+                end[-1] = '\0';
+            }
+            while (*value == ' ' || *value == '\t') ++value;
+            for (char* end = value + std::strlen(value);
+                 end > value && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ');
+                 --end) {
+                end[-1] = '\0';
+            }
+            if (std::strcmp(key, "name") == 0) {
+                application.key = value;
+            } else if (std::strcmp(key, "executable") == 0) {
+                application.executable = value;
+            } else if (std::strcmp(key, "api") == 0) {
+                application.api = value;
+            } else if (std::strcmp(key, "desktop") == 0) {
+                application.desktop = value;
+            } else if (std::strcmp(key, "steam") == 0) {
+                application.steam_app_id = value;
+            } else if (std::strcmp(key, "game") == 0) {
+                application.looks_like_game = std::strcmp(value, "true") == 0;
+            } else if (std::strcmp(key, "why") == 0) {
+                application.reason = value;
+            } else if (std::strcmp(key, "seen") == 0) {
+                application.seen = std::atol(value);
+            }
+        }
+        std::fclose(file);
+        // Records written before our own processes were excluded, which the list
+        // should not go on offering a switch for. And a key longer than the
+        // kernel's fifteen characters, which no record of ours can have: what
+        // reads this is the window, and the key is what a flipped switch writes
+        // into the settings file, so a corrupt file is not given a row a
+        // thousand characters wide to put there.
+        if (!application.key.empty() && application.key.size() <= kCommLength &&
+            !is_own_process(application.key)) {
+            applications.push_back(application);
+        }
+    }
+    ::closedir(handle);
+    return applications;
+}
+
+// Empty the list. The window offers this because the list is a history: an
+// application uninstalled a year ago has no business still being in it.
+void forget_applications() {
+    const std::string directory = apps_directory();
+    DIR* handle = ::opendir(directory.c_str());
+    if (!handle) {
+        return;
+    }
+    while (const dirent* entry = ::readdir(handle)) {
+        const std::string file_name = entry->d_name;
+        if (file_name == "." || file_name == "..") {
+            continue;
+        }
+        std::remove((directory + "/" + file_name).c_str());
+    }
+    ::closedir(handle);
+}
+
+}  // namespace vocem

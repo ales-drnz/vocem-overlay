@@ -23,6 +23,27 @@
 // into a private /dev/shm (bwrap), lets the overlay draw over 45 frames, then
 // reads its front buffer back and requires pixels it did not paint itself.
 // Against the library as shipped in 0.1.0-44 the count is zero.
+//
+// Two more things the same miniature game measures, since 0.1.8 (DESIGN entry
+// 132):
+//
+//   * **How many textures the overlay holds** after its first frames: a census
+//     of glIsTexture over the low names. The scene has no faces, so the answer
+//     is the font atlas and nothing else -- one. The library shipped 0.1.7
+//     built the atlas texture twice on the frame its backend came up (once
+//     explicitly, once again inside the backend's own NewFrame) and orphaned
+//     the first, 16 to 64 MB of RGBA, for the life of the game's context: two.
+//   * **VOCEM_GL_SCENARIO=second-context**: a second, unshared GLX context is
+//     created, made current and destroyed -- a loader thread's helper context,
+//     a splash screen's -- and the frames continue in the first. The overlay's
+//     backend lives in the first context and must not notice: the shipped
+//     library tore it down for ANY context's death, made the dying one current
+//     with the drawing one's drawable to do so, and rebuilt everything on the
+//     next frame. Two witnesses: "OpenGL backend ready" once in the log, and
+//     zero calls to glXMakeCurrent from the overlay, counted by an interposed
+//     definition in this executable (the gl_avatar_quiet.cpp trick: the
+//     overlay resolves the name through RTLD_DEFAULT, where the main program
+//     comes first).
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -40,6 +61,13 @@
 namespace {
 
 int failures = 0;
+
+// The overlay's own glXMakeCurrent calls. This probe never calls the name
+// through the global scope -- its own calls go through the pointer it took
+// off the private handle -- so everything counted here is the overlay's.
+using PFN_glXMakeCurrent_real = int (*)(Display*, XID, void*);
+PFN_glXMakeCurrent_real g_real_make_current = nullptr;
+volatile long g_overlay_make_current = 0;
 
 void check(bool condition, const char* what) {
     printf("%s %s\n", condition ? "ok  " : "FAIL", what);
@@ -66,13 +94,44 @@ using PFN_glClear = void (*)(unsigned int);
 using PFN_glReadBuffer = void (*)(unsigned int);
 using PFN_glReadPixels = void (*)(int, int, int, int, unsigned int, unsigned int, void*);
 
+// How many lines of a file contain `needle`.
+long lines_containing(const char* path, const char* needle) {
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return -1;
+    }
+    long count = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        if (strstr(line, needle)) {
+            ++count;
+        }
+    }
+    fclose(file);
+    return count;
+}
+
 }  // namespace
+
+extern "C" {
+
+// The interposition (see the header). Exported from the executable, which is
+// what -rdynamic is for in tests/CMakeLists.txt.
+__attribute__((visibility("default"))) int glXMakeCurrent(Display* display, XID drawable,
+                                                          void* context) {
+    ++g_overlay_make_current;
+    return g_real_make_current ? g_real_make_current(display, drawable, context) : 0;
+}
+
+}  // extern "C"
 
 int main() {
     if (!getenv("DISPLAY")) {
         printf("skip no DISPLAY, so no GLX drawable to draw into\n");
         return 77;
     }
+    const char* scenario = getenv("VOCEM_GL_SCENARIO") ? getenv("VOCEM_GL_SCENARIO") : "";
+    const bool second_context = strcmp(scenario, "second-context") == 0;
     if (!getenv("VOCEM_GL_LIBRARY") || !getenv("VOCEM_SHIM_PRELOADED")) {
         printf("skip meant to run with the shim preloaded and VOCEM_GL_LIBRARY set\n");
         return 77;
@@ -107,6 +166,11 @@ int main() {
     snprintf(path, sizeof(path), "%s/cache", root);
     mkdir(path, 0700);
     setenv("XDG_CACHE_HOME", path, 1);
+    // The overlay's own log, for counting how many times its backend came up.
+    static char log_path[700];
+    snprintf(log_path, sizeof(log_path), "%s/overlay.log", root);
+    setenv("VOCEM_DEBUG", "1", 1);
+    setenv("VOCEM_LOG_FILE", log_path, 1);
 
     // The channel, published by this process: the reader in the overlay cannot
     // tell it from the daemon, which is the point.
@@ -141,12 +205,15 @@ int main() {
     auto* clear = reinterpret_cast<PFN_glClear>(dlsym(gl, "glClear"));
     auto* read_buffer = reinterpret_cast<PFN_glReadBuffer>(dlsym(gl, "glReadBuffer"));
     auto* read_pixels = reinterpret_cast<PFN_glReadPixels>(dlsym(gl, "glReadPixels"));
+    using PFN_glIsTexture = unsigned char (*)(unsigned int);
+    auto* is_texture = reinterpret_cast<PFN_glIsTexture>(dlsym(gl, "glIsTexture"));
     check(choose && create && make_current && destroy && swap && clear_colour && clear &&
-              read_buffer && read_pixels,
+              read_buffer && read_pixels && is_texture,
           "every GL function resolves off the private handle");
     if (failures) {
         return 1;
     }
+    g_real_make_current = make_current;
 
     Display* display = XOpenDisplay(nullptr);
     if (!display) {
@@ -178,11 +245,45 @@ int main() {
 
     // 45 frames: the overlay skips its first thirty while ImGui sizes itself,
     // and a few more make the count independent of that detail.
-    for (int frame = 0; frame < 45; ++frame) {
-        clear_colour(0.10f, 0.15f, 0.20f, 1.0f);
-        clear(0x00004000 /*GL_COLOR_BUFFER_BIT*/);
-        swap(display, window);
-        usleep(16000);
+    const auto run_frames = [&](int frames) {
+        for (int frame = 0; frame < frames; ++frame) {
+            clear_colour(0.10f, 0.15f, 0.20f, 1.0f);
+            clear(0x00004000 /*GL_COLOR_BUFFER_BIT*/);
+            swap(display, window);
+            usleep(16000);
+        }
+    };
+    run_frames(45);
+
+    // The texture census, with the backend up and no faces in the scene: the
+    // font atlas is the one texture the overlay should hold.
+    {
+        long textures = 0;
+        for (unsigned int name = 1; name <= 64; ++name) {
+            if (is_texture(name)) {
+                ++textures;
+            }
+        }
+        printf("     textures alive in the low names: %ld\n", textures);
+        check(textures == 1, "the overlay holds one texture, the atlas, and no orphaned twin");
+    }
+
+    if (second_context) {
+        void* helper = create(display, visual, nullptr, 1);
+        check(helper != nullptr, "a second, unshared context comes up");
+        const long before = g_overlay_make_current;
+        make_current(display, window, helper);
+        make_current(display, window, context);
+        // Destroyed while NOT current, through the shim's hook, as a loader
+        // thread's context usually is: that is the case where the shipped
+        // library made the dying context current to tear down a backend that
+        // had never lived in it.
+        destroy(display, helper);
+        printf("     the overlay called glXMakeCurrent %ld time(s) while the helper died\n",
+               g_overlay_make_current - before);
+        check(g_overlay_make_current - before == 0,
+              "a context that is not the backend's is not made current by the overlay");
+        run_frames(15);
     }
 
     // What ended up on screen, read out of the front buffer the way the capture
@@ -206,6 +307,11 @@ int main() {
     printf("     foreign pixels: %ld\n", foreign);
     check(foreign > 500,
           "the overlay drew in a process whose GL lives behind dlopen(RTLD_LOCAL)");
+    if (second_context) {
+        const long ready = lines_containing(log_path, "OpenGL backend ready");
+        printf("     the overlay said \"OpenGL backend ready\" %ld time(s)\n", ready);
+        check(ready == 1, "and its backend came up once: the helper's death did not tear it down");
+    }
 
     destroy(display, context);
     XCloseDisplay(display);

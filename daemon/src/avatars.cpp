@@ -140,6 +140,21 @@ bool AvatarCache::download(const std::string& url, std::string& body) {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, VOCEM_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXFILESIZE, 1024L * 1024L);
+    // See auth.cpp: what libcurl asks of a multi-threaded program.
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    // A way out of a transfer that is under way when the daemon is told to
+    // stop. stop() sets the flag and joins this thread, and a stalled CDN --
+    // or a proxy that accepted the connection and went quiet -- used to hold
+    // the join for the transfer's whole fifteen seconds, past the unit's
+    // TimeoutStopSec, so the daemon was killed with its segment still
+    // published (entry 134). libcurl consults this callback as the transfer
+    // progresses and ends it on a non-zero answer.
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+                     +[](void* self, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
+                         return static_cast<AvatarCache*>(self)->stopping_.load() ? 1 : 0;
+                     });
 
     const CURLcode result = curl_easy_perform(curl);
     curl_easy_cleanup(curl);

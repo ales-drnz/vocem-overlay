@@ -117,7 +117,9 @@ RowLayout {
 
     Connections {
         target: root.config
-        function onStateChanged() {
+        // The bridge announces the enumeration on a signal of its own, and only
+        // when it moved; this used to listen on stateChanged, twice a second.
+        function onDisplaysChanged() {
             // Only when the enumeration itself changed. A ComboBox puts
             // currentIndex back to 0 when its model is replaced (entry 104), so
             // reassigning on every tick would drag the selection to "Automatic"

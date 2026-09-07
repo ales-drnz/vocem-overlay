@@ -35,6 +35,7 @@
 
 #include <algorithm>
 
+#include "vocem/apps.h"
 #include "vocem/display.h"
 
 namespace vocem {
@@ -296,6 +297,10 @@ struct DisplayMode {
     QString name;  // the connector, card<N>- prefix stripped: "DP-2", "HDMI-A-1"
     int width = 0;
     int height = 0;
+    bool operator==(const DisplayMode& other) const {
+        return name == other.name && width == other.width && height == other.height;
+    }
+    bool operator!=(const DisplayMode& other) const { return !(*this == other); }
 };
 
 inline QString drm_root() {
@@ -303,38 +308,18 @@ inline QString drm_root() {
     return root.isEmpty() ? QStringLiteral("/sys/class/drm") : QString::fromLocal8Bit(root);
 }
 
-// Every connected, enabled connector with a readable mode, sorted by name.
+// Every connected, enabled connector with a readable mode, sorted by name --
+// through display.h's one reader, which is the daemon's too. This file carried
+// a second reader in Qt, and the two had disagreed once about `enabled` (entry
+// 135); the shape of the tree is known in one place now.
 inline QList<DisplayMode> read_displays() {
     QList<DisplayMode> found;
-    QDir drm(drm_root());
-    QStringList connectors = drm.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-    connectors.sort();
-    for (const QString& connector : connectors) {
-        // Connectors are card<N>-<name>; the bare card<N> and renderD* are not --
-        // the same shape display.h's reader requires.
-        const qsizetype dash = connector.indexOf(QLatin1Char('-'));
-        if (!connector.startsWith(QStringLiteral("card")) || dash <= 0) {
-            continue;
-        }
-        const QString base = drm.filePath(connector);
-        QFile status(base + QStringLiteral("/status"));
-        QFile enabled(base + QStringLiteral("/enabled"));
-        QFile modes(base + QStringLiteral("/modes"));
-        if (!status.open(QIODevice::ReadOnly) || !enabled.open(QIODevice::ReadOnly) ||
-            !modes.open(QIODevice::ReadOnly)) {
-            continue;
-        }
-        if (status.readAll().trimmed() != "connected" ||
-            enabled.readAll().trimmed() != "enabled") {
-            continue;
-        }
-        // The first line is the mode in use; the rest are the other ones the
-        // display would accept.
-        const QString mode = QString::fromLatin1(modes.readLine()).trimmed();
-        const QStringList parts = mode.split('x');
-        if (parts.size() == 2 && parts[0].toInt() > 0 && parts[1].toInt() > 0) {
-            found.append({connector.mid(dash + 1), parts[0].toInt(), parts[1].toInt()});
-        }
+    vocem::DisplayModeInfo modes[vocem::kMaxDisplayModes];
+    const int count =
+        vocem::read_display_modes(drm_root().toLocal8Bit().constData(), modes, vocem::kMaxDisplayModes);
+    for (int i = 0; i < count; ++i) {
+        found.append({QString::fromLocal8Bit(modes[i].name), static_cast<int>(modes[i].width),
+                      static_cast<int>(modes[i].height)});
     }
     std::sort(found.begin(), found.end(),
               [](const DisplayMode& a, const DisplayMode& b) { return a.name < b.name; });
@@ -470,18 +455,11 @@ inline QString screen_resolution() {
 // installed" without running a game to find out. XDG_DATA_DIRS is honoured because
 // a --prefix=~/.local install is a supported way to have this.
 inline bool vulkan_layer_installed() {
-    QStringList roots;
-    const QByteArray home = qgetenv("XDG_DATA_HOME");
-    roots << (home.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share")
-                             : QString::fromLocal8Bit(home));
-    const QByteArray dirs = qgetenv("XDG_DATA_DIRS");
-    const QString list = dirs.isEmpty() ? QStringLiteral("/usr/local/share:/usr/share")
-                                        : QString::fromLocal8Bit(dirs);
-    roots << list.split(QLatin1Char(':'), Qt::SkipEmptyParts);
-
-    for (const QString& root : std::as_const(roots)) {
-        const QString manifest =
-            root + QStringLiteral("/vulkan/implicit_layer.d/VkLayer_vocem_overlay.json");
+    // The XDG data roots, spelled once for the project (apps.h): this was the
+    // third copy of the enumeration.
+    for (const std::string& root : vocem::detail::desktop_roots()) {
+        const QString manifest = QString::fromStdString(root) +
+                                 QStringLiteral("/vulkan/implicit_layer.d/VkLayer_vocem_overlay.json");
         if (QFileInfo::exists(manifest)) {
             return true;
         }
@@ -502,17 +480,23 @@ inline bool vulkan_layer_installed() {
 //
 // Either one means OpenGL games are covered; neither means the session has not
 // picked up the file yet, and only logging out fixes that.
-inline bool opengl_preload_active() {
-    if (qgetenv("LD_PRELOAD").contains("vocem_gl_shim")) {
-        return true;
-    }
-    QProcess environment;
-    environment.start(QStringLiteral("systemctl"),
-                      {QStringLiteral("--user"), QStringLiteral("show-environment")});
-    if (!environment.waitForFinished(3000)) {
-        return false;
-    }
-    return environment.readAllStandardOutput().contains("vocem_gl_shim");
+//
+// Two halves, asked differently. This process's own environment is a string
+// compare and is answered here at once. The user manager's is a `systemctl`
+// spawn, and that is NOT asked here: it used to be, synchronously with a
+// three-second cap, behind a CONSTANT property the Debug page reads while the
+// window is being built -- so the first frame waited on systemctl. ConfigBridge
+// starts that spawn asynchronously and publishes the answer when it arrives
+// (openglPreloadKnown); the arguments it runs are these, so the two stay one
+// question.
+inline bool opengl_preload_in_own_environment() {
+    return qgetenv("LD_PRELOAD").contains("vocem_gl_shim");
+}
+inline QStringList opengl_preload_probe_arguments() {
+    return {QStringLiteral("--user"), QStringLiteral("show-environment")};
+}
+inline bool opengl_preload_in_manager_output(const QByteArray& show_environment) {
+    return show_environment.contains("vocem_gl_shim");
 }
 
 // The desktop entry that starts this window with the session.
@@ -548,7 +532,11 @@ inline void set_autostart(bool enabled) {
     }
     // The executable by absolute path: a session's PATH is not this shell's, and
     // an entry that names a program the desktop cannot find fails silently.
-    const QString executable = QCoreApplication::applicationFilePath();
+    // Quoted the way the specification's Exec key wants an argument quoted
+    // (apps.h, desktop_exec_quoted): written bare, a path with a space in it
+    // was two arguments and a path with a `%` in it a field code.
+    const QString executable = QString::fromStdString(
+        vocem::detail::desktop_exec_quoted(QCoreApplication::applicationFilePath().toStdString()));
     QTextStream out(&file);
     out << "[Desktop Entry]\n"
         << "Type=Application\n"

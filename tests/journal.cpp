@@ -238,6 +238,132 @@ int main() {
     check(history.size() >= 2 && history.front().when >= history.back().when,
           "history comes back newest first");
 
+    // A journal already at this pid's name -- a recycled pid, or a game in
+    // Steam's container whose pid namespace is its own while the cache
+    // directory is the host's. begin() used to fopen(..., "w") it: the host's
+    // live journal truncated and its header rewritten, and the Debug section
+    // reporting a crash for a game still running. Now the name is taken with
+    // O_EXCL and the newcomer takes a suffixed one; the file that was there
+    // is left as it was, byte for byte.
+    {
+        pid_t squatter = fork();
+        if (squatter == 0) {
+            char taken[600];
+            snprintf(taken, sizeof(taken), "%s/%d.running", dir.c_str(), (int)getpid());
+            if (FILE* file = fopen(taken, "w")) {
+                fprintf(file, "process = host_game\npid = %d\napi = vulkan\n--\n"
+                              "12:00:00 uploading avatar\n",
+                        (int)getpid());
+                fclose(file);
+            }
+            vocem::journal_begin("opengl", "container_game");
+            vocem::journal_note("container's own line");
+            vocem::journal_stat(7, 3);
+            // Left `.running` on purpose: what is checked is the file that
+            // was there before, and where the newcomer's went.
+            _exit(0);
+        }
+        waitpid(squatter, &status, 0);
+        char taken[600];
+        snprintf(taken, sizeof(taken), "%s/%d.running", dir.c_str(), (int)squatter);
+        bool intact = false;
+        bool own_line_in_it = false;
+        if (FILE* file = fopen(taken, "r")) {
+            char line[256];
+            while (fgets(line, sizeof(line), file)) {
+                intact = intact || strstr(line, "process = host_game");
+                own_line_in_it = own_line_in_it || strstr(line, "container's own line");
+            }
+            fclose(file);
+        }
+        check(intact, "a journal already at the name is left exactly as it was");
+        check(!own_line_in_it, "and the newcomer did not write into it");
+        char suffixed[600];
+        snprintf(suffixed, sizeof(suffixed), "%s/%d-1.running", dir.c_str(), (int)squatter);
+        check(file_exists(suffixed), "the newcomer's journal took a suffixed name");
+        char suffixed_stat[600];
+        snprintf(suffixed_stat, sizeof(suffixed_stat), "%s/%d-1.stat", dir.c_str(),
+                 (int)squatter);
+        long frames = 0;
+        long drawn = 0;
+        check(file_exists(suffixed_stat) &&
+                  vocem::journal_read_stat_beside(suffixed, frames, drawn) && frames == 7,
+              "and its counters followed it there");
+        unlink(taken);
+        unlink(suffixed);
+        unlink(suffixed_stat);
+    }
+
+    // A FIFO where the journal goes: begin() must not wait on a reader that
+    // is never coming (entry 98's shape, one directory over).
+    {
+        pid_t blocked = fork();
+        if (blocked == 0) {
+            alarm(5);
+            char name[600];
+            snprintf(name, sizeof(name), "%s/%d.running", dir.c_str(), (int)getpid());
+            mkfifo(name, 0600);
+            vocem::journal_begin("opengl", "fifo_game");
+            unlink(name);
+            char suffixed[600];
+            snprintf(suffixed, sizeof(suffixed), "%s/%d-1.running", dir.c_str(), (int)getpid());
+            unlink(suffixed);
+            _exit(0);
+        }
+        waitpid(blocked, &status, 0);
+        check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "a named pipe at the journal's name does not hold the process");
+    }
+
+    // The counters of a crashed process go when its journal is pruned: seed
+    // dead `.running` journals past the keep with a `.stat` each, and let a
+    // fresh process prune. No `.stat` may be left whose journal is gone.
+    {
+        for (int i = 0; i < vocem::kJournalHistoryKeep + 5; ++i) {
+            char dead[600];
+            snprintf(dead, sizeof(dead), "%s/%d.running", dir.c_str(), 200000 + i);
+            if (FILE* file = fopen(dead, "w")) {
+                fprintf(file, "process = dead_%d\npid = %d\napi = opengl\n--\n", i, 200000 + i);
+                fclose(file);
+            }
+            char dead_stat[600];
+            snprintf(dead_stat, sizeof(dead_stat), "%s/%d.stat", dir.c_str(), 200000 + i);
+            if (FILE* file = fopen(dead_stat, "w")) {
+                fprintf(file, "frames = 1\ndrawn = 1\n");
+                fclose(file);
+            }
+            struct timespec times[2];
+            times[0].tv_sec = time(nullptr) - 20000 + i;
+            times[0].tv_nsec = 0;
+            times[1] = times[0];
+            utimensat(AT_FDCWD, dead, times, 0);
+        }
+        pid_t pruner2 = fork();
+        if (pruner2 == 0) {
+            vocem::journal_begin("opengl", "pruner_child_2");
+            vocem::journal_end();
+            _exit(0);
+        }
+        waitpid(pruner2, &status, 0);
+        int orphans = 0;
+        int dead_left = 0;
+        for (int i = 0; i < vocem::kJournalHistoryKeep + 5; ++i) {
+            char dead[600];
+            snprintf(dead, sizeof(dead), "%s/%d.running", dir.c_str(), 200000 + i);
+            char dead_stat[600];
+            snprintf(dead_stat, sizeof(dead_stat), "%s/%d.stat", dir.c_str(), 200000 + i);
+            dead_left += file_exists(dead) ? 1 : 0;
+            orphans += (!file_exists(dead) && file_exists(dead_stat)) ? 1 : 0;
+        }
+        printf("     dead journals left after the prune: %d, orphaned stat files: %d\n",
+               dead_left, orphans);
+        check(vocem::journal_sees_host_pids() ? dead_left < vocem::kJournalHistoryKeep + 5
+                                              : dead_left == vocem::kJournalHistoryKeep + 5,
+              "dead journals are pruned where the host's pids are visible, and left alone "
+              "where they are not");
+        check(orphans == 0, "and no stat file outlives the journal it belonged to");
+    }
+
     char cleanup[600];
     snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
     if (system(cleanup) != 0) {

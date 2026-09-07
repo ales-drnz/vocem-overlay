@@ -12,7 +12,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/vocemd
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/vocemd
 Restart=on-failure
 RestartSec=10
 # The daemon holds one WebSocket and a shared memory segment: nothing here needs

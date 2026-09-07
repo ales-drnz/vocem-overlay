@@ -102,11 +102,19 @@ struct HdrPipeline {
     VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
 };
 
-// Builds the converting pipeline for `mode` (1, 2 or 3) against the layer's own
-// render pass. Returns false -- with everything released -- on any failure,
-// in which case the caller draws with the stock pipeline: a game must never
-// lose its overlay, let alone its stability, to a pipeline that would only
-// have corrected its colours (rule 7).
+// Builds the pipeline for `mode` (0 to 3) against the layer's own render pass.
+//
+// Mode 0 too, since 0.1.8: the shader's mode 0 is the identity, and a
+// pipeline of the swapchain's own is the only one guaranteed compatible with
+// the swapchain's own render pass. ImGui's stock pipeline is built once, for
+// the first swapchain's format, and a swapchain recreated with another format
+// -- HDR switched off in the game's settings, an sRGB attachment replaced by a
+// UNORM one -- would have had that stock pipeline drawn into an incompatible
+// render pass (VUID-vkCmdDrawIndexed-renderPass-02684). Returns false -- with
+// everything released -- on any failure; the caller then draws with the stock
+// pipeline only where its format matches, and passes the frame through
+// otherwise: a game must never lose its stability to a pipeline that would
+// only have corrected its colours (rule 7).
 bool hdr_pipeline_create(const HdrDeviceFunctions& fn, VkDevice device, VkRenderPass render_pass,
                          int mode, float sdr_nits, HdrPipeline& out);
 

@@ -49,6 +49,16 @@
 # connector added at 1.6 s, and 1.778 with both present at startup. Against the
 # fix: 1.250 before the sweep and 1.778 after it, on both maps.
 
+# Run through ctest, or with -DCMAKE_CURRENT_BINARY_DIR=<build>/tests: in script
+# mode that variable is the working directory, and a run started from the
+# repository root left its scratch directories in the repository (0.1.7's
+# packaging pass left two, untracked, beside CMakeLists.txt).
+if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/CTestTestfile.cmake")
+    message(FATAL_ERROR
+        "CMAKE_CURRENT_BINARY_DIR is '${CMAKE_CURRENT_BINARY_DIR}', which is not a "
+        "test directory: pass -DCMAKE_CURRENT_BINARY_DIR=<build>/tests, or run this "
+        "through ctest, so the scratch files land in the build tree")
+endif()
 if(NOT EXISTS "${CONFIG_BINARY}")
     message(STATUS "skip the configuration window was not built")
     return()

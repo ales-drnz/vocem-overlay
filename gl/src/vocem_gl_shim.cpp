@@ -152,19 +152,33 @@ void load_overlay() {
     if (!handle) {
         return;  // not installed, or the wrong architecture: stay out of the way
     }
-    g_present_glx = reinterpret_cast<PFN_present_glx>(real_dlsym(handle, "vocem_gl_present_glx"));
-    g_present_egl = reinterpret_cast<PFN_present_egl>(real_dlsym(handle, "vocem_gl_present_egl"));
-    g_context_gone_glx =
-        reinterpret_cast<PFN_context_gone>(real_dlsym(handle, "vocem_gl_context_destroyed"));
-    g_context_gone_egl =
-        reinterpret_cast<PFN_context_gone>(real_dlsym(handle, "vocem_gl_egl_context_destroyed"));
+    // Stored with the atomic builtins, like every other slot in this file: a
+    // second thread presenting at the same moment reads these after seeing
+    // g_load_attempted set, and a plain store is a data race by the letter
+    // (harmless on x86, where it costs a skipped frame at worst; still not
+    // the shape this file promises).
+    __atomic_store_n(&g_present_glx,
+                     reinterpret_cast<PFN_present_glx>(real_dlsym(handle, "vocem_gl_present_glx")),
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&g_present_egl,
+                     reinterpret_cast<PFN_present_egl>(real_dlsym(handle, "vocem_gl_present_egl")),
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &g_context_gone_glx,
+        reinterpret_cast<PFN_context_gone>(real_dlsym(handle, "vocem_gl_context_destroyed")),
+        __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &g_context_gone_egl,
+        reinterpret_cast<PFN_context_gone>(real_dlsym(handle, "vocem_gl_egl_context_destroyed")),
+        __ATOMIC_RELEASE);
 }
 
 // The overlay is told a context is going only if it was ever loaded. A process that
 // never presented a frame has nothing to give back, and must not be made to load a
 // megabyte of overlay just to be told so.
 void context_gone(bool egl, void* display, void* context) {
-    PFN_context_gone gone = egl ? g_context_gone_egl : g_context_gone_glx;
+    PFN_context_gone gone = __atomic_load_n(egl ? &g_context_gone_egl : &g_context_gone_glx,
+                                            __ATOMIC_ACQUIRE);
     if (gone) {
         gone(display, context);
     }
@@ -439,8 +453,8 @@ void present_glx(void* display, unsigned long drawable) {
         return;
     }
     load_overlay();
-    if (g_present_glx) {
-        g_present_glx(display, drawable);
+    if (PFN_present_glx present = __atomic_load_n(&g_present_glx, __ATOMIC_ACQUIRE)) {
+        present(display, drawable);
     }
 }
 
@@ -449,8 +463,8 @@ void present_egl(void* display, void* surface) {
         return;
     }
     load_overlay();
-    if (g_present_egl) {
-        g_present_egl(display, surface);
+    if (PFN_present_egl present = __atomic_load_n(&g_present_egl, __ATOMIC_ACQUIRE)) {
+        present(display, surface);
     }
 }
 
@@ -603,14 +617,16 @@ void* eglGetProcAddress(const char* name) {
 // `dlopen(RTLD_NOLOAD)` which their own code says crashes on NVIDIA, and which was
 // force-enabled in 0.8.2 and turned back off in 0.8.3. It is not copied here.
 void* dlsym(void* handle, const char* name) {
-    static int hook_enabled = -1;
-    if (hook_enabled < 0) {
+    static int hook_enabled = -1;  // -1 unknown, 0 off, 1 on; the disabled() shape
+    int enabled = __atomic_load_n(&hook_enabled, __ATOMIC_ACQUIRE);
+    if (enabled < 0) {
         const char* env = getenv("VOCEM_NO_DLSYM");
-        hook_enabled = (env && env[0] == '1') ? 0 : 1;
+        enabled = (env && env[0] == '1') ? 0 : 1;
+        __atomic_store_n(&hook_enabled, enabled, __ATOMIC_RELEASE);
     }
 
     void* real = real_dlsym(handle, name);
-    if (hook_enabled == 1 && real && !disabled()) {
+    if (enabled == 1 && real && !disabled()) {
         if (Hook* entry = find_hook(name)) {
             if (is_system_gl(real)) {
                 // This lookup is the only place the real function is ever visible
