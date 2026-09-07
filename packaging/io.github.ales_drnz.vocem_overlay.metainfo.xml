@@ -78,19 +78,73 @@
 
   <content_rating type="oars-1.1"/>
 
-  <!-- Every release that has a tag, newest first, in the words CHANGELOG.md uses
-       for it: this list is what Discover and GNOME Software show as "what's new",
-       and there is one wording of what a release changed, not two. It had stopped
-       at 0.1.2 while 0.1.3 and 0.1.4 shipped, which validates cleanly: an
-       out-of-date release list is not something AppStream can catch, and nothing
-       else looked. tests/version_agrees.cmake does now. -->
+  <!-- Every release that has a tag, newest first, in CHANGELOG.md's own words:
+       this list is what Discover and GNOME Software show as "what's new". It is
+       a store front's summary and not the record: a release's page and the
+       CHANGELOG carry every bullet, and this list carries the ones a person
+       choosing to update wants (0.1.6 shows eight of its eleven, 0.1.5 seven of
+       eight). A bullet here is a CHANGELOG bullet, never a third wording.
+       The list had stopped at 0.1.2 while 0.1.3 and 0.1.4 shipped, which
+       validates cleanly: an out-of-date release list is not something AppStream
+       can catch, and nothing else looked. tests/version_agrees.cmake does now. -->
   <releases>
+    <release version="0.1.8" date="2026-09-07">
+      <description>
+        <p>Fixed</p>
+        <ul>
+          <li>The Vulkan layer uploads its font atlas after the present is handed down, not inside it: the first drawn frame carried a queue wait on the present path.</li>
+          <li>The Vulkan layer draws into a swapchain recreated in another format through a pipeline built for that swapchain, not the first swapchain's.</li>
+          <li>A helper Vulkan device created and destroyed beside the presenting one no longer tears the overlay down and rebuilds it on the next frame.</li>
+          <li>The Vulkan layer's fences are created unsignalled, and a present on a queue family without graphics, or not the command pool's, passes through untouched.</li>
+          <li>The OpenGL overlay builds its font atlas texture once per backend. It built it twice on the first frame and orphaned the first copy, up to 64 MB, for the life of the game's context.</li>
+          <li>The OpenGL overlay releases its backend only when the context it lives in is destroyed, not on any context's death.</li>
+          <li>The OpenGL overlay restores the game's draw framebuffer binding alone and leaves its read framebuffer binding untouched.</li>
+          <li>The daemon unlinks its segment, the message's words and every Flatpak mirror the moment it is told to stop, and aborts a download in flight rather than waiting for it.</li>
+          <li>The daemon serves at most 32 Flatpak sandboxes and only directories named like a Flatpak application id. Two thousand asking directories used to exhaust its descriptors.</li>
+          <li>The daemon's token file is read bounded and validated, and written through a temporary. A link, a FIFO or a byte that is not UTF-8 at that path could stall the daemon or end it on its first message.</li>
+          <li>A newline or another control character in a nickname, a channel name or a message's title is removed before the text reaches the panel, the log or the journal.</li>
+          <li>A peer that stops reading what the daemon sends is noticed and reconnected, and a WebSocket frame with a reserved bit set, or a binary message's fragments, no longer reach the text stream.</li>
+          <li>A desktop entry is read only if it is a regular file of a plausible size. A FIFO or a link to /dev/zero named `.desktop` in a data directory could hold a game's first frame for ever.</li>
+          <li>A journal is never created over a file already at its name, a sandbox never prunes journals whose processes it cannot see, and a crashed process's counters go with its journal.</li>
+          <li>A record written from the environment is one line per field, so a launcher's value with a newline in it cannot add a row to the Applications page.</li>
+          <li>Desktop entries three directories down, where wine installs a prefix's programs, are found.</li>
+          <li>A display that is connected but switched off no longer sizes the overlay.</li>
+          <li>The settings window writes its three instant switches on top of the file as it stands, picks up a file edited while it is open, and says so when the file cannot be written.</li>
+          <li>The settings window's numeric setters are held to the same bounds the file is read with, from one table. Three of them had no bound.</li>
+          <li>The row switch on the Applications page removes a rule written against the executable's name as well as one against the process name.</li>
+          <li>A quoted value in the settings file loses both quotes, `True` and `on` are true, a corner that is not a number keeps the current corner, and `auto` is the whole word.</li>
+          <li>`vocem --watch` follows a daemon that stops and one that starts again, and clears the screen only on a terminal.</li>
+          <li>`vocem-why` is installed.</li>
+          <li>The package declares `qt6-svg`, which the window's icons need, and the tagged package build no longer compiles the test suite.</li>
+          <li>The Vulkan layer tells the daemon that a Flatpak sandbox with the master switch off is not drawing, so the daemon serves it a cleared state rather than the channel and every face.</li>
+          <li>The daemon's token exchange ends within a second of a stop, instead of holding the stop for the connect timeout with the segment published.</li>
+          <li>The settings window's first frame no longer waits on `systemctl`: the preload probe is asynchronous, and the Debug page says it is asking until the answer arrives.</li>
+          <li>The settings window announces a state change only when one happened, asks the segment and the display tree once per sweep, and finds an application's icon through an index.</li>
+          <li>Two launches of the settings window inside its own startup are one window: a lock file decides it before the socket does.</li>
+          <li>Quit hides the window at once and ends the process when the daemon has stopped.</li>
+          <li>The autostart entry quotes the window's path, so a space or a `%` in it does not break the entry.</li>
+          <li>The settings window reads a desktop entry's `Exec` the way the overlay does, any word of it and not the first, so a game behind a wrapper gets its own icon.</li>
+          <li>`VOCEM_LOG_FILE` is honoured by the Vulkan layer as well as the OpenGL overlay.</li>
+        </ul>
+        <p>Changed</p>
+        <ul>
+          <li>The daemon's source is split into its model, its protocol and its loops.</li>
+          <li>The code the two overlay paths, the daemon, the window and the tests share is built once per width as a static library, and the bookkeeping the two paths kept alike is one object.</li>
+          <li>The test suite is written in four CMake functions with one skip spelling, and the tests that run against the 32-bit tree look for it when they run.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.7" date="2026-09-02">
       <description>
         <p>Added</p>
         <ul>
-          <li>The voice panel can draw its background behind the names alone, as a rounded box under each one.</li>
-          <li>A fifth preset, Pills, draws it that way, and a new installation opens on it.</li>
+          <li>The voice panel can draw its background behind the names alone, as a rounded box under each one, set by the new Box control on the Appearance page.</li>
+          <li>A fifth preset, Pills, draws it that way, on the same surface and at the same opacity as Dark.</li>
+        </ul>
+        <p>Changed</p>
+        <ul>
+          <li>A new installation opens on that preset instead of on Transparent.</li>
+          <li>A settings file from an earlier release keeps its colour and its opacity, and draws them in the new shape.</li>
         </ul>
       </description>
     </release>

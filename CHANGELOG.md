@@ -1,4 +1,48 @@
-## [0.1.7] - 2-09-2026
+## [0.1.8] - 2026-09-07
+
+### Fixed
+
+- The Vulkan layer uploads its font atlas after the present is handed down, not inside it: the first drawn frame carried a queue wait on the present path.
+- The Vulkan layer draws into a swapchain recreated in another format through a pipeline built for that swapchain, not the first swapchain's.
+- A helper Vulkan device created and destroyed beside the presenting one no longer tears the overlay down and rebuilds it on the next frame.
+- The Vulkan layer's fences are created unsignalled, and a present on a queue family without graphics, or not the command pool's, passes through untouched.
+- The OpenGL overlay builds its font atlas texture once per backend. It built it twice on the first frame and orphaned the first copy, up to 64 MB, for the life of the game's context.
+- The OpenGL overlay releases its backend only when the context it lives in is destroyed, not on any context's death.
+- The OpenGL overlay restores the game's draw framebuffer binding alone and leaves its read framebuffer binding untouched.
+- The daemon unlinks its segment, the message's words and every Flatpak mirror the moment it is told to stop, and aborts a download in flight rather than waiting for it.
+- The daemon serves at most 32 Flatpak sandboxes and only directories named like a Flatpak application id. Two thousand asking directories used to exhaust its descriptors.
+- The daemon's token file is read bounded and validated, and written through a temporary. A link, a FIFO or a byte that is not UTF-8 at that path could stall the daemon or end it on its first message.
+- A newline or another control character in a nickname, a channel name or a message's title is removed before the text reaches the panel, the log or the journal.
+- A peer that stops reading what the daemon sends is noticed and reconnected, and a WebSocket frame with a reserved bit set, or a binary message's fragments, no longer reach the text stream.
+- A desktop entry is read only if it is a regular file of a plausible size. A FIFO or a link to /dev/zero named `.desktop` in a data directory could hold a game's first frame for ever.
+- A journal is never created over a file already at its name, a sandbox never prunes journals whose processes it cannot see, and a crashed process's counters go with its journal.
+- A record written from the environment is one line per field, so a launcher's value with a newline in it cannot add a row to the Applications page.
+- Desktop entries three directories down, where wine installs a prefix's programs, are found.
+- A display that is connected but switched off no longer sizes the overlay.
+- The settings window writes its three instant switches on top of the file as it stands, picks up a file edited while it is open, and says so when the file cannot be written.
+- The settings window's numeric setters are held to the same bounds the file is read with, from one table. Three of them had no bound.
+- The row switch on the Applications page removes a rule written against the executable's name as well as one against the process name.
+- A quoted value in the settings file loses both quotes, `True` and `on` are true, a corner that is not a number keeps the current corner, and `auto` is the whole word.
+- `vocem --watch` follows a daemon that stops and one that starts again, and clears the screen only on a terminal.
+- `vocem-why` is installed.
+- The package declares `qt6-svg`, which the window's icons need, and the tagged package build no longer compiles the test suite.
+- The Vulkan layer tells the daemon that a Flatpak sandbox with the master switch off is not drawing, so the daemon serves it a cleared state rather than the channel and every face.
+- The daemon's token exchange ends within a second of a stop, instead of holding the stop for the connect timeout with the segment published.
+- The settings window's first frame no longer waits on `systemctl`: the preload probe is asynchronous, and the Debug page says it is asking until the answer arrives.
+- The settings window announces a state change only when one happened, asks the segment and the display tree once per sweep, and finds an application's icon through an index.
+- Two launches of the settings window inside its own startup are one window: a lock file decides it before the socket does.
+- Quit hides the window at once and ends the process when the daemon has stopped.
+- The autostart entry quotes the window's path, so a space or a `%` in it does not break the entry.
+- The settings window reads a desktop entry's `Exec` the way the overlay does, any word of it and not the first, so a game behind a wrapper gets its own icon.
+- `VOCEM_LOG_FILE` is honoured by the Vulkan layer as well as the OpenGL overlay.
+
+### Changed
+
+- The daemon's source is split into its model, its protocol and its loops.
+- The code the two overlay paths, the daemon, the window and the tests share is built once per width as a static library, and the bookkeeping the two paths kept alike is one object.
+- The test suite is written in four CMake functions with one skip spelling, and the tests that run against the 32-bit tree look for it when they run.
+
+## [0.1.7] - 2026-09-02
 
 ### Added
 
@@ -10,7 +54,7 @@
 - A new installation opens on that preset instead of on Transparent.
 - A settings file from an earlier release keeps its colour and its opacity, and draws them in the new shape.
 
-## [0.1.6] - 18-08-2026
+## [0.1.6] - 2026-08-18
 
 ### Fixed
 
@@ -26,7 +70,7 @@
 - The daemon tells Discord which release it is. The one string it shows a server it does not control said 0.1 whatever the package said.
 - `vocem --help` prints what the tool accepts and succeeds; an unknown argument prints the same on the error output and fails. It used to print one snapshot and succeed either way.
 
-## [0.1.5] - 9-08-2026
+## [0.1.5] - 2026-08-09
 
 ### Fixed
 
@@ -39,7 +83,7 @@
 - Emoji stay coloured in a channel full of decorated or CJK names. The table of characters that have a colour glyph counted every unusual character, not only the emoji.
 - `vocem-why.sh` reports the daemon's state on one line when the daemon is stopped.
 
-## [0.1.4] - 6-08-2026
+## [0.1.4] - 2026-08-06
 
 ### Added
 
@@ -61,7 +105,7 @@
 - The daemon goes on doing its own work while a program on Discord's port floods it, and waits before trying again when one takes the connection and drops it.
 - The package is built with the compiler flags the machine building it asks for, and the 32-bit libraries carry the same hardening as the 64-bit ones.
 
-## [0.1.3] - 5-08-2026
+## [0.1.3] - 2026-08-05
 
 ### Added
 
@@ -78,14 +122,14 @@
 - The list of past sessions scrolls.
 - Several settings say in one line what took three.
 
-## [0.1.2] - 3-08-2026
+## [0.1.2] - 2026-08-03
 
 ### Fixed
 
 - The text of a message appears in a game that is itself a Flatpak.
 - The daemon and the overlay log when a message's text goes missing, never the text itself.
 
-## [0.1.1] - 3-08-2026
+## [0.1.1] - 2026-08-03
 
 Games that are themselves Flatpaks.
 
@@ -99,7 +143,7 @@ Games that are themselves Flatpaks.
 
 - A game rendering below its display's mode draws the overlay proportionally larger, since the overlay is sized by the display. Telling the game to render at native resolution is the remedy.
 
-## [0.1.0] - 3-08-2026
+## [0.1.0] - 2026-08-03
 
 First release.
 

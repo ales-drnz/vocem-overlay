@@ -20,7 +20,7 @@ pkgname=vocem-overlay
 # next one is being written, and moves when the owner tags. PKGBUILD.local, which
 # builds the working tree, carries the release being written instead.
 # tests/version_agrees.cmake holds each of the two to its own rule.
-pkgver=0.1.7
+pkgver=0.1.8
 pkgrel=1
 pkgdesc="Discord voice overlay drawn inside the game, through a Vulkan layer and an OpenGL hook"
 arch=('x86_64')
@@ -38,6 +38,12 @@ depends=(
     'vulkan-icd-loader'
     'qt6-base'
     'qt6-declarative'
+    # The window's own icons are SVG, loaded through QIcon, which needs Qt's
+    # SVG image-format plugin. On a Plasma machine it arrives as a dependency
+    # of the desktop style; on any other it did not, and the About page drew
+    # an empty square where the icon goes -- the defect tray_icon_choice was
+    # written against, back through the package's dependency list.
+    'qt6-svg'
     'curl'
     'hicolor-icon-theme'
     # The settings window resolves a font family to the files the overlay opens:
@@ -114,11 +120,16 @@ build() {
     # asserts stay compiled out no matter what build type is in use. It also
     # answers the caveat the same guidelines attach to None -- the $srcdir
     # references they warn about are "caused by the missing NDEBUG definition".
+    # No tests in a package build (PKGBUILD.local has said so since it
+    # existed; this file did not, and built fifty-odd test executables plus
+    # their -m32 twins and a probe into ~/.steam for every stranger -- entry
+    # 76's drift, found by diffing the two files).
     cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=None \
         -DCMAKE_CXX_FLAGS="$CXXFLAGS -DNDEBUG" \
         -DCMAKE_INSTALL_PREFIX=/usr \
-        -DVOCEM_ENABLE_BY_DEFAULT=ON
+        -DVOCEM_ENABLE_BY_DEFAULT=ON \
+        -DVOCEM_BUILD_TESTS=OFF
     cmake --build build
 
     # 32-bit: injected libraries only. The daemon never enters a game process, so
