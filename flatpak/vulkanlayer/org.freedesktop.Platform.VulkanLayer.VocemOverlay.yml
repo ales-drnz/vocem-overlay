@@ -79,6 +79,16 @@ modules:
     sources: &sources
       - type: dir
         path: ../..
+        # The copy takes the whole checkout, and a special file anywhere in it
+        # fails the build (it cannot copy a special file): a test's leftover socket
+        # under build/tests did, at 0.1.8. The build trees, the builder's own
+        # state and the exported repository are not sources either way.
+        skip:
+          - build
+          - build32
+          - .flatpak-builder
+          - vocem-flatpak-build
+          - vocem-flatpak-repo
 
   - name: vocem-overlay-32bit
     buildsystem: cmake-ninja

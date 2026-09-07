@@ -99,6 +99,11 @@ execute_process(
         "QT_QPA_PLATFORM=set:offscreen"
         "VOCEM_CONFIG_NO_DAEMON=set:1")
 message("${report}")
+# The windows are gone (race.sh kills them) and the socket's presence is in the
+# report, so the socket itself is not needed any more -- and it must not stay:
+# the Flatpak manifest copies the checkout as a source, and a socket under
+# build/tests failed 0.1.8's first export: the copy stops at a special file.
+file(REMOVE_RECURSE "${scratch}/run")
 if(NOT status EQUAL 0)
     message(STATUS "skip the race could not be run here: ${status} ${errors}")
     return()

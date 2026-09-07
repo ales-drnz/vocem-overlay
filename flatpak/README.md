@@ -44,6 +44,14 @@ builder's sandbox has a `/tmp` of its own, and flatpak-builder refuses when its
 state directory and its target are on different filesystems. `.gitignore`
 carries all three.
 
+The `type: dir` source is the checkout itself, and a special file anywhere
+under it fails the build, saying it cannot copy a special file, before the
+first module runs. 0.1.8's first export failed on a socket the single-instance
+test had left under `build/tests`: the test now removes it, and the manifest's
+`skip` list leaves the build trees, `.flatpak-builder` and the repository out
+of the copy. `find . -path ./.git -prune -o -type s -print` before building is
+the check.
+
 `--subject` is not decoration. The branch is `25.08`, which says which runtime
 the extension fits and nothing about what is in it, so without a subject
 `flatpak info` reads "Export org.freedesktop.Platform.VulkanLayer.VocemOverlay"
@@ -59,6 +67,15 @@ ostree --repo=vocem-flatpak-repo log runtime/org.freedesktop.Platform.VulkanLaye
 ```
 
 prints the commit with this release's subject on it.
+
+Stop it then, and look in `~/.gnupg/public-keys.d/` before the next step: the
+sandboxed gpg that signed the commit leaves `pubring.db.lock` behind, naming a
+pid of the sandbox's own namespace. On the host that pid is somebody else (it
+was `kauditd` at 0.1.8), so the host's gpg believes the lock is held and waits
+on it forever, and `flatpak build-update-repo --gpg-sign=` reports "No gpg key
+found" instead of waiting. With the builder gone the lock is stale: remove it
+(and its `.#lk…` twin) and `gpg --list-secret-keys FA67BB03AECF6941` answers
+at once.
 
 The i386 half is cross-compiled by the second module. It cannot be built on the
 host instead: the layer must match the runtime's ABI, and a library built
