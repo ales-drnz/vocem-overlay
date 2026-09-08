@@ -38,7 +38,101 @@ from typing import Any, Iterator
 try:
     import websocket  # provided by python-websocket-client
 except ImportError:
-    sys.exit("error: python-websocket-client is not installed")
+    # Not installed here (it was, on 2026-08-10; it is not on 2026-09-08), and
+    # the moment a probe is wanted is a moment somebody is streaming, not a
+    # moment to install packages. The handful of the protocol this script uses
+    # -- one handshake, masked text frames out, text/ping/close frames in --
+    # fits in the standard library below, under the same three names.
+    import base64
+    import os as _os
+    import socket
+    import struct
+    from urllib.parse import urlparse
+
+    class _Closed(Exception):
+        pass
+
+    class _Socket:
+        def __init__(self, url: str, origin: str, timeout: float) -> None:
+            parts = urlparse(url)
+            self.sock = socket.create_connection((parts.hostname, parts.port or 80), timeout)
+            key = base64.b64encode(_os.urandom(16)).decode()
+            request = (
+                f"GET {parts.path or '/'}{'?' + parts.query if parts.query else ''} HTTP/1.1\r\n"
+                f"Host: {parts.hostname}:{parts.port or 80}\r\n"
+                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+                f"Origin: {origin}\r\n\r\n"
+            )
+            self.sock.sendall(request.encode())
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise _Closed("handshake: connection closed")
+                head += chunk
+            status = head.split(b"\r\n", 1)[0]
+            if b" 101 " not in status:
+                raise _Closed(f"handshake refused: {status.decode(errors='replace')}")
+            self.buffer = head.split(b"\r\n\r\n", 1)[1]
+
+        def settimeout(self, seconds: float) -> None:
+            self.sock.settimeout(seconds)
+
+        def _exactly(self, n: int) -> bytes:
+            while len(self.buffer) < n:
+                chunk = self.sock.recv(65536)
+                if not chunk:
+                    raise _Closed("connection closed")
+                self.buffer += chunk
+            out, self.buffer = self.buffer[:n], self.buffer[n:]
+            return out
+
+        def _frame(self, opcode: int, payload: bytes) -> None:
+            mask = _os.urandom(4)
+            header = bytes([0x80 | opcode])
+            n = len(payload)
+            if n < 126:
+                header += bytes([0x80 | n])
+            elif n < 65536:
+                header += bytes([0x80 | 126]) + struct.pack("!H", n)
+            else:
+                header += bytes([0x80 | 127]) + struct.pack("!Q", n)
+            masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            self.sock.sendall(header + mask + masked)
+
+        def send(self, text: str) -> None:
+            self._frame(0x1, text.encode())
+
+        def recv(self) -> str:
+            while True:
+                first, second = self._exactly(2)
+                opcode = first & 0x0F
+                length = second & 0x7F
+                if length == 126:
+                    length = struct.unpack("!H", self._exactly(2))[0]
+                elif length == 127:
+                    length = struct.unpack("!Q", self._exactly(8))[0]
+                mask = self._exactly(4) if second & 0x80 else b""
+                payload = self._exactly(length)
+                if mask:
+                    payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+                if opcode == 0x8:
+                    raise _Closed("close frame")
+                if opcode == 0x9:
+                    self._frame(0xA, payload)
+                    continue
+                if opcode in (0x1, 0x0):
+                    return payload.decode(errors="replace")
+                # binary or pong: nothing this probe reads
+
+    class websocket:  # type: ignore[no-redef]  # the three names the script uses
+        WebSocketTimeoutException = socket.timeout
+        WebSocketConnectionClosedException = _Closed
+
+        @staticmethod
+        def create_connection(url: str, origin: str, timeout: float) -> _Socket:
+            return _Socket(url, origin, timeout)
 
 # Streamkit's public client id, the same one vocemd authorises with, so the token
 # it stored is valid here.
@@ -134,6 +228,13 @@ class Probe:
         self.events_seen[name] = self.events_seen.get(name, 0) + 1
 
         for path, value in walk(message):
+            # The channel snapshot carries the channel's recent text messages,
+            # and a message's embed of a tweet or a Twitch link has a `video`
+            # key of its own: that is content somebody posted, not a
+            # participant's state, and on 2026-09-08 it made this report say
+            # FEASIBLE about a channel whose voice states said nothing.
+            if path.startswith("data.messages"):
+                continue
             leaf = path.rsplit(".", 1)[-1].removesuffix("[]").lower()
             if any(token in leaf for token in INTERESTING):
                 self.hits.setdefault(path, set()).add(json.dumps(value)[:80])
