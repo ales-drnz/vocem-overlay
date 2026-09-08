@@ -88,6 +88,14 @@
        validates cleanly: an out-of-date release list is not something AppStream
        can catch, and nothing else looked. tests/version_agrees.cmake does now. -->
   <releases>
+    <release version="0.1.9" date="2026-09-08">
+      <description>
+        <p>Fixed</p>
+        <ul>
+          <li>Emoji sequences draw as one glyph: the lime, the families, the flags, the keycaps and every other ligature of the font, 2546 glyphs in all. A name with 🍋‍🟩 in it drew a lemon beside a green square.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.8" date="2026-09-07">
       <description>
         <p>Fixed</p>
