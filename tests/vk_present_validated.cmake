@@ -13,9 +13,13 @@
 #
 # The validation manifest is explicit (explicit_layer.d), and the probe builds
 # an implicit chain of its own from the manifests it is handed
-# (VOCEM_VK_EXTRA_MANIFESTS); copied there it loads as an implicit layer for
-# this run and this run only. Its messages go to stdout, which is where the
-# probe's own lines go, so the whole output is read.
+# (VOCEM_VK_EXTRA_MANIFESTS); copied there, and given the disable_environment
+# an implicit manifest must carry, it loads as an implicit layer for this run
+# and this run only. Copied bare it did not: the loader skips an implicit layer
+# without that key, and this test failed on "never mapped" the first time the
+# layer was installed on this machine (2026-09-10; entry 143). Its messages go
+# to stdout, which is where the probe's own lines go, so the whole output is
+# read.
 #
 # Expects PROBE, MANIFEST, LIBRARY; resolves the validation manifest when it
 # runs (a package installed after configure is found, one removed is a skip).

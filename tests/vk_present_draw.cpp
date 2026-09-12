@@ -121,6 +121,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <string>
+
 #include <X11/Xlib.h>
 
 #define VK_USE_PLATFORM_XLIB_KHR
@@ -170,6 +172,47 @@ bool copy_file(const char* from, const char* to) {
     fclose(in);
     fclose(out);
     return true;
+}
+
+// A manifest handed in through VOCEM_VK_EXTRA_MANIFESTS, copied into this
+// chain's implicit directory. The loader refuses an implicit layer whose
+// manifest has no disable_environment -- measured with VK_LOADER_DEBUG=layer on
+// the Khronos validation layer, loader 1.4.357: "doesn't contain required layer
+// object disable_environment in the manifest JSON file, skipping this layer" --
+// and an EXPLICIT manifest never carries one, so the copy is given one, inside
+// its "layer" object. Without it vk_present_validated measured a chain the
+// validation layer was never in (entry 143). gamescope's WSI manifest is
+// implicit already and carries its own, so it goes through untouched.
+// `given_switch` says whether the copy differs from the file.
+bool copy_as_implicit(const char* from, const char* to, bool& given_switch) {
+    given_switch = false;
+    FILE* in = fopen(from, "rb");
+    if (!in) {
+        return false;
+    }
+    std::string text;
+    char buffer[4096];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), in)) > 0) {
+        text.append(buffer, n);
+    }
+    fclose(in);
+    if (text.find("\"disable_environment\"") == std::string::npos) {
+        const size_t key = text.find("\"layer\"");
+        const size_t brace = key == std::string::npos ? std::string::npos : text.find('{', key);
+        if (brace != std::string::npos) {
+            text.insert(brace + 1,
+                        "\n        \"disable_environment\": { \"VOCEM_VK_NO_EXTRA\": \"1\" },");
+            given_switch = true;
+        }
+    }
+    FILE* out = fopen(to, "wb");
+    if (!out) {
+        return false;
+    }
+    const bool written = fwrite(text.data(), 1, text.size(), out) == text.size();
+    fclose(out);
+    return written;
 }
 
 // Every Vulkan layer library mapped into this process, printed, with the vocem
@@ -731,8 +774,11 @@ int main() {
             }
             if (*cursor) {
                 snprintf(destination, sizeof(destination), "%s/layers/extra%d.json", root, added);
-                if (copy_file(cursor, destination)) {
-                    printf("     also in the chain: %s\n", cursor);
+                bool given_switch = false;
+                if (copy_as_implicit(cursor, destination, given_switch)) {
+                    printf("     also in the chain: %s%s\n", cursor,
+                           given_switch ? " (given a disable_environment to load as implicit)"
+                                        : "");
                     ++added;
                 } else {
                     printf("FAIL could not copy the extra manifest %s\n", cursor);
@@ -951,6 +997,10 @@ int main() {
     if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
         skip("this surface's images cannot be a transfer source, so no frame can be read back");
     }
+    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        skip("this surface's images cannot be a transfer destination, so no frame can be "
+             "cleared to a known colour");
+    }
 
     uint32_t format_count = 0;
     vk.vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &format_count, nullptr);
@@ -1056,9 +1106,15 @@ int main() {
     swap_info.imageExtent = extent;
     swap_info.imageArrayLayers = 1;
     // COLOR_ATTACHMENT is what the layer needs and it adds the bit itself
-    // (vocem_layer.cpp:537); asking for it here keeps the probe honest about
-    // what a game requests. TRANSFER_SRC is this test's own, for the read-back.
-    swap_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    // (vocem_layer.cpp, where the swapchain is created); asking for it here
+    // keeps the probe honest about what a game requests. TRANSFER_SRC and
+    // TRANSFER_DST are this test's own: the read-back, and the clear to a
+    // known colour with vkCmdClearColorImage. The clear went without its bit
+    // for as long as nothing looked -- the validation layer, once it actually
+    // loaded, reported VUID-vkCmdClearColorImage-image-00002 on every frame
+    // (entry 143), the probe's fault and not the overlay's.
+    swap_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     swap_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     swap_info.preTransform = caps.currentTransform;
     swap_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
