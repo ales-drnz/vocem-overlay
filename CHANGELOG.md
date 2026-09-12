@@ -1,3 +1,9 @@
+## [0.1.10] - 2026-09-12
+
+### Added
+
+- The avatars of the people not talking are quieter, as their names are, set by the new Quiet avatars slider on the Appearance page: 55% by default, 100% keeps every avatar lit.
+
 ## [0.1.9] - 2026-09-08
 
 ### Fixed
