@@ -17,7 +17,8 @@ ScrollablePage {
 
     settings: ["panelLayout", "panelBox", "panelColour", "opacity", "speakingColour",
                "textIdleColour",
-               "textSpeakingColour", "fontFamily", "fontSize", "avatarSize", "textShadow",
+               "textSpeakingColour", "fontFamily", "fontSize", "avatarSize",
+               "avatarIdleOpacity", "textShadow",
                "showChannelName", "notificationColour", "notificationOpacity",
                "notificationTextColour"]
     title: qsTr("Appearance")
@@ -162,6 +163,8 @@ ScrollablePage {
                                 readonly property real boxPaddingY: root.config.boxPaddingY
                                 readonly property real avatarGap: root.config.avatarGap
                                 readonly property real avatarSize: root.config.avatarSize
+                                readonly property real avatarIdleOpacity:
+                                    root.config.avatarIdleOpacity
                                 readonly property real opacity: chip.modelData.opacity
                                 readonly property bool showChannelName:
                                     root.config.showChannelName
@@ -669,6 +672,24 @@ ScrollablePage {
                 value: root.config.avatarSize
                 defaultValue: root.config.defaultAvatarSize
                 onMoved: function(chosen) { root.config.avatarSize = chosen; }
+            }
+        }
+
+        // The picture's half of what the idle grey does to a name: whoever is
+        // not talking shows quieter. From 10%, the bound config.h gives it --
+        // at zero the picture would not be drawn at all.
+        SettingRow {
+            label: qsTr("Quiet avatars")
+            description: qsTr("Opacity of the avatar of anyone not talking, whose name is greyed as well.")
+
+            SliderRow {
+                accessibleName: qsTr("Avatar opacity when not talking")
+                from: 10; to: 100; stepSize: 5
+                decimals: 0
+                suffix: "%"
+                value: Math.round(root.config.avatarIdleOpacity * 100)
+                defaultValue: Math.round(root.config.defaultAvatarIdleOpacity * 100)
+                onMoved: function(chosen) { root.config.avatarIdleOpacity = chosen / 100; }
             }
         }
 

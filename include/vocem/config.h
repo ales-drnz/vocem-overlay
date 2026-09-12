@@ -195,6 +195,18 @@ struct Config {
     // glance -- which is the only thing an avatar is there for.
     float avatar_size = 1.5f;     // multiplier on the avatar diameter
 
+    // How strongly the picture of somebody who is not talking shows. Their name
+    // has always been greyed (theme.h's text_idle) while their face stayed at
+    // full strength, which is not what Discord's own overlay does: it quiets
+    // the picture with the name. 55% because that is the step the name takes
+    // on the default palette -- the idle grey #b5bac1 carries 0.488 of the
+    // light the speaking #f2f3f5 carries (0.896), 54%, and over a dark scene a
+    // picture at alpha a carries a of its own. 1.0 is every picture lit, which
+    // is what every version up to 0.1.9 drew. Not below 10%: a picture at zero
+    // is not drawn at all (ImGui culls alpha 0), a row whose face has gone
+    // reads as a broken avatar, and hiding whoever is quiet is only_speaking.
+    float avatar_idle_opacity = 0.55f;
+
     // Whether the text carries its outline -- permanent while on, not a remedy
     // that fades in when the background thins (see kTextOutlineStrength in
     // theme.h). Off by default on the owner's judgement: the default overlay is
@@ -404,6 +416,7 @@ struct Config {
             {"scale", &Config::scale, 0.5, 3.0, 2},
             {"opacity", &Config::opacity, 0.0, 1.0, 2},
             {"avatar_size", &Config::avatar_size, 0.5, 2.0, 2},
+            {"avatar_idle_opacity", &Config::avatar_idle_opacity, 0.1, 1.0, 2},
             {"notification_seconds", &Config::notification_seconds, 1.0, 30.0, 1},
             {"notification_opacity", &Config::notification_opacity, 0.0, 1.0, 2},
             {"notification_scale", &Config::notification_scale, 0.5, 3.0, 2},
@@ -593,6 +606,7 @@ struct Config {
                      colour_or_auto_text(text_speaking_colour).c_str());
         std::fprintf(file, "opacity = %s\n", decimal(opacity, 2).c_str());
         std::fprintf(file, "avatar_size = %s\n", decimal(avatar_size, 2).c_str());
+        std::fprintf(file, "avatar_idle_opacity = %s\n", decimal(avatar_idle_opacity, 2).c_str());
         std::fprintf(file, "text_shadow = %s\n", text_shadow ? "true" : "false");
         std::fprintf(file, "show_channel_name = %s\n", show_channel_name ? "true" : "false");
         std::fprintf(file, "\n[notifications]\n");

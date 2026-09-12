@@ -145,6 +145,9 @@ private:
     Q_PROPERTY(QColor defaultNotificationColour READ defaultNotificationColour CONSTANT)
     Q_PROPERTY(QColor defaultSpeakingColour READ defaultSpeakingColour CONSTANT)
     Q_PROPERTY(qreal avatarSize READ avatarSize WRITE setAvatarSize NOTIFY configChanged)
+    Q_PROPERTY(qreal avatarIdleOpacity READ avatarIdleOpacity WRITE setAvatarIdleOpacity
+                   NOTIFY configChanged)
+    Q_PROPERTY(qreal defaultAvatarIdleOpacity READ defaultAvatarIdleOpacity CONSTANT)
     Q_PROPERTY(qreal fontSize READ fontSize WRITE setFontSize NOTIFY configChanged)
     Q_PROPERTY(qreal defaultFontSize READ defaultFontSize CONSTANT)
     // The typeface. Empty is the carried Inter, which is what the overlay drew
@@ -427,6 +430,8 @@ public:
     }
     QColor defaultSpeakingColour() const { return toColour(vocem::Config{}.speaking_colour); }
     qreal avatarSize() const { return config_.avatar_size; }
+    qreal avatarIdleOpacity() const { return config_.avatar_idle_opacity; }
+    qreal defaultAvatarIdleOpacity() const { return vocem::Config{}.avatar_idle_opacity; }
     qreal fontSize() const { return config_.font_size; }
     qreal defaultFontSize() const { return vocem::Config{}.font_size; }
     QString fontFamily() const { return QString::fromStdString(config_.font_family); }
@@ -514,6 +519,7 @@ public:
     void setAvatarGap(qreal value);
     void setRowSpacing(qreal value);
     void setAvatarSize(qreal value);
+    void setAvatarIdleOpacity(qreal value);
     void setFontSize(qreal value);
     // Writes the family *and* the two files it resolves to: the game cannot ask
     // fontconfig anything, so the window has to hand it paths.

@@ -26,6 +26,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -156,6 +157,34 @@ int max_alpha(const ImDrawList* list, ImU32 rgb) {
         }
     }
     return alpha;
+}
+
+// The strongest alpha of each shape drawn in this colour, in drawing order:
+// colour_clusters' split, max_alpha's measurement. One participant's picture and
+// the next one's are the same disc, and what tells them apart is how strongly
+// each was drawn.
+std::vector<int> cluster_alphas(const ImDrawList* list, ImU32 rgb) {
+    std::vector<int> alphas;
+    if (!list) {
+        return alphas;
+    }
+    const ImU32 mask = IM_COL32(255, 255, 255, 0);
+    int previous = -10;
+    for (int i = 0; i < list->VtxBuffer.Size; ++i) {
+        const ImDrawVert& vertex = list->VtxBuffer[i];
+        if ((vertex.col & mask) != (rgb & mask)) {
+            continue;
+        }
+        if (i != previous + 1 || alphas.empty()) {
+            alphas.push_back(0);
+        }
+        const int a = (vertex.col >> IM_COL32_A_SHIFT) & 0xff;
+        if (a > alphas.back()) {
+            alphas.back() = a;
+        }
+        previous = i;
+    }
+    return alphas;
 }
 
 ImU32 to_rgb(uint32_t colour) {
@@ -296,22 +325,43 @@ struct Measurement {
 // is, whatever state the persistent motion slots were left in by the previous
 // configuration measured. The toast's timestamp is restamped each frame so the
 // box is measured mid-life -- past its entrance, before its fade.
+//
+// One clock for every caller of build_panel in this file, at namespace scope
+// rather than inside this function: the drawing keeps its own last timestamp and
+// the moment each participant fell quiet, so a check stepping a second clock of
+// its own would hand the next run_frames a time in the past -- a step of zero, a
+// ring hold that never ends, and a settled geometry that is not settled.
+double g_clock = 100.0;
+
 void run_frames(const Snapshot& snapshot, const Config& config, uint32_t width, uint32_t height,
                 bool with_toast) {
-    static double clock = 100.0;
     Snapshot animated = snapshot;
     for (int frame = 0; frame < 6; ++frame) {
-        clock += 10.0;
-        animated.notification.received = clock - 1.0;
+        g_clock += 10.0;
+        animated.notification.received = g_clock - 1.0;
         ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
         ImGui::GetIO().DeltaTime = 1.0f / 60.0f;
         ImGui::NewFrame();
-        build_panel(animated, config, width, height, nullptr, clock);
+        build_panel(animated, config, width, height, nullptr, g_clock);
         if (with_toast) {
-            build_notification(animated, config, width, height, nullptr, clock);
+            build_notification(animated, config, width, height, nullptr, g_clock);
         }
         ImGui::Render();
     }
+}
+
+// One frame of the panel alone, `step` seconds after the last one on the shared
+// clock, for the checks that watch an animation move rather than the geometry it
+// leaves behind. The panel's draw list is what comes back.
+const ImDrawList* panel_frame(const Snapshot& snapshot, const Config& config, double step) {
+    g_clock += step;
+    ImGui::GetIO().DisplaySize = ImVec2(1920.0f, 1080.0f);
+    ImGui::GetIO().DeltaTime = 1.0f / 60.0f;
+    ImGui::NewFrame();
+    build_panel(snapshot, config, 1920, 1080, nullptr, g_clock);
+    ImGui::Render();
+    ImGuiWindow* panel = ImGui::FindWindowByName("##vocem");
+    return panel ? panel->DrawList : nullptr;
 }
 
 float window_height(const char* name) {
@@ -1114,11 +1164,108 @@ void toast_corners() {
     }
 }
 
+// The picture of somebody who is not talking is quieter, as their name is.
+// Every version up to 0.1.9 greyed the name and left the face at full strength,
+// which is not what Discord's overlay does; the owner saw it beside Discord's.
+//
+// Measured on the placeholder disc, which is the picture whenever there is no
+// downloaded image -- here, always -- and relatively: the idle disc against the
+// speaker's in the same frame, so nothing restates what alpha the theme gives
+// the disc. The fixture's first participant speaks, the second is quiet, the
+// third muted. Against the drawing before the setting existed the two discs
+// come out equal and the first check fails.
+void idle_picture_quieter() {
+    Config config;
+    config.notifications_enabled = false;
+    config.panel_colour = kPanelSentinel;
+    config.speaking_colour = kSpeakingSentinel;
+    const float pixels = font_pixel_size(1080, config.scale, config.font_size);
+    ensure_fonts(pixels, config.font_size, config.font_path.c_str(),
+                 config.font_path_strong.c_str());
+    configure_style(config);
+    const Theme theme = theme_for(config);
+
+    struct Strengths {
+        std::vector<int> discs;
+        int scrim = -1;
+        int badge = -1;
+    };
+    auto settle = [&](const Config& c) {
+        run_frames(make_snapshot(3, "Voice channel"), c, 1920, 1080, false);
+        ImGuiWindow* panel = ImGui::FindWindowByName("##vocem");
+        const ImDrawList* list = panel ? panel->DrawList : nullptr;
+        Strengths out;
+        out.discs = cluster_alphas(list, ink(theme.avatar_placeholder));
+        out.scrim = max_alpha(list, ink(theme.avatar_scrim));
+        out.badge = max_alpha(list, ink(theme.badge_fill));
+        return out;
+    };
+
+    const Strengths quiet = settle(config);
+    Config lit = config;
+    lit.avatar_idle_opacity = 1.0f;
+    const Strengths full = settle(lit);
+
+    check(quiet.discs.size() >= 3 && full.discs.size() >= 3,
+          "quiet pictures: three placeholder discs are drawn");
+    if (quiet.discs.size() < 3 || full.discs.size() < 3 || quiet.discs[0] <= 0 ||
+        full.scrim <= 0) {
+        return;
+    }
+    const float idle_ratio =
+        static_cast<float>(quiet.discs[1]) / static_cast<float>(quiet.discs[0]);
+    const float scrim_ratio = static_cast<float>(quiet.scrim) / static_cast<float>(full.scrim);
+    std::printf("  quiet pictures: speaker %d, quiet %d (%.3f of it), scrim %d of %d, "
+                "badge %d of %d\n",
+                quiet.discs[0], quiet.discs[1], idle_ratio, quiet.scrim, full.scrim, quiet.badge,
+                full.badge);
+    // One part in 255 on either alpha is the tolerance of the byte they are
+    // stored in; 0.01 is well over it at these strengths and well under any
+    // step the slider can take.
+    check(std::fabs(idle_ratio - config.avatar_idle_opacity) < 0.01f,
+          "a quiet participant's picture is drawn at the idle opacity of the speaker's");
+    check(std::abs(full.discs[1] - full.discs[0]) <= 1,
+          "at 100% the quiet picture is as strong as the speaker's, as up to 0.1.9");
+    check(quiet.discs[0] == full.discs[0], "the speaker's picture is not touched by the setting");
+    check(std::fabs(scrim_ratio - config.avatar_idle_opacity) < 0.02f,
+          "a muted participant's scrim is quieted with the picture it lies on");
+    check(quiet.badge == full.badge, "the badge is not: a quiet state is still true");
+
+    // Timing: the picture follows the ring, not the flag. Discord's speaking
+    // flag drops between two words; a picture that dimmed at each one would
+    // flicker, so it holds with the ring and falls with it.
+    Snapshot one = make_snapshot(1, "Voice channel");
+    run_frames(one, config, 1920, 1080, false);  // speaking, settled
+    one.users[0].flags = 0;
+    const ImDrawList* list = panel_frame(one, config, 0.05);  // the flag drops
+    list = panel_frame(one, config, 0.05);                    // inside the hold
+    const std::vector<int> held = cluster_alphas(list, ink(theme.avatar_placeholder));
+    list = panel_frame(one, config, 0.10);  // past the hold, into the fall
+    const std::vector<int> falling = cluster_alphas(list, ink(theme.avatar_placeholder));
+    const int ring = max_alpha(list, to_rgb(kSpeakingSentinel));
+    run_frames(one, config, 1920, 1080, false);
+    ImGuiWindow* panel = ImGui::FindWindowByName("##vocem");
+    const std::vector<int> rested =
+        cluster_alphas(panel ? panel->DrawList : nullptr, ink(theme.avatar_placeholder));
+    if (held.empty() || falling.empty() || rested.empty()) {
+        check(false, "quiet pictures: the disc is drawn in every frame of the fall");
+        return;
+    }
+    std::printf("  quiet pictures over time: held %d, falling %d (ring %d), rested %d\n",
+                held[0], falling[0], ring, rested[0]);
+    check(held[0] == quiet.discs[0], "a pause inside the ring's hold does not dim the picture");
+    check(ring > 1 && ring < 255, "control: the ring is mid-fall at that moment");
+    check(falling[0] < held[0] && falling[0] > rested[0],
+          "the picture falls with the ring, between lit and quiet");
+    check(rested[0] == quiet.discs[1], "and comes to rest at the quiet strength");
+}
+
 void self_check() {
     distinct_tokens();
     placeholder_inside_disc();
     toast_fade_carries_raw_colours();
     toast_corners();
+    idle_picture_quieter();
 
     const uint32_t modes[][2] = {{3840, 2160}, {1920, 1080}, {1280, 720}, {640, 480}};
 
@@ -1186,6 +1333,8 @@ void self_check() {
         {"opacity 1", [](Config& c) { c.opacity = 1.0f; }},
         {"avatar 0.5", [](Config& c) { c.avatar_size = 0.5f; }},
         {"avatar 2.0", [](Config& c) { c.avatar_size = 2.0f; }},
+        // An alpha, never a vertex: the quietest pictures sit where lit ones do.
+        {"quiet pictures 0.1", [](Config& c) { c.avatar_idle_opacity = 0.1f; }},
         // Both distances, because each box has one of its own now.
         {"margin 0", [](Config& c) { c.screen_margin = 0.0f; c.notification_margin = 0.0f; }},
         {"margin 120",
@@ -1409,6 +1558,7 @@ bool set_field(Config& config, const std::string& key, const std::string& value)
     if (key == "scale") config.scale = number;
     else if (key == "opacity") config.opacity = number;
     else if (key == "avatar_size") config.avatar_size = number;
+    else if (key == "avatar_idle_opacity") config.avatar_idle_opacity = number;
     else if (key == "font_size") config.font_size = number;
     else if (key == "screen_margin") config.screen_margin = number;
     else if (key == "notification_margin") config.notification_margin = number;

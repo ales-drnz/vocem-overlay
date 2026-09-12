@@ -223,6 +223,11 @@ if(TARGET vocem-config)
     # unconditionally while the switch had no interface, and the owner read the
     # difference between the promise and the game as text failing to draw.
     vocem_script_test(toast_preview_honest ARGS ${VOCEM_WINDOW_ARG})
+
+    # The preview quiets the picture of whoever is not talking, from the same
+    # setting the overlay reads: an opacity no rectangle can see, so the dump
+    # prints it. Against 0.1.9's window there is no such figure and this fails.
+    vocem_script_test(preview_idle_picture ARGS ${VOCEM_WINDOW_ARG})
 endif()
 
 # One place turns pixels back into a position fraction. The wrong line was written

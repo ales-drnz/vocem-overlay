@@ -1398,6 +1398,10 @@ void ConfigBridge::setAvatarSize(qreal value) {
     setNumber("avatar_size", &vocem::Config::avatar_size, value);
 }
 
+void ConfigBridge::setAvatarIdleOpacity(qreal value) {
+    setNumber("avatar_idle_opacity", &vocem::Config::avatar_idle_opacity, value);
+}
+
 void ConfigBridge::setFontSize(qreal value) {
     setNumber("font_size", &vocem::Config::font_size, value);
 }

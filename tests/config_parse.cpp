@@ -91,10 +91,17 @@ int main() {
     {
         size_t count = 0;
         const vocem::Config::Number* table = vocem::Config::numbers(count);
-        bool agree = count == 15;
+        // Against the bound as the float the setting is: every member is a
+        // float and clamp() answers in one, so avatar_idle_opacity's 0.1 comes
+        // back as 0.100000001 -- the first bound in the table that a float
+        // cannot hold exactly, and the one that showed this compared doubles.
+        bool agree = count == 16;
         for (size_t i = 0; i < count; ++i) {
-            agree = agree && vocem::Config::clamped(table[i].key, -1e9) == table[i].low &&
-                    vocem::Config::clamped(table[i].key, 1e9) == table[i].high;
+            agree = agree &&
+                    vocem::Config::clamped(table[i].key, -1e9) ==
+                        static_cast<double>(static_cast<float>(table[i].low)) &&
+                    vocem::Config::clamped(table[i].key, 1e9) ==
+                        static_cast<double>(static_cast<float>(table[i].high));
         }
         check(agree, "Config::clamped answers every table row with that row's bounds");
         check(vocem::Config::clamped("no_such_key", 42.0) == 42.0,

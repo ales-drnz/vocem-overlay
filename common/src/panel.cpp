@@ -722,6 +722,18 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             motion.row_phase += dt / kRowFadeSeconds;
             motion.row_phase = motion.row_phase > 1.0f ? 1.0f : motion.row_phase;
             const float row_alpha = eased(motion.row_phase);
+            // The picture of somebody who is not talking is quieter, as their
+            // name is (avatar_idle_opacity in config.h). It rides the ring's
+            // phase rather than the flag the name follows: the face and its ring
+            // are one object, so the picture lights as the ring rises, stays lit
+            // through the hold -- Discord's speaking flag drops between two
+            // words, and a face that dimmed at every breath would flicker -- and
+            // falls with it. Everything that IS the picture takes it, the
+            // placeholder, the image and the muted scrim over them; the badge
+            // does not, because it names a state and a quiet one is still true.
+            const float picture_alpha =
+                config.avatar_idle_opacity +
+                (1.0f - config.avatar_idle_opacity) * eased(motion.ring_phase);
 
             // Round avatars come from rounding the image corners to half its size,
             // the same trick the client's CSS uses. The picture crossfades in over
@@ -739,10 +751,11 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                 // picture at all. The placeholder holds the layout so nothing
                 // jumps when an image lands.
                 draw_avatar_placeholder(draw_list, centre, radius, theme.avatar_placeholder,
-                                        theme.avatar_mark, row_alpha);
+                                        theme.avatar_mark, row_alpha * picture_alpha);
             }
             if (avatar) {
-                const uint8_t image_alpha = scaled(255, row_alpha * eased(motion.avatar_phase));
+                const uint8_t image_alpha =
+                    scaled(255, row_alpha * picture_alpha * eased(motion.avatar_phase));
                 draw_list->AddImageRounded(avatar, ImVec2(centre.x - radius, centre.y - radius),
                                            ImVec2(centre.x + radius, centre.y + radius),
                                            ImVec2(0, 0), ImVec2(1, 1),
@@ -787,7 +800,9 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             // against a busy avatar.
             if ((muted || deafened) && config.show_muted_state) {
                 draw_list->AddCircleFilled(centre, radius,
-                                           col_scaled(theme.avatar_scrim, row_alpha), 32);
+                                           col_scaled(theme.avatar_scrim,
+                                                      row_alpha * picture_alpha),
+                                           32);
                 const float offset = radius * theme.badge_offset_factor;
                 draw_state_badge(draw_list, theme, ImVec2(centre.x + offset, centre.y + offset),
                                  radius * theme.badge_radius_factor, deafened, row_alpha);

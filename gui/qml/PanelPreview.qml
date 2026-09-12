@@ -360,8 +360,17 @@ Rectangle {
                             width: root.avatarDiameter
                             height: root.avatarDiameter
 
+                            // Quieter for whoever is not talking, as in game
+                            // (panel.cpp's picture_alpha, at rest): the picture
+                            // and the scrim over it take it, the badge and the
+                            // ring do not. A property of its own so the
+                            // geometry dump can print it.
+                            readonly property real pictureOpacity:
+                                person.modelData.speaking ? 1.0 : root.config.avatarIdleOpacity
+
                             AvatarPlaceholder {
                                 anchors.fill: parent
+                                opacity: parent.pictureOpacity
                                 discColour: root.tokens.avatarPlaceholder
                                 markColour: root.tokens.avatarMark
                             }
@@ -382,6 +391,7 @@ Rectangle {
                                 radius: width / 2
                                 antialiasing: true
                                 color: root.tokens.avatarScrim
+                                opacity: parent.pictureOpacity
                                 visible: root.config.showMutedState &&
                                          (person.modelData.muted || person.modelData.deafened)
                             }

@@ -126,6 +126,10 @@ void dump_item(QQuickItem* item, const QString& path, QHash<QString, int>& seen,
                                  // an opacity and draw them in two different
                                  // places.
                                  "surfaceRgb", "presetOpacity", "presetBox",
+                                 // The strength a preview's picture is drawn at,
+                                 // which the overlay quiets for whoever is not
+                                 // talking: an opacity is invisible to a rectangle.
+                                 "pictureOpacity",
                                  // Whether the keyboard can reach it. A bool converts
                                  // to a number, and "every control is reachable
                                  // without a mouse" is otherwise a claim nobody can

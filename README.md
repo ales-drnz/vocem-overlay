@@ -335,6 +335,9 @@ control says whether the surface goes around the whole panel or behind each name
 The default is **Pills**: a rounded box under each name, and the pictures, the
 ring and the badge straight on the game.
 
+The picture of whoever is not talking is quieter, as their name is greyed;
+**Quiet avatars** sets how much, and at 100% every picture stays lit.
+
 #### 2.3 The configuration file
 
 Settings are written to `~/.config/vocem/config.ini`, and a running game picks them

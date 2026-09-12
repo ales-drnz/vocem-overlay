@@ -53,6 +53,7 @@ vocem::Config sample() {
     config.scale = 1.25f;
     config.opacity = 0.82f;
     config.avatar_size = 1.35f;
+    config.avatar_idle_opacity = 0.37f;
     config.notification_seconds = 7.5f;
     config.panel_colour = 0x1a2b3c;
     config.notification_colour = 0xffcc00;
@@ -121,6 +122,7 @@ void expect_sample(const vocem::Config& config, const char* context) {
     check_close(config.scale, 1.25f, "scale");
     check_close(config.opacity, 0.82f, "opacity");
     check_close(config.avatar_size, 1.35f, "avatar_size");
+    check_close(config.avatar_idle_opacity, 0.37f, "avatar_idle_opacity");
     check_close(config.notification_seconds, 7.5f, "notification_seconds");
     check(config.panel_colour == 0x1a2b3c, "panel_colour");
     check(config.notification_colour == 0xffcc00, "notification_colour");
