@@ -66,7 +66,16 @@ except ImportError:
             )
             self.sock.sendall(request.encode())
             head = b""
+            # Bounded, and on the caller's clock. A peer that accepts and then
+            # trickles has to hit something: the daemon's own client learned
+            # this twice (entries 72 and 77), and this probe had neither a cap
+            # nor a deadline on the handshake.
+            deadline = time.monotonic() + max(timeout, 1.0)
             while b"\r\n\r\n" not in head:
+                if len(head) > 8192:
+                    raise _Closed("handshake: 8 KiB of headers and no blank line")
+                if time.monotonic() > deadline:
+                    raise _Closed("handshake: no reply within the timeout")
                 chunk = self.sock.recv(4096)
                 if not chunk:
                     raise _Closed("handshake: connection closed")
@@ -104,17 +113,41 @@ except ImportError:
         def send(self, text: str) -> None:
             self._frame(0x1, text.encode())
 
+        # A frame is read whole or the stream is given up on.
+        #
+        # This used to consume the two-byte header and then read the payload,
+        # so a socket timeout inside _exactly() propagated out of the MIDDLE of
+        # a frame -- and run() catches timeouts and continues, so the next
+        # recv() read two bytes of payload as a header. From there the stream is
+        # desynchronised for the rest of the session and every garbled message
+        # lands in `except json.JSONDecodeError: continue`, which is silence.
+        # Then report() prints "the local RPC does not expose it; drop the
+        # feature from scope" on an empty list of hits. This is the instrument
+        # phase 0b was settled with, and its own comment already records that it
+        # has produced one wrong verdict.
+        #
+        # So: anything that goes wrong mid-frame closes the connection, which
+        # the caller can see, rather than leaving a stream nobody can trust.
         def recv(self) -> str:
             while True:
-                first, second = self._exactly(2)
-                opcode = first & 0x0F
-                length = second & 0x7F
-                if length == 126:
-                    length = struct.unpack("!H", self._exactly(2))[0]
-                elif length == 127:
-                    length = struct.unpack("!Q", self._exactly(8))[0]
-                mask = self._exactly(4) if second & 0x80 else b""
-                payload = self._exactly(length)
+                try:
+                    first, second = self._exactly(2)
+                    fin = bool(first & 0x80)
+                    opcode = first & 0x0F
+                    length = second & 0x7F
+                    if length == 126:
+                        length = struct.unpack("!H", self._exactly(2))[0]
+                    elif length == 127:
+                        length = struct.unpack("!Q", self._exactly(8))[0]
+                    # Discord does not send frames like this; a peer that does
+                    # is not one this probe should try to follow.
+                    if length > 16 * 1024 * 1024:
+                        raise _Closed(f"frame of {length} bytes: past anything this reads")
+                    mask = self._exactly(4) if second & 0x80 else b""
+                    payload = self._exactly(length)
+                except socket.timeout:
+                    self.sock.close()
+                    raise _Closed("timed out inside a frame: the stream can no longer be read")
                 if mask:
                     payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
                 if opcode == 0x8:
@@ -123,6 +156,11 @@ except ImportError:
                     self._frame(0xA, payload)
                     continue
                 if opcode in (0x1, 0x0):
+                    if not fin:
+                        # Continuations are not reassembled here, and a probe
+                        # that returned half a message as a whole one would
+                        # report about text it never saw.
+                        raise _Closed("fragmented message: this probe does not reassemble")
                     return payload.decode(errors="replace")
                 # binary or pong: nothing this probe reads
 

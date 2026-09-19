@@ -25,14 +25,29 @@ def covered(cp: int, ranges) -> bool:
 
 def main() -> int:
     fonts_cpp = (ROOT / "common/src/fonts.cpp").read_text()
+    # All FOUR range functions and all SIX fonts, which is what the atlas is
+    # built from (common/src/fonts.cpp's add_weight). This asked for three of
+    # each: it never parsed symbol_ranges and never opened the three symbol
+    # faces entry 128 added -- so the one tool that answers "what can the
+    # overlay not draw" over-reported by three times (6472 missing codepoints
+    # against 2180) and was blind to the 3860 codepoints of the very blocks it
+    # was last extended for.
     letters = parse_ranges(fonts_cpp, "letter_ranges")
     emoji = parse_ranges(fonts_cpp, "emoji_ranges")
     punct = parse_ranges(fonts_cpp, "punctuation_ranges")
-    requested = letters + emoji + punct
+    symbols = parse_ranges(fonts_cpp, "symbol_ranges")
+    requested = letters + emoji + punct + symbols
 
+    faces = ["Inter-Regular.ttf", "NotoEmoji.ttf", "NotoSansJP.ttf",
+             "NotoSansMath.ttf", "NotoSansSymbols.ttf", "NotoSansSymbols2.ttf"]
     cmaps = set()
-    for name in ["Inter-Regular.ttf", "NotoEmoji.ttf", "NotoSansJP.ttf"]:
-        cmaps |= set(TTFont(ROOT / "third_party/fonts" / name).getBestCmap())
+    for name in faces:
+        path = ROOT / "third_party/fonts" / name
+        if not path.exists():
+            raise SystemExit(
+                f"{name} is not in third_party/fonts: the atlas is built from six faces and "
+                "this would measure a subset of them while printing a total")
+        cmaps |= set(TTFont(path).getBestCmap())
 
     bank = set()
     data = (ROOT / "common/emoji/emoji_bank.rgba").read_bytes()
@@ -66,9 +81,17 @@ def main() -> int:
         "Thai (U+0E00-0E7F)": (0x0E00, 0x0E7F),
         "Devanagari (U+0900-097F)": (0x0900, 0x097F),
     }
+    # "in the atlas" and not "drawable": ImGui does no shaping, so a script
+    # whose letters join or reorder is out of scope however many of its
+    # codepoints a face happens to carry (DESIGN says so of Arabic and Indic).
+    # Since the symbol faces joined the atlas some of those codepoints ARE
+    # present, which is why this line says what it measures.
+    shaping = {"Arabic (U+0600-06FF)", "Hebrew (U+0590-05FF)", "Thai (U+0E00-0E7F)",
+               "Devanagari (U+0900-097F)"}
     for label, (a, b) in classes.items():
         have = any(covered(cp, requested) and cp in cmaps for cp in range(a, b + 1))
-        print(f"{'covered ' if have else 'ABSENT  '} {label}")
+        note = "  (in the atlas, but unshaped: out of scope)" if have and label in shaping else ""
+        print(f"{'in atlas' if have else 'ABSENT  '} {label}{note}")
 
     return 0
 

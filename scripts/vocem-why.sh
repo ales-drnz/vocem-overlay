@@ -106,9 +106,45 @@ for pid in $pids; do
         [ -n "$found" ] || found=0
         echo "$found"
     }
+    # And whether the question could be asked at all, which is a different
+    # answer from "no". An unreadable /proc/<pid>/maps -- a process of another
+    # uid, which is exactly whose overlay somebody is most likely to be confused
+    # about -- gives grep nothing to count, so `found=0`, so the report used to
+    # print `shim loaded: NO`, `GL overlay: no`, `Vulkan layer: no` and then the
+    # confident sentence "we are not inside it at all: a sandbox (Flatpak/Snap),
+    # or the program started before the preload existed in the session". That is
+    # this script's third round of printing something it did not measure
+    # (entries 99 and 116 are the other two), in the one tool whose stated
+    # purpose is to tell "never started" from "ran for an hour without our code
+    # reaching it". Measured against pid 1: three noes and the sentence.
+    # Readable AND with something in it. A kernel thread's map is readable and
+    # empty, and "no overlay in a kworker" is true but not an answer anybody
+    # came here for; an unreadable one is another user's process, which is the
+    # case somebody reaching for this tool is most likely to be confused by.
+    #
+    # Not `[ -s ]`: every file under /proc reports a size of zero, so that test
+    # calls plasmashell's own map empty. The first line is the measurement.
+    if [ -n "$(head -n 1 "/proc/$pid/maps" 2>/dev/null)" ]; then
+        maps_readable=yes
+    else
+        maps_readable=no
+    fi
     shim=$(count_in_maps "libvocem_gl_shim")
     lib=$(count_in_maps "libvocem_gl\.so")
     vk=$(count_in_maps "libvocem_vk")
+    if [ "$maps_readable" = no ]; then
+        echo "  shim loaded:       unknown (cannot read /proc/$pid/maps)"
+        echo "  GL overlay:        unknown"
+        echo "  Vulkan layer:      unknown"
+        echo "  environment:       unknown (cannot read /proc/$pid/environ)"
+        echo
+        echo "  Its memory map is empty or cannot be read from here: another user's"
+        echo "  process, or a kernel thread, which has no libraries at all. Nothing"
+        echo "  above is a measurement of the overlay -- run this as the user who owns"
+        echo "  the process."
+        echo
+        continue
+    fi
     # `A && echo x || echo y` is the same shape as the fault above and is sound
     # here, which is worth saying rather than leaving to be re-derived: the first
     # branch is a `[` test, so it either succeeds and `echo x` runs alone, or it
@@ -125,7 +161,15 @@ for pid in $pids; do
     echo
 
     # 3. In what environment, which is where the detection lives.
-    env_of() { tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n "s/^$1=//p" | head -1; }
+    # By this point the map was readable, so an empty value here means the
+    # variable is not set rather than that nothing could be read.
+    env_of() {
+        # The redirect is what fails when /proc/<pid>/environ is another user's,
+        # and a redirect fails in the SHELL: `2>/dev/null` on the command does
+        # not silence it, so the report carried "Permesso negato" in the middle
+        # of its own answer. cat's own error is silenced the ordinary way.
+        cat "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' | sed -n "s/^$1=//p" | head -1
+    }
     echo "  SteamAppId:        $(env_of SteamAppId)"
     echo "  FLATPAK_ID:        $(env_of FLATPAK_ID)"
     echo "  LD_PRELOAD:        $(env_of LD_PRELOAD)"

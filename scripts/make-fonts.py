@@ -27,6 +27,7 @@
 #
 # Requires: fonttools, and imgui's binary_to_compressed_c (built here on the fly).
 
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -136,20 +137,72 @@ def subset_static(variable_font: Path, ranges, destination: Path, weight: int = 
     return destination
 
 
-def fetch(url: str, destination: Path) -> Path:
+# What each source was when the committed .inc files were generated. The
+# generator beside this one, make-emoji-bank.py, refuses an input whose sha256
+# it does not recognise unless it is told --repin, and this one pinned nothing
+# at all: it fetches six fonts from a MOVING branch of google/fonts, so a
+# regeneration could silently change what every shipped library draws with --
+# in a project where a licence obligation (entry 50) and a coverage claim
+# (entry 128, "3100 of 3199") are both properties of these exact files.
+#
+# Every entry is empty TODAY, and deliberately so: the originals are deleted
+# after each run, so the only honest digest is one taken at a regeneration, and
+# writing down whatever upstream serves now would pin the wrong file while
+# looking like a pin. The script prints the sha256 of each font it fetches; the
+# next person to regenerate copies those six lines in here, and from then on a
+# moved upstream stops the run instead of quietly changing what ships.
+# `--repin` accepts a digest that differs from the table.
+PINS = {
+    "Inter-Variable.ttf": "",
+    "NotoEmoji-Variable.ttf": "",
+    "NotoSansJP-Variable.ttf": "",
+    "NotoSansMath-Regular.ttf": "",
+    "NotoSansSymbols2-Regular.ttf": "",
+    "NotoSansSymbols-Variable.ttf": "",
+}
+
+
+def fetch(url: str, destination: Path, repin: bool = False) -> Path:
     if not destination.exists():
         print(f"fetching {url}")
-        subprocess.run(["curl", "-sL", "-o", str(destination), url], check=True)
+        # --fail, because curl without it exits 0 on an HTTP 404 and writes the
+        # error page to the destination -- which this function would then reuse
+        # for ever, since it only fetches what is not already there.
+        subprocess.run(["curl", "-sL", "--fail", "-o", str(destination), url], check=True)
+    digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+    expected = PINS.get(destination.name, "")
+    if not expected:
+        print(f"  {destination.name}: sha256 {digest} (not pinned)")
+    elif digest != expected:
+        if not repin:
+            raise SystemExit(
+                f"{destination.name} is not the file this project was built from:\n"
+                f"  expected {expected}\n"
+                f"  fetched  {digest}\n"
+                "Upstream moved. Look at what changed, then re-run with --repin to accept it "
+                "-- the licence texts and entry 128's coverage figures are properties of these "
+                "exact files."
+            )
+        print(f"  {destination.name}: repinned {expected} -> {digest}")
     return destination
 
 
 def main() -> int:
-    variable_font = fetch(SOURCE, FONT_DIR / "Inter-Variable.ttf")
-    emoji_font = fetch(EMOJI_SOURCE, FONT_DIR / "NotoEmoji-Variable.ttf")
-    punctuation_font = fetch(PUNCTUATION_SOURCE, FONT_DIR / "NotoSansJP-Variable.ttf")
-    math_font = fetch(MATH_SOURCE, FONT_DIR / "NotoSansMath-Regular.ttf")
-    symbols2_font = fetch(SYMBOLS2_SOURCE, FONT_DIR / "NotoSansSymbols2-Regular.ttf")
-    symbols_font = fetch(SYMBOLS_SOURCE, FONT_DIR / "NotoSansSymbols-Variable.ttf")
+    repin = "--repin" in sys.argv
+    # One name per font, and the cleanup at the bottom of the file walks the
+    # same PINS table rather than repeating them: two of the six are not
+    # matched by .gitignore's "-Variable.ttf" pattern, and the unlinks used to
+    # be the last statements of main() with no try/finally, so an interrupted
+    # run left whatever it had fetched sitting untracked in third_party/fonts.
+    def take(url: str, name: str) -> Path:
+        return fetch(url, FONT_DIR / name, repin)
+
+    variable_font = take(SOURCE, "Inter-Variable.ttf")
+    emoji_font = take(EMOJI_SOURCE, "NotoEmoji-Variable.ttf")
+    punctuation_font = take(PUNCTUATION_SOURCE, "NotoSansJP-Variable.ttf")
+    math_font = take(MATH_SOURCE, "NotoSansMath-Regular.ttf")
+    symbols2_font = take(SYMBOLS2_SOURCE, "NotoSansSymbols2-Regular.ttf")
+    symbols_font = take(SYMBOLS_SOURCE, "NotoSansSymbols-Variable.ttf")
 
     with tempfile.TemporaryDirectory() as work:
         compressor = Path(work) / "binary_to_compressed_c"
@@ -181,14 +234,19 @@ def main() -> int:
         emit(subset_static(symbols_font, SYMBOL_RANGES, FONT_DIR / "NotoSansSymbols.ttf"),
              "NotoSymbols", "noto_symbols.inc")
 
-    variable_font.unlink()
-    emoji_font.unlink()
-    punctuation_font.unlink()
-    math_font.unlink()
-    symbols2_font.unlink()
-    symbols_font.unlink()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The fetched originals go whatever happens -- an exception, a Ctrl-C, a
+    # refused pin. They are large, two of the six are not covered by
+    # .gitignore's pattern, and what is committed is the subsets under
+    # common/fonts/.
+    try:
+        status = main()
+    finally:
+        for name in PINS:
+            leftover = FONT_DIR / name
+            if leftover.exists():
+                leftover.unlink()
+    sys.exit(status)
