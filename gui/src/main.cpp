@@ -141,6 +141,15 @@ void dump_item(QQuickItem* item, const QString& path, QHash<QString, int>& seen,
                                  // measured here they are in it, and this is what
                                  // will say so if that ever stops being true.
                                  "activeFocusOnTab",
+                                 // Which display the "Map shows" dropdown is
+                                 // pointing at, and how many it offers. A pin
+                                 // is an index and an index is invisible to a
+                                 // rectangle, so a test could not see the
+                                 // dropdown being dragged back to "Automatic"
+                                 // by an enumeration that merely changed --
+                                 // which is what a live binding on
+                                 // config.displays did (DisplayPicker.qml).
+                                 "pickerIndex", "pickerCount",
                                  // How many of a preview's own pictures actually
                                  // came up. An Image that failed to load keeps the
                                  // size its layout gave it and paints nothing, so
@@ -148,7 +157,17 @@ void dump_item(QQuickItem* item, const QString& path, QHash<QString, int>& seen,
                                  // missing one -- and missing is what six of them
                                  // were until the artwork was carried in the
                                  // binary.
-                                 "loadedIcons"}) {
+                                 "loadedIcons",
+                                 // Every named item's strength. A switch that
+                                 // takes the overlay off the screen has to be
+                                 // visible in a picture OF the screen, and the
+                                 // only way it shows is an opacity -- which a
+                                 // rectangle cannot carry. It is on the item
+                                 // itself, so this one line covers every map
+                                 // and every preview at once, where
+                                 // pictureOpacity above had to be published by
+                                 // hand.
+                                 "opacity"}) {
             const QVariant value = item->property(name);
             if (value.isValid() && value.canConvert<qreal>()) {
                 out << ", \"" << name << "\": " << value.toReal();

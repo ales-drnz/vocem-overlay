@@ -282,7 +282,35 @@ void ConfigBridge::persistNow() {
     if (reportSave(saved)) {
         saved_ = written;
         saved_.start_at_login = config_.start_at_login;
-        disk_mtime_ = vocem::Config::mtime();
+        // This write IS the file moving under the window, and `written` is the
+        // file as it now stands -- every key, including anything edited outside
+        // since this window opened, which write_switches reloads rather than
+        // overwrites (entry 136). The timestamp is advanced here, so
+        // reloadIfMoved() will never look at those keys again: without the line
+        // below the window went on showing its own morning copy, the Apply
+        // button stayed grey because nothing was pending, nothing said the two
+        // differed, and the next Apply wrote the window's copy over the edit.
+        //
+        // With an edit waiting for Apply the window keeps its own copy, exactly
+        // as reloadIfMoved decides it: Apply means "what the window shows".
+        // start_at_login is not in the file at all -- it is the autostart entry
+        // -- so it is carried across rather than taken from the read.
+        if (!pending_) {
+            const bool login = config_.start_at_login;
+            config_ = written;
+            config_.start_at_login = login;
+        }
+    } else {
+        // The write failed and the switch in the window has already moved. Left
+        // alone, the window shows "on" against a file that says "off" for the
+        // rest of the session, with a grey Apply and nothing to press: entry
+        // 136 made apply() leave the edit pending for this exact reason and
+        // persistNow() was outside that fix. The InlineMessage says why; this
+        // is what makes the edit recoverable.
+        if (!pending_) {
+            pending_ = true;
+            emit pendingChanged();
+        }
     }
     emit configChanged();
 }

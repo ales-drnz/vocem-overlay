@@ -103,6 +103,18 @@ Item {
             }
             Label {
                 text: root.description
+                // Plain, for the same reason as the label one line up, which is
+                // where this rule was written and where it stopped. The
+                // description is in fact the MORE exposed of the two: the
+                // Applications page feeds it a record's `reason` and its
+                // `executable`, and a record is written from inside every
+                // GL and Vulkan process of the session -- by a Flatpak game
+                // through the bridge, too -- with only its file name
+                // sanitised. Qt's default is AutoText, and
+                // Qt::mightBeRichText() turns the whole string rich on a known
+                // tag before the first newline; a rich Text then loads <img>
+                // sources through the QML engine's network access manager.
+                textFormat: Text.PlainText
                 visible: root.description !== ""
                 opacity: 0.65
                 font.pointSize: Math.max(7, Qt.application.font.pointSize - 1)

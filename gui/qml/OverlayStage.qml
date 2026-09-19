@@ -179,6 +179,14 @@ Rectangle {
         readonly property real contentWidth: panelContent.implicitWidth
 
         visible: root.showPanel
+        // Dimmed when the panel is switched off, exactly as the message box
+        // beside it is: `panelEnabled` reached the header's Switch and nothing
+        // else in the whole window, so with the voice panel off -- a
+        // persistNow() setting, in a running game within about two seconds --
+        // every map and every preview went on drawing a panel at full strength
+        // while the game drew none. Its own sibling three items down had the
+        // honest treatment from the start, which is what made this one visible.
+        opacity: root.config.panelEnabled ? 1.0 : 0.35
         width: contentWidth * factor
         height: panelContent.implicitHeight * factor
 

@@ -75,6 +75,8 @@ Item {
                              panelScene.roomY / Math.max(1, panelContent.implicitHeight))
 
                 anchors.centerIn: parent
+                // Dimmed with the switch, as the message preview below is.
+                opacity: root.config.panelEnabled ? 1.0 : 0.35
                 width: panelContent.implicitWidth * factor
                 height: panelContent.implicitHeight * factor
 

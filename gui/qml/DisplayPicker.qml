@@ -100,18 +100,43 @@ RowLayout {
 
     ComboBox {
         id: picker
+        objectName: "displayPicker"
 
         // Held in a plain property and only replaced when the enumeration
         // itself changed: a model bound straight to config.displays would be
         // reassigned on every state tick.
-        property var options: root.optionsFrom(root.config.displays)
+        //
+        // **Assigned, not bound.** It used to be initialised with an expression
+        // over `config.displays`, which is a NOTIFY property -- so that
+        // initialiser was a live binding and re-evaluated on the same signal the
+        // guard below listens to. Both are endpoints of one signal and the
+        // binding is delivered first, so by the time the handler ran
+        // `picker.options` already held the fresh list, `sameOptions` answered
+        // true, and `currentIndex` was never restored -- while the model HAD
+        // been replaced, which puts a ComboBox's currentIndex back to 0 (entry
+        // 104's own trap). With a display pinned in "Map shows", plugging in,
+        // unplugging, waking or re-moding a monitor made the dropdown read
+        // "Automatic (largest)" while the map underneath went on drawing the
+        // pinned one and config.ini went on naming it; re-picking the row it
+        // was showing wrote "" and lost the pin.
+        property var options: []
+
+        // For the geometry dump, which holds rectangles and would otherwise
+        // have nothing to say about a dropdown's selection: the pin's whole
+        // visible state is an index. display_change_while_open.cmake reads
+        // these two on both sides of a connector arriving.
+        readonly property int pickerIndex: currentIndex
+        readonly property int pickerCount: options.length
 
         textRole: "label"
         valueRole: "value"
         model: options
         Accessible.name: root.accessibleLabel
 
-        Component.onCompleted: currentIndex = root.indexFor(root.selection)
+        Component.onCompleted: {
+            options = root.optionsFrom(root.config.displays);
+            currentIndex = root.indexFor(root.selection);
+        }
         onActivated: root.picked(currentValue)
     }
 
