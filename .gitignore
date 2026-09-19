@@ -26,15 +26,29 @@ packaging/*.pkg.tar.*
 packaging/vocem-overlay/
 packaging/imgui/
 
+# Python leaves these beside any script it IMPORTS rather than runs, which is
+# how a 24 KB .pyc of rpc-probe.py came to sit untracked in scripts/ -- one
+# `git add -A` from a compiled binary in a public repository.
+__pycache__/
+*.pyc
+
 # Fetched by scripts/make-fonts.py, which deletes them again; what is committed
 # is the subsets it produces under common/fonts/.
 third_party/fonts/*-Variable.ttf
+# Two of the six are not named "-Variable": the pattern above was written when
+# there were three fonts, and NotoSansMath-Regular.ttf and
+# NotoSansSymbols2-Regular.ttf fell outside it. The script unlinks all six at
+# the end of main(), with no try/finally, so an interrupted run leaves whatever
+# it had fetched.
+third_party/fonts/NotoSansMath-Regular.ttf
+third_party/fonts/NotoSansSymbols2-Regular.ttf
 
 # AI tooling
 .claude/
 CLAUDE.md
 DESIGN.md
 PROMPT-*.md
+AUDIT-*.md
 
 # flatpak-builder leaves its cache and its build trees beside the manifest.
 .flatpak-builder/

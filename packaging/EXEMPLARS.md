@@ -7,9 +7,12 @@ for a test that fails against the defective binary, and for the pre-git era the
 packaged artifact is the only defective binary there is.
 
 Which of them anything still names, so that a clean-up knows what it may not
-touch. Found with `grep -ohE '0\.1\.0-[0-9]+' DESIGN.md tests/ CLAUDE.md`;
-the rest of the 0.1.0 series is kept with them, since a citation can be added
-at any time and a package cannot be rebuilt.
+touch. Found with
+`grep -rohE '0\.1\.[0-9]+-[0-9]+' DESIGN.md CLAUDE.md tests/ | sort -u -V` --
+the version that stood here was hardcoded to `0\.1\.0-`, so it could not find
+a later exemplar even in principle, and six had quietly become one. The rest of
+the 0.1.0 series is kept with them, since a citation can be added at any time
+and a package cannot be rebuilt.
 
 | Package | Cited by |
 | --- | --- |
@@ -24,5 +27,42 @@ at any time and a package cannot be rebuilt.
 | 0.1.0-64, -65 | `tests/CMakeLists.txt`, the window tests (padding, empty views, the moved channel) |
 | 0.1.0-67 | `tests/gl_unpack_state.cpp` (the ES3 GL_INVALID_ENUM the backend leaves) |
 
-The packages from 0.1.2 on are rebuilds of tagged releases; a tag can be
-rebuilt with `PKGBUILD`, so they are under no such rule.
+## And six later ones, which this file used to give away
+
+| Package | Cited by | Rebuildable? |
+| --- | --- | --- |
+| 0.1.3-1 | DESIGN entry 94 (the 32-bit hardening, 0 `_chk` symbols) | **yes** -- `PKGBUILD` at `#tag=v0.1.3` |
+| 0.1.3-7 | `tests/daemon_reconnect.cpp`, `tests/CMakeLists.txt`, DESIGN 103 (2215 connections in five seconds) | **no** -- built from `PKGBUILD.local` two commits before the v0.1.3 tag |
+| 0.1.4-1 | `tests/display_change_while_open.cmake`, `tests/daemon_note_expiry.cpp`, `tests/version_agrees.cmake`, DESIGN 103/110/111/112 | **yes** -- `PKGBUILD` at `#tag=v0.1.4` |
+| 0.1.8-1 | DESIGN 138/139/140 (the bridge's drawing flag, the window's four spawns, two windows) | **no** -- its recipe hash is in no git object at all |
+| 0.1.10-1 | `tests/fonts_lifecycle.cpp`, `tests/gl_context_cycle.cpp`, `tests/CMakeLists.txt`, DESIGN 144/145 | from a commit, not a tag: there is no `v0.1.10` |
+| 0.1.10-2 | `tests/gl_inside_gamescope.cmake`, `tests/vk_present_draw.cpp`, DESIGN 147, and entries 159-164's daemon measurements | **no** -- built from an uncommitted working tree |
+
+**So "a tag can be rebuilt" was true of two of the six.** The sentence that
+stood here -- "The packages from 0.1.2 on are rebuilds of tagged releases; a
+tag can be rebuilt with `PKGBUILD`, so they are under no such rule" -- gave a
+clean-up permission to delete the only defective binaries for entries 103, 138,
+139, 140, 144, 145, 146, 147 and the September repairs. Measured corpus-wide:
+**73 of the 88 packages here were built from a recipe that is not in git** (63
+pre-git plus ten intermediate pkgrels), and three of them -- 0.1.8-1, 0.1.8-2
+and 0.1.10-2 -- from a recipe that exists in no blob anywhere in this
+repository. `packaging/*.pkg.tar.*` is in `.gitignore`, so no copy exists
+anywhere else either.
+
+**Nothing in this directory is deleted without checking this table first**, and
+the table is regenerated with the grep above rather than edited by hand.
+
+## What an exemplar cannot refute for ever
+
+`kAbiVersion` has been 6 since the first commit, so 0.1.0-10 -- entry 129's
+exemplar -- refutes "did anything reach the framebuffer" rather than the
+present hook itself: its failure reads `state read failed (abi mismatch or
+writer contention)`. **Every future ABI bump converts one more historical
+exemplar's refutation into an ABI mismatch**, while the record goes on reading
+"the test fails against the old binary". Written here because it is true of the
+artifacts and of nothing in DESIGN.
+
+Entries 144 and 145 leave no artifact trace at all: the fonts module is a
+statically linked, hidden-visibility unit, so there is no cheap way to tell
+0.1.10-1's defective copy from -2's fixed one except by running the test --
+which makes those tests the whole record.

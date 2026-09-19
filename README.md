@@ -236,8 +236,8 @@ VOCEM_DISABLE=1 the-game
 #### 1.2 OpenGL
 
 OpenGL has no layer mechanism, so the library is preloaded instead. The package
-installs a 14 KB shim and an `environment.d` file that preloads it into everything
-you start after your next login.
+installs an 18 KB shim and an `environment.d` file that preloads it into
+everything you start after your next login.
 
 To start one program with it, without the session-wide preload:
 
@@ -256,10 +256,14 @@ overlay does not draw on the launcher itself.
 The overlay appears in games and leaves everything else alone. It decides from,
 in order:
 
-* a Steam app id in the environment
-* a launcher's own identifiers: Lutris, Heroic, umu, gamescope, Minecraft
-* the game's own arguments
-* the desktop entry it was started from
+* a launcher's own identifier: Lutris, Heroic or Prism, each of which names the
+  game itself
+* a Steam app id, when it is digits and not all zero
+* the identifiers that only say a game is being run: umu, itch, gamescope
+* the game's own arguments, which is how Minecraft under Mojang's launcher is
+  found
+* the desktop entry it was started from, and failing that the one installed
+  entry that names this program
 
 The **Applications** page lists everything it was loaded into and what it found for
 each. The switch beside a row overrides the verdict either way, and reaches a
@@ -395,13 +399,21 @@ the source.
 
 ### 5. What it costs a game
 
-* A program that never draws a frame pays for one 14 KB mapping.
-* A program that draws but is not a game loads the overlay library, about 260 kB
-  resident, decides once, and draws nothing. On a desktop session that is most
-  graphical applications.
-* A game that gets the overlay also holds its font atlas, a few megabytes.
-* Uploads and font rebuilds happen after the frame has been presented, never
-  during it.
+* A program that never draws a frame pays for one mapping of an 18 KB file: 24 kB
+  resident, 8 kB of that its own share, measured in three processes of a live
+  session.
+* A program that draws but is not a game loads the overlay library, 56 kB
+  resident and 20 kB of it its own share on the same measurement, decides once,
+  and draws nothing. On a desktop session that is most graphical applications.
+* A game that gets the overlay also holds its font atlas, and that is the large
+  number: 16 MB of glyph coverage plus a 64 MB RGBA copy at a 4K display's text
+  size, 80 MB in all. It is built at the first frame that draws something and
+  kept until the overlay is switched off, the daemon stops, or the game exits.
+  Six fonts are merged into each of two weights, which is what buys the coverage.
+* The Vulkan layer does its expensive work after the frame has been presented:
+  the font atlas and every avatar upload. The OpenGL interposer has no
+  after-the-present to work in, because it is the swap call itself, so its
+  uploads and its atlas builds are inside that call, one upload per frame.
 
 ### 6. OpenGL games
 
