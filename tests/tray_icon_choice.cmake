@@ -56,6 +56,8 @@ macro(walk name setting)
     file(MAKE_DIRECTORY "${scratch}/${name}/config/vocem")
     file(MAKE_DIRECTORY "${scratch}/${name}/cache/vocem")
     file(WRITE "${scratch}/${name}/config/vocem/config.ini" "tray_voice_icon = ${setting}\n")
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
     execute_process(
         COMMAND "${CONFIG_BINARY}"
         RESULT_VARIABLE status
@@ -68,10 +70,7 @@ macro(walk name setting)
             "QT_QPA_PLATFORM=set:offscreen"
             "VOCEM_CONFIG_SECTIONS=set:7"
             "VOCEM_CONFIG_GEOMETRY=set:${scratch}/${name}.json")
-    if(NOT status EQUAL 0)
-        message(STATUS "skip the window could not run here: ${status} ${errors}")
-        return()
-    endif()
+    vocem_window_ran("${status}" "${errors}")
     if(NOT EXISTS "${scratch}/${name}.json")
         message(FATAL_ERROR "the window wrote no geometry dump")
     endif()

@@ -22,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "probe_alarm.h"
 #include "vocem/shm.h"
 #include "private_shm.h"
 
@@ -51,7 +52,7 @@ int main() {
     if (const int gate = vocem_test::ensure_private_shm(false); gate >= 0) {
         return gate;
     }
-    alarm(30);
+    vocem_test::set_alarm(30, "reattaching across a daemon restart");
 
     // First life: a daemon publishes, a game attaches and reads.
     auto* first = new vocem::StateWriter;

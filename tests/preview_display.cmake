@@ -63,6 +63,8 @@ file(MAKE_DIRECTORY "${scratch}/drm/renderD128")
 # the given config, dumping geometry to the given file.
 function(run_window config_text dump)
     file(WRITE "${scratch}/config/vocem/config.ini" "${config_text}")
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
     execute_process(
         COMMAND "${CONFIG_BINARY}"
         RESULT_VARIABLE status
@@ -101,10 +103,7 @@ endfunction()
 
 # ---- the automatic run: the map as it has always been.
 run_window("" "${scratch}/geometry-auto.json")
-if(NOT status EQUAL 0)
-    message(STATUS "skip the window could not run here: ${status} ${errors}")
-    return()
-endif()
+vocem_window_ran("${status}" "${errors}")
 file(READ "${scratch}/geometry-auto.json" auto_dump)
 item_height("${auto_dump}" "positionStage" stage_auto)
 item_height("${auto_dump}" "positionStage/panel" panel_auto)

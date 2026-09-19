@@ -43,35 +43,68 @@ if(NOT EXISTS "${PROBE}")
     return()
 endif()
 
-execute_process(
-    COMMAND "${PROBE}"
-    RESULT_VARIABLE status
-    OUTPUT_VARIABLE output
-    ERROR_VARIABLE errors
-    TIMEOUT 240
-    ENVIRONMENT_MODIFICATION
-        "VOCEM_VK_MANIFEST=set:${MANIFEST}"
-        "VOCEM_VK_LIBRARY=set:${LIBRARY}"
-        "VOCEM_VK_EXTRA_MANIFESTS=set:${VALIDATION}"
-        # Every message, and to stdout: the layer's defaults print only errors.
-        "VK_LAYER_MESSAGE_ID_FILTER=unset:"
-        "VK_LAYER_LOG_FILENAME=set:stdout")
-set(both "${output}${errors}")
-if(status EQUAL 77)
-    message(STATUS "skip the probe could not measure here; its output says why")
-    return()
+# Every scenario, not the default one alone.
+#
+# This ran the plain loop and nothing else, so the legs that CREATE and DESTROY
+# things -- a swapchain recreated in another format, a second device coming and
+# going, frames chained with two in flight, and the daemon-stopped release that
+# tears the renderer down on an arbitrary present of a live device -- were
+# exactly the legs the real layer never saw. That is where a validation layer
+# earns its keep, and it is where the wait this release path needs would have
+# been missing in silence.
+set(scenarios "" "recreate" "second-device" "in-flight" "daemon-gone" "idle")
+set(measured 0)
+foreach(scenario IN LISTS scenarios)
+    if(scenario STREQUAL "")
+        set(label "the default loop")
+    else()
+        set(label "${scenario}")
+    endif()
+    execute_process(
+        COMMAND "${PROBE}"
+        RESULT_VARIABLE status
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE errors
+        TIMEOUT 240
+        ENVIRONMENT_MODIFICATION
+            "VOCEM_VK_MANIFEST=set:${MANIFEST}"
+            "VOCEM_VK_LIBRARY=set:${LIBRARY}"
+            "VOCEM_VK_EXTRA_MANIFESTS=set:${VALIDATION}"
+            "VOCEM_VK_SCENARIO=set:${scenario}"
+            # Every message, and to stdout: the layer's defaults print only errors.
+            "VK_LAYER_MESSAGE_ID_FILTER=unset:"
+            "VK_LAYER_LOG_FILENAME=set:stdout")
+    set(both "${output}${errors}")
+    if(status EQUAL 77)
+        message(STATUS "skip the probe could not measure ${label} here; its output says why")
+        return()
+    endif()
+    if(NOT status EQUAL 0)
+        message(FATAL_ERROR "the probe failed under validation (${label}):\n${both}")
+    endif()
+    if(NOT both MATCHES "libVkLayer_khronos_validation")
+        message(FATAL_ERROR
+                "the validation layer was named and never mapped (${label}): the chain measured "
+                "was not the one this test is about\n${both}")
+    endif()
+    string(REGEX MATCHALL "(Validation Error|VUID-[A-Za-z0-9_-]+|Validation Warning)" faults
+           "${both}")
+    list(LENGTH faults fault_count)
+    if(fault_count GREATER 0)
+        message("${both}")
+        message(FATAL_ERROR
+                "the validation layer reported ${fault_count} message(s) with the overlay in the "
+                "chain (${label})")
+    endif()
+    message(STATUS "     ${label}: clean")
+    math(EXPR measured "${measured} + 1")
+endforeach()
+
+# A loop that measured nothing would print the same closing line as one that
+# measured everything (entry 105's rule).
+list(LENGTH scenarios wanted)
+if(NOT measured EQUAL wanted)
+    message(FATAL_ERROR "only ${measured} of ${wanted} scenarios were measured")
 endif()
-if(NOT status EQUAL 0)
-    message(FATAL_ERROR "the probe failed under validation:\n${both}")
-endif()
-if(NOT both MATCHES "libVkLayer_khronos_validation")
-    message(FATAL_ERROR "the validation layer was named and never mapped: the chain measured was "
-                        "not the one this test is about\n${both}")
-endif()
-string(REGEX MATCHALL "(Validation Error|VUID-[A-Za-z0-9_-]+|Validation Warning)" faults "${both}")
-list(LENGTH faults fault_count)
-if(fault_count GREATER 0)
-    message("${both}")
-    message(FATAL_ERROR "the validation layer reported ${fault_count} message(s) with the overlay in the chain")
-endif()
-message("ok   the validation layer sat under the overlay for the whole scene and reported nothing")
+message("ok   the validation layer sat under the overlay for ${measured} scenarios and reported "
+        "nothing")

@@ -184,6 +184,65 @@ int main(int argc, char** argv) {
     }
     check(authenticated, "and authenticated with the stored token");
 
+    // Before the message this file is named for: a frame the daemon cannot
+    // hold. `kMaxMessageBytes` is 8 MiB (entry 72's reassembly cap), and
+    // `json::parse(raw, nullptr, false)` bounds parse ERRORS and nothing else
+    // -- an allocation that fails comes back as std::bad_alloc, which used to
+    // reach main() and end the process by abort(). Measured under the unit's
+    // own MemoryMax of 128 MiB with RLIMIT_AS standing in for it: 8 MiB of '['
+    // aborts, 8 MiB of string parses in 47 MB. `Restart=on-failure` then
+    // brings the daemon back, and an abort runs no destructor -- so each turn
+    // of that loop leaves the segment, the note's words and every Flatpak
+    // mirror behind, which is the leftover entry 81 forbids.
+    //
+    // The claim is only that the daemon is STILL THERE afterwards: everything
+    // below this line is the ordinary test, and it can only run against a
+    // daemon that survived.
+    {
+        // What it costs is the measurement, not whether it survives: this
+        // machine has the memory to parse 624 MB, so a daemon with no cgroup
+        // around it comes through either way -- and the owner's has
+        // MemoryMax=128M, where the same allocation is a SIGKILL. So the
+        // probe reads the daemon's own high-water mark on both sides of the
+        // message.
+        auto peak_kb = [&]() -> long {
+            char path[64];
+            snprintf(path, sizeof(path), "/proc/%d/status", static_cast<int>(daemon_pid));
+            FILE* status = fopen(path, "r");
+            if (!status) {
+                return -1;
+            }
+            char line[256];
+            long value = -1;
+            while (fgets(line, sizeof(line), status)) {
+                if (sscanf(line, "VmHWM: %ld kB", &value) == 1) {
+                    break;
+                }
+            }
+            fclose(status);
+            return value;
+        };
+        const long before = peak_kb();
+        const std::string hostile(8u * 1024 * 1024 - 64, '[');
+        send_text(fd, hostile);
+        // A moment for it to be read, refused and dropped.
+        usleep(1500 * 1000);
+        const bool alive = kill(daemon_pid, 0) == 0 && waitpid(daemon_pid, nullptr, WNOHANG) == 0;
+        const long after = peak_kb();
+        printf("--  8 MiB of '[': the daemon's peak went %ld kB -> %ld kB\n", before, after);
+        check(alive, "a message 8 MiB deep does not take the daemon down with it");
+        if (!alive) {
+            printf("--  the daemon is gone: 8 MiB of '[' ended it\n");
+            close(fd);
+            return 1;
+        }
+        // Parsing it costs 624 MB, measured twice, against a unit whose
+        // MemoryMax is 128. Fifty is far above the few hundred kB a refusal
+        // moves and far below anything the parse could do.
+        check(before > 0 && after > 0 && after - before < 50 * 1024,
+              "and is refused before it is parsed, so it costs no memory worth naming");
+    }
+
     // The message, exactly once. What varies below is the settings file, never
     // the notification.
     send_text(fd,
@@ -235,8 +294,26 @@ int main(int argc, char** argv) {
     if (probe >= 0) {
         close(probe);
     }
-    check(reader.read(snapshot) && snapshot.notification.serial == 1,
-          "without inventing a new notification");
+    // And the slot goes with the words, which is what note.h's "between
+    // messages there is nothing to read anywhere" says and what this check
+    // used to assert the opposite of: it read `serial == 1`, pinning the state
+    // segment's notification slot as SURVIVING its own words -- the sender's
+    // display name plus the guild and the channel, in the segment every
+    // graphical process of the session maps, until the next message or the next
+    // daemon. The intent behind the old wording was "the expiry does not invent
+    // a new notification", and that is still held: an invented one would read a
+    // non-zero serial with a title beside it, and a retired one reads zero and
+    // empty.
+    vocem::Snapshot retired{};
+    bool slot_cleared = false;
+    for (int i = 0; i < 60 && !slot_cleared; ++i) {
+        usleep(100000);
+        slot_cleared = reader.read(retired) && retired.notification.serial == 0;
+    }
+    check(slot_cleared, "and the notification slot is retired with them, not left standing");
+    check(slot_cleared && retired.notification.title[0] == '\0' &&
+              retired.notification.user_id == 0,
+          "so neither the words nor who sent them outlive the toast");
 
     // The daemon's death must leave the segment saying "draw nothing". A game
     // that was drawing keeps its mapping after the unlink -- unlinking removes

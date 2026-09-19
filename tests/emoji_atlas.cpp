@@ -72,7 +72,10 @@ int main() {
         return 77;
     }
 
-    ImGui::CreateContext();
+    // The context the injected paths create: with the fonts module's own
+    // atlas, which is what makes the rebuild dead band a promise at all
+    // (vocem/fonts.h).
+    ImGui::CreateContext(vocem::fonts_atlas());
 
     // The frame shows a name with the sushi in it; the next build must carry it.
     vocem::fonts_note_emoji("Reix \xF0\x9F\x8D\xA3");

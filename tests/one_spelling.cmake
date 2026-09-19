@@ -21,6 +21,26 @@ file(GLOB_RECURSE sources
     "${SOURCE_DIR}/gui/src/*.cpp" "${SOURCE_DIR}/gui/src/*.h"
     "${SOURCE_DIR}/include/vocem/*.h")
 
+# The same floor, for the same reason, as one_dlsym_version.cmake and for the
+# rule one_placement_inverse.cmake writes down: without it a moved directory
+# turns this into a test that approves nothing.
+list(LENGTH sources source_count)
+if(source_count LESS 40)
+    message(FATAL_ERROR
+        "one_spelling: only ${source_count} source files found under ${SOURCE_DIR} -- "
+        "the walk has lost the code, which is not agreement")
+endif()
+message(STATUS "     ${source_count} source files examined")
+
+# **What this does NOT hold, said rather than implied.** The patterns below are
+# name-shaped, not fact-shaped: a second `mkdir -p` loop is caught only if its
+# variable is called `partial`, and a second curl sink only if the function is
+# called `*append_to_string`. So this pins the three copies that were removed
+# and would not notice a fourth written in other words. Making it fact-shaped
+# means recognising the SHAPE of each duplicated thing, which is a different
+# test; until somebody writes it, this is a guard against the copies coming
+# back, not a proof that none exist.
+
 set(offenders "")
 foreach(source IN LISTS sources)
     file(STRINGS "${source}" lines)

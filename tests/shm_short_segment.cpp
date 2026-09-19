@@ -33,6 +33,7 @@
 #include <cstring>
 
 #include "private_shm.h"
+#include "probe_alarm.h"
 #include "vocem/note.h"
 #include "vocem/shm.h"
 
@@ -103,7 +104,7 @@ int main() {
             return 1;
         }
     }
-    alarm(60);
+    vocem_test::set_alarm(60, "a segment shorter than its struct");
 
     char state_name[64];
     vocem::shm_name(state_name, sizeof(state_name), getuid());

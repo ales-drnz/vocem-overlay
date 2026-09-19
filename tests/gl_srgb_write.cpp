@@ -42,6 +42,10 @@
 #include <X11/Xutil.h>
 
 #include "private_shm.h"
+#include "probe_alarm.h"
+#include "probe_name.h"
+
+#include <string>
 #include "vocem/config.h"
 #include "vocem/shm.h"
 #include "vocem/theme.h"
@@ -108,7 +112,7 @@ int main() {
         return gate;
     }
 
-    alarm(60);
+    vocem_test::set_alarm(60, "the sRGB write guard");
 
     char root[] = "/tmp/vocem-gl-srgb-XXXXXX";
     if (!mkdtemp(root)) {
@@ -122,9 +126,12 @@ int main() {
     // Opaque, and no channel name: the panel's surface is what this measures,
     // and at the default opacity there is no surface to measure. Everything
     // else stays at its default, so the colour looked for is the theme's.
-    write_file(path,
-               "enabled = true\nshown_apps = vocem_gl_srgb_write\n"
-               "opacity = 1.0\nshow_channel_name = false\n");
+    // The rule names THIS binary, read off /proc/self/exe (probe_name.h,
+    // entry 129).
+    const std::string rule = "enabled = true\nshown_apps = " +
+                             vocem_test::own_name("vocem_gl_srgb_write") +
+                             "\nopacity = 1.0\nshow_channel_name = false\n";
+    write_file(path, rule.c_str());
     setenv("XDG_CONFIG_HOME", root, 1);
     snprintf(path, sizeof(path), "%s/cache", root);
     mkdir(path, 0700);

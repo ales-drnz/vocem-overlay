@@ -17,7 +17,8 @@
 # interposer's pixels count exactly like ours (gl_beside_mangohud's lesson). Run
 # under gamescope unchanged, that same cleanliness excluded gamescope's WSI layer
 # too, so the run measured a process that had been *launched by* gamescope with
-# nothing of gamescope's in its dispatch chain. 1232 pixels, four ok lines, and
+# nothing of gamescope's in its dispatch chain. 1232 pixels at the time, four ok
+# lines, and
 # no information.
 #
 # So: the WSI manifest is put back in on purpose (VOCEM_VK_EXTRA_MANIFESTS), and
@@ -85,6 +86,23 @@ function(run_present nested out_pixels out_drew out_wsi)
         set(${out_wsi} 0 PARENT_SCOPE)
         return()
     endif()
+    # The probe did not run at all: the line it prints as soon as it has a
+    # Vulkan instance is missing, so gamescope handed it no session and this
+    # attempt measured nothing about the overlay. Entry 147 is this exact
+    # distinction on the OpenGL half -- gamescope's nested Xwayland dies with
+    # "failed to read Wayland events: Broken pipe" on roughly one attempt in
+    # three, measured against the library shipped in 0.1.10-2 as much as against
+    # the working tree -- and the sweep stopped there, leaving this script to
+    # report the compositor's own startup as "the Vulkan half no longer behaves
+    # inside gamescope", in a suite whose law is 100% green and whose message
+    # tells the next person to rewrite DESIGN. The assertions below are
+    # untouched; only "it never ran" is told from "it ran and drew nothing".
+    if(NOT both MATCHES "layer library:")
+        set(${out_pixels} "absent" PARENT_SCOPE)
+        set(${out_drew} 0 PARENT_SCOPE)
+        set(${out_wsi} 0 PARENT_SCOPE)
+        return()
+    endif()
     if(both MATCHES "foreign pixels:[ \t]*([0-9]+)")
         set(${out_pixels} "${CMAKE_MATCH_1}" PARENT_SCOPE)
     else()
@@ -107,9 +125,44 @@ if(plain_pixels STREQUAL "skip")
     message(STATUS "skip the present probe skipped outside gamescope")
     return()
 endif()
-run_present(TRUE nested_pixels nested_drew nested_wsi)
+if(plain_pixels STREQUAL "absent")
+    # Not gamescope's flake -- nothing is nested here -- so this is the probe
+    # failing to start at all, which is news rather than a skip.
+    message(FATAL_ERROR
+        "the present probe printed nothing outside gamescope: it did not run, so neither the "
+        "control nor the claim below means anything")
+endif()
+# Six attempts, because gamescope's nested session is the flaky part and the
+# overlay is not: one attempt that never started the probe says nothing, and
+# six that never start it say the compositor cannot be measured here today.
+#
+# Six and not three, on a measurement. `gamescope --backend headless -- sh -c
+# echo` -- no probe, no overlay, nothing of this project in it -- started its
+# child **4 of 10** times back-to-back and **6 of 10** with two seconds between
+# runs, which is the same answer within the noise of twenty samples: the
+# compositor's own startup fails about half the time on this machine, and
+# spacing the attempts does not buy what a few more attempts do. At p = 0.5,
+# three tries leave one run in eight reporting a skip and six leave one in
+# sixty-four, at about a second each. Every run of it also ends with
+# `failed to read Wayland events: Broken pipe` and a core dump -- with
+# /bin/true as the child, so that is gamescope's own teardown and not ours
+# (entry 147 read it as the cause; it is the noise the cause hides in).
+set(attempt 1)
+while(attempt LESS_EQUAL 6)
+    run_present(TRUE nested_pixels nested_drew nested_wsi)
+    if(NOT nested_pixels STREQUAL "absent")
+        break()
+    endif()
+    message("     gamescope gave the probe no session on attempt ${attempt}")
+    math(EXPR attempt "${attempt} + 1")
+endwhile()
 if(nested_pixels STREQUAL "skip")
     message(STATUS "skip the present probe skipped inside gamescope")
+    return()
+endif()
+if(nested_pixels STREQUAL "absent")
+    message(STATUS "skip gamescope started no session for the probe in six attempts, so "
+                   "nothing here measures the overlay")
     return()
 endif()
 

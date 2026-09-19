@@ -1206,10 +1206,31 @@ void idle_picture_quieter() {
     lit.avatar_idle_opacity = 1.0f;
     const Strengths full = settle(lit);
 
-    check(quiet.discs.size() >= 3 && full.discs.size() >= 3,
-          "quiet pictures: three placeholder discs are drawn");
-    if (quiet.discs.size() < 3 || full.discs.size() < 3 || quiet.discs[0] <= 0 ||
-        full.scrim <= 0) {
+    // Every precondition of the block below is ASSERTED, not merely tested.
+    // The check() used to cover the two size() conditions and the early return
+    // covered four -- so `quiet.discs[0] <= 0` and `full.scrim <= 0` were
+    // silent exits, and max_alpha() returns -1 when the colour is not in the
+    // draw list at all. If theme.avatar_scrim ever stops being drawn --
+    // renamed, removed, or the muted treatment reworked -- this function used
+    // to return with zero failures recorded and panel_geometry AND
+    // panel_geometry32 stayed green, with five of the six claims DESIGN entry
+    // 143 cites this file for evaporating: the idle ratio against
+    // avatar_idle_opacity, the speaker's picture being untouched, the badge
+    // being untouched, the scrim quieted with the picture it lies on, and the
+    // whole hold-and-fall block. A precondition of an assertion is an
+    // assertion.
+    const bool drawn = quiet.discs.size() >= 3 && full.discs.size() >= 3 &&
+                       quiet.discs[0] > 0 && quiet.scrim > 0 && full.scrim > 0 &&
+                       quiet.badge > 0 && full.badge > 0;
+    check(drawn,
+          "quiet pictures: three placeholder discs, a scrim and a badge are all drawn, at both "
+          "strengths");
+    if (!drawn) {
+        std::printf("  discs %zu/%zu, first %d, scrim %d/%d, badge %d/%d (-1 means the colour "
+                    "is not in the draw list at all)\n",
+                    quiet.discs.size(), full.discs.size(),
+                    quiet.discs.empty() ? -1 : quiet.discs[0], quiet.scrim, full.scrim,
+                    quiet.badge, full.badge);
         return;
     }
     const float idle_ratio =
@@ -1648,7 +1669,10 @@ void check_placement_round_trip() {
 
 int main(int argc, char** argv) {
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    // The context the injected paths create: with the fonts module's own
+    // atlas, which is what makes the rebuild dead band a promise at all
+    // (vocem/fonts.h).
+    ImGui::CreateContext(vocem::fonts_atlas());
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;

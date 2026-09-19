@@ -152,7 +152,9 @@ int main() {
     // 4. An edited list is the only thing that recomputes -- and it must, in the
     //    running process, which is what the page promises.
     config.shown_apps = vocem::process_name();
-    check(!decision.refresh(config), "an edited list recomputes without claiming to be the first");
+    check(decision.refresh(config),
+          "an edited list that changes the verdict recomputes and says so, which is the caller's "
+          "moment to write down that the overlay came or went");
     check(decision.allowed(), "and the running process follows it");
 
     vocem::forget_applications();

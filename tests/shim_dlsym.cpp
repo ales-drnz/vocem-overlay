@@ -103,11 +103,21 @@ int main() {
     // in software. Every Electron application on the machine was affected the same
     // way. Nothing in the build said anything, because every test until this one
     // asked the shim for names the shim knows.
+    // Whether the ANGLE half below was actually walked. A `skip` printed into
+    // the middle of a run is not a skip: this file's own line was the only
+    // `printf("skip ` in tests/ that was not followed by `return 77`, and the
+    // test was registered with no SKIP flag either -- so on a machine without
+    // libEGL.so.1, INCLUDING the 32-bit twin, which is the width entries
+    // 30/33/34 say fails invisibly, the whole entry-35 check did not run and
+    // ctest printed Passed. Entry 123 swept this shape out of the CMake side
+    // and left this one in a .cpp.
+    bool angle_walked = false;
     if (getenv("VOCEM_SHIM_PRELOADED")) {
         void* egl = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_LOCAL);
         if (!egl) {
             printf("skip libEGL.so.1 is not installed, so the ANGLE path cannot be walked\n");
         } else {
+            angle_walked = true;
             using PFN = void* (*)(const char*);
             PFN get_proc = reinterpret_cast<PFN>(dlsym(egl, "eglGetProcAddress"));
             check(get_proc != nullptr, "eglGetProcAddress resolves out of a private handle");
@@ -126,6 +136,14 @@ int main() {
         }
     }
 
+    if (failures == 0 && getenv("VOCEM_SHIM_PRELOADED") && !angle_walked) {
+        // Everything else passed and the half this file exists for did not run.
+        // Reported as the skip it is, whole: a partial measurement that calls
+        // itself a pass is what entry 123 is about, and the checks above are
+        // covered at the other width and in shim_two_egls besides.
+        printf("skip the ANGLE path could not be walked here, so this is not a measurement\n");
+        return 77;
+    }
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }

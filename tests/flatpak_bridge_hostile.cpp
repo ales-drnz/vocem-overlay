@@ -32,6 +32,7 @@
 
 #include <string>
 
+#include "probe_alarm.h"
 #include "flatpak_bridge.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/flatpak.h"
@@ -121,7 +122,7 @@ struct Sandbox {
 }  // namespace
 
 int main() {
-    alarm(60);
+    vocem_test::set_alarm(60, "hostile files in a sandbox");
     char scratch[] = "/tmp/vocem-flatpak-hostile-XXXXXX";
     if (!mkdtemp(scratch)) {
         printf("FAIL could not make a scratch directory\n");

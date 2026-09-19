@@ -34,6 +34,8 @@ endif()
 
 # A process that is certainly alive for the length of the run, wearing the
 # name the journal records: this test's own cmake process.
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
 execute_process(COMMAND sh -c "echo $PPID" OUTPUT_VARIABLE live_pid
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT EXISTS "/proc/${live_pid}/comm")
@@ -69,10 +71,7 @@ execute_process(
         "VOCEM_CONFIG_SECTIONS=set:8"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
 
-if(NOT status EQUAL 0)
-    message(STATUS "skip the window could not run here: ${status} ${errors}")
-    return()
-endif()
+vocem_window_ran("${status}" "${errors}")
 if(NOT EXISTS "${journal}")
     message(FATAL_ERROR "the fixture never wrote its journal -- the run was too short")
 endif()

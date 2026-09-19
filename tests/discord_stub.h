@@ -91,10 +91,21 @@ inline bool send_text(int fd, const std::string& payload) {
     frame.push_back(static_cast<char>(0x81));  // FIN + text
     if (payload.size() < 126) {
         frame.push_back(static_cast<char>(payload.size()));
-    } else {
+    } else if (payload.size() <= 0xFFFF) {
         frame.push_back(126);
         frame.push_back(static_cast<char>((payload.size() >> 8) & 0xFF));
         frame.push_back(static_cast<char>(payload.size() & 0xFF));
+    } else {
+        // The 64-bit length. Without this branch anything past 65535 bytes was
+        // written with a 126 header and a truncated 16-bit length -- a frame
+        // the daemon is right to read as garbage, after which the stream is
+        // desynchronised and the test hangs rather than failing. Found by
+        // sending one deliberately large message (daemon_notification's
+        // hostile frame): the harness was the thing that could not do it.
+        frame.push_back(127);
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            frame.push_back(static_cast<char>((payload.size() >> shift) & 0xFF));
+        }
     }
     frame += payload;
     return write_all(fd, frame.data(), frame.size());

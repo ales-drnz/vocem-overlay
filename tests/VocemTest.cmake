@@ -66,7 +66,17 @@ endif()
 # machine) refuses instead of counting as a pass. `-- skip ` is STATUS's own
 # prefix, so a script's message(STATUS "skip ...") and this echo are one
 # spelling.
-function(vocem_skip name reason)
+# The reason is every remaining argument joined, not the first one: callers
+# write it as several adjacent strings the way every message() in this suite
+# does, and taking one parameter silently dropped the rest -- vocem_m32_twin's
+# own call passes two, and the half naming entries 30/33/34 never reached the
+# output. Unreachable on this machine, where VOCEM_HAVE_M32 is set, which is
+# why nobody saw it.
+function(vocem_skip name)
+    string(JOIN "" reason ${ARGN})
+    if(reason STREQUAL "")
+        message(FATAL_ERROR "vocem_skip(${name}): a skip with no reason is not a skip")
+    endif()
     add_test(NAME ${name} COMMAND "${CMAKE_COMMAND}" -E echo "-- skip ${reason}")
     set_tests_properties(${name} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
 endfunction()
@@ -171,6 +181,12 @@ function(vocem_test_run name)
     if(NOT R_TARGET)
         message(FATAL_ERROR "vocem_test_run(${name}) needs TARGET")
     endif()
+    # Remembered so that vocem_m32_twin_run can twin a SCENARIO and not only a
+    # test. Nothing recorded this, so `vk_present_draw` had eight scenarios at
+    # 64 bits and one at 32 -- in the project whose own law is that the 64-bit
+    # build passing is evidence about nothing (entries 30/33/34).
+    set_property(GLOBAL PROPERTY VOCEM_RUN_ARGS_${name} "${ARGN}")
+    set_property(GLOBAL PROPERTY VOCEM_RUN_DEFINED_${name} ON)
     add_test(NAME ${name} COMMAND vocem_${R_TARGET} ${R_ARGS})
     if(R_ENV)
         set_tests_properties(${name} PROPERTIES ENVIRONMENT "${R_ENV}")
@@ -184,6 +200,58 @@ function(vocem_test_run name)
     if(R_DEPENDS)
         set_tests_properties(${name} PROPERTIES DEPENDS "${R_DEPENDS}")
     endif()
+endfunction()
+
+# The 32-bit twin of a vocem_test_run: the same scenario against the 32-bit
+# executable of the same probe. TARGET names the *64-bit* run to twin, and its
+# ENV/ARGS are taken from it unless given again here -- which is what an ENV
+# naming build32's libraries is for.
+#
+# Why it exists: vocem_m32_twin twins a TEST, so a probe whose behaviour is
+# chosen by an environment variable had exactly one of its scenarios measured
+# at 32 bits. The widths differ in a pointer and a size_t, and every one of
+# these scenarios is about lifetimes and bookkeeping.
+function(vocem_m32_twin_run name)
+    cmake_parse_arguments(PARSE_ARGV 1 O "" "TARGET" "ENV")
+    if(O_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "vocem_m32_twin_run(${name}): unknown ${O_UNPARSED_ARGUMENTS}")
+    endif()
+    if(NOT O_TARGET)
+        message(FATAL_ERROR "vocem_m32_twin_run(${name}) needs TARGET")
+    endif()
+    get_property(defined GLOBAL PROPERTY VOCEM_RUN_DEFINED_${O_TARGET})
+    if(NOT defined)
+        message(FATAL_ERROR "vocem_m32_twin_run(${name}): no vocem_test_run(${O_TARGET})")
+    endif()
+    get_property(stored GLOBAL PROPERTY VOCEM_RUN_ARGS_${O_TARGET})
+    cmake_parse_arguments(R "SKIP" "TARGET;TIMEOUT" "ENV;ARGS;DEPENDS" ${stored})
+    if(NOT VOCEM_HAVE_M32)
+        vocem_skip(${name}32
+            "no 32-bit toolchain, so the ${O_TARGET} scenario is measured at one width only -- "
+            "the width that has failed invisibly three times (entries 30/33/34)")
+        return()
+    endif()
+    if(NOT TARGET vocem_${R_TARGET}32)
+        message(FATAL_ERROR
+            "vocem_m32_twin_run(${name}): there is no vocem_${R_TARGET}32 to run -- the probe "
+            "itself needs a vocem_m32_twin before its scenarios can have one")
+    endif()
+    set(args TARGET ${R_TARGET}32)
+    if(DEFINED O_ENV)
+        list(APPEND args ENV ${O_ENV})
+    elseif(R_ENV)
+        list(APPEND args ENV ${R_ENV})
+    endif()
+    if(R_ARGS)
+        list(APPEND args ARGS ${R_ARGS})
+    endif()
+    if(R_TIMEOUT)
+        list(APPEND args TIMEOUT ${R_TIMEOUT})
+    endif()
+    if(R_SKIP)
+        list(APPEND args SKIP)
+    endif()
+    vocem_test_run(${name}32 ${args})
 endfunction()
 
 # The same sources as vocem_test(<name>) at -m32: executable vocem_<name>32,

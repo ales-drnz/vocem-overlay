@@ -37,6 +37,8 @@
 #include <vector>
 
 #include "private_shm.h"
+#include "probe_alarm.h"
+#include "probe_name.h"
 #include "vocem/shm.h"
 
 namespace {
@@ -203,7 +205,7 @@ int main(int argc, char** argv) {
         return gate;
     }
 
-    alarm(120);
+    vocem_test::set_alarm(120, "colour emoji in a real frame");
 
     char root[] = "/tmp/vocem-gl-emoji-XXXXXX";
     if (!mkdtemp(root)) {
@@ -218,9 +220,12 @@ int main(int argc, char** argv) {
     // drawn in the heavier weight, and a merged glyph belongs to the font it
     // was merged into (entry 26) -- without this, the strong weight had no
     // frame-level witness and only the atlas test covered it.
-    write_file(path,
-               "enabled = true\nshown_apps = vocem_gl_emoji_colour\n"
-               "show_channel_name = true\n");
+    // The rule names THIS binary, read off /proc/self/exe (probe_name.h,
+    // entry 129).
+    const std::string rule = "enabled = true\nshown_apps = " +
+                             vocem_test::own_name("vocem_gl_emoji_colour") +
+                             "\nshow_channel_name = true\n";
+    write_file(path, rule.c_str());
     setenv("XDG_CONFIG_HOME", root, 1);
     snprintf(path, sizeof(path), "%s/cache", root);
     mkdir(path, 0700);

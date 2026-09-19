@@ -30,6 +30,7 @@
 #include <string>
 
 #include "private_shm.h"
+#include "probe_alarm.h"
 #include "vocem/shm.h"
 
 namespace {
@@ -98,7 +99,7 @@ int main() {
     if (const int gate = vocem_test::ensure_private_shm(false); gate >= 0) {
         return gate;
     }
-    alarm(60);
+    vocem_test::set_alarm(60, "the CLI following a daemon");
     signal(SIGPIPE, SIG_IGN);
 
     // The first daemon's segment.

@@ -73,6 +73,20 @@ function(run_probe_in_gamescope preload out_pixels out_ours)
         set(${out_ours} 0 PARENT_SCOPE)
         return()
     endif()
+    # The probe did not run at all: its very first line is missing, so gamescope
+    # never handed it a session and this attempt measured nothing about the
+    # overlay. Distinguished rather than counted as a failure, because the two
+    # look identical from here and only one of them is news -- "nothing of ours
+    # ran" below is the claim this test exists for, and it must not be answerable
+    # by gamescope's own startup. Measured on this machine: the nested Xwayland
+    # dies with "failed to read Wayland events: Broken pipe" on roughly a third
+    # of attempts, against the library shipped in 0.1.10-2 as much as against the
+    # working tree (2 of 5 and 1 of 5), so it is gamescope's and not ours.
+    if(NOT both MATCHES "the private state segment opens")
+        set(${out_pixels} "absent" PARENT_SCOPE)
+        set(${out_ours} 0 PARENT_SCOPE)
+        return()
+    endif()
     if(both MATCHES "foreign pixels:[ \t]*([0-9]+)")
         set(${out_pixels} "${CMAKE_MATCH_1}" PARENT_SCOPE)
     else()
@@ -88,9 +102,37 @@ if(plain_pixels STREQUAL "skip")
     message(STATUS "skip the probe found no display")
     return()
 endif()
-run_probe_in_gamescope("${SHIM}" nested_pixels nested_ours)
+# Six attempts, because gamescope's nested session is the flaky part and the
+# overlay is not: one attempt that never started the probe says nothing, and
+# six that never start it say the compositor cannot be measured here today.
+#
+# Six and not three, on a measurement. `gamescope --backend headless -- sh -c
+# echo` -- no probe, no overlay, nothing of this project in it -- started its
+# child **4 of 10** times back-to-back and **6 of 10** with two seconds between
+# runs, which is the same answer within the noise of twenty samples: the
+# compositor's own startup fails about half the time on this machine, and
+# spacing the attempts does not buy what a few more attempts do. At p = 0.5,
+# three tries leave one run in eight reporting a skip and six leave one in
+# sixty-four, at about a second each. Every run of it also ends with
+# `failed to read Wayland events: Broken pipe` and a core dump -- with
+# /bin/true as the child, so that is gamescope's own teardown and not ours
+# (entry 147 read it as the cause; it is the noise the cause hides in).
+set(attempt 1)
+while(attempt LESS_EQUAL 6)
+    run_probe_in_gamescope("${SHIM}" nested_pixels nested_ours)
+    if(NOT nested_pixels STREQUAL "absent")
+        break()
+    endif()
+    message("     gamescope gave the probe no session on attempt ${attempt}")
+    math(EXPR attempt "${attempt} + 1")
+endwhile()
 if(nested_pixels STREQUAL "skip")
     message(STATUS "skip gamescope did not give the probe a display")
+    return()
+endif()
+if(nested_pixels STREQUAL "absent")
+    message(STATUS "skip gamescope started no session for the probe in six attempts, so "
+                   "nothing here measures the overlay")
     return()
 endif()
 

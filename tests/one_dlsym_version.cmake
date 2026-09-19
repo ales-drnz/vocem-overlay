@@ -20,8 +20,27 @@ file(GLOB_RECURSE sources
     "${SOURCE_DIR}/gl/src/*.cpp" "${SOURCE_DIR}/gl/src/*.h"
     "${SOURCE_DIR}/layer/src/*.cpp" "${SOURCE_DIR}/layer/src/*.h"
     "${SOURCE_DIR}/common/src/*.cpp"
+    "${SOURCE_DIR}/daemon/src/*.cpp" "${SOURCE_DIR}/daemon/src/*.h"
+    "${SOURCE_DIR}/cli/src/*.cpp"
+    "${SOURCE_DIR}/gui/src/*.cpp" "${SOURCE_DIR}/gui/src/*.h"
     "${SOURCE_DIR}/include/vocem/*.h"
     "${SOURCE_DIR}/tests/*.cpp")
+
+# A purely negative test over a glob is a test that passes on an empty set
+# (one_placement_inverse.cmake states the rule; this file and one_spelling.cmake
+# are the two it was invented for and the two that did not have it). The floor
+# is well under the real count and exists only to catch a moved directory or a
+# broken pattern, and the count is printed so a walk that quietly shrinks is
+# visible rather than merely not-zero. The glob gained daemon/, cli/ and gui/ in
+# the same pass: the rule is about any `dlvsym` call in this project, and three
+# directories were outside the sweep that enforces it.
+list(LENGTH sources source_count)
+if(source_count LESS 40)
+    message(FATAL_ERROR
+        "one_dlsym_version: only ${source_count} source files found under ${SOURCE_DIR} -- "
+        "the walk has lost the code, which is not agreement")
+endif()
+message(STATUS "     ${source_count} source files examined")
 
 set(offenders "")
 foreach(source IN LISTS sources)

@@ -101,6 +101,15 @@
 //     and on nothing else, every present it passed through must wait on this
 //     probe's own, and the only wait allowed on the present path is
 //     vkWaitForFences on a fence the overlay itself submitted.
+//   * VOCEM_VK_SCENARIO=daemon-gone: after the frames, the segment this probe
+//     publishes is unlinked -- which is exactly what vocemd does when the tray's
+//     Quit stops it -- and the frames go on for two and a half seconds, because
+//     the poll's cadence is a second of real time. The layer must hand back the
+//     backend, the font atlas and every face it is holding on that daemon's
+//     behalf, say so once, and draw nothing into the frame that is read back.
+//     Against the layer shipped in 0.1.10-2 it kept all of it for the life of
+//     the process (DESIGN entry 146; the OpenGL half is tests/gl_daemon_gone.cpp,
+//     which can weigh the memory because it is the only process using it).
 //   * VOCEM_VK_SCENARIO=flatpak-off: the process wears FLATPAK_ID and an
 //     XDG_RUNTIME_DIR of this test's own, so the layer enters the bridge
 //     (vocem/flatpak.h) and reads its settings from the bridge's copy of
@@ -129,6 +138,7 @@
 #include <vulkan/vulkan.h>
 
 #include "private_shm.h"
+#include "probe_alarm.h"
 #include "vocem/shm.h"
 
 namespace {
@@ -651,6 +661,8 @@ int main() {
     const bool second_device = strcmp(scenario, "second-device") == 0;
     const bool flatpak_off = strcmp(scenario, "flatpak-off") == 0;
     const bool in_flight = strcmp(scenario, "in-flight") == 0;
+    const bool daemon_gone = strcmp(scenario, "daemon-gone") == 0;
+    const bool idle = strcmp(scenario, "idle") == 0;
     const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
                             strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
     const char* witness_manifest = getenv("VOCEM_VK_WITNESS_MANIFEST");
@@ -672,7 +684,7 @@ int main() {
         return gate;
     }
 
-    alarm(180);
+    vocem_test::set_alarm(180, "the Vulkan present hook");
 
     char root[] = "/tmp/vocem-vk-present-XXXXXX";
     if (!mkdtemp(root)) {
@@ -830,15 +842,16 @@ int main() {
     // is the control.
     setenv("VOCEM", "1", 1);
     // The layer's own log, sent into a file this process can read back, in the
-    // one scenario that counts its lines ("backend ready", second-device).
-    // Only there: vk_inside_gamescope.cmake reads the same log off this
-    // process's stderr for its own witness ("drawing panel:"), and the first
-    // version redirected it unconditionally, which made that test report the
-    // hook drew nothing. VOCEM_VK_KEEP_STDERR=1 leaves stderr alone whatever
-    // the scenario, for reading the loader's own VK_LOADER_DEBUG output by hand.
+    // scenarios that count its lines ("backend ready" for second-device,
+    // "handing back" for daemon-gone). Only there: vk_inside_gamescope.cmake
+    // reads the same log off this process's stderr for its own witness
+    // ("drawing panel:"), and the first version redirected it unconditionally,
+    // which made that test report the hook drew nothing. VOCEM_VK_KEEP_STDERR=1
+    // leaves stderr alone whatever the scenario, for reading the loader's own
+    // VK_LOADER_DEBUG output by hand.
     char stderr_log[800];
     snprintf(stderr_log, sizeof(stderr_log), "%s/stderr.txt", root);
-    if (second_device && !getenv("VOCEM_VK_KEEP_STDERR")) {
+    if ((second_device || daemon_gone || idle) && !getenv("VOCEM_VK_KEEP_STDERR")) {
         if (FILE* teed = fopen(stderr_log, "w")) {
             fflush(stderr);
             dup2(fileno(teed), 2);
@@ -853,17 +866,28 @@ int main() {
     // ---- The channel, published by this process -----------------------------
     vocem::StateWriter writer;
     check(writer.open(), "the private state segment opens");
-    writer.publish([](vocem::SharedState& state) {
-        state.connected = 1;
-        state.in_channel = 1;
-        state.status = 2;  // Connected
-        snprintf(state.channel_name, sizeof(state.channel_name), "present-hook");
-        state.user_count = 3;
-        for (uint32_t i = 0; i < 3; ++i) {
-            state.users[i].id = 700 + i;
-            snprintf(state.users[i].name, sizeof(state.users[i].name), "Present %u", i + 1);
-        }
-    });
+    if (idle) {
+        // A daemon that is up and connected, with the owner out of every voice
+        // channel: a segment to attach to and nothing on it worth a frame.
+        writer.publish([](vocem::SharedState& state) {
+            state.connected = 1;
+            state.in_channel = 0;
+            state.status = 2;  // Connected
+            state.user_count = 0;
+        });
+    } else {
+        writer.publish([](vocem::SharedState& state) {
+            state.connected = 1;
+            state.in_channel = 1;
+            state.status = 2;  // Connected
+            snprintf(state.channel_name, sizeof(state.channel_name), "present-hook");
+            state.user_count = 3;
+            for (uint32_t i = 0; i < 3; ++i) {
+                state.users[i].id = 700 + i;
+                snprintf(state.users[i].name, sizeof(state.users[i].name), "Present %u", i + 1);
+            }
+        });
+    }
     if (failures) {
         return 1;
     }
@@ -1018,7 +1042,7 @@ int main() {
     // (format 44) plainly and B8G8R8A8_SRGB (50) under gamescope, so the two runs
     // cleared to the same float and stored different bytes -- 25 against 89, the
     // sRGB encode of the same grey -- and the panel's own dark surface stopped
-    // being 40 away from its background. 1232 pixels against 652, and neither
+    // being 40 away from its background. 1232 pixels against 652 then, and neither
     // number was wrong: they were two formats, and the comparison was measuring
     // the format rather than gamescope. Holding the format fixed is what makes
     // the counts comparable across runs; the sRGB path itself has its own test
@@ -1134,9 +1158,13 @@ int main() {
     }
     uint32_t image_count = 0;
     vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, nullptr);
-    VkImage images[8];
-    if (image_count > 8) {
-        image_count = 8;
+    // One spelling of the probe's own cap: the images array, the clamp after a
+    // recreation, and the per-image present semaphores all have to agree, and
+    // they were three literal 8s.
+    constexpr uint32_t kMaxSwapchainImages = 8;
+    VkImage images[kMaxSwapchainImages];
+    if (image_count > kMaxSwapchainImages) {
+        image_count = kMaxSwapchainImages;
     }
     vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, images);
     printf("     swapchain: %ux%u, format %d, %u images\n", extent.width, extent.height,
@@ -1245,9 +1273,24 @@ int main() {
                                           int frames) -> bool {
         constexpr int kSlots = 2;
         VkSemaphore acquired[kSlots] = {};
-        VkSemaphore done[kSlots] = {};
         VkFence slot_fence[kSlots] = {};
         VkCommandBuffer slot_cmd[kSlots] = {};
+        // The semaphore the PRESENT waits on is indexed by the acquired image,
+        // not by the in-flight slot.
+        //
+        // It was indexed by slot, and with two slots over three images that is
+        // the classic swapchain-semaphore-reuse hazard: a binary semaphore
+        // handed to a present is not free again until the presentation engine
+        // has consumed it, and the only thing that says so is re-acquiring that
+        // image. Cycling two of them by slot signals one again while an older
+        // present of a different image may still be waiting on it. Invisible
+        // until vk_present_validated ran anything but the default loop --
+        // 4 x VUID-vkQueueSubmit-pSignalSemaphores-00067, and the validation
+        // layer's own hint is exactly this fix ("use a separate semaphore per
+        // swapchain image; index these semaphores using the index of the
+        // acquired image"). The probe's fault and not the layer's, which is the
+        // shape entry 143 met from the other end.
+        VkSemaphore done[kMaxSwapchainImages] = {};
         VkSemaphoreCreateInfo sem_info{};
         sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         VkFenceCreateInfo signalled{};
@@ -1259,10 +1302,13 @@ int main() {
         g_own_semaphore_count = 0;
         for (int k = 0; k < kSlots; ++k) {
             vk.vkCreateSemaphore(device, &sem_info, nullptr, &acquired[k]);
-            vk.vkCreateSemaphore(device, &sem_info, nullptr, &done[k]);
             vk.vkCreateFence(device, &signalled, nullptr, &slot_fence[k]);
+        }
+        for (uint32_t k = 0; k < image_count; ++k) {
+            vk.vkCreateSemaphore(device, &sem_info, nullptr, &done[k]);
             g_own_semaphores[g_own_semaphore_count++] = handle_value(done[k]);
-            printf("     probe presents with semaphore 0x%llx\n", handle_value(done[k]));
+            printf("     probe presents image %u with semaphore 0x%llx\n", k,
+                   handle_value(done[k]));
         }
         bool ok = true;
         for (int frame = 0; frame < frames && ok; ++frame) {
@@ -1302,13 +1348,13 @@ int main() {
             submit.commandBufferCount = 1;
             submit.pCommandBuffers = &slot_cmd[slot];
             submit.signalSemaphoreCount = 1;
-            submit.pSignalSemaphores = &done[slot];
+            submit.pSignalSemaphores = &done[index];
             vk.vkQueueSubmit(queue, 1, &submit, slot_fence[slot]);
 
             VkPresentInfoKHR present{};
             present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
             present.waitSemaphoreCount = 1;
-            present.pWaitSemaphores = &done[slot];
+            present.pWaitSemaphores = &done[index];
             present.swapchainCount = 1;
             present.pSwapchains = &chain;
             present.pImageIndices = &index;
@@ -1328,8 +1374,10 @@ int main() {
         vk.vkDeviceWaitIdle(device);
         for (int k = 0; k < kSlots; ++k) {
             vk.vkDestroySemaphore(device, acquired[k], nullptr);
-            vk.vkDestroySemaphore(device, done[k], nullptr);
             vk.vkDestroyFence(device, slot_fence[k], nullptr);
+        }
+        for (uint32_t k = 0; k < image_count; ++k) {
+            vk.vkDestroySemaphore(device, done[k], nullptr);
         }
         return ok;
     };
@@ -1382,14 +1430,67 @@ int main() {
         swapchain = replacement;
         image_count = 0;
         vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, nullptr);
-        if (image_count > 8) {
-            image_count = 8;
+        if (image_count > kMaxSwapchainImages) {
+            image_count = kMaxSwapchainImages;
         }
         vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, images);
         printf("     swapchain recreated: format %d -> %d, %u images\n", (int)chosen.format,
                (int)other.format, image_count);
         if (!run_frames(swapchain, images, kFrames)) {
             return 1;
+        }
+    }
+    if (daemon_gone) {
+        // The tray's Quit, as vocemd performs it: the name goes first, and the
+        // mapping this game holds outlives it.
+        //
+        // Driven with run_frames_in_flight, not run_frames. The idling loop
+        // calls vkQueueWaitIdle after every present, so by the time the layer's
+        // post-present release executes the GPU is provably finished and
+        // destroying the renderer's images, buffers, pipeline and descriptor
+        // pool is legal whatever the layer does. That is the shape of a test
+        // that cannot see the defect it is pointed at: the release fires on an
+        // arbitrary present of a live, presenting device, and the only thing
+        // that makes it safe is a wait the layer has to perform itself. Chained
+        // frames with two in flight and no idle anywhere is what a game does,
+        // and it is what the Khronos layer needs in the chain to have anything
+        // to say (vk_present_validated runs this scenario for that reason).
+        printf("     >>> the daemon stops: the segment is unlinked\n");
+        writer.close();
+        vocem::StateWriter::unlink_segment();
+        const long long until = now_ns() + 4000000000LL;
+        while (now_ns() < until) {
+            if (!run_frames_in_flight(swapchain, images, 10)) {
+                return 1;
+            }
+        }
+        // And the other half of what Quit promises: opening the window again
+        // starts the daemon, and a game still running has to take the overlay
+        // back by itself. Handing everything back would be a fine way to break
+        // that, so it is asked here rather than hoped for -- DESIGN said both
+        // halves did this while only the OpenGL one did.
+        printf("     >>> the daemon comes back\n");
+        if (!writer.open()) {
+            printf("FAIL a second daemon could not publish a segment of its own\n");
+            return 1;
+        }
+        writer.publish([](vocem::SharedState& state) {
+            state.connected = 1;
+            state.in_channel = 1;
+            state.status = 2;  // Connected
+            state.display_height = 1080;
+            snprintf(state.channel_name, sizeof(state.channel_name), "present-hook");
+            state.user_count = 3;
+            for (uint32_t i = 0; i < 3; ++i) {
+                state.users[i].id = 700 + i;
+                snprintf(state.users[i].name, sizeof(state.users[i].name), "Ritorno %u", i + 1);
+            }
+        });
+        const long long back_until = now_ns() + 3000000000LL;
+        while (now_ns() < back_until) {
+            if (!run_frames_in_flight(swapchain, images, 10)) {
+                return 1;
+            }
         }
     }
 
@@ -1492,13 +1593,40 @@ int main() {
     }
     vk.vkUnmapMemory(device, memory);
 
-    printf("     background byte: %d, foreign pixels: %ld\n", background, foreign);
+    // The count, against what this project has written down about it. The
+    // checks below are a FLOOR -- 500 -- and a floor is the right shape, since
+    // any deliberate change to what the panel draws moves the number and this
+    // probe must not have to be edited for every one of them. What a floor
+    // cannot do is notice a move, and one happened: entry 129 recorded 1232,
+    // entry 143's quieter idle avatars took it to 733, and DESIGN went on
+    // quoting 1232 in four places (entry 165). So the figure is printed beside
+    // the measurement, and a run whose count has left it says so in its own
+    // output. What WOULD catch a halving is a same-pass comparison, which
+    // vk_inside_gamescope and gl_beside_mangohud have and a standalone run does
+    // not -- said here rather than left to be assumed.
+    constexpr long kRecordedForeign = 733;
+    printf("     background byte: %d, foreign pixels: %ld (DESIGN records %ld)\n", background,
+           foreign, kRecordedForeign);
+    if (foreign > 0 && (foreign * 10 < kRecordedForeign * 9 ||
+                        foreign * 9 > kRecordedForeign * 10)) {
+        printf("     note: that is more than a tenth away from the recorded figure. If the "
+               "drawing changed on purpose, this constant and DESIGN's entries 129, 130 and "
+               "165 move with it.\n");
+    }
     if (control) {
         check(foreign == 0,
               "with the layer out of the chain the presented frame is exactly what the game "
               "painted");
     } else if (flatpak_off) {
         check(foreign == 0, "with the master switch off in the bridge's settings nothing is drawn");
+    } else if (daemon_gone) {
+        // The frame read back is the one after the daemon CAME BACK: the empty
+        // frame in between is asserted through the layer's own lines below,
+        // because "nothing was drawn" is also what a layer that never loaded
+        // looks like (entry 38) and this scenario's whole point is the return.
+        check(foreign > 500, "the overlay draws again once a daemon returns");
+    } else if (idle) {
+        check(foreign == 0, "with nobody in a channel the presented frame is the game's own");
     } else if (in_flight) {
         check(foreign > 500, "the overlay drew into a frame chained through semaphores, two in flight");
     } else if (recreate) {
@@ -1545,12 +1673,28 @@ int main() {
                presents, submits, submits_inside, submits_on_path, waits, waits_inside,
                waits_on_path, signalled, pipelines, mismatches);
         check(presents > 0, "the witness saw the presents at all");
-        check(pipelines > 0,
-              "and a pipeline being created, which only the overlay does: it sat BELOW the "
-              "overlay's layer");
-        check(submits_on_path > 0,
-              "the overlay's own submit fell on the present path, so the intervals are the "
-              "right instrument");
+        // The idle scenario is the one where the overlay deliberately builds
+        // nothing and submits nothing, so these two positive controls are the
+        // assertion turned around: there they say the overlay really did stay
+        // out, and anywhere else they say the witness really was underneath it.
+        if (idle) {
+            // The pipeline the witness counts is the SWAPCHAIN's, built by
+            // build_swapchain_resources whether or not there is anything on the
+            // screen -- deliberately, so that the first frame with something on
+            // it does not stall. What must not be built is the renderer, and
+            // that is asserted by "backend ready" below, where it belongs.
+            check(pipelines > 0,
+                  "the swapchain's own resources were built, so the witness sat below us");
+            check(submits_on_path == 0,
+                  "and nothing was submitted, which is what an idle channel should cost");
+        } else {
+            check(pipelines > 0,
+                  "and a pipeline being created, which only the overlay does: it sat BELOW the "
+                  "overlay's layer");
+            check(submits_on_path > 0,
+                  "the overlay's own submit fell on the present path, so the intervals are the "
+                  "right instrument");
+        }
         if (in_flight) {
             // With frames in flight the layer's wait on its OWN fence is allowed
             // to block, and is the one wait rule 8 allows; what the chain saw
@@ -1595,6 +1739,45 @@ int main() {
         check(strstr(body, "drawing=0\n") != nullptr && strstr(body, "drawing=1") == nullptr,
               "and told the daemon it is NOT drawing: the master switch is off, so the daemon "
               "serves this sandbox a cleared state rather than the channel");
+    }
+    if (daemon_gone) {
+        fflush(stderr);
+        // The frame read back is empty either way, so "it drew nothing" proves
+        // nothing on its own -- it is what a layer that never loaded looks like
+        // too (entry 38). The layer's own line is what says it got as far as
+        // having something to hand back.
+        const long ready = lines_containing(stderr_log, "backend ready");
+        printf("     the layer said \"backend ready\" %ld time(s)\n", ready);
+        check(ready == 2,
+              "the layer was drawing before the daemon stopped, and built its backend again "
+              "for the daemon that came back");
+        const long handed = lines_containing(stderr_log, "releasing the backend and the font atlas");
+        printf("     the layer released what it held %ld time(s)\n", handed);
+        check(handed == 1,
+              "and hands back the backend, the atlas and every face when the daemon stops, "
+              "instead of holding them for the life of the game");
+        // The nothing-to-draw gate, asked here because this scenario is the one
+        // that spends four seconds with a segment and no channel on it. A layer
+        // that builds its renderer from the swapchain and the application's
+        // verdict alone -- everything except whether there is anything on the
+        // screen -- says "backend ready" a third time in that window.
+    }
+    if (idle) {
+        fflush(stderr);
+        // A daemon publishing, the owner simply not in a voice channel -- the
+        // ordinary state of a machine with the tray icon up. The renderer used
+        // to be built from the swapchain and the application's verdict alone,
+        // which is everything except whether there is anything to draw, so this
+        // game paid 133 ms of atlas and 80 MB of pixels for a panel that was
+        // never going to appear. The OpenGL path has always returned above
+        // ensure_backend() here.
+        const long ready = lines_containing(stderr_log, "backend ready");
+        printf("     the layer said \"backend ready\" %ld time(s)\n", ready);
+        check(ready == 0,
+              "with a daemon publishing and nothing on the segment to draw, the renderer is "
+              "not built at all");
+        check(lines_containing(stderr_log, "nothing to draw") == 1,
+              "and the layer says once why it is spending no frames");
     }
     if (second_device) {
         fflush(stderr);

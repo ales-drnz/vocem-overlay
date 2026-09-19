@@ -4,7 +4,7 @@
 //
 // The avatar upload's command buffer must be registered with the loader.
 //
-// A command buffer is a dispatchable object, and layer rule 4 (vocem_layer.cpp's
+// A command buffer is a dispatchable object, and layer rule 5 (vocem_layer.cpp's
 // own header) is that every dispatchable object the layer creates goes through
 // pfnSetDeviceLoaderData, or dispatch on it will crash. The layer honours that
 // for the per-swapchain command buffers it records the overlay into -- and the
@@ -286,7 +286,7 @@ int main() {
 
     check(alloc_order > 0, "the upload allocated a command buffer");
     check(register_order > 0,
-          "the command buffer was handed to pfnSetDeviceLoaderData (layer rule 4)");
+          "the command buffer was handed to pfnSetDeviceLoaderData (layer rule 5)");
     check(register_order > alloc_order, "after it was allocated");
     check(begin_order > 0 && register_order < begin_order,
           "and before the first dispatch on it");

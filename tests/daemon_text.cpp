@@ -33,6 +33,7 @@ void check(bool condition, const char* what) {
 }  // namespace
 
 int main() {
+    using vocem::json_depth_within;
     using vocem::sanitise_text;
 
     // Entry 66: the title as the owner's journal recorded it, isolates and all.
@@ -61,6 +62,35 @@ int main() {
     check(sanitise_text("") == "", "nothing in, nothing out");
     check(sanitise_text("\xE2\x81") == "\xE2\x81",
           "a truncated sequence is copied through, never read past");
+
+    // --- how deep a message may nest before it is parsed at all -----------
+    //
+    // nlohmann bounds neither depth nor element count, so what a message costs
+    // is the peer's to choose. Measured twice: 8 MiB of '[' -- exactly
+    // kMaxMessageBytes, the reassembly cap entry 72 put on a frame -- costs
+    // **624 MB** of resident memory and then comes back discarded, because it
+    // is invalid. The unit says MemoryMax=128M, so on the owner's machine that
+    // is the cgroup killing the daemon with a SIGKILL, which runs no
+    // destructor: the segment, the note's words and every Flatpak mirror stay
+    // behind (the leftover entry 81 forbids) and Restart=on-failure does it
+    // again. The scan below is what stops it reaching the parser.
+    check(json_depth_within(R"({"cmd":"DISPATCH","evt":"SPEAKING_START",)"
+                            R"("data":{"user_id":"1"}})", 64),
+          "a real RPC message is nowhere near the ceiling");
+    check(json_depth_within(std::string(64, '[') + std::string(64, ']'), 64),
+          "a message exactly at the ceiling is allowed");
+    check(!json_depth_within(std::string(65, '[') + std::string(65, ']'), 64),
+          "and one level past it is not");
+    check(!json_depth_within(std::string(8u * 1024 * 1024, '['), 64),
+          "8 MiB of nesting is refused without being parsed");
+    // A name is data, and a name full of brackets is a name. This is why the
+    // scan skips strings rather than counting every byte that looks like
+    // structure -- a channel decorated from a symbol site (entry 128) is
+    // exactly the shape that would trip a naive counter.
+    check(json_depth_within(R"({"nick":"[[[[[[[[[[ hello ]]]]]]]]]]"})", 4),
+          "brackets inside a name are not nesting");
+    check(json_depth_within(R"({"n":"say \" [[[[["})", 4),
+          "and a backslash-escaped quote does not end the string early");
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

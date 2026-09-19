@@ -37,6 +37,7 @@
 
 #include <string>
 
+#include "probe_alarm.h"
 #include "flatpak_bridge.h"
 #include "vocem/apps.h"
 #include "vocem/avatar_rgba.h"
@@ -200,7 +201,7 @@ int main() {
     if (const int gate = vocem_test::ensure_private_shm(false); gate >= 0) {
         return gate;
     }
-    alarm(60);
+    vocem_test::set_alarm(60, "the bridge, both halves");
 
     char scratch[] = "/tmp/vocem-flatpak-bridge-XXXXXX";
     if (!mkdtemp(scratch)) {

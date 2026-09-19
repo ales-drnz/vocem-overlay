@@ -140,3 +140,90 @@ endif()
 
 message("ok   the daemon's state is one line, and the fallback did not run beside it")
 message("ok   and no other line in the script has that shape")
+
+# --- and the half that was never run at all ---------------------------------
+#
+# Everything above drives the script with NO arguments, so the per-process
+# report -- eighty lines of it, where both of the faults this file is named for
+# lived and where a third was found on 2026-09-19 -- never executed. Two
+# targets, both hermetic:
+#
+#   * a `sleep` this test starts, which is the ordinary case: a live process of
+#     this user's, whose map can be read.
+#   * `kthreadd`, pid 2 on every Linux, a kernel thread with no memory map and
+#     another uid. That is the case the third fault was about: `grep -c` over a
+#     map it cannot read counts nothing, so `found=0`, so the report printed
+#     `shim loaded: NO`, `GL overlay: no`, `Vulkan layer: no` and then the
+#     confident sentence "we are not inside it at all: a sandbox (Flatpak/Snap),
+#     or the program started before the preload existed in the session" --
+#     measured against pid 1. An unreadable map and a map with nothing of ours
+#     in it were one answer, in the one tool whose whole purpose is to tell
+#     "never started" from "ran for an hour without our code reaching it".
+#
+# Both legs also assert the script's STDERR is empty: it used to exit 0 while
+# printing "Permesso negato" into the middle of its own answer, because a
+# redirect fails in the shell and `2>/dev/null` on the command does not cover
+# it -- and this test captured stderr and printed it only on a non-zero exit.
+
+function(run_why target out_output out_errors)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+                "PATH=${work}/bin:$ENV{PATH}"
+                "XDG_CACHE_HOME=${work}/cache"
+                sh "${SOURCE_DIR}/scripts/vocem-why.sh" "${target}"
+        OUTPUT_VARIABLE captured
+        ERROR_VARIABLE complaints
+        RESULT_VARIABLE ignored
+        TIMEOUT 60)
+    set(${out_output} "${captured}" PARENT_SCOPE)
+    set(${out_errors} "${complaints}" PARENT_SCOPE)
+endfunction()
+
+# Leg 1: this very script's own process. `cmake -P` is what is running these
+# lines, so `vocem-why.sh cmake` is guaranteed a live process of this user's
+# with a readable map, and nothing has to be started or cleaned up -- a
+# background `sleep` did not survive execute_process's own child handling,
+# which is the sort of thing that makes a fixture flaky rather than hermetic.
+run_why("cmake" own_output own_errors)
+if(NOT own_output MATCHES "shim loaded:")
+    message("${own_output}")
+    message(FATAL_ERROR
+        "the per-process report never ran for a live process of this user's, so the half of "
+        "the script this test exists for was not measured")
+endif()
+if(own_output MATCHES "cannot read")
+    message("${own_output}")
+    message(FATAL_ERROR
+        "the script could not read the map of a process this test started itself: the "
+        "readability check is refusing something it can read")
+endif()
+if(NOT own_errors STREQUAL "")
+    message("${own_errors}")
+    message(FATAL_ERROR "the script wrote to stderr while reporting on a live process")
+endif()
+message("ok   the per-process report runs for an ordinary process, in silence")
+
+# Leg 2: a kernel thread -- no map, another uid.
+run_why("kthreadd" kernel_output kernel_errors)
+if(NOT kernel_output MATCHES "kthreadd")
+    message(STATUS "skip there is no kthreadd here to ask about")
+    return()
+endif()
+if(NOT kernel_output MATCHES "shim loaded:[ 	]*unknown")
+    message("${kernel_output}")
+    message(FATAL_ERROR
+        "a process whose memory map cannot be read is reported as though it had been read: "
+        "an unreadable map and a map with nothing of ours in it are not the same answer, and "
+        "this tool exists to tell them apart")
+endif()
+if(kernel_output MATCHES "we are not inside it at all")
+    message("${kernel_output}")
+    message(FATAL_ERROR
+        "the script printed its confident 'we are not inside it at all' diagnosis about a "
+        "process it could not look inside (entries 99 and 116, third round)")
+endif()
+if(NOT kernel_errors STREQUAL "")
+    message("${kernel_errors}")
+    message(FATAL_ERROR "the script wrote to stderr while reporting on a kernel thread")
+endif()
+message("ok   and says 'unknown' about a process it cannot look inside, rather than 'no'")

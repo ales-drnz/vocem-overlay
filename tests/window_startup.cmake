@@ -77,10 +77,16 @@ function(time_run stub out)
             "VOCEM_CONFIG_SECTIONS=set:8"
             "VOCEM_CONFIG_GEOMETRY=set:${scratch}/${stub}.json")
     now_ms(after)
-    if(NOT status EQUAL 0)
-        message(STATUS "skip the window could not run here: ${status} ${errors}")
-        set(${out} "skip" PARENT_SCOPE)
-        return()
+    # window_status.cmake's rule, in a function that cannot use its macro
+    # (return() would leave only this function, and the caller has a skip
+    # protocol of its own through ${out}): a window that did not come back
+    # cleanly is a failure either way, and that file carries the measurements
+    # the rule rests on.
+    if(NOT "${status}" STREQUAL "0")
+        message(FATAL_ERROR
+            "the window did not come back from its run: ${status}. A skip here would be "
+            "counted as a pass, and this is the window failing rather than the machine "
+            "refusing to run it -- window_status.cmake says how that was measured.\n${errors}")
     endif()
     math(EXPR elapsed "${after} - ${before}")
     set(${out} "${elapsed}" PARENT_SCOPE)

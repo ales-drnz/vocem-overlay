@@ -31,6 +31,10 @@
 #include <X11/Xutil.h>
 
 #include "private_shm.h"
+#include "probe_alarm.h"
+#include "probe_name.h"
+
+#include <string>
 #include "vocem/note.h"
 #include "vocem/shm.h"
 
@@ -89,7 +93,7 @@ int main() {
         return gate;
     }
 
-    alarm(60);
+    vocem_test::set_alarm(60, "a toast outside a channel");
 
     char root[] = "/tmp/vocem-toast-alone-XXXXXX";
     if (!mkdtemp(root)) {
@@ -101,9 +105,12 @@ int main() {
     mkdir(path, 0700);
     snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // A long toast, so the read-back at frame 45 is nowhere near its exit.
-    write_file(path,
-               "enabled = true\nshown_apps = vocem_gl_toast_alone\n"
-               "notification_seconds = 30\n");
+    // The rule names THIS binary, read off /proc/self/exe (probe_name.h,
+    // entry 129).
+    const std::string rule = "enabled = true\nshown_apps = " +
+                             vocem_test::own_name("vocem_gl_toast_alone") +
+                             "\nnotification_seconds = 30\n";
+    write_file(path, rule.c_str());
     setenv("XDG_CONFIG_HOME", root, 1);
     snprintf(path, sizeof(path), "%s/cache", root);
     mkdir(path, 0700);

@@ -28,6 +28,8 @@
 #include <GL/glx.h>
 #include <X11/Xlib.h>
 
+#include "probe_alarm.h"
+
 namespace {
 
 int failures = 0;
@@ -149,7 +151,7 @@ int main(int argc, char** argv) {
     }
     self[n] = '\0';
 
-    alarm(120);
+    vocem_test::set_alarm(120, "a declining process's per-frame cost");
 
     double disabled = 0.0;
     double declining = 0.0;

@@ -48,6 +48,10 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 
+#include "probe_alarm.h"
+#include "probe_name.h"
+
+#include <string>
 #include "vocem/avatar_rgba.h"
 #include "private_shm.h"
 #include "vocem/shm.h"
@@ -146,7 +150,7 @@ int main() {
         return gate;
     }
 
-    alarm(180);
+    vocem_test::set_alarm(180, "drawing and counting avatar reads");
 
     char root[] = "/tmp/vocem-gl-avatar-XXXXXX";
     if (!mkdtemp(root)) {
@@ -157,7 +161,12 @@ int main() {
     snprintf(path, sizeof(path), "%s/vocem", root);
     mkdir(path, 0700);
     snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
-    write_file(path, "enabled = true\nshown_apps = vocem_gl_avatar_quiet\n");
+    // The rule names THIS binary, read off /proc/self/exe: a literal is
+    // wrong the day the binary is renamed and wrong at -m32 today
+    // (tests/probe_name.h, entry 129).
+    const std::string rule = "enabled = true\nshown_apps = " +
+                             vocem_test::own_name("vocem_gl_avatar_quiet") + "\n";
+    write_file(path, rule.c_str());
     setenv("XDG_CONFIG_HOME", root, 1);
     char cache[700];
     snprintf(cache, sizeof(cache), "%s/cache", root);

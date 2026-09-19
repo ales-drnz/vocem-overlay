@@ -67,14 +67,29 @@ int main() {
     // next one. The full binary name, because /proc/self/comm truncates at 15
     // characters and the lists match either spelling.
     config.shown_apps = "vocem_draw_decision";
-    check(!decision.refresh(config), "an edited list recomputes without claiming first");
+    // refresh() answers "there is something to say" -- the first computation, and
+    // every later one that came out differently. It used to answer "this was the
+    // first", and the caller logs on it, so the overlay leaving a running game
+    // because somebody ticked it off the Applications page was written down
+    // nowhere at all: not the log, not the journal, not anywhere vocem-why
+    // reads. This assertion pinned that silence by name.
+    check(decision.refresh(config),
+          "an edited list that changes the verdict says so, so the caller can write it down");
     check(decision.allowed(), "and shown_apps lets the running process in");
 
     // And off again, through the other list.
     config.shown_apps.clear();
     config.hidden_apps = "vocem_draw_decision";
-    decision.refresh(config);
+    check(decision.refresh(config), "and taking it back out is worth saying too");
     check(!decision.allowed(), "hidden_apps takes it back out, same process");
+
+    // A list edited in a way that does not move the verdict is not news: the
+    // recomputation happens, the caller is not woken. Without this the fix above
+    // would be "return true whenever anything was touched", which would put a
+    // line in the log for every Apply the user makes.
+    config.hidden_apps = "vocem_draw_decision,something_else";
+    check(!decision.refresh(config), "an edit that leaves the verdict alone says nothing");
+    check(!decision.allowed(), "and the verdict is still the same one");
 
     char cleanup[600];
     snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);

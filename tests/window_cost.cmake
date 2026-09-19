@@ -56,6 +56,8 @@ foreach(i RANGE ${last_record})
          "why = entry:game${i}.desktop\nseen = 1788700000\n")
 endforeach()
 
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
 execute_process(
     COMMAND "${CONFIG_BINARY}"
     RESULT_VARIABLE status
@@ -72,10 +74,7 @@ execute_process(
         "QT_QPA_PLATFORM=set:offscreen"
         "VOCEM_CONFIG_SECTIONS=set:5,5,5,5,5,5,5,5,5,5"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
-if(NOT status EQUAL 0)
-    message(STATUS "skip the window could not run here: ${status} ${errors}")
-    return()
-endif()
+vocem_window_ran("${status}" "${errors}")
 
 file(READ "${scratch}/geometry.json" dump)
 if(NOT dump MATCHES "\"counters\": ({[^}]*})")

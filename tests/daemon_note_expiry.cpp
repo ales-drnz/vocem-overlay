@@ -177,6 +177,23 @@ int main(int argc, char** argv) {
 
     g_daemon = daemon_path;
 
+    // The one scenario flag this file has: `port-walk` replaces "Discord is
+    // gone, and nothing answers" with "Discord is gone, and three ports accept
+    // and say nothing", which is what makes the port walk SLOW -- ten seconds
+    // of handshake deadline each. The daemon's tick, which is what retires
+    // these words, sat after the walk's closing brace while its own comment and
+    // DESIGN 112 both said it ran once per port: so with this shape the words
+    // stayed for the whole walk. The measurement is case 1's own, unchanged and
+    // with its own bound; only what is listening changes. It stops after case 1,
+    // because the cases after it need the ports.
+    const char* env_scenario = getenv("VOCEM_NOTE_EXPIRY_SCENARIO");
+    const std::string scenario = env_scenario ? env_scenario : "";
+    const bool port_walk = scenario == "port-walk";
+    if (!scenario.empty() && !port_walk) {
+        printf("FAIL unknown VOCEM_NOTE_EXPIRY_SCENARIO '%s'\n", scenario.c_str());
+        return 1;
+    }
+
     char root[] = "/tmp/vocem-note-expiry-XXXXXX";
     if (!mkdtemp(root)) {
         printf("FAIL mkdtemp\n");
@@ -267,11 +284,30 @@ int main(int argc, char** argv) {
     // on a number that measured the deadline and not the expiry.
     close(listener);
     close(fd);
+    // Three ports that accept and never answer, planted before the daemon can
+    // look. The daemon is right to wait on each -- it has a ten-second absolute
+    // deadline for a handshake -- so this is thirty seconds of walking, and the
+    // question is whether anything ticks inside it.
+    int silent[3] = {-1, -1, -1};
+    if (port_walk) {
+        for (int i = 0; i < 3; ++i) {
+            silent[i] = vocem_test::listen_on(static_cast<uint16_t>(6463 + i));
+            if (silent[i] < 0) {
+                printf("FAIL cannot listen on %d\n", 6463 + i);
+                kill(daemon_pid, SIGKILL);
+                return 1;
+            }
+        }
+        printf("--  and three ports accept without answering: thirty seconds of port walk\n");
+    }
     printf("--  Discord is gone; the toast lasts 1.0 s over which the daemon allows 1.0 s\n");
 
     const double closed_at = monotonic();
     double cleared_after = -1.0;
-    for (int i = 0; i < 150; ++i) {  // 15 s, against a fix that needs about two
+    // 15 s for the ordinary case (against a fix that needs about two), 45 for
+    // the port walk, whose defect takes the whole 30 s walk plus the tick.
+    const int looks = port_walk ? 450 : 150;
+    for (int i = 0; i < looks; ++i) {
         usleep(100 * 1000);
         if (!note_still_readable(serial)) {
             cleared_after = monotonic() - closed_at;
@@ -286,17 +322,72 @@ int main(int argc, char** argv) {
     }
     check(cleared_after >= 0.0,
           "the words are retired with Discord gone: the clock is the daemon's own");
-    // An upper bound as well as existence. The budget printed above is about
-    // two seconds (the toast's second plus the allowance); the first version of
-    // this file measured 10.1 s and nearly believed it -- the handshake
-    // deadline spent talking to the stub's own leaked listener -- and a check
-    // reading "cleared within the 15 s window" would have passed on that
-    // number too. Six seconds is generous over the budget and still refuses
-    // the deadline class.
-    check(cleared_after >= 0.0 && cleared_after <= 6.0,
-          "and they go on the toast's own budget, not on some deadline's");
+    // An upper bound as well as existence. With nothing listening the budget
+    // printed above is about two seconds (the toast's second plus the
+    // allowance); the first version of this file measured 10.1 s and nearly
+    // believed it -- the handshake deadline spent talking to the stub's own
+    // leaked listener -- and a check reading "cleared within the 15 s window"
+    // would have passed on that number too. Six seconds is generous over the
+    // budget and still refuses the deadline class.
+    //
+    // Under `port-walk` the bound is a different claim, and the honest one:
+    // three ports that accept and stay silent are thirty seconds of walking,
+    // and a tick per port bounds the wait to ONE of those deadlines rather than
+    // all three. Measured: **11.0 s** with the tick inside the loop against
+    // **31.0 s** with it after the loop, which is what the code did while its
+    // own comment and DESIGN 112 said otherwise. Fifteen is one deadline plus
+    // margin; it is deliberately not two seconds, because nothing here makes a
+    // silent peer answer sooner and a bound that pretended otherwise would be
+    // measuring a wish.
+    const double budget = port_walk ? 15.0 : 6.0;
+    check(cleared_after >= 0.0 && cleared_after <= budget,
+          port_walk ? "and they go within one handshake deadline, not after the whole walk"
+                    : "and they go on the toast's own budget, not on some deadline's");
     check(!note_name_exists(),
           "and the name is unlinked too, so nothing in the session can open it");
+
+    // And the sender goes with the words. vocem/note.h promises that "between
+    // messages there is nothing to read anywhere"; the body had its own segment
+    // and everything around it -- the serial, the timestamp, the avatar hash
+    // and the TITLE, which is Discord's composed string of the sender's display
+    // name plus the guild and the channel -- stayed in SharedState, which every
+    // graphical process of the session maps as a matter of course. Nothing
+    // zeroed the slot on expiry. Read here, through the same reader a game
+    // uses, after the words have already gone.
+    vocem::Snapshot retired{};
+    const bool slot_cleared = wait_for(reader, retired, 6.0, [](const vocem::Snapshot& state) {
+        return state.notification.serial == 0;
+    });
+    if (!slot_cleared) {
+        printf("--  the retired toast still reads: serial %llu, title '%s', hash '%s'\n",
+               static_cast<unsigned long long>(retired.notification.serial),
+               retired.notification.title, retired.notification.avatar_hash);
+    }
+    check(slot_cleared, "the state segment's notification slot is retired with the words");
+    check(slot_cleared && retired.notification.title[0] == '\0',
+          "so who sent it is not left in the segment every game maps");
+    check(slot_cleared && retired.notification.received == 0.0 &&
+              retired.notification.user_id == 0 && retired.notification.avatar_hash[0] == '\0',
+          "and neither is when, from whom, or which face");
+
+    if (port_walk) {
+        // The claim is about the walk and the cases below need the ports.
+        kill(daemon_pid, SIGTERM);
+        int status = 0;
+        waitpid(daemon_pid, &status, 0);
+        check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "and the daemon still stops cleanly from inside that walk");
+        for (int one : silent) {
+            if (one >= 0) {
+                close(one);
+            }
+        }
+        if (system(("rm -rf " + g_base).c_str()) != 0) {
+            printf("  (could not remove %s)\n", g_base.c_str());
+        }
+        printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
+        return failures == 0 ? 0 : 1;
+    }
 
     // -----------------------------------------------------------------------
     // Case 2: the daemon is killed outright.

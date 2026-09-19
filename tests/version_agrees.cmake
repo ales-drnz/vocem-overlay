@@ -145,6 +145,8 @@ list(GET metainfo_versions 0 metainfo_newest)
 set(tags "")
 find_program(GIT_EXECUTABLE git)
 if(GIT_EXECUTABLE)
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" tag --sort=-v:refname
         WORKING_DIRECTORY "${SOURCE_DIR}"
@@ -234,6 +236,57 @@ if(NOT missing STREQUAL "")
         "the metainfo has no <release> for ${missing_text}, and those releases have tags. Discover and GNOME Software read that list, whose words come from CHANGELOG.md and from nowhere else.")
 endif()
 
+# 4b. Every bullet in the metainfo is a CHANGELOG bullet, character for
+#     character. The metainfo says so in its own comment -- "A bullet here is a
+#     CHANGELOG bullet, never a third wording" -- and rule 4 above says the same
+#     in its failure message, and nothing enforced either: measured on
+#     2026-09-18, 0.1.6's eight bullets and 0.1.5's seven matched none of the
+#     file's, every one of them the CHANGELOG bullet cut off at its first
+#     clause. For 0.1.6 they were authored that way; for 0.1.5 the CHANGELOG was
+#     rewritten afterwards and this file was not, which is the drift this whole
+#     script exists for. Omitting a bullet is deliberate and allowed (the
+#     comment says which releases show a subset and the counts are right); what
+#     is not allowed is a fourth wording of a sentence that already has three
+#     homes -- the file, the release page and the store.
+file(READ "${SOURCE_DIR}/CHANGELOG.md" changelog_text)
+string(REPLACE ";" "\\;" changelog_escaped "${changelog_text}")
+string(REPLACE "\n" ";" changelog_lines "${changelog_escaped}")
+set(changelog_bullets "")
+foreach(line IN LISTS changelog_lines)
+    if(line MATCHES "^- (.+)$")
+        string(STRIP "${CMAKE_MATCH_1}" bullet)
+        list(APPEND changelog_bullets "${bullet}")
+    endif()
+endforeach()
+list(LENGTH changelog_bullets bullet_count)
+if(bullet_count LESS 40)
+    list(APPEND problems
+        "read ${bullet_count} bullets out of CHANGELOG.md, which cannot be right: the parsing is what is broken, not the metainfo.")
+else()
+    string(REGEX MATCHALL "<li>[^<]*</li>" metainfo_items "${metainfo_text}")
+    list(LENGTH metainfo_items item_count)
+    if(item_count LESS 20)
+        list(APPEND problems
+            "read ${item_count} <li> items out of the metainfo, which cannot be right for ${item_count} releases' worth of notes.")
+    endif()
+    set(third_wordings "")
+    foreach(item IN LISTS metainfo_items)
+        string(REGEX REPLACE "^<li>(.*)</li>$" "\\1" text "${item}")
+        string(REPLACE "&amp;" "&" text "${text}")
+        string(STRIP "${text}" text)
+        list(FIND changelog_bullets "${text}" at)
+        if(at EQUAL -1)
+            list(APPEND third_wordings "${text}")
+        endif()
+    endforeach()
+    if(NOT third_wordings STREQUAL "")
+        list(LENGTH third_wordings third_count)
+        list(GET third_wordings 0 first_third)
+        list(APPEND problems
+            "${third_count} of the metainfo's ${item_count} bullets are not in CHANGELOG.md word for word, starting with: ${first_third}")
+    endif()
+endif()
+
 # 5. Newest first, and the newest is either the last release or the one being
 #    written (its entry and its tag are made in one pass).
 set(previous "")
@@ -274,9 +327,18 @@ endif()
 # What the built window says it is, which is the only claim the four files above
 # cannot make on their own.
 if(NOT DEFINED CONFIG_BINARY OR NOT EXISTS "${CONFIG_BINARY}")
+    # `skip `, in the spelling ctest is told to recognise. This said the same
+    # thing without that word and so reported **Passed** with its whole reason
+    # for existing unmeasured: "every source-level claim about the version was
+    # already fine while the binary said 0.1.0" is this test's own header, and
+    # the four files above are the half that was never wrong. The same release
+    # fixed exactly this in two neighbouring scripts and wrote down why
+    # (gl_entry_points: "one width measured is still reported as one width
+    # measured rather than as both"); this one was written in the same pass and
+    # did not get it.
     message(STATUS
-        "the sources agree (${state}); the window was not built, so what the "
-        "binary carries was not checked")
+        "skip the sources agree (${state}), but the window was not built, so what the "
+        "binary carries -- the half this test exists for -- was not checked")
     return()
 endif()
 
@@ -304,10 +366,7 @@ execute_process(
         "QT_QPA_PLATFORM=set:offscreen"
         "VOCEM_CONFIG_SECTIONS=set:0"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
-if(NOT window_status EQUAL 0)
-    message(STATUS "skip the window could not run here: ${window_status} ${window_errors}")
-    return()
-endif()
+vocem_window_ran("${window_status}" "${window_errors}")
 
 file(READ "${scratch}/geometry.json" dump)
 # It must be there. A dump without the line is an old binary or an instrument

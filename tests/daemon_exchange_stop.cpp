@@ -40,6 +40,7 @@
 
 #include <string>
 
+#include "probe_alarm.h"
 #include "discord_stub.h"
 #include "private_shm.h"
 #include "vocem/shared_state.h"
@@ -88,7 +89,7 @@ int main() {
     if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
         return gate;
     }
-    alarm(120);
+    vocem_test::set_alarm(120, "the token exchange ending on a stop");
 
     char root[] = "/tmp/vocem-exchange-stop-XXXXXX";
     if (!mkdtemp(root)) {

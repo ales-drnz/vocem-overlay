@@ -58,6 +58,7 @@
 
 #include <string>
 
+#include "probe_alarm.h"
 #include "discord_stub.h"
 #include "private_shm.h"
 #include "vocem/shm.h"
@@ -157,7 +158,7 @@ int main() {
         return gate;
     }
 
-    alarm(120);
+    vocem_test::set_alarm(120, "being dragged between channels");
 
     char root[] = "/tmp/vocem-moved-test-XXXXXX";
     if (!mkdtemp(root)) {

@@ -146,7 +146,10 @@ float width_of(ImFont* font, float size) {
 
 int main() {
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    // The context the injected paths create: with the fonts module's own
+    // atlas, which is what makes the rebuild dead band a promise at all
+    // (vocem/fonts.h).
+    ImGui::CreateContext(vocem::fonts_atlas());
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;

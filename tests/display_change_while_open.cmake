@@ -95,6 +95,8 @@ mv '${scratch}/pending/card0-HDMI-A-1' '${scratch}/drm/card0-HDMI-A-1'
 # four-second sweep. The walk's timers do not depend on how fast this machine
 # is -- the clock is stopped while each step is set, grabbed and dumped (entry
 # 105) -- so those two figures are 1.1 s per step and nothing else.
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
 execute_process(
     COMMAND sh -c "sh '${scratch}/plug.sh' & exec '${CONFIG_BINARY}'"
     RESULT_VARIABLE status
@@ -107,10 +109,7 @@ execute_process(
         "QT_QPA_PLATFORM=set:offscreen"
         "VOCEM_CONFIG_SECTIONS=set:0,1,2,3,0,1"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
-if(NOT status EQUAL 0)
-    message(STATUS "skip the window could not run here: ${status} ${errors}")
-    return()
-endif()
+vocem_window_ran("${status}" "${errors}")
 if(NOT EXISTS "${scratch}/drm/card0-HDMI-A-1/modes")
     message(FATAL_ERROR "the fixture never plugged its display in -- the run was too short")
 endif()
@@ -294,3 +293,100 @@ message(STATUS
     "opened on, 1778 = the 3840x2160 that arrived); the control with both "
     "present at startup draws ${control_aspect}/1000, and a chosen display "
     "still reads ${chosen_last}/1000 after the sweep")
+
+
+# --- the same monitor arriving, with a display pinned ------------------------
+#
+# A second run, because the two claims need opposite fixtures: the run above
+# asks what the map does when nothing is chosen (it must follow the machine),
+# and this one asks what the DROPDOWN does when something is (it must not move).
+# Pinning a display in the first run would have made its own assertion false --
+# the map then depicts the pinned display, correctly -- which is exactly why
+# every fixture in this suite left the dropdown at its default and nothing ever
+# exercised the guard.
+set(pinned "${CMAKE_CURRENT_BINARY_DIR}/display-change-pinned")
+file(REMOVE_RECURSE "${pinned}")
+file(MAKE_DIRECTORY "${pinned}/config/vocem")
+file(MAKE_DIRECTORY "${pinned}/cache/vocem")
+file(MAKE_DIRECTORY "${pinned}/drm/card0-DP-1")
+file(WRITE "${pinned}/drm/card0-DP-1/status" "connected\n")
+file(WRITE "${pinned}/drm/card0-DP-1/enabled" "enabled\n")
+file(WRITE "${pinned}/drm/card0-DP-1/modes" "1280x1024\n")
+file(WRITE "${pinned}/config/vocem/config.ini" "preview_display_panel = DP-1\n")
+file(WRITE "${pinned}/plug.sh"
+"#!/bin/sh
+sleep 1.6
+mkdir -p '${pinned}/pending/card0-HDMI-A-1'
+printf 'connected\\n' > '${pinned}/pending/card0-HDMI-A-1/status'
+printf 'enabled\\n'   > '${pinned}/pending/card0-HDMI-A-1/enabled'
+printf '3840x2160\\n' > '${pinned}/pending/card0-HDMI-A-1/modes'
+mv '${pinned}/pending/card0-HDMI-A-1' '${pinned}/drm/card0-HDMI-A-1'
+")
+
+execute_process(
+    COMMAND sh -c "sh '${pinned}/plug.sh' & exec '${CONFIG_BINARY}'"
+    RESULT_VARIABLE pinned_status
+    ERROR_VARIABLE pinned_errors
+    TIMEOUT 120
+    ENVIRONMENT_MODIFICATION
+        "XDG_CONFIG_HOME=set:${pinned}/config"
+        "XDG_CACHE_HOME=set:${pinned}/cache"
+        "VOCEM_DRM_ROOT=set:${pinned}/drm"
+        "QT_QPA_PLATFORM=set:offscreen"
+        "VOCEM_CONFIG_SECTIONS=set:0,1,2,3,0,1"
+        "VOCEM_CONFIG_GEOMETRY=set:${pinned}/geometry.json")
+vocem_window_ran("${pinned_status}" "${pinned_errors}")
+if(NOT EXISTS "${pinned}/drm/card0-HDMI-A-1/modes")
+    message(FATAL_ERROR "the pinned fixture never plugged its display in -- the run was too short")
+endif()
+file(READ "${pinned}/geometry.json" pinned_dump)
+
+
+# What the "Map shows" dropdown was pointing at, every time it was on screen.
+# A pin is an index, and an index is invisible to a rectangle: DisplayPicker
+# publishes pickerIndex and pickerCount into the dump for exactly this check.
+function(picker_states dump out_indexes out_counts)
+    set(indexes "")
+    set(counts "")
+    string(REGEX MATCHALL
+           "\"item\": \"[^\"]*panelDisplayPicker/displayPicker\"[^\n]*\"visible\": true[^\n]*"
+           lines "${dump}")
+    foreach(line IN LISTS lines)
+        if(line MATCHES "\"pickerIndex\": ([0-9]+)[^\n]*\"pickerCount\": ([0-9]+)")
+            list(APPEND indexes "${CMAKE_MATCH_1}")
+            list(APPEND counts "${CMAKE_MATCH_2}")
+        endif()
+    endforeach()
+    set(${out_indexes} "${indexes}" PARENT_SCOPE)
+    set(${out_counts} "${counts}" PARENT_SCOPE)
+endfunction()
+
+picker_states("${pinned_dump}" picker_indexes picker_counts)
+list(LENGTH picker_indexes picker_seen)
+if(picker_seen LESS 2)
+    message(FATAL_ERROR
+        "the dropdown was read ${picker_seen} time(s), so there is no before and after: either "
+        "the walk did not come back to the page or DisplayPicker stopped publishing "
+        "pickerIndex, and an absent measurement is not agreement")
+endif()
+list(GET picker_indexes 0 picker_first)
+list(GET picker_counts 0 count_first)
+list(GET picker_indexes -1 picker_last)
+list(GET picker_counts -1 count_last)
+message("     Map shows: index ${picker_first} of ${count_first} rows before, "
+        "${picker_last} of ${count_last} after")
+if(NOT count_last GREATER count_first)
+    message(FATAL_ERROR
+        "the dropdown offered ${count_first} rows before and ${count_last} after: the "
+        "enumeration never reached it, so what follows would measure nothing")
+endif()
+if(NOT picker_first EQUAL 1 OR NOT picker_last EQUAL 1)
+    message(FATAL_ERROR
+        "the pinned display was lost when the enumeration changed: the dropdown pointed at row "
+        "${picker_first} before the monitor arrived and row ${picker_last} after, where "
+        "config.ini says DP-1 throughout. A ComboBox resets currentIndex to 0 when its model "
+        "is replaced (entry 104), so a live binding on config.displays drags the pin to "
+        "\"Automatic\" while the map underneath goes on drawing the pinned display -- and "
+        "re-picking the row it is showing then writes \"\" and loses the pin for good.")
+endif()
+message("ok   a monitor arriving does not drag the pinned display back to Automatic")

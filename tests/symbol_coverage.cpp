@@ -44,7 +44,10 @@ struct Pinned {
 }  // namespace
 
 int main() {
-    ImGui::CreateContext();
+    // The context the injected paths create: with the fonts module's own
+    // atlas, which is what makes the rebuild dead band a promise at all
+    // (vocem/fonts.h).
+    ImGui::CreateContext(vocem::fonts_atlas());
     if (!vocem::ensure_fonts(16.0f, 16.0f)) {
         printf("FAIL the atlas did not build\n");
         return 1;

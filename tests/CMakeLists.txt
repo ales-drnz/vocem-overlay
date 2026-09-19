@@ -127,8 +127,11 @@ vocem_test(hdr_mode
 # version that resolved on x86-64 and not on i386 shipped and took the Steam client
 # down with it. Hence a test built twice, out of one source, and run against the
 # preloaded shim rather than against a copy of its logic.
+# SKIP, because the ANGLE half of this file cannot be walked without
+# libEGL.so.1 and a half-run is not a pass: the probe exits 77 and says so
+# (entry 123's rule, which this file was the last escape from).
 vocem_test(shim_dlsym INCLUDE "${CMAKE_SOURCE_DIR}/gl/src" LINK ${CMAKE_DL_LIBS}
-    ENV ${VOCEM_SHIM_ENV})
+    ENV ${VOCEM_SHIM_ENV} SKIP)
 
 # The 32-bit half, which is the one that failed. Built here with -m32 rather than
 # taken from the separate 32-bit tree, so `ctest` in an ordinary build covers it;
@@ -224,6 +227,13 @@ if(TARGET vocem-config)
     # difference between the promise and the game as text failing to draw.
     vocem_script_test(toast_preview_honest ARGS ${VOCEM_WINDOW_ARG})
 
+    # A switch that empties the overlay has to be visible in the window's own
+    # picture of the overlay. `notificationsEnabled` dimmed its box from the
+    # start and `panelEnabled` was read by the Switch that sets it and by
+    # nothing else, so the Panel map and the live preview drew a panel at full
+    # strength while the game drew none. Two runs, the dump's own `opacity`.
+    vocem_script_test(preview_switch_honest ARGS ${VOCEM_WINDOW_ARG})
+
     # The preview quiets the picture of whoever is not talking, from the same
     # setting the overlay reads: an opacity no rectangle can see, so the dump
     # prints it. Against 0.1.9's window there is no such figure and this fails.
@@ -259,6 +269,31 @@ vocem_script_test(slider_bounds)
 # normalised away. Entry 76 is what a drift cost once; the tagged file
 # compiling the whole test suite for every stranger is what it cost again.
 vocem_script_test(pkgbuild_agree)
+
+# The third artefact, which nothing had ever read: the Flatpak extension's
+# manifest. Its post-install list is the whole of what it carries besides the
+# libraries, because both of its modules pass -DVOCEM_BUILD_HOST_TOOLS=OFF and
+# that is what every data and licence install rule in CMakeLists.txt is guarded
+# by. The published 0.1.9 extension shipped the emoji bank without its sequence
+# table -- 0.1.9's one announced fix, absent in every Flatpak game -- and six
+# OFL fonts and Dear ImGui with none of their licence texts. Both requirements
+# are derived from the tree rather than listed in the test.
+vocem_script_test(flatpak_extension_payload)
+
+# The two ways the shim reaches a process, held to one path (entry 16). It
+# configures a tree at a prefix of its own on purpose: at the default prefix
+# vocem-run's hardcoded /usr and environment.d's @CMAKE_INSTALL_PREFIX@ agree
+# by accident, so the comparison anybody would make on this machine passes
+# against the defect. About a second; nothing is built.
+vocem_script_test(one_preload_path TIMEOUT 300)
+
+# Nothing in the repository root that is neither tracked nor ignored. `git
+# status` cannot see a directory with no files in it, and six of those --
+# named after this project's own environment variables and Steam runtime path
+# fragments, so an ad-hoc command word-split a line -- were carried for three
+# days. Entry 137 caught the version that has files in it, because that one
+# git status shows.
+vocem_script_test(repo_root_clean)
 
 # The daemon's unit: confined, and confined in ways that actually start. An empty
 # CapabilityBoundingSet on a user service fails to start (exit 218, measured), so
@@ -311,6 +346,43 @@ vocem_test(gl_draw_local LINK ${CMAKE_DL_LIBS} X11 rt LINK_OPTIONS -rdynamic
 # and made the dying context current to do it (gl_draw_local.cpp's header).
 vocem_test_run(gl_second_context TARGET gl_draw_local
     ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=second-context" SKIP)
+
+# What a GL CONTEXT costs, which gl_noop_quiet (per frame) and apps_cost (per
+# ask) leave uncovered. A game that destroys the context it was drawing in and
+# makes another crashed 0.1.10-1 on the second one -- the fonts module's dead
+# band could not tell a fresh atlas from its own -- and paid the whole 133 ms
+# rasterisation again per context. Four EGL contexts, no window; the log's own
+# "font atlas built" lines are the count.
+vocem_test(gl_context_cycle LINK ${CMAKE_DL_LIBS} EGL GLESv2 rt
+    ENV ${VOCEM_GL_PROBE_ENV} SKIP TIMEOUT 120)
+
+# Quit means quit inside the game too. The daemon stops, the overlay leaves the
+# screen -- and used to go on holding its atlas, its GL objects and a texture
+# per face for the rest of the process's life: 139.7 MB against 22.3 MB without
+# the overlay, unchanged 1200 presents after the segment was unlinked. The probe
+# reads its own Pss on both sides of the quit.
+vocem_test(gl_daemon_gone LINK ${CMAKE_DL_LIBS} EGL GLESv2 rt
+    ENV ${VOCEM_GL_PROBE_ENV} SKIP TIMEOUT 120)
+
+# The same probe in a process the overlay declines, which is what plasmashell
+# and every other EGL client of the session is: no backend, no atlas, and one
+# verdict however many contexts go by.
+vocem_test_run(gl_context_cycle_quiet TARGET gl_context_cycle
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=declining" SKIP TIMEOUT 120)
+
+# Both at 32 bits, against build32's own libraries. Entries 144, 145 and 146
+# were all written at one width, in a project whose own law is that the 64-bit
+# build passing is not evidence about the 32-bit half (entries 30/33/34) -- and
+# the atlas these two are about is the largest thing the injected code holds,
+# with a pointer and a size_t in every one of its bookkeeping structures.
+vocem_m32_twin(gl_context_cycle
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_m32_twin(gl_daemon_gone
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
 
 # The overlay's colours in a game that writes sRGB. GL_FRAMEBUFFER_SRGB makes the
 # hardware encode whatever the shader writes, and ImGui's colours are encoded
@@ -468,7 +540,7 @@ vocem_script_test(vk_layer_in_container ARGS
 
 # The avatar upload's command buffer through the loader contract: a dispatchable
 # object a layer creates is registered with pfnSetDeviceLoaderData or dispatch
-# on it crashes (layer rule 4). The TextureCache allocated one under a comment
+# on it crashes (layer rule 5). The TextureCache allocated one under a comment
 # claiming the renderer had registered it, and nothing had. Runs the real
 # TextureCache against a stub Vulkan supplied through its own resolver seam.
 # vocem_common for the shared logger the cache speaks through (nothing else of
@@ -570,6 +642,16 @@ if(TARGET vocemd)
     # RPC connection it will not serve: measured against the packaged 0.1.3-7
     # daemon, 2215 connections in five seconds against 3. Same sandbox as above.
     vocem_test(daemon_reconnect ENV ${VOCEM_DAEMON_ENV} TIMEOUT 120 SKIP)
+
+    # The same peer, one step further in: it authenticates the session and then
+    # drops it. The pause was made conditional on NOT having authenticated, so
+    # this path had no sleep at all -- measured against the installed 0.1.10-2
+    # daemon, 5166 and 4381 connections in five seconds, where the pause makes
+    # 6; and as in entry 103 the ceiling is the stub's, not the daemon's.
+    # Discord restarting is this shape.
+    vocem_test_run(daemon_reconnect_authenticated TARGET daemon_reconnect
+        ENV ${VOCEM_DAEMON_ENV} "VOCEM_DAEMON_RECONNECT_SCENARIO=authenticated"
+        TIMEOUT 120 SKIP)
 endif()
 
 # What the daemon takes out of a name (daemon/src/text.h): the directional
@@ -597,6 +679,26 @@ if(TARGET vocemd)
     # daemon_notification's sandbox.
     vocem_test(daemon_stop_unlinks INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
         ENV ${VOCEM_DAEMON_ENV} TIMEOUT 150 SKIP)
+
+    # The same stop arriving while the daemon is inside a handshake rather than
+    # inside a transfer. A peer that accepts and never answers the upgrade is
+    # one the daemon is right to wait for -- it has a ten-second absolute
+    # deadline for it (entry 77) -- and it waited the whole of it with `g_stop`
+    # already set, against a unit whose TimeoutStopSec is ten. The class had
+    # been repaired four times in four functions (entries 72, 77, 102, 112) and
+    # this was the instance left: daemon_ws_bounds cannot reach it, because its
+    # stub answers.
+    vocem_test_run(daemon_stop_in_handshake TARGET daemon_stop_unlinks
+        ENV ${VOCEM_DAEMON_ENV} "VOCEM_DAEMON_STOP_SCENARIO=handshake" TIMEOUT 150 SKIP)
+
+    # And what a CLEAN stop leaves in a Flatpak sandbox. `bridge.stop()` emptied
+    # the list of mirrors before `note().clear()` fired the hook that unlinks
+    # the mirrored words, so a message's text stayed in the sandbox until
+    # logout -- after the tray's Quit, which is the one stop with no later
+    # daemon to clean up after it. vocem/note.h promises the opposite; the two
+    # halves are each covered in flatpak_bridge.cpp and never in this order.
+    vocem_test_run(daemon_stop_note_mirror TARGET daemon_stop_unlinks
+        ENV ${VOCEM_DAEMON_ENV} "VOCEM_DAEMON_STOP_SCENARIO=note-mirror" TIMEOUT 150 SKIP)
 
     # The same stop with the token exchange stalled instead of a download: the
     # one transfer on the daemon's own thread had no way out, so SIGTERM waited
@@ -735,6 +837,30 @@ vocem_test_run(vk_present_in_flight TARGET vk_present_draw
 vocem_test_run(vk_present_second_device TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-device" SKIP)
 
+# Quit means quit on the Vulkan side too: the daemon's segment is unlinked under
+# a drawing game and the layer must hand back everything it holds for it. The
+# memory is weighed on the OpenGL half (gl_daemon_gone); here the witnesses are
+# the layer's own line, counted, and a frame that is the game's own again.
+#
+# WITNESSED, and driven by the chained loop rather than the idling one. The
+# first version of this test used run_frames, which calls vkQueueWaitIdle after
+# every present -- so the GPU was provably finished by the time the layer's
+# release executed, and destroying the renderer's images, buffers, pipeline and
+# descriptor pool was legal whatever the layer did. It asserted three things
+# about bookkeeping and could not have failed for any lifetime reason, which is
+# the shape DESIGN 62 is about. The release fires on an arbitrary present of a
+# live device; only a wait the layer performs itself makes it safe.
+vocem_test_run(vk_present_daemon_gone TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=daemon-gone" SKIP TIMEOUT 180)
+
+# A daemon publishing and nobody in a voice channel: the ordinary state of a
+# machine with the tray icon up, and the one the layer used to build its whole
+# renderer for -- 133 ms of atlas and 80 MB of pixels for a panel that was never
+# going to appear, because `needs_init` was decided from the swapchain and the
+# application's verdict alone. "backend ready" must not appear at all.
+vocem_test_run(vk_present_idle TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=idle" SKIP)
+
 # A Flatpak game with the master switch off, as the daemon hears of it. The
 # layer enters the bridge and tells the daemon whether this sandbox is drawing;
 # it used to say `allowed` where the GL side said `enabled && allowed`, so the
@@ -758,6 +884,21 @@ vocem_m32_twin(vk_present_draw
         "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so"
     BUILD32 "${VOCEM_BUILD32_DIR}/dev/VkLayer_vocem_overlay.x86.json"
             "${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+
+# And its scenarios at 32 bits, which nothing could twin until
+# vocem_m32_twin_run existed: the probe had eight scenes at 64 bits and one at
+# 32, and every one of them is about lifetimes and bookkeeping in a process
+# where a pointer and a size_t are a different size. The witness is left out --
+# it is a 64-bit layer -- so these run with the plain 32-bit chain, which is
+# what `vk_present_draw32` itself uses.
+set(VOCEM_VK_PROBE32_ENV
+    "VOCEM_VK_MANIFEST=${VOCEM_BUILD32_DIR}/dev/VkLayer_vocem_overlay.x86.json"
+    "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+foreach(scene recreate in_flight second_device daemon_gone idle)
+    string(REPLACE "_" "-" scene_value "${scene}")
+    vocem_m32_twin_run(vk_present_${scene} TARGET vk_present_${scene}
+        ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=${scene_value}")
+endforeach()
 
 # The same present hook under the Khronos validation layer, where the machine
 # has one: the witness knows the handful of calls this project's rules name,
@@ -849,6 +990,25 @@ if(TARGET vocem-config)
     # examining the entries that carry its name and not the whole registry.
     vocem_script_test(window_cost ARGS ${VOCEM_WINDOW_ARG})
 
+    # The three instant switches, driven where no window test can reach them.
+    # The offscreen harness walks sections and opens popups; it cannot press a
+    # Switch, and persistNow() has no other interface -- so the bridge is built
+    # directly here, the way daemon_ws_bounds.cpp compiles websocket.cpp and
+    # talks to it. It writes on top of the file as it stands, and used to leave
+    # the window's own copy at the value it had that morning: the next Apply
+    # then wrote over an edit made outside, with the button grey and nothing
+    # saying the two differed.
+    # The GUI's own dependencies, found here because tests/ is a directory of
+    # its own and gui/'s find_package does not reach it.
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Quick Widgets)
+    find_package(Fontconfig QUIET)
+    vocem_test(config_bridge_switches
+        SOURCES config_bridge_switches.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Quick Qt6::Widgets Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_config_bridge_switches PROPERTIES AUTOMOC ON)
+
     # Two launches 100 ms apart are one window: the socket guard asked before
     # the window was built and listened after, so two launches inside that gap
     # both proceeded and the second unlinked the first's socket. A lock file
@@ -937,6 +1097,15 @@ vocem_script_test(version_agrees ARGS
 if(TARGET vocemd)
     vocem_test(daemon_note_expiry LINK rt ENV ${VOCEM_DAEMON_ENV} TIMEOUT 240 SKIP)
 endif()
+
+    # The same words, with the port walk made slow: three ports that accept and
+    # say nothing are thirty seconds of walking, and the tick that retires a
+    # message's words sat AFTER the walk while its own comment and DESIGN 112
+    # both said "once per port". Measured: 11.0 s with the tick inside the loop
+    # -- one handshake deadline -- against 30.0 and 30.1 s against the installed
+    # 0.1.10-2 daemon.
+    vocem_test_run(daemon_note_expiry_port_walk TARGET daemon_note_expiry
+        ENV ${VOCEM_DAEMON_ENV} "VOCEM_NOTE_EXPIRY_SCENARIO=port-walk" TIMEOUT 120 SKIP)
 
 # The map of the display follows the machine while the window is open.
 #

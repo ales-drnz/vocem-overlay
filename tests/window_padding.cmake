@@ -116,6 +116,8 @@ set(dumps "")
 # the whole test instead of only this walk.
 macro(walk fixture size)
     set(dump "${scratch}/${fixture}-${size}.json")
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
     execute_process(
         COMMAND "${CONFIG_BINARY}"
         RESULT_VARIABLE status
@@ -129,10 +131,7 @@ macro(walk fixture size)
             "VOCEM_CONFIG_SECTIONS=set:9"
             "VOCEM_CONFIG_SIZE=set:${size}"
             "VOCEM_CONFIG_GEOMETRY=set:${dump}")
-    if(NOT status EQUAL 0)
-        message(STATUS "skip the window could not run here: ${status} ${errors}")
-        return()
-    endif()
+    vocem_window_ran("${status}" "${errors}")
     if(NOT EXISTS "${dump}")
         message(FATAL_ERROR "the window wrote no geometry dump at ${size}")
     endif()

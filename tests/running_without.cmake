@@ -52,6 +52,8 @@ file(WRITE "${scratch}/cache/vocem/apps/${init_name}"
 file(WRITE "${scratch}/config/vocem/config.ini"
      "hidden_apps = ${init_name}\n")
 
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
+
 execute_process(
     COMMAND "${CONFIG_BINARY}"
     RESULT_VARIABLE status
@@ -65,10 +67,7 @@ execute_process(
         "VOCEM_CONFIG_SECTIONS=set:5"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
 
-if(NOT status EQUAL 0)
-    message(STATUS "skip the window could not run here: ${status} ${errors}")
-    return()
-endif()
+vocem_window_ran("${status}" "${errors}")
 if(NOT EXISTS "${scratch}/geometry.json")
     message(FATAL_ERROR "the window wrote no geometry dump")
 endif()
