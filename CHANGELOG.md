@@ -1,8 +1,35 @@
-## [0.1.10] - 2026-09-12
+## [0.1.10] - 2026-09-19
 
 ### Added
 
 - The avatars of the people not talking are quieter, as their names are, set by the new Quiet avatars slider on the Appearance page: 55% by default, 100% keeps every avatar lit.
+
+### Fixed
+
+- A game that destroys the OpenGL context it was drawing in and creates another keeps its overlay: the panel came back without its text, and often took the game down with it.
+- The overlay's font atlas outlives the context it was built for, so a game cycling contexts no longer pays 133 ms of rasterisation for each one.
+- Stopping the overlay hands back what every running game was holding for it: the font atlas, the renderer's objects and a texture per face, 81 MB in a three-person channel.
+- Switching the overlay off hands the Vulkan layer's renderer and font atlas back too. That half had never released anything, on any path out of a game.
+- The Vulkan layer builds its renderer only while the daemon is publishing and only for a frame with something on it. A game it was allowed to draw in built the whole thing, atlas included, with nobody in a voice channel.
+- A game notices the overlay stopping within a second, whatever its frame rate. The wait was a count of frames: two seconds at 144 of them and ten at thirty.
+- Restarting the daemon no longer costs every running game its font atlas. A daemon that had been replaced was read as one that had stopped, and each game rasterised its glyphs again.
+- A Flatpak game drawing through OpenGL with the overlay switched off is served a cleared state, not the channel and every face. The daemon was told the sandbox was drawing, and the log said the same.
+- Hiding a running game on the Applications page is written to the log, with the reason. The overlay left the game within two seconds and nothing recorded why.
+- Emoji sequences draw as one glyph inside a game that is itself a Flatpak. The extension shipped the bank without the table that has to sit beside it, so 0.1.9's fix reached every game but those.
+- The Flatpak extension carries the licence texts of the six fonts and of Dear ImGui that its libraries are built from, as both packages already did.
+- `vocem-run` preloads the shim from the directory it was installed in. It named `/usr` whatever the prefix was, so after an install under `~/.local` it started every program with a preload error and no overlay.
+- A message's words leave every Flatpak sandbox when the daemon stops. The tray's Quit left the last message's text in the sandbox of every game that was drawing, until logout.
+- Who sent a message leaves the shared segment when its toast ends, as the words already did. The sender's name, the channel and the time stayed in the segment every game maps until the next message.
+- A stop reaches the daemon within a second while it is waiting on a peer that accepted the connection and said nothing. It waited the whole handshake out and was killed with the segment still published.
+- A Discord session that ends as soon as it starts is retried once a second. Discord restarting could make the daemon reconnect thousands of times a second, flickering every game's panel on and off.
+- A message's words are retired on time while the daemon is looking for Discord across its ten ports. A port that accepted and said nothing held them for the whole walk.
+- A directory under the runtime app directory that no Flatpak made is refused once instead of once a second, and so are the two refusals beside it.
+- The settings window keeps the display pinned in "Map shows" when a monitor is plugged in, unplugged or re-moded. The dropdown fell back to "Automatic" while the map under it went on drawing the pinned display.
+- The window's map and preview draw the voice panel faint while its switch is off, as they already did for messages. They drew it at full strength for a game that was drawing nothing.
+- A row's description and its label are both drawn as plain text. A description carries a record's own fields, written from inside another process.
+- Switching the overlay off or on no longer discards a settings file edited outside the window, and says so when that write fails.
+- `vocem-why` says it could not look inside a process instead of reporting that the overlay is absent from it. It read a memory map it had no permission to read as an empty one.
+- The daemon declines a message that nests past 64 levels instead of parsing it. One 8 MiB message of brackets cost 624 MB, enough for the memory limit to end the daemon and leave its segment behind.
 
 ## [0.1.9] - 2026-09-08
 

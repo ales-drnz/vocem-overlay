@@ -88,11 +88,38 @@
        validates cleanly: an out-of-date release list is not something AppStream
        can catch, and nothing else looked. tests/version_agrees.cmake does now. -->
   <releases>
-    <release version="0.1.10" date="2026-09-12">
+    <release version="0.1.10" date="2026-09-19">
       <description>
         <p>Added</p>
         <ul>
           <li>The avatars of the people not talking are quieter, as their names are, set by the new Quiet avatars slider on the Appearance page: 55% by default, 100% keeps every avatar lit.</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>A game that destroys the OpenGL context it was drawing in and creates another keeps its overlay: the panel came back without its text, and often took the game down with it.</li>
+          <li>The overlay's font atlas outlives the context it was built for, so a game cycling contexts no longer pays 133 ms of rasterisation for each one.</li>
+          <li>Stopping the overlay hands back what every running game was holding for it: the font atlas, the renderer's objects and a texture per face, 81 MB in a three-person channel.</li>
+          <li>Switching the overlay off hands the Vulkan layer's renderer and font atlas back too. That half had never released anything, on any path out of a game.</li>
+          <li>The Vulkan layer builds its renderer only while the daemon is publishing and only for a frame with something on it. A game it was allowed to draw in built the whole thing, atlas included, with nobody in a voice channel.</li>
+          <li>A game notices the overlay stopping within a second, whatever its frame rate. The wait was a count of frames: two seconds at 144 of them and ten at thirty.</li>
+          <li>Restarting the daemon no longer costs every running game its font atlas. A daemon that had been replaced was read as one that had stopped, and each game rasterised its glyphs again.</li>
+          <li>A Flatpak game drawing through OpenGL with the overlay switched off is served a cleared state, not the channel and every face. The daemon was told the sandbox was drawing, and the log said the same.</li>
+          <li>Hiding a running game on the Applications page is written to the log, with the reason. The overlay left the game within two seconds and nothing recorded why.</li>
+          <li>Emoji sequences draw as one glyph inside a game that is itself a Flatpak. The extension shipped the bank without the table that has to sit beside it, so 0.1.9's fix reached every game but those.</li>
+          <li>The Flatpak extension carries the licence texts of the six fonts and of Dear ImGui that its libraries are built from, as both packages already did.</li>
+          <li>`vocem-run` preloads the shim from the directory it was installed in. It named `/usr` whatever the prefix was, so after an install under `~/.local` it started every program with a preload error and no overlay.</li>
+          <li>A message's words leave every Flatpak sandbox when the daemon stops. The tray's Quit left the last message's text in the sandbox of every game that was drawing, until logout.</li>
+          <li>Who sent a message leaves the shared segment when its toast ends, as the words already did. The sender's name, the channel and the time stayed in the segment every game maps until the next message.</li>
+          <li>A stop reaches the daemon within a second while it is waiting on a peer that accepted the connection and said nothing. It waited the whole handshake out and was killed with the segment still published.</li>
+          <li>A Discord session that ends as soon as it starts is retried once a second. Discord restarting could make the daemon reconnect thousands of times a second, flickering every game's panel on and off.</li>
+          <li>A message's words are retired on time while the daemon is looking for Discord across its ten ports. A port that accepted and said nothing held them for the whole walk.</li>
+          <li>A directory under the runtime app directory that no Flatpak made is refused once instead of once a second, and so are the two refusals beside it.</li>
+          <li>The settings window keeps the display pinned in "Map shows" when a monitor is plugged in, unplugged or re-moded. The dropdown fell back to "Automatic" while the map under it went on drawing the pinned display.</li>
+          <li>The window's map and preview draw the voice panel faint while its switch is off, as they already did for messages. They drew it at full strength for a game that was drawing nothing.</li>
+          <li>A row's description and its label are both drawn as plain text. A description carries a record's own fields, written from inside another process.</li>
+          <li>Switching the overlay off or on no longer discards a settings file edited outside the window, and says so when that write fails.</li>
+          <li>`vocem-why` says it could not look inside a process instead of reporting that the overlay is absent from it. It read a memory map it had no permission to read as an empty one.</li>
+          <li>The daemon declines a message that nests past 64 levels instead of parsing it. One 8 MiB message of brackets cost 624 MB, enough for the memory limit to end the daemon and leave its segment behind.</li>
         </ul>
       </description>
     </release>
@@ -168,14 +195,14 @@
       <description>
         <p>Fixed</p>
         <ul>
-          <li>The symbols a server decorates its channel names with are drawn.</li>
-          <li>A game whose systemd unit carries no random part in its name is found again.</li>
-          <li>A monitor switched to another resolution resizes the overlay even while Discord is closed.</li>
-          <li>The "Show for" slider offers every duration the settings file accepts.</li>
-          <li>A message toast fades in whole, placeholder disc and text outline included.</li>
-          <li>Reset restores the two preview-display settings.</li>
-          <li>The daemon stays bounded when messages arrive from a great many different senders.</li>
-          <li>A subscription Discord refuses is named in the log.</li>
+          <li>The symbols a server decorates its channel names with are drawn, instead of the empty boxes that stood in for them.</li>
+          <li>A game whose systemd unit carries no random part in its name is found again. Everything after the first dash of the application id was being discarded.</li>
+          <li>A monitor plugged in, unplugged or switched to another resolution resizes the overlay in running games even while Discord is closed. It used to wait for Discord to come back.</li>
+          <li>The "Show for" slider offers every duration the settings file accepts. It stopped at 20 seconds against a limit of 30, and rewrote a longer setting the moment it was touched.</li>
+          <li>A message toast fades in whole. The placeholder disc and the outline around the text arrived at full strength over a box that was still appearing.</li>
+          <li>Reset restores the two preview-display settings, and their pages notice when everything on them is back to its default.</li>
+          <li>The daemon stays bounded when messages arrive from a great many different senders, and an avatar that never appears says in the log which half of the work failed.</li>
+          <li>A subscription Discord refuses is named in the log, instead of leaving a voice channel where nobody ever seems to speak.</li>
         </ul>
       </description>
     </release>
@@ -183,13 +210,13 @@
       <description>
         <p>Fixed</p>
         <ul>
-          <li>The About page names the release that is installed.</li>
-          <li>The map of the display follows a monitor plugged in while the settings window is open.</li>
-          <li>The text of a direct message leaves shared memory when its toast ends, whatever Discord is doing.</li>
-          <li>A settings line longer than 255 bytes is read and written whole.</li>
-          <li>Colour emoji are drawn in colour in a Steam game, and in a game that is itself a Flatpak.</li>
-          <li>A keycap emoji is drawn by one font throughout.</li>
-          <li>Emoji stay coloured in a channel full of decorated or CJK names.</li>
+          <li>The About page names the release that is installed, and the list of changes Discover and GNOME Software show reaches it too.</li>
+          <li>The map of the display follows a monitor plugged in, unplugged or switched to another resolution while the settings window is open. It used to draw whatever was there when the window opened.</li>
+          <li>The text of a direct message leaves shared memory when its toast ends, whatever Discord is doing. It used to stay for as long as Discord was away, and what a killed daemon leaves behind is cleared by the next one to start.</li>
+          <li>A settings line is read and written whole at any length. Past 255 bytes it was cut without a word, which gave the overlay back to the applications hidden after the cut and lost them from the file at the next Apply.</li>
+          <li>Colour emoji are drawn in colour in a Steam game, and in a game that is itself a Flatpak. The bank they come from was looked for at one path, which inside a container belongs to the container rather than to the machine.</li>
+          <li>A keycap emoji is drawn by one typeface throughout, instead of a plain digit inside a coloured tile.</li>
+          <li>Emoji stay coloured in a channel full of decorated or CJK names. The table of characters that have a colour glyph counted every unusual character, not only the emoji.</li>
         </ul>
       </description>
     </release>
