@@ -23,6 +23,7 @@
 #define VOCEM_DAEMON_FLATPAK_BRIDGE_H
 
 #include <cstddef>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,10 @@ private:
         // The name of the record already written on the host for this sandbox, so
         // that a tick which learns nothing new writes nothing.
         std::string recorded;
+        // The publish failure's line, said once per sandbox: publish() runs on
+        // every tick, so a mirror whose file cannot be written was one line a
+        // second for as long as the sandbox existed.
+        bool publish_refused = false;
     };
 
     static bool read_request(int directory, Request& request);
@@ -116,9 +121,28 @@ private:
     // daemon hold (rescan() says what each one costs).
     static constexpr size_t kMirrorCeiling = 32;
 
+    // Whether a refusal about this directory NAME has already been said.
+    // rescan() retries adopt() on every one-second tick, and two of its
+    // refusals had no memory at all: `mkdir $XDG_RUNTIME_DIR/app/x` -- which
+    // any process of this user's can do, a sandbox with the xdg-run/app grant
+    // included, the grant entry 134 names as what hands a sandbox this power --
+    // put one line a second into the journal for ever, from a directory name.
+    // The retry itself is unchanged and must be: a directory that appears
+    // before the game inside it has written its `request` is the ordinary case,
+    // and only the SAYING is once. A name is forgotten again when it is
+    // adopted, so a sandbox that comes back and fails differently speaks again.
+    //
+    // Bounded by the same ceiling as the mirrors, and for the same reason: the
+    // set is fed by names somebody else chooses. Past the bound the refusals go
+    // quiet with one line saying so, which is the honest end of a bounded
+    // memory (entry 126's shape).
+    bool say_refusal_once(const char* id);
+
     int applications_ = -1;  // $XDG_RUNTIME_DIR/app
     bool runtime_missing_said_ = false;  // the no-XDG_RUNTIME_DIR refusal, said once
     bool ceiling_said_ = false;          // the mirror ceiling's refusal, said once
+    bool refusals_full_said_ = false;    // the refusal memory's own ceiling, said once
+    std::set<std::string> refusals_said_;
     std::vector<Mirror> mirrors_;
 };
 

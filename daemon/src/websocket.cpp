@@ -5,6 +5,8 @@
 #include "websocket.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -45,6 +47,29 @@ constexpr int kFrameTimeoutMs = 5000;
 constexpr int kHandshakeTimeoutMs = 10000;
 
 using Clock = std::chrono::steady_clock;
+
+// How long the TCP connect itself may take. A port nobody is listening on
+// refuses at once, which is the ordinary answer for nine of the ten ports the
+// daemon walks; a peer that drops the SYN instead answers never, and a blocking
+// ::connect() then sits in the kernel for the better part of two minutes with
+// no deadline and no way to notice a stop. Discord is on loopback, so two
+// seconds is four orders of magnitude of headroom.
+constexpr int kConnectTimeoutMs = 2000;
+
+// How long a single poll() may wait while there is a stop flag to notice.
+//
+// The daemon's SIGTERM handler sets a variable and nothing else -- it cannot,
+// safely -- so a poll() already asleep on a silent peer does not wake up for
+// it. Every wait inside this client is therefore taken in slices with the flag
+// read between them. This is the last instance of a class that has been
+// repaired four times in four different functions (entries 72, 77, 102, 112):
+// the handshake had an absolute deadline and honoured it, and honouring it
+// meant waiting the whole ten seconds out while `g_stop` was already set, so
+// `systemctl --user stop` -- and the tray's Quit, which does the same -- ended
+// in SIGKILL with the segment, the note's words and every Flatpak mirror still
+// published, the leftover entry 81 forbids. 200 ms is five reads a second on an
+// idle descriptor and invisible against the unit's TimeoutStopSec of ten.
+constexpr int kStopSliceMs = 200;
 
 // Milliseconds left before `deadline`, never negative -- poll() reads a negative
 // timeout as "wait forever", which is the opposite of what a deadline means.
@@ -97,9 +122,13 @@ bool WebSocket::write_all(const void* data, size_t length, Clock::time_point dea
     // own SIGTERM. Wait on the descriptor instead, against the caller's deadline.
     while (written < length) {
         struct pollfd pfd{fd_, POLLOUT, 0};
-        const int ready = ::poll(&pfd, 1, remaining_ms(deadline));
+        const int ready = ::poll(&pfd, 1, wait_ms(deadline));
         if (ready == 0) {
-            return false;
+            // A slice, or the deadline: only one of the two ends the call.
+            if (stopping() || remaining_ms(deadline) == 0) {
+                return false;
+            }
+            continue;
         }
         if (ready < 0) {
             if (errno == EINTR) {
@@ -119,6 +148,18 @@ bool WebSocket::write_all(const void* data, size_t length, Clock::time_point dea
     return true;
 }
 
+bool WebSocket::stopping() const { return stop_ && *stop_ != 0; }
+
+// The next poll timeout: the deadline, cut into slices while a stop flag is
+// being watched so that the flag is read on the way through.
+int WebSocket::wait_ms(Clock::time_point deadline) const {
+    const int left = remaining_ms(deadline);
+    if (!stop_ || left <= kStopSliceMs) {
+        return left;
+    }
+    return kStopSliceMs;
+}
+
 bool WebSocket::read_exact(void* dest, size_t length, Clock::time_point by) {
     auto* bytes = static_cast<uint8_t*>(dest);
     size_t read_total = 0;
@@ -129,9 +170,15 @@ bool WebSocket::read_exact(void* dest, size_t length, Clock::time_point by) {
         // seconds stayed inside a five-second window for ever -- measured: recv
         // had not returned after thirty seconds. That is the same defect the
         // handshake loop below was fixed for, one function away.
-        int ready = ::poll(&pfd, 1, remaining_ms(by));
+        int ready = ::poll(&pfd, 1, wait_ms(by));
         if (ready == 0) {
-            return false;  // timeout mid-frame: treated as failure by the caller
+            // A stop, or the deadline. A slice expiring is neither, and
+            // returning on one would turn every 200 ms of a quiet peer into a
+            // failed read (see kStopSliceMs).
+            if (stopping() || remaining_ms(by) == 0) {
+                return false;  // treated as failure by the caller
+            }
+            continue;
         }
         if (ready < 0) {
             if (errno == EINTR) {
@@ -170,7 +217,61 @@ bool WebSocket::connect(const char* host, uint16_t port, const std::string& path
         close();
         return false;
     }
+    // Non-blocking for the connect alone, then back to blocking: everything
+    // below waits through poll() anyway, and a descriptor whose mode changes
+    // under the rest of this file is a second thing to reason about.
+    //
+    // A plain blocking ::connect() was the one call left in this daemon with no
+    // deadline and no stop check (see kStopSliceMs): a peer that drops the SYN
+    // holds it in the kernel for ~2 minutes, and nothing in it ever reads
+    // g_stop. Now: EINPROGRESS, then poll(POLLOUT) in slices, then SO_ERROR --
+    // which is how a connect failure is collected, since the ::connect() call
+    // itself has already returned.
+    const int flags = ::fcntl(fd_, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK) != 0) {
+        close();
+        return false;
+    }
     if (::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        if (errno != EINPROGRESS) {
+            close();
+            return false;
+        }
+        const Clock::time_point connect_by =
+            Clock::now() + std::chrono::milliseconds(kConnectTimeoutMs);
+        for (;;) {
+            struct pollfd pfd{fd_, POLLOUT, 0};
+            const int ready = ::poll(&pfd, 1, wait_ms(connect_by));
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                close();
+                return false;
+            }
+            if (ready == 0) {
+                if (stopping() || remaining_ms(connect_by) == 0) {
+                    close();
+                    return false;
+                }
+                continue;
+            }
+            int error = 0;
+            socklen_t length = sizeof(error);
+            if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &error, &length) != 0 || error != 0) {
+                close();
+                return false;
+            }
+            break;
+        }
+    }
+    if (::fcntl(fd_, F_SETFL, flags) != 0) {
+        close();
+        return false;
+    }
+    // A stop that arrived while connecting is a stop: nothing below it is worth
+    // ten seconds of handshake deadline.
+    if (stopping()) {
         close();
         return false;
     }

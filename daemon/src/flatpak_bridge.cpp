@@ -222,6 +222,26 @@ bool copy_into(int directory, const char* source_path, const char* name) {
 
 }  // namespace
 
+// Whether this refusal is the first one about this directory name. See the
+// header for why the memory exists and why it is bounded.
+bool FlatpakBridge::say_refusal_once(const char* id) {
+    const std::string name = id ? id : "";
+    if (refusals_said_.count(name)) {
+        return false;
+    }
+    if (refusals_said_.size() >= kMirrorCeiling) {
+        if (!refusals_full_said_) {
+            refusals_full_said_ = true;
+            LOG("%zu directories under the runtime app directory have been refused; further "
+                "refusals are not logged",
+                refusals_said_.size());
+        }
+        return false;
+    }
+    refusals_said_.insert(name);
+    return true;
+}
+
 void FlatpakBridge::stop() {
     for (Mirror& mirror : mirrors_) {
         if (mirror.directory >= 0) {
@@ -324,7 +344,7 @@ bool FlatpakBridge::adopt(const char* id) {
         // The directory exists but nothing in that sandbox is asking to be
         // served -- or `request` is not a regular file, which is somebody being
         // clever rather than an overlay asking.
-        if (errno == EINVAL || errno == ELOOP) {
+        if ((errno == EINVAL || errno == ELOOP) && say_refusal_once(id)) {
             LOG("refusing the Flatpak bridge for %s: its %s is not a regular file", id,
                 kBridgeRequestName);
         }
@@ -483,8 +503,11 @@ void FlatpakBridge::rescan() {
         // The two bounds on who gets served, refused out loud (entry 134).
         // A directory under $XDG_RUNTIME_DIR/app can be made by any process
         // of the user's -- a sandbox with the xdg-run/app grant included --
-        // and every mirror costs two descriptors, a six-megabyte emoji bank
-        // and a share of every publish: without a ceiling a few hundred
+        // and every mirror costs two descriptors, the emoji bank -- 16.3 MB
+        // today, with its sequence table beside it, where this comment said six
+        // megabytes until 2026-09-18 and the two other comments about the same
+        // file were corrected without it -- and a share of every publish:
+        // without a ceiling a few hundred
         // asking directories exhausted this process's descriptors, after
         // which the socket, /proc/net/tcp and the segment itself all failed
         // to open. A Flatpak application id is reverse-DNS -- letters,
@@ -500,11 +523,17 @@ void FlatpakBridge::rescan() {
             continue;
         }
         if (!looks_like_app_id(entry->d_name)) {
-            LOG("not serving %s: not the shape of a Flatpak application id",
-                printable_id(entry->d_name).c_str());
+            if (say_refusal_once(entry->d_name)) {
+                LOG("not serving %s: not the shape of a Flatpak application id",
+                    printable_id(entry->d_name).c_str());
+            }
             continue;
         }
-        adopt(entry->d_name);
+        if (adopt(entry->d_name)) {
+            // Adopted: forget the refusals said about it, so a sandbox that
+            // comes back and fails differently is heard.
+            refusals_said_.erase(entry->d_name);
+        }
     }
     ::closedir(handle);
 }
@@ -546,10 +575,16 @@ void FlatpakBridge::publish(const SharedState& state) {
             !write_at(mirror.state_file, bytes + kTailAt,
                       sizeof(SharedState) - static_cast<size_t>(kTailAt), kTailAt) ||
             !write_at(mirror.state_file, &even, kSequenceBytes, kSequenceAt)) {
-            LOG("could not publish into the Flatpak sandbox of %s (%s)", mirror.id.c_str(),
-                std::strerror(errno));
+            // Once per sandbox: this runs on every tick, and a mirror whose
+            // file cannot be written fails the same way every time.
+            if (!mirror.publish_refused) {
+                mirror.publish_refused = true;
+                LOG("could not publish into the Flatpak sandbox of %s (%s)", mirror.id.c_str(),
+                    std::strerror(errno));
+            }
             continue;
         }
+        mirror.publish_refused = false;
         mirror.sequence = even;
     }
 }

@@ -102,6 +102,51 @@ inline std::string sanitise_text(const std::string& source) {
     return out;
 }
 
+// How deeply a JSON text nests, up to `ceiling`, without parsing it.
+//
+// `json::parse(raw, nullptr, false)` bounds parse ERRORS and nothing else:
+// nlohmann has no depth or element limit, so the cost of a message is the
+// peer's to choose. Measured twice: **8 MiB of `[`** -- which is exactly
+// `kMaxMessageBytes`, the reassembly cap entry 72 put on a frame -- costs
+// **624 MB** of resident memory and then comes back `discarded`, because it is
+// invalid. The unit says `MemoryMax=128M`, so what really happens is the
+// cgroup killing the daemon: a SIGKILL runs no destructor, which leaves
+// `/dev/shm/vocem-<uid>`, the note's words and every Flatpak mirror behind --
+// the leftover entry 81 forbids -- and `Restart=on-failure` then does it
+// again. Entry 72 capped the reassembly buffer and never re-derived the cap
+// for what happens to the bytes next.
+//
+// One pass over the bytes, no allocation, stopping at the ceiling: strings are
+// skipped so a name full of brackets is not counted, and `\` escapes the next
+// byte inside one. Discord's RPC messages nest about five levels; the ceiling
+// is far above anything the client sends and far below anything that costs
+// memory worth noticing.
+inline bool json_depth_within(const std::string& text, int ceiling) {
+    int depth = 0;
+    bool in_string = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (in_string) {
+            if (c == '\\') {
+                ++i;  // whatever follows is data, including a quote
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+        } else if (c == '[' || c == '{') {
+            if (++depth > ceiling) {
+                return false;
+            }
+        } else if (c == ']' || c == '}') {
+            --depth;
+        }
+    }
+    return true;
+}
+
 }  // namespace vocem
 
 #endif  // VOCEM_DAEMON_TEXT_H

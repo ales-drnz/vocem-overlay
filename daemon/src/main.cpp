@@ -34,6 +34,7 @@
 #include "log.h"
 #include "rpc_client.h"
 #include "session.h"
+#include "text.h"
 #include "vocem/clock.h"
 #include "vocem/display.h"
 #include "vocem/journal.h"
@@ -57,6 +58,11 @@ constexpr uint16_t kRpcPortLast = 6472;
 constexpr double kReconcileSeconds = 5.0;  // ask Discord where we are
 constexpr double kDisplaySeconds = 60.0;   // re-read /sys/class/drm
 constexpr double kBridgeSeconds = 1.0;     // sweep the Flatpak sandboxes
+// How deep a message from Discord may nest before this daemon declines to
+// parse it. Its own messages reach about five; this is far above anything the
+// client sends and far below anything that costs memory worth noticing
+// (daemon/src/text.h has the measurement).
+constexpr int kMaxJsonDepth = 64;
 constexpr int kBackoffCapSeconds = 30;     // the longest pause between attempts
 constexpr int kRecvTimeoutMs = 1000;       // one tick's worth of waiting on the socket
 
@@ -199,8 +205,14 @@ int main() {
         }
 
         vocem::WebSocket socket;
+        // Every wait this client makes reads the stop flag on its way through,
+        // so a SIGTERM arriving inside the connect or the handshake ends the
+        // daemon then rather than after the deadline (websocket.cpp).
+        socket.watch_stop(&g_stop);
         uint16_t reached_on = 0;
         for (uint16_t port = kRpcPortFirst; port <= kRpcPortLast && !g_stop; ++port) {
+            // Before each attempt, not after the walk: see the tick below.
+            tick();
             if (!socket.connect("127.0.0.1", port, path, kOrigin)) {
                 continue;
             }
@@ -229,11 +241,15 @@ int main() {
             reached_on = port;
             break;
         }
-        // Between ports, because `connect()` above is allowed a whole handshake
-        // deadline against a peer that accepts and then says nothing, and ten
-        // ports of that would accumulate into a minute and a half in which the
-        // note's expiry never came round. One tick per port bounds the wait to
-        // one deadline rather than ten.
+        // One tick per port, which is what this comment claimed for four
+        // releases while the call sat AFTER the loop's closing brace -- so ten
+        // ports that accept and say nothing were one deadline each with nothing
+        // in between: ~100 s in which expire_note(), the bridge rescan, the
+        // republish and the display re-read did not run, which is entry 112's
+        // own "a minute and a half with no expiry in it", stated there as the
+        // thing being fixed. The tick is cheap and idempotent (its two slower
+        // halves carry their own clocks), so calling it per port costs a
+        // reachable Discord nothing: the first port answers and the loop breaks.
         tick();
         if (reached_on == 0) {
             DBG("Discord not reachable on ports %u-%u, retrying in %ds", kRpcPortFirst,
@@ -276,7 +292,62 @@ int main() {
             if (result == vocem::WebSocket::Result::Timeout) {
                 continue;
             }
-            json message = json::parse(raw, nullptr, false);
+            // `allow_exceptions = false` covers a parse ERROR and nothing
+            // else: an allocation that fails is not a parse error, and it
+            // comes straight back out as std::bad_alloc. Measured under the
+            // unit's own MemoryMax of 128 MiB, with RLIMIT_AS standing in for
+            // it: 8 MiB of '[' -- which is exactly kMaxMessageBytes, the cap
+            // entry 72 put on reassembly -- throws, nothing catches it, and
+            // the daemon dies by abort(). Restart=on-failure then brings it
+            // back, and an abort runs no destructor, so every turn of that
+            // loop leaves /dev/shm/vocem-<uid>, the note's words and every
+            // Flatpak mirror behind: entry 81's leftover, through a door
+            // entry 134 did not close. (8 MiB of string, by contrast, parses
+            // in 47 MB and is fine -- it is the DEPTH that costs, and
+            // nlohmann bounds neither.)
+            //
+            // A message this daemon cannot hold is a message it drops. Said
+            // once, because a peer that does it once will do it again and the
+            // journal is what somebody reads afterwards.
+            // Bounded before it is parsed, not after. nlohmann limits neither
+            // depth nor element count, so the cost of a message is the peer's
+            // to choose: 8 MiB of '[' -- exactly kMaxMessageBytes, entry 72's
+            // reassembly cap -- costs 624 MB, measured twice, and then comes
+            // back discarded because it is invalid. Against the unit's
+            // MemoryMax of 128M that is the cgroup killing this process, and a
+            // SIGKILL runs no destructor: the segment, the note's words and
+            // every Flatpak mirror stay behind, and Restart=on-failure does it
+            // again. vocem::json_depth_within says what the scan costs and why
+            // the ceiling is where it is.
+            //
+            // Said once: a peer that does this once will do it again, and the
+            // journal is what somebody reads afterwards.
+            if (!vocem::json_depth_within(raw, kMaxJsonDepth)) {
+                static bool said_deep = false;
+                if (!said_deep) {
+                    said_deep = true;
+                    LOG("a message of %zu bytes nests deeper than %d levels; dropping it rather "
+                        "than parsing it",
+                        raw.size(), kMaxJsonDepth);
+                }
+                continue;
+            }
+            // And a second line for what a bound cannot foresee: an allocation
+            // that fails is not a parse error, so it arrives as an exception
+            // whatever `allow_exceptions = false` says.
+            json message;
+            try {
+                message = json::parse(raw, nullptr, false);
+            } catch (const std::exception& error) {
+                static bool said = false;
+                if (!said) {
+                    said = true;
+                    LOG("a message of %zu bytes could not be parsed within this daemon's memory "
+                        "(%s); dropping it and staying up",
+                        raw.size(), error.what());
+                }
+                continue;
+            }
             if (message.is_discarded()) {
                 continue;
             }
@@ -297,26 +368,43 @@ int main() {
             break;
         }
         // A connection that got as far as authenticating is evidence Discord is
-        // really there, and the next attempt should be immediate. One that did
-        // not is a peer that took the connection and dropped it -- Discord
-        // refusing an origin or a client_id, a client still starting, or
-        // something else on the port entirely -- and reconnecting at once turns
-        // that into a busy loop. The backoff used to be reset the moment the
-        // socket connected, which made "reachable" and "willing to talk" the
-        // same question: measured against the packaged 0.1.4-1 daemon, 1914
-        // connections in five seconds against a peer that answered the handshake
-        // and hung up, where this makes 3 -- and the stub, not the daemon, was
-        // what set that ceiling (tests/daemon_reconnect.cpp).
+        // really there, so the next attempt waits the shortest pause there is.
+        // One that did not is a peer that took the connection and dropped it --
+        // Discord refusing an origin or a client_id, a client still starting,
+        // or something else on the port entirely -- and reconnecting at once
+        // turns that into a busy loop. The backoff used to be reset the moment
+        // the socket connected, which made "reachable" and "willing to talk"
+        // the same question: measured against the packaged **0.1.3-7** daemon,
+        // **2215** connections in five seconds against a peer that answered the
+        // handshake and hung up, where this makes 3 -- and the stub, not the
+        // daemon, was what set that ceiling, so the real figure is higher
+        // (tests/daemon_reconnect.cpp). This comment said "0.1.4-1 ... 1914"
+        // until 2026-09-18: entry 103 withdrew that pair on 2026-09-07 --
+        // 0.1.4-1 is the release that carries the fix and makes 3 -- and the
+        // correcting commit had this file open and corrected the test alone,
+        // which is entry 33's pattern inside the pass correcting entry 103.
         if (client.authenticated()) {
             backoff_seconds = 1;
         }
         if (!g_stop) {
-            LOG("connection lost, reconnecting%s",
-                client.authenticated() ? "" : " after a pause: the session never started");
+            LOG("connection lost, reconnecting after %ds%s", backoff_seconds,
+                client.authenticated() ? "" : ": the session never started");
             vocem::journal_note("connection lost, reconnecting");
         }
+        // Always a pause, and for the authenticated case always the shortest
+        // one. "Evidence Discord is really there, so reconnect at once" left
+        // the authenticated path with no sleep in it at all: a session that
+        // authenticates and then ends -- Discord restarting, a client that
+        // accepts AUTHENTICATE and drops, anything that makes
+        // `authenticated_` true without staying -- re-entered this loop with
+        // nothing sleeping, and each turn is a token read, a port walk, a
+        // handshake, a publish and a fan-out to every mirror on
+        // set_connected(true), then the same again on false, plus two journal
+        // lines. A spin, with `connected` flapping under every game's panel.
+        // One second is not a wait anybody notices and is not a busy loop;
+        // only the never-authenticated case doubles from here.
+        pause_ticking(backoff_seconds);
         if (!client.authenticated()) {
-            pause_ticking(backoff_seconds);
             backoff_seconds = backoff_seconds < kBackoffCapSeconds ? backoff_seconds * 2
                                                                    : kBackoffCapSeconds;
         }
@@ -333,10 +421,22 @@ int main() {
     // unit whose TimeoutStopSec is ten, so systemctl stop ended in SIGKILL
     // with the segment still published, the exact leftover entry 81 forbids
     // (entry 134). tests/daemon_stop_unlinks.cpp measures the seconds.
+    // The note's words first of all, and BEFORE bridge.stop(). `clear()` fires
+    // the on_publish hook into FlatpakBridge::publish_note(), which unlinks the
+    // mirrored copy in every sandbox it is serving -- and stop() empties
+    // `mirrors_`, so with these two the other way round the hook iterated
+    // nothing and unlinked nothing. A clean stop -- the tray's Quit,
+    // `systemctl --user stop`, SIGTERM -- therefore left the last message's
+    // text in `$XDG_RUNTIME_DIR/app/<id>/vocem/note` in every served drawing
+    // sandbox, readable by that application until logout, where
+    // `vocem/note.h` says the daemon "removes it at the same moment it unlinks
+    // the segment". Entry 112 closed this on the host and the sandbox half
+    // stayed open; `adopt()` unlinks a stale note, but "Quit means quit" means
+    // there is no later daemon to do it.
+    session.note().clear();
     bridge.stop();
     writer.close();
     vocem::StateWriter::unlink_segment();
-    session.note().clear();
     avatars.stop();
     vocem::journal_end();
     return 0;

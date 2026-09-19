@@ -13,6 +13,7 @@
 #define VOCEM_WEBSOCKET_H
 
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -51,6 +52,14 @@ public:
 
     void close();
 
+    // A flag this client reads while it waits: the daemon's SIGTERM handler
+    // sets it, and every poll() in here is taken in slices so that a stop is
+    // noticed rather than waited out. Without it the handshake's own deadline
+    // was honoured to the letter -- ten seconds of it, inside a stop the unit
+    // gives ten (websocket.cpp, kStopSliceMs). Optional: the bounds tests
+    // construct this client without one.
+    void watch_stop(const volatile std::sig_atomic_t* stop) { stop_ = stop; }
+
 
 private:
     // Reads against an absolute deadline. A per-call timeout was not enough:
@@ -66,7 +75,13 @@ private:
     bool send_frame(uint8_t opcode, const void* data, size_t length,
                     std::chrono::steady_clock::time_point by);
 
+    bool stopping() const;
+    // The next poll() timeout: the deadline, in slices while a stop flag is
+    // watched.
+    int wait_ms(std::chrono::steady_clock::time_point deadline) const;
+
     int fd_ = -1;
+    const volatile std::sig_atomic_t* stop_ = nullptr;
     std::string pending_;  // accumulates fragmented messages
     // Whether `pending_` is the start of a TEXT message. A binary message's
     // continuations are not appended to it (recv() says why).

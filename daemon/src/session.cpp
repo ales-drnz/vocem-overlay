@@ -139,6 +139,24 @@ void Session::expire_note(double seconds) {
     }
     note_cleared_ = true;
     note_.clear();
+    // And the sender with the words. `vocem/note.h` promises that "between
+    // messages there is nothing to read anywhere", and that was true of the
+    // body and false of everything around it: the serial, the user id, the
+    // timestamp, the avatar hash and the TITLE -- Discord's composed string,
+    // which is the sender's display name plus the guild and the channel -- went
+    // on standing in SharedState, which every GL and Vulkan process of the
+    // session maps as a matter of course, until the next message replaced them
+    // or the daemon stopped. Nothing zeroed the slot: not on expiry, not on
+    // set_connected(false).
+    //
+    // Safe at exactly this moment and no earlier, which is why it is here
+    // rather than on a clock of its own: expire_note() has already waited the
+    // toast's seconds plus a second of margin, so no reader is still drawing
+    // it, and publish() below is the same write that retires it everywhere.
+    // The counter is NOT reset -- `notification_serial_` goes on increasing, or
+    // a later message would reuse a serial a reader has already seen and been
+    // latched on (note.h's `have_`).
+    publish();
 }
 
 void Session::set_display_height(uint32_t value) {
@@ -210,10 +228,16 @@ void Session::publish() {
         state.user_count = count;
         state.display_height = display_height_;
 
-        state.notification.serial = notification_serial_;
-        state.notification.user_id = notification_user_;
-        state.notification.received = notification_received_;
-        copy_string(state.notification.title, kNotificationTitleCapacity, notification_title_);
+        // A retired message leaves nothing behind: an expired note means the
+        // whole slot goes, not only the words (expire_note says why here and
+        // not sooner). A reader takes serial 0 as "no toast", which is the
+        // question notification_wanted() asks first.
+        const bool retired = note_cleared_;
+        state.notification.serial = retired ? 0 : notification_serial_;
+        state.notification.user_id = retired ? 0 : notification_user_;
+        state.notification.received = retired ? 0.0 : notification_received_;
+        copy_string(state.notification.title, kNotificationTitleCapacity,
+                    retired ? std::string() : notification_title_);
         // Deliberately always empty: the message's text has its own
         // segment now (vocem/note.h). The field stays because removing it
         // would move every offset after it and empty the overlay in every
@@ -221,7 +245,7 @@ void Session::publish() {
         // that happens for its own reasons takes it away.
         copy_string(state.notification.body, kNotificationBodyCapacity, std::string());
         copy_string(state.notification.avatar_hash, kAvatarHashCapacity,
-                    publishable_hash(notification_avatar_));
+                    retired ? std::string() : publishable_hash(notification_avatar_));
     });
 }
 
