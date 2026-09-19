@@ -59,13 +59,17 @@ public:
     // asked to draw in. File syscalls, once.
     void enter_flatpak_bridge_once();
 
-    // Whether the overlay is allowed in this process by the lists and the
-    // verdict (vocem/draw_decision.h: the lists re-walked only when edited).
-    // Logs the evidence the first time it is computed -- a game that is missed
-    // has to be a case somebody can read off one line -- and tells the daemon
-    // across the bridge whether this sandbox is DRAWING, which is the answer
-    // and the master switch together: a sandbox that is not drawing is served
-    // its settings and a cleared state, nothing else. No file work unless the
+    // Whether this frame should carry the overlay: the lists and the verdict
+    // (vocem/draw_decision.h, re-walked only when edited) AND the master
+    // switch. The whole question, deliberately -- a caller that spells half of
+    // it outside can short-circuit past the half inside, which is how the
+    // Flatpak bridge stopped being told on the OpenGL path (the .cpp says it).
+    //
+    // Logs the evidence whenever the verdict is computed or changes -- a game
+    // that is missed, or that stops being drawn in, has to be a case somebody
+    // can read off one line -- and tells the daemon across the bridge whether
+    // this sandbox is DRAWING: a sandbox that is not drawing is served its
+    // settings and a cleared state, nothing else. No file work unless the
     // bridge answer changed (one open and one write then).
     bool decide(const Config& config);
 

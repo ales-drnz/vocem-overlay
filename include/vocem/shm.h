@@ -207,30 +207,50 @@ public:
 
     bool valid() const { return state_ != nullptr; }
 
-    // Whether the object this mapping came from is still the one the name points
-    // at. Unlinking removes the name and not the pages, so a reader that mapped
-    // once keeps reading its private copy of history: a daemon that stopped
-    // leaves it a cleared state forever, and a daemon that started *again*
-    // creates a new object this mapping will never see. Only a look at the name
-    // can tell -- one shm_open and two fstats, compared by inode -- so a game
-    // that outlives a daemon restart can notice, drop the orphaned pages, and
-    // attach to the living segment. Not free: callers keep it off the per-frame
-    // path and ask on the same cadence as the reopen retries.
-    bool still_current() const {
+    // What the name says about the object this mapping came from.
+    //
+    // Unlinking removes the name and not the pages, so a reader that mapped once
+    // keeps reading its private copy of history: a daemon that stopped leaves it
+    // a cleared state forever, and a daemon that started *again* creates a new
+    // object this mapping will never see. Only a look at the name can tell --
+    // one shm_open and two fstats, compared by inode -- so a game that outlives
+    // a daemon restart can notice, drop the orphaned pages, and attach to the
+    // living segment. Not free: callers keep it off the per-frame path and ask
+    // on the same cadence as the reopen retries.
+    //
+    // Three answers, not two. The distinction was always computed here and
+    // thrown away at the return, and the caller then had to treat a daemon that
+    // had been REPLACED exactly as it treats one that is GONE -- so a
+    // `systemctl --user restart vocemd`, which CLAUDE.md's own delivery rule
+    // asks the owner to run, made every running game hand back its font atlas
+    // and rasterise it again: 133 ms and a fresh 64 MB upload, per game, per
+    // restart. Measured on tests/gl_daemon_gone.cpp, twice: two "font atlas
+    // built" lines across one stop-and-return where one is correct.
+    enum class Segment {
+        Current,   // the name still stands behind these pages
+        Replaced,  // a different object is at the name: a daemon came back
+        Gone,      // no name at all: a daemon stopped
+    };
+
+    Segment segment_state() const {
         if (!state_ || fd_ < 0) {
-            return false;
+            return Segment::Gone;
         }
         const int named = open_segment();
         if (named < 0) {
-            return false;  // the name is gone: the daemon is, too
+            return Segment::Gone;
         }
         struct stat ours {};
         struct stat theirs {};
         const bool same = fstat(fd_, &ours) == 0 && fstat(named, &theirs) == 0 &&
                           ours.st_dev == theirs.st_dev && ours.st_ino == theirs.st_ino;
         ::close(named);
-        return same;
+        return same ? Segment::Current : Segment::Replaced;
     }
+
+    // The old question, kept because the CLI and the settings window ask exactly
+    // it and neither has anything to hand back.
+    bool still_current() const { return segment_state() == Segment::Current; }
 
     // Lock-free consistent read. Bounded retries: a writer crashing mid-update
     // must not spin a game's render thread forever.

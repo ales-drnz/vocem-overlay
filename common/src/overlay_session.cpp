@@ -49,14 +49,20 @@ bool OverlaySession::decide(const Config& config) {
         // The evidence, not just the verdict. "not drawing in" whole is what
         // tests/gl_noop_quiet.cpp matches; the first probe matched "drawing in"
         // inside it and reported the opposite (entry 54).
-        if (decision_.allowed()) {
-            VOCEM_OVERLAY_LOG(tag_, "drawing in '%s': %s", process_name().c_str(),
-                              game_verdict().reason.c_str());
-        } else {
+        if (!decision_.allowed()) {
             VOCEM_OVERLAY_LOG(tag_, "not drawing in '%s': %s (%s)", process_name().c_str(),
                               looks_like_game() ? "on the hidden list"
                                                 : "does not look like a game",
                               game_verdict().reason.c_str());
+        } else if (config.enabled) {
+            VOCEM_OVERLAY_LOG(tag_, "drawing in '%s': %s", process_name().c_str(),
+                              game_verdict().reason.c_str());
+        } else {
+            // Allowed by the lists and switched off by the user: saying
+            // "drawing in" here would be the log telling the opposite of what
+            // the screen shows, which is the one thing it may not do.
+            VOCEM_OVERLAY_LOG(tag_, "not drawing in '%s': the overlay is switched off (%s)",
+                              process_name().c_str(), game_verdict().reason.c_str());
         }
     }
     // Inside a Flatpak, tell the daemon. It adopted this sandbox before the
@@ -66,8 +72,19 @@ bool OverlaySession::decide(const Config& config) {
     // switch is part of that answer: with it off nothing is drawn, and a daemon
     // told otherwise would mirror the channel into a sandbox showing nothing
     // (entry 138 -- the Vulkan side left the switch out of this sentence).
-    flatpak_bridge_drawing(config.enabled && decision_.allowed());
-    return decision_.allowed();
+    const bool drawing = config.enabled && decision_.allowed();
+    flatpak_bridge_drawing(drawing);
+    // The whole answer, not half of it. Entry 138 made the two paths agree on
+    // what the daemon is told and left the two CALL SITES spelling the master
+    // switch themselves -- and the GL one spelled it `config.enabled &&
+    // session_.decide(config)`, which short-circuits: with the overlay switched
+    // off, decide() was never reached, so flatpak_bridge_drawing() was never
+    // told, and it only writes on a change. A Flatpak game on the OpenGL path
+    // therefore went on receiving the channel and every face from a daemon that
+    // believed it was drawing -- entry 138's own defect, surviving on the other
+    // side of entry 138's own fix. Returning the whole answer is what makes the
+    // question unaskable by halves.
+    return drawing;
 }
 
 void OverlaySession::journal_begin_once() {

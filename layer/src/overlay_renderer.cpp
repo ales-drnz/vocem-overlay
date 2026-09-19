@@ -136,7 +136,10 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
 
     if (!context_ready_) {
         IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
+        // With the fonts module's atlas: this context dies with the device and
+        // another takes its place in the same process, and the ImFont pointers
+        // the module caches have to survive that (vocem/fonts.h).
+        ImGui::CreateContext(fonts_atlas());
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;   // never write files from inside a game
         io.LogFilename = nullptr;
@@ -235,6 +238,11 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         backend_ready_ = true;
         device_ = target.device;
         format_ = target.format;
+        // Resolved here rather than at teardown, because by then the device may
+        // be the one being destroyed and vkGetDeviceProcAddr on it is not ours
+        // to call. shutdown_locked() says what it is for.
+        device_wait_idle_ = reinterpret_cast<PFN_vkDeviceWaitIdle>(
+            resolve_function("vkDeviceWaitIdle", &g_loader_context));
 
         if (!avatar_adapter_) {
             static Adapter adapter(textures_);
@@ -379,6 +387,29 @@ void OverlayRenderer::shutdown() {
 }
 
 void OverlayRenderer::shutdown_locked() {
+    // Nothing below may run while the GPU is still reading what it destroys.
+    //
+    // This used to be a property of *who could call this*: vocem_DestroyDevice,
+    // where the application has already had to finish everything, and nothing
+    // else. Then a second caller arrived -- the daemon stopping, which fires on
+    // an arbitrary present of a live, presenting device -- and the property went
+    // with it. The overlay's submit for the previous image is at most one
+    // present old and no fence on this path consults it; textures_.shutdown()
+    // frees the images and the command pool it reads, and
+    // ImGui_ImplVulkan_Shutdown() frees the vertex ring, the font image, the
+    // pipeline and the descriptor pool (imgui_impl_vulkan.cpp has no wait of its
+    // own -- checked). The wait belongs here rather than at the new call site so
+    // that the next caller inherits it: entry 131 fixed exactly this shape for
+    // the second-device case and it came back through a door nobody had yet.
+    //
+    // vkDeviceWaitIdle wants external synchronisation on the device's queues,
+    // which this has: it runs after the present returned, under the renderer's
+    // own lock, and destroy_swapchain_resources does the same thing for the same
+    // reason. A failure (a lost device) is not a reason to keep the memory --
+    // rule 7 -- so the answer is not checked.
+    if (device_wait_idle_ && backend_ready_ && device_ != VK_NULL_HANDLE) {
+        device_wait_idle_(device_);
+    }
     // The next device's first frame must not measure the gap between devices as
     // one animation step.
     session().reset_clock();
@@ -397,6 +428,7 @@ void OverlayRenderer::shutdown_locked() {
     functions_loaded_ = false;
     failed_ = false;
     device_ = VK_NULL_HANDLE;
+    device_wait_idle_ = nullptr;
     format_ = VK_FORMAT_UNDEFINED;
 }
 

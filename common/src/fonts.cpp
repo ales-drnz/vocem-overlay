@@ -566,6 +566,50 @@ const char* fonts_emoji_status() {
 
 const Fonts& fonts() { return g_fonts; }
 
+ImFontAtlas* fonts_atlas() {
+    // Leaked on purpose, and the `new` is the whole point.
+    //
+    // A function-local static object would also have the compiler register
+    // ~ImFontAtlas with __cxa_atexit, and that destructor deletes every ImFont
+    // and frees the 16 MB + 64 MB of pixels -- at exit(), from whichever thread
+    // called it, while a render thread may still be inside draw() holding the
+    // lock and dereferencing g.Font. The atexit list runs LIFO, so it would also
+    // run BEFORE the ELF destructor that closes the journal, leaving a `.running`
+    // behind: the overlay reporting, in the window's Debug section, a crash it
+    // caused itself. IM_ASSERT is compiled out of both injected targets, so
+    // there would not even be an abort to read.
+    //
+    // This is the decision gl/src/vocem_gl.cpp makes for overlay() in the same
+    // words and for the same reason (entry 132), and a function-local static
+    // here quietly took it back for the one object that matters most. A pointer
+    // still costs a guard variable and nothing else: no destructor is registered
+    // because there is none to run.
+    static ImFontAtlas* atlas = new ImFontAtlas;
+    return atlas;
+}
+
+void fonts_release() {
+    ImFontAtlas* atlas = fonts_atlas();
+    // ImGui locks the atlas for the length of a frame and unlocks it in
+    // EndFrame -- and its Shutdown unlocks it too, but only for the atlas the
+    // context owns, which this one is not. A context torn down between NewFrame
+    // and EndFrame would leave it locked forever, so the lock is dropped here
+    // and in build_atlas() rather than trusted.
+    atlas->Locked = false;
+    atlas->Clear();
+    g_fonts.body = nullptr;
+    g_fonts.strong = nullptr;
+    g_fonts.pixel_size = 0.0f;
+    // What is in the atlas, not what the session has seen: the emoji the text
+    // asked for are still wanted, and the next build carries them again.
+    g_built_count = 0;
+    g_asked_body[0] = '\0';
+    g_asked_strong[0] = '\0';
+    g_body_path[0] = '\0';
+    g_strong_path[0] = '\0';
+    g_font_reason = nullptr;
+}
+
 float font_pixel_size(uint32_t height, float user_scale, float reference) {
     // Whole pixels. The size is what every distance in the panel is a multiple of,
     // and ImGui truncates the content extent it fits a window to: with a fractional
@@ -605,6 +649,8 @@ namespace {
 // about. The second run is the carried Inter alone, which is the one build this
 // project knows always works.
 bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
+    // See fonts_release(): nobody else unlocks an atlas this module owns.
+    atlas->Locked = false;
     atlas->Clear();
 
     ImFontConfig config;
@@ -802,16 +848,16 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
     // without a dead band, a size derived from a continuous slider would rebuild
     // on every frame the user is dragging it.
     //
-    // The dead band holds only while the atlas it remembers building is still the
-    // one in front of us. Both injected paths destroy their ImGui context and
-    // create another in the same process -- the GL overlay when the user switches
-    // it off and back on, the Vulkan layer when a game replaces its device -- and
-    // the fresh context brings a fresh, empty atlas at the same pixel size. A
-    // size-only dead band answered "nothing to do" and left the pointers below
-    // aimed into the atlas that died with the old context; the first PushFont of
-    // the first frame after the overlay came back crashed the game. An atlas this
-    // module has filled is never empty, so empty means: not ours yet, build.
-    if (g_fonts.pixel_size > 0.0f && atlas->Fonts.Size > 0 &&
+    // It is a promise that the ImFont pointers below still point at live glyphs,
+    // so it is made about the atlas this module owns and about no other. Both
+    // injected paths destroy their ImGui context and create another in the same
+    // process -- the GL overlay when the user switches it off and back on or the
+    // game replaces its context, the Vulkan layer when a game replaces its
+    // device -- and they create the new one with fonts_atlas(), which therefore
+    // survives. A context created with an atlas of its own gets that atlas
+    // filled and nothing promised: it can die under this module at any time, and
+    // the two ways of noticing from outside both fail (fonts.h says how).
+    if (atlas == fonts_atlas() && g_fonts.pixel_size > 0.0f &&
         pixel_size > g_fonts.pixel_size - 0.5f && pixel_size < g_fonts.pixel_size + 0.5f &&
         g_built_count == g_wanted_count && same_font) {
         return false;

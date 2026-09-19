@@ -31,18 +31,28 @@ namespace vocem {
 class DrawDecision {
 public:
     // Recomputes only on the first call or when either list changed. Returns
-    // true exactly once, on the first computation: the caller's moment to log
-    // the evidence -- the verdict and its reason -- in its own voice.
+    // true when there is something to say: the first computation, and every
+    // later one that came out differently -- the caller's moment to log the
+    // evidence, the verdict and its reason, in its own voice.
+    //
+    // It used to return `first` alone, so a verdict that *changed* was silent.
+    // Somebody ticks a running game off the Applications page, the overlay
+    // leaves within two seconds exactly as the page promises, and nothing is
+    // written to the log, to the journal, or anywhere `vocem-why` reads -- in a
+    // project whose rule is that a component which decides not to act says why.
+    // The recomputation is already rare (only when a list was edited), so
+    // answering honestly costs one comparison and at most one line per edit.
     bool refresh(const Config& config) {
         if (decided_ && config.hidden_apps == hidden_ && config.shown_apps == shown_) {
             return false;
         }
         const bool first = !decided_;
+        const bool was = allowed_;
         decided_ = true;
         hidden_ = config.hidden_apps;
         shown_ = config.shown_apps;
         allowed_ = draw_here(config.hidden_apps, config.shown_apps);
-        return first;
+        return first || allowed_ != was;
     }
 
     bool allowed() const { return allowed_; }

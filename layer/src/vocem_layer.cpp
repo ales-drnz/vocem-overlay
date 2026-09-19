@@ -10,13 +10,19 @@
 // are older than any of the drawing:
 //   * Never block in vkQueuePresentKHR. No per-frame I/O, no allocation on the
 //     hot path (the exact shape of that claim, with its measured exceptions,
-//     is at overlay_hidden_here's call site).
+//     is at overlay_wanted_here's call site).
 //   * Per-image state is indexed by swapchain image index, never by acquisition
 //     order (MangoHud 0.8.3 fixed exactly this class of bug).
 //   * If anything we need is missing, degrade to a pure pass-through. A layer
 //     must never be the reason a game fails to start.
 //   * Dispatchable objects we create (command buffers) must be registered with
 //     the loader via pfnSetDeviceLoaderData, or their dispatch will crash.
+//
+// These bullets are this file's own order and are deliberately unnumbered: the
+// numbers anything cites -- in this directory, in tests/, and in DESIGN's own
+// entries -- are DESIGN's, where the index rule is 4 and the loader-data rule
+// is 5. Five citations named rule 4 for the loader-data one, following this
+// list's order while naming that file's numbering (corrected 2026-09-19).
 
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
@@ -36,6 +42,7 @@
 #include "vocem/journal.h"
 #include "vocem/draw_decision.h"
 #include "vocem/flatpak.h"
+#include "vocem/fonts.h"
 #include "vocem/overlay_log.h"
 #include "vocem/overlay_session.h"
 #include "vocem/panel.h"
@@ -841,8 +848,13 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
 // real present waits on, so the drawn path never allocates.
 constexpr uint32_t kMaxWaitSemaphores = 16;
 
+// `wanted` is set when this frame had something to put on the screen -- past the
+// poll, past the master switch and past both feature guards -- whatever happens
+// after. It is what the caller gates the renderer's construction on, because
+// the construction is 133 ms of atlas and 80 MB of pixels and the one thing
+// worth knowing before paying it is whether there is anything to draw.
 VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint32_t image_index,
-                         const VkSemaphore* wait_semaphores, uint32_t wait_count) {
+                         const VkSemaphore* wait_semaphores, uint32_t wait_count, bool& wanted) {
     const DeviceDispatch& d = dev.disp;
     if (image_index >= sc.command_buffers.size() || wait_count > kMaxWaitSemaphores) {
         return VK_NULL_HANDLE;
@@ -859,14 +871,11 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     if (!snapshot) {
         return VK_NULL_HANDLE;
     }
-    // The master switch first: with the overlay off, "off" used to mean a full
-    // fence wait, an empty render pass and a submit chained into the game's
-    // semaphores, with only the ImGui half skipped. Off now leaves the present
-    // exactly as the application made it.
+    // Nothing to show: the master switch is handled by the caller's verdict
+    // now, so what is left here is the two features.
     const vocem::Config& config = vocem::renderer().current_config();
-    if (!config.enabled ||
-        (!vocem::panel_wanted(*snapshot, config) &&
-         !vocem::notification_wanted(*snapshot, config, vocem::monotonic_seconds()))) {
+    if (!vocem::panel_wanted(*snapshot, config) &&
+        !vocem::notification_wanted(*snapshot, config, vocem::monotonic_seconds())) {
         static bool logged_idle = false;
         if (!logged_idle) {
             logged_idle = true;
@@ -876,6 +885,10 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
         }
         return VK_NULL_HANDLE;
     }
+    // From here on this frame had something to draw. Everything below is about
+    // whether it CAN be drawn, which is a different question and not one the
+    // renderer should be built for.
+    wanted = true;
 
     // Initialisation happens after the present returns, never here: ImGui's
     // Vulkan backend uploads its font atlas with vkQueueWaitIdle, and blocking on
@@ -1010,9 +1023,17 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
 // `allowed` where the GL side told it `enabled && allowed`, so a Flatpak game
 // with the master switch off kept receiving the channel and every face from a
 // daemon that believed it was drawing (entry 138).
-bool overlay_hidden_here() {
-    return !vocem::session().decide(vocem::renderer().current_config());
+// Whether this process should be carrying the overlay at all: the lists, the
+// verdict and the master switch, in one sentence the caller cannot ask by
+// halves (vocem/overlay_session.h).
+bool overlay_wanted_here() {
+    return vocem::session().decide(vocem::renderer().current_config());
 }
+
+// The last answer, so that a change can be acted on rather than merely obeyed.
+// -1 until the first present. Guarded by g_lock, which the only reader and the
+// only writer both hold.
+int g_drawing = -1;
 
 VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                                                      const VkPresentInfoKHR* pPresentInfo) {
@@ -1028,7 +1049,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // present: a handful of syscalls, once in the life of a process.
     //
     // The verdict behind it is not, and this comment used to say it was. The
-    // `overlay_hidden_here()` below is asked inside the lock and before the
+    // `overlay_wanted_here()` below is asked inside the lock and before the
     // present, and its first evaluation reads /proc/self/comm, /proc/self/exe,
     // /proc/self/cgroup and /proc/self/cmdline -- and, for a process none of the
     // launcher signals answer for, opens every installed desktop entry.
@@ -1041,23 +1062,40 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // further in). Two steady-state costs also live inside the present, on
     // their own cadences: current_config() runs LiveConfig::current() -- one
     // stat() at most every two seconds, a full fopen-and-reparse when the file
-    // moved -- both here and in draw(); and the state poll asks
-    // still_current() (one shm_open, two fstats) every 300 presents. So rule 8
-    // as it holds is: no PER-FRAME blocking I/O, a once-per-process verdict on
-    // the first frame, and a handful of deliberate, cadenced syscalls the
-    // design accepts by name. A claim wider than that is where the next
-    // violation hides (entry 42).
+    // moved -- both here and in draw(); and the state poll asks the segment's
+    // name about itself (one shm_open, two fstats and a close) once a second,
+    // StatePoll::kCadenceSeconds. That used to be a count -- 300 presents -- and
+    // the count is what made the same Quit take two seconds at 144 frames and
+    // ten at thirty; pacing it by the clock costs a drawing process four
+    // syscalls a second at any frame rate, which is 10x the old rate at 30 fps
+    // and half it at 600. Also per present, and new with that change: one
+    // clock_gettime(CLOCK_MONOTONIC), which is the vDSO's on any machine whose
+    // clocksource supports it (tsc here) and a real syscall on one whose does
+    // not.
+    //
+    // So rule 8 as it holds is: no PER-FRAME blocking I/O, a once-per-process
+    // verdict on the first frame, and a handful of deliberate, cadenced
+    // syscalls the design accepts by name. A claim wider than that is where the
+    // next violation hides (entry 42) -- and DESIGN's rule 8 is currently the
+    // wider claim, which is why this paragraph exists.
     //
     // Kept that way on purpose, and not because 2.4 ms is small. Nothing can be
     // drawn before the verdict exists, so moving it past the present buys a
     // frame of latency rather than removing the work; the frame it would buy is
     // one the overlay is not on anyway, since the renderer is built post-present
-    // by rule 10. Against that: the Vulkan present path has no frame-level test
-    // to change it under (entry 70 is that finding), and this runs under a lock
-    // inside somebody's game. The cost is once, while the process is still
-    // starting, and it is the processes with no launcher signal -- the browsers
-    // and the compositor, not the games -- that pay the 2.4 ms.
+    // by rule 10. Against that, it runs under a lock inside somebody's game, and
+    // the cost is once, while the process is still starting, paid hardest by the
+    // processes with no launcher signal -- the browsers and the compositor, not
+    // the games. The sentence that used to stand here, "the Vulkan present path
+    // has no frame-level test to change it under", was true when it was written
+    // on 2026-08-08 and stopped being true on 2026-08-17, when
+    // tests/vk_present_draw.cpp arrived (entry 129): the deferral is testable
+    // work now, and what is left is the argument above rather than the absence
+    // of an instrument.
     bool drawable = false;
+    // Set under the lock when the verdict or the master switch turned off on
+    // this present; acted on after it returns, where blocking is allowed.
+    bool switched_off = false;
     vocem::RendererTarget pending_target;
 
     {
@@ -1077,7 +1115,22 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         drawable = pPresentInfo->swapchainCount == 1;
         if (drawable) {
             auto it = g_swapchains.find(pPresentInfo->pSwapchains[0]);
-            if (it != g_swapchains.end() && !overlay_hidden_here()) {
+            const bool want = it != g_swapchains.end() && overlay_wanted_here();
+            // A verdict that turns off is a moment, not just a state: this
+            // process is holding a renderer, an atlas and a descriptor set per
+            // face, and "stop drawing" without "give it back" is what entry 37's
+            // footnote recorded the Vulkan switch as always having done. The
+            // OpenGL side has released on this transition since it had a
+            // transition to release on; this is that, on the other path.
+            if (g_drawing >= 0 && want != (g_drawing == 1)) {
+                VOCEM_LOG("%s in '%s'", want ? "switched on" : "switched off",
+                          vocem::process_name().c_str());
+                switched_off = !want;
+            }
+            if (it != g_swapchains.end()) {
+                g_drawing = want ? 1 : 0;
+            }
+            if (want) {
                 SwapchainData& sc = it->second;
 
                 auto family_it = dev->queue_families.find(queue);
@@ -1110,7 +1163,24 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                 }
 
                 if (sc.usable && family != UINT32_MAX) {
-                    if (!vocem::renderer().ready()) {
+                    bool wanted = false;
+                    overlay_semaphore =
+                        draw_overlay(*dev, sc, queue, pPresentInfo->pImageIndices[0],
+                                     pPresentInfo->pWaitSemaphores,
+                                     pPresentInfo->waitSemaphoreCount, wanted);
+                    // Built only for a frame that had something on it. This
+                    // used to be decided from the swapchain and the
+                    // application's verdict alone -- everything except whether
+                    // there was anything to draw -- so a game the overlay is
+                    // allowed in built the whole renderer, 133 ms of atlas and
+                    // 80 MB of pixels and a descriptor pool, while the owner
+                    // was simply not in a voice channel: the ordinary state of
+                    // a machine with the tray icon up. The OpenGL path has
+                    // always had this door and one more: its draw() returns at
+                    // the poll and again at these two predicates, both above
+                    // ensure_backend(). The cost of asking late is the first
+                    // frame with something on it, which rule 10 spends anyway.
+                    if (wanted && !vocem::renderer().ready()) {
                         needs_init = true;
                         pending_target.instance = dev->instance;
                         pending_target.physical_device = dev->physical_device;
@@ -1125,10 +1195,6 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                         pending_target.gdpa = dev->disp.GetDeviceProcAddr;
                         pending_target.set_loader_data = dev->set_device_loader_data;
                     }
-                    overlay_semaphore =
-                        draw_overlay(*dev, sc, queue, pPresentInfo->pImageIndices[0],
-                                     pPresentInfo->pWaitSemaphores,
-                                     pPresentInfo->waitSemaphoreCount);
                 }
             }
         }
@@ -1158,6 +1224,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
 
     // The journal line a build inside the present held back (rule 8): a file
     // write, done here where file work is allowed.
+    bool daemon_left = false;
+    bool daemon_attached = false;
     if (drawable) {
         std::lock_guard<std::mutex> guard(g_lock);
         auto it = g_swapchains.find(pPresentInfo->pSwapchains[0]);
@@ -1165,11 +1233,46 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
             it->second.colour_note_pending = false;
             vocem::journal_note("colour pipeline ready");
         }
+        // Read under the lock the poll itself runs under, acted on below with
+        // the lock let go: shutdown() takes the renderer's own.
+        daemon_left = g_state.daemon_left();
+        daemon_attached = g_state.attached();
+    }
+
+    // The daemon stopped -- the tray's Quit, or `systemctl --user stop`. This
+    // process is holding a backend, a font atlas and a descriptor set per face
+    // on its behalf, and not drawing does not hand any of it back. Here, after
+    // the present has returned, which is where this side is allowed to block;
+    // the next present finds the renderer not ready, sets needs_init again, and
+    // prepare() builds it back if a daemon returns.
+    //
+    // The switch being turned off is the same situation from this side, and the
+    // same answer: what is held is held on the daemon's behalf either way. What
+    // "everything" means is the renderer's own objects and the font atlas -- the
+    // swapchain's render pass, framebuffers, views, command pool, semaphores and
+    // fences stay, because they belong to the swapchain and the next frame in
+    // this game still needs them.
+    if (daemon_left || switched_off) {
+        VOCEM_LOG("%s: releasing the backend and the font atlas",
+                  daemon_left ? "the daemon stopped" : "switched off");
+        vocem::journal_note(daemon_left ? "daemon stopped: released" : "switched off: released");
+        vocem::renderer().shutdown();
+        vocem::fonts_release();
     }
 
     // Safe here: the present has returned, so the queue is ours to block on. Costs
     // one stall on the first frame that has something to draw, once per swapchain.
-    if (needs_init && !vocem::renderer().ready()) {
+    //
+    // And only while a daemon is publishing. `needs_init` above is decided from
+    // the swapchain and the application's verdict alone, which is everything
+    // except whether there is anything to draw: a game the overlay is allowed in
+    // built its whole renderer -- 133 ms rasterising an atlas, 80 MB of pixels,
+    // a descriptor pool -- with the daemon stopped and nothing to put in it, and
+    // built it again on the present after the release below. The OpenGL path
+    // never had this door, because its draw() returns at the poll, above
+    // ensure_backend(). tests/vk_present_draw.cpp's daemon-gone scenario counts
+    // "backend ready": twice before this line, once after.
+    if (needs_init && !vocem::renderer().ready() && daemon_attached) {
         // Deliberately unlocked: prepare() resolves entry points through the
         // chain, and the loader can route those back into this layer. Its
         // answer is remembered inside: a failure is said once and not retried

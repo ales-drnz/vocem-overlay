@@ -72,6 +72,49 @@ inline uint32_t sizing_height(uint32_t display_height, uint32_t drawable_height)
 // make the panel larger, and vice versa.
 float ui_scale();
 
+// The atlas this module fills, and the one every context that wants these fonts
+// must be created with: `ImGui::CreateContext(vocem::fonts_atlas())`.
+//
+// A context owns the atlas it creates and destroys it with itself, and this
+// module caches ImFont pointers into that atlas -- so the question "is the atlas
+// I remember still alive" had to be answered from outside, and both answers
+// available from outside are wrong. Emptiness (entry 37's) stopped being true in
+// 0.1.8, when the GL path began building its renderer's font texture inside
+// ensure_backend(), before asking for the fonts: building that texture builds
+// the atlas, which puts ImGui's default font in it, and a fresh atlas is
+// therefore never empty by the time this is asked. Addresses are no better --
+// measured on this machine, the second context's atlas landed at the SAME
+// address as the dead one, with its default font at the address of the dead
+// heavier weight.
+//
+// So the module owns the atlas instead, and the question does not arise: it
+// outlives every context created with it. That is also what makes a context
+// cycle cheap -- rasterising the atlas is 122 ms plus 11 ms to widen it to RGBA
+// (4096x4096, measured twice), and a game that destroys and recreates a context
+// used to pay it every time. A context created WITHOUT it gets an atlas of its
+// own, which this module will fill but never promise anything about: the dead
+// band below holds for its own atlas alone.
+ImFontAtlas* fonts_atlas();
+
+// Hand the pixels back: the atlas above is cleared and the cached pointers
+// forgotten, so the next ensure_fonts() builds from nothing.
+//
+// For the two cases where a guest has been asked to leave and should not still
+// be holding 80 MB of rasterised glyphs (16 MB alpha8 + 64 MB RGBA32 at
+// 4096x4096, measured): the user switched the overlay off, and the daemon
+// stopped. Both injected paths call it for both, which is four call sites and
+// one rule. NOT for a context death: an atlas outliving the context is the whole
+// point, and a game that destroys and recreates one must pay nothing for it --
+// nor for a daemon that was merely replaced, which StatePoll tells apart.
+//
+// **The caller must have no live ImGui context pointing at this atlas.**
+// Clear() IM_DELETEs every ImFont in it, and ImGui's own NewFrame would then
+// dereference a freed one through GetDefaultFont() -- with IM_ASSERT compiled
+// out of both injected targets, silently. All four call sites satisfy this by
+// destroying the context first (the GL path in release(), the Vulkan path in
+// OverlayRenderer::shutdown_locked()); a fifth has to do the same.
+void fonts_release();
+
 // Rebuilds the atlas when the requested size differs from the current one, when
 // the chosen typeface has changed, or when fonts_note_emoji() has seen a colour
 // emoji the atlas does not carry yet. Returns true when it did, in which case

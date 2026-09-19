@@ -43,7 +43,7 @@ struct RendererTarget {
     PFN_vkGetInstanceProcAddr gipa = nullptr;
     PFN_vkGetDeviceProcAddr gdpa = nullptr;
     // The loader's pfnSetDeviceLoaderData for this device: every dispatchable
-    // object created below the loader has to be registered through it (rule 4).
+    // object created below the loader has to be registered through it (rule 5).
     PFN_vkSetDeviceLoaderData set_loader_data = nullptr;
 };
 
@@ -129,6 +129,8 @@ private:
     // until shutdown() (a new device) clears it.
     bool failed_ = false;
     VkDevice device_ = VK_NULL_HANDLE;
+    // Resolved with the backend, spent in shutdown_locked(), which says why.
+    PFN_vkDeviceWaitIdle device_wait_idle_ = nullptr;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
 
     // Written by draw(), acted on by process_uploads(): the atlas size this output

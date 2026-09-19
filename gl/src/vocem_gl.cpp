@@ -671,7 +671,10 @@ public:
         // The decision, its evidence and the word to the daemon across the
         // bridge are one spelling with the Vulkan layer's now
         // (vocem/overlay_session.h).
-        const bool want = config.enabled && session_.decide(config);
+        // decide() carries the master switch itself now: spelling it here as
+        // well short-circuited past the sentence that tells the daemon whether
+        // this sandbox is drawing (vocem/overlay_session.h).
+        const bool want = session_.decide(config);
         if (want) {
             // The session's journal (vocem/journal.h): opened at the first
             // frame the overlay draws in this process, closed into history on
@@ -687,7 +690,22 @@ public:
                 // A present hook is the one place where the application's context
                 // is guaranteed current, so this is the good moment to hand back
                 // everything that lives in it.
+                //
+                // Said in the same words the daemon-stopped case below uses, and
+                // in the same words the Vulkan layer uses: the two paths release
+                // for the same two reasons now, and a reader chasing one of them
+                // should not have to know which half of the overlay wrote the
+                // line. What it names is what actually goes -- the backend and
+                // the atlas -- rather than "everything", which the swapchain's
+                // and the context's own objects are not.
+                VOCEM_GLOG("switched off: releasing the backend and the font atlas");
                 release(true);
+                // The atlas does not live in the context: it belongs to the
+                // fonts module and survives release() on purpose, so that a game
+                // cycling its context pays nothing. Being switched off is the
+                // other case, and there 80 MB of rasterised glyphs in somebody
+                // else's process is exactly what release() exists to give back.
+                vocem::fonts_release();
             }
         }
         drawing_ = want ? 1 : 0;
@@ -703,6 +721,21 @@ public:
 
         vocem::Snapshot* snapshot = poll_state();
         if (!snapshot) {
+            // The daemon stopped -- the tray's Quit, or `systemctl --user stop`.
+            // Not drawing is not enough: this process is holding a backend, an
+            // atlas and a texture per face on the daemon's behalf, and measured
+            // before this existed it went on holding all of it -- 139.7 MB
+            // against 22 MB for the same process without the overlay -- for the
+            // rest of its life. The same handing back as the switch being turned
+            // off, because from the guest's side it is the same situation; a
+            // present hook is the one place the application's context is
+            // guaranteed current, which is what makes it safe here.
+            if (state_poll_.daemon_left()) {
+                VOCEM_GLOG("the daemon stopped: releasing the backend and the font atlas");
+                vocem::journal_note("daemon stopped: released");
+                release(true);
+                vocem::fonts_release();
+            }
             return;
         }
         // One clock for the whole frame: the animation step, the panel's motion
@@ -787,20 +820,23 @@ public:
         const PixelStoreGuard unpack = avatars_.pixel_store_guard();
 
         vocem::fonts_note_emoji_in(*snapshot);
-        if (vocem::ensure_fonts(
-                // Sized by the display, not by the window: a window is where the
-                // overlay is drawn, not how large it should be, and sizing from
-                // the drawable made every resize rubber-band the whole panel --
-                // text, pictures, spacing, all of it, since every distance is a
-                // multiple of ui_scale(). The daemon publishes the display's
-                // mode height; sizing_height() says when the drawable wins
-                // instead (zero display, or a supersampled drawable taller than
-                // the display and headed for a downscale).
-                vocem::font_pixel_size(
-                    vocem::sizing_height(snapshot->display_height, height),
-                    config.scale, config.font_size),
-                config.font_size, config.font_path.c_str(),
-                config.font_path_strong.c_str())) {
+        // Sized by the display, not by the window: a window is where the overlay
+        // is drawn, not how large it should be, and sizing from the drawable
+        // made every resize rubber-band the whole panel -- text, pictures,
+        // spacing, all of it, since every distance is a multiple of ui_scale().
+        // The daemon publishes the display's mode height; sizing_height() says
+        // when the drawable wins instead (zero display, or a supersampled
+        // drawable taller than the display and headed for a downscale).
+        const float wanted_pixels = vocem::font_pixel_size(
+            vocem::sizing_height(snapshot->display_height, height), config.scale,
+            config.font_size);
+        if (vocem::ensure_fonts(wanted_pixels, config.font_size, config.font_path.c_str(),
+                                config.font_path_strong.c_str())) {
+            // The expensive thing this process does, said out loud: 133 ms of
+            // rasterising, and nothing said so until a context cycle was found
+            // paying it every time. tests/gl_context_cycle.cpp counts these
+            // lines, which is why it can assert a count instead of a clock.
+            VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(wanted_pixels));
             vocem::configure_style(config);
             ImGui_ImplOpenGL3_DestroyFontsTexture();
             ImGui_ImplOpenGL3_CreateFontsTexture();
@@ -992,7 +1028,11 @@ private:
 
         if (!ImGui::GetCurrentContext()) {
             IMGUI_CHECKVERSION();
-            ImGui::CreateContext();
+            // With the fonts module's atlas, not one of the context's own: the
+            // atlas has to outlive the context, because this is a context that
+            // dies and comes back (vocem/fonts.h says what the alternatives
+            // cost, both in a crash and in 133 ms per context).
+            ImGui::CreateContext(vocem::fonts_atlas());
             ImGuiIO& io = ImGui::GetIO();
             io.IniFilename = nullptr;
             io.LogFilename = nullptr;
