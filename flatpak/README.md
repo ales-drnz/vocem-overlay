@@ -10,15 +10,23 @@ Published from this repository's own pages, at
 
 ## When to rebuild it
 
-It carries the three injected libraries, the two layer manifests and the emoji
-bank, and nothing from `daemon/`, `cli/` or `gui/`. So it is rebuilt and
+It carries the three injected libraries at both widths, the two layer
+manifests, the emoji bank with its sequence table, and the licence texts those
+libraries oblige; nothing from `daemon/`, `cli/` or `gui/`. So it is rebuilt and
 republished when a release touched `gl/`, `layer/`, `common/`, `include/` or
 `third_party/`, the same rule that decides whether `build32` has to be rebuilt,
 and left alone otherwise:
 
 ```sh
-git diff --name-only <previous tag>..HEAD -- gl layer common include third_party
+git diff --name-only <previous tag>..HEAD -- gl layer common include third_party \
+    CMakeLists.txt flatpak
 ```
+
+`CMakeLists.txt` and `flatpak/` are in that list because the payload is decided
+there: the manifest's own `post-install` is everything the extension carries
+that is not a library, and 0.1.9 shipped without `emoji_sequences.bin` because
+of one missing line in it. A change to either is a change to the extension even
+when no library moved.
 
 The one coupling that is not optional: a change to `kAbiVersion` means the
 extension must be republished, or a Flatpak game reads a segment it refuses.
@@ -35,8 +43,16 @@ Then, from the top of the checkout, with the signing key and the project's own
 version:
 
 ```sh
-flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --subject="Vocem Overlay $(grep -m1 '^pkgver=' packaging/PKGBUILD | cut -d= -f2)" --body="Built from $(git rev-parse --short HEAD) of https://github.com/ales-drnz/vocem-overlay" --repo=vocem-flatpak-repo vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
+flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --subject="Vocem Overlay $(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9.]*\)$/\1/p' CMakeLists.txt | head -1)" --body="Built from $(git rev-parse --short HEAD) of https://github.com/ales-drnz/vocem-overlay" --repo=vocem-flatpak-repo vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
 ```
+
+The version in the subject comes from `CMakeLists.txt`, which is the one place
+this project states its release (entry 110). It used to come from
+`packaging/PKGBUILD`, which says outright that it stays one release behind while
+the next one is being written: without the subject `flatpak info` shows a
+generated line and nobody can tell whether the fix a release announced is in the
+copy they have, so a subject naming the wrong release is the same defect
+politely.
 
 The build directory, the exported repository and `.flatpak-builder` all sit
 beside the manifest, on one filesystem. Do not move any of them to `/tmp`: the

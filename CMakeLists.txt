@@ -113,7 +113,19 @@ endif()
 # --- launcher helper ---------------------------------------------------------
 # Uses the linker's $LIB token so a single script serves both architectures. The
 # literal must survive CMake's configure step, hence the placeholder.
-set(VOCEM_LIBDIR_TOKEN "/usr/$LIB")
+#
+# From the install prefix, not from a hardcoded /usr. Entry 16's rule is that
+# vocem-run preloads the same shim the session does, so the two entry paths
+# cannot drift -- and this said /usr while packaging/environment.d/50-vocem.conf.in
+# took @CMAKE_INSTALL_PREFIX@ (entry 137 made it a template and did not come
+# back here). Measured on a configure at another prefix: vocem-run said
+# `/usr/$LIB/libvocem_gl_shim.so` and the session's file said
+# `<prefix>/$LIB/libvocem_gl_shim.so`, so every program started through
+# vocem-run after a ~/.local install printed `cannot be preloaded: ignored` and
+# got no OpenGL overlay. tests/one_preload_path.cmake configures at a prefix of
+# its own and compares the two generated files, because at the default prefix
+# the defect is invisible.
+set(VOCEM_LIBDIR_TOKEN "${CMAKE_INSTALL_PREFIX}/$LIB")
 configure_file(scripts/vocem-run.in "${CMAKE_BINARY_DIR}/vocem-run" @ONLY)
 
 if(VOCEM_BUILD_HOST_TOOLS)
