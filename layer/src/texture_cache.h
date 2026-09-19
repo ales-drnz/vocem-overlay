@@ -58,7 +58,7 @@ public:
 
     // set_loader_data is the loader's pfnSetDeviceLoaderData for this device:
     // the upload allocates a command buffer, a dispatchable object, and layer
-    // rule 4 says every one of those is registered or dispatch on it crashes.
+    // rule 5 says every one of those is registered or dispatch on it crashes.
     bool init(VkDevice device, VkPhysicalDevice physical_device, VkQueue queue,
               uint32_t queue_family, FunctionResolver resolver, void* resolver_data,
               PFN_vkSetDeviceLoaderData set_loader_data);

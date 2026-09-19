@@ -320,7 +320,7 @@ bool TextureCache::upload(const AvatarKey& key, const std::string& path) {
         }
         // A dispatchable object this layer created: registered with the loader
         // before anything dispatches on it, or a layer below ours keying its
-        // bookkeeping on the handle's dispatch pointer misses (rule 4). This
+        // bookkeeping on the handle's dispatch pointer misses (rule 5). This
         // comment used to say the renderer had done it, and nothing had.
         if (set_loader_data_) {
             set_loader_data_(device_, command_buffer);
