@@ -6,6 +6,11 @@
 
 ### Fixed
 
+- Somebody joining a channel, or a message arriving, no longer freezes the game: a new colour emoji cost a Vulkan game 150 to 200 ms and an OpenGL one 125 to 145, and now costs a few milliseconds.
+- A Vulkan game in a window builds the overlay's font atlas once when the panel first appears, not twice.
+- The panel's first appearance in a game no longer stops it for 180 ms: the font atlas is built beside the game instead of inside its frame.
+- People without an avatar share one picture instead of one copy each, and a new face never makes a Vulkan game wait for the GPU.
+- The Vulkan layer's drawing waits for the game's frame before reading it, as the Vulkan specification requires. Only a validation layer placed below the overlay could see the difference.
 - A game that destroys the OpenGL context it was drawing in and creates another keeps its overlay: the panel came back without its text, and often took the game down with it.
 - The overlay's font atlas outlives the context it was built for, so a game cycling contexts no longer pays 133 ms of rasterisation for each one.
 - Stopping the overlay hands back what every running game was holding for it: the font atlas, the renderer's objects and a texture per face, 81 MB in a three-person channel.

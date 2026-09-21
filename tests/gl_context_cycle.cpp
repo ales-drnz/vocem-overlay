@@ -255,6 +255,25 @@ int main() {
         }
         glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
         drawn[cycle] = foreign_pixels();
+        // The FIRST context waits for its panel. The first atlas of a process is
+        // rasterised on a worker now (entry 192), so the panel appears about a
+        // tenth of a second after the first frame with a channel on it instead
+        // of the game standing still for it -- three frames are no longer
+        // enough, and the later contexts are compared against this one, so a
+        // first context read before its panel would make every comparison
+        // below pass on nothing. Presented until the panel is there, two
+        // seconds at most. The later contexts get their three frames as before:
+        // the atlas outlives the context, and their panel must be there at once.
+        if (cycle == 0 && !declining) {
+            const double deadline = milliseconds() + 2000.0;
+            while (drawn[0] <= 10000 && milliseconds() < deadline) {
+                glClearColor(0.10f, 0.15f, 0.20f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                eglSwapBuffers(display, surface);
+                glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
+                drawn[0] = foreign_pixels();
+            }
+        }
         eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         eglDestroyContext(display, context);
         eglDestroySurface(display, surface);

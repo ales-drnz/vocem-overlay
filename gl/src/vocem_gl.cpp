@@ -21,10 +21,12 @@
 // deals with getting a frame, a size, and a texture upload path.
 
 #include <dlfcn.h>
+#include <pthread.h>
 #include <time.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -88,6 +90,8 @@ using PFN_glGetIntegerv = void (*)(GLenum, GLint*);
 using PFN_glPixelStorei = void (*)(GLenum, GLint);
 using PFN_glBindBuffer = void (*)(GLenum, GLuint);
 using PFN_glBindFramebuffer = void (*)(GLenum, GLuint);
+using PFN_glTexSubImage2D = void (*)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum,
+                                     const void*);
 using PFN_glIsEnabled = unsigned char (*)(GLenum);
 using PFN_glEnable = void (*)(GLenum);
 using PFN_glDisable = void (*)(GLenum);
@@ -380,6 +384,84 @@ private:
     PFN_glEnable enable_ = nullptr;
     bool was_enabled_ = false;
 };
+
+// The first font atlas of a process, rasterised off the game's thread (entry
+// 192). On this path the build ran INSIDE the game's glXSwapBuffers, in the
+// frame the panel first appeared: 179-184 ms, measured by gl_draw_local's
+// arrivals scene, 113 of them stb_truetype. The frame the worker starts in, and
+// every frame until it is done, goes out without the overlay; the panel then
+// appears about a tenth of a second later instead of the game standing still.
+//
+// At file scope, not in GlOverlay, so the ELF destructor below can wait for it
+// without constructing the overlay in a process that never drew. A pthread and
+// not a std::thread: this library is built without exceptions and std::thread
+// reports a refused clone by throwing, which would end the game; a refusal
+// here is a return code, and the build then happens on the game's thread as it
+// always did. Started and joined under g_gl_lock or by the destructor; its own
+// mutex makes the two exclusive.
+struct AtlasWorker {
+    std::mutex lock;
+    pthread_t thread{};
+    bool running = false;
+    std::atomic<bool> done{false};
+    float pixels = 0.0f;
+    float reference = 16.0f;
+    std::string body;
+    std::string strong;
+
+    static void* run(void* self) {
+        auto* worker = static_cast<AtlasWorker*>(self);
+        vocem::ensure_fonts(worker->pixels, worker->reference, worker->body.c_str(),
+                            worker->strong.c_str());
+        unsigned char* rgba = nullptr;
+        int width = 0;
+        int height = 0;
+        vocem::fonts_atlas()->GetTexDataAsRGBA32(&rgba, &width, &height);
+        // Said here, where the rasterisation happened, and not where the game's
+        // thread next looks: a context that dies mid-build joins the worker in
+        // release() and never reaches the draw path's join, and the count
+        // gl_context_cycle and gl_daemon_gone take of this line read 0 for an
+        // atlas that had been built (measured, the first run of this worker).
+        VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(worker->pixels));
+        worker->done.store(true, std::memory_order_release);
+        return nullptr;
+    }
+
+    // True when a thread took the job; false means the caller builds.
+    bool start(float wanted_pixels, float wanted_reference, const std::string& wanted_body,
+               const std::string& wanted_strong) {
+        std::lock_guard<std::mutex> guard(lock);
+        pixels = wanted_pixels;
+        reference = wanted_reference;
+        body = wanted_body;
+        strong = wanted_strong;
+        done.store(false, std::memory_order_relaxed);
+        running = pthread_create(&thread, nullptr, &AtlasWorker::run, this) == 0;
+        if (running) {
+            pthread_setname_np(thread, "vocem-atlas");
+        }
+        return running;
+    }
+
+    bool busy() {
+        std::lock_guard<std::mutex> guard(lock);
+        return running;
+    }
+
+    void join() {
+        std::lock_guard<std::mutex> guard(lock);
+        if (running) {
+            pthread_join(thread, nullptr);
+            running = false;
+        }
+    }
+};
+
+AtlasWorker& atlas_worker() {
+    // Never destroyed, for the reason overlay() gives.
+    static AtlasWorker* worker = new AtlasWorker;
+    return *worker;
+}
 
 class GlAvatarProvider : public vocem::AvatarProvider {
 public:
@@ -819,6 +901,30 @@ public:
         // row length at 2048 found it at 0 after the overlay's first frame.
         const PixelStoreGuard unpack = avatars_.pixel_store_guard();
 
+        // The FIRST atlas of this process, or the first after fonts_release(),
+        // goes to the worker (AtlasWorker says why). A rebuild for a new size
+        // or typeface stays here: it is rare, and the atlas it replaces is the
+        // one this frame would otherwise draw from.
+        bool atlas_from_worker = false;
+        if (atlas_worker().busy()) {
+            if (!atlas_worker().done.load(std::memory_order_acquire)) {
+                return;  // still rasterising: this frame goes out without the overlay
+            }
+            atlas_worker().join();
+            atlas_from_worker = true;
+        } else if (vocem::fonts().pixel_size == 0.0f) {
+            const float first_pixels = vocem::font_pixel_size(
+                vocem::sizing_height(snapshot->display_height, height), config.scale,
+                config.font_size);
+            if (atlas_worker().start(first_pixels, config.font_size, config.font_path,
+                                     config.font_path_strong)) {
+                VOCEM_GLOG("rasterising the font atlas at %.0f px off the game's thread",
+                           static_cast<double>(first_pixels));
+                return;
+            }
+            VOCEM_GLOG("no thread for the font atlas; rasterising it on the game's thread");
+        }
+
         vocem::fonts_note_emoji_in(*snapshot);
         // Sized by the display, not by the window: a window is where the overlay
         // is drawn, not how large it should be, and sizing from the drawable
@@ -830,16 +936,45 @@ public:
         const float wanted_pixels = vocem::font_pixel_size(
             vocem::sizing_height(snapshot->display_height, height), config.scale,
             config.font_size);
+        const uint32_t builds_before = vocem::fonts_build_count();
         if (vocem::ensure_fonts(wanted_pixels, config.font_size, config.font_path.c_str(),
                                 config.font_path_strong.c_str())) {
             // The expensive thing this process does, said out loud: 133 ms of
             // rasterising, and nothing said so until a context cycle was found
             // paying it every time. tests/gl_context_cycle.cpp counts these
-            // lines, which is why it can assert a count instead of a clock.
-            VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(wanted_pixels));
+            // lines, which is why it can assert a count instead of a clock. A
+            // new emoji FOLDED into the atlas answers true as well (the texture
+            // still has to be uploaded again) and is not a build, so it says so
+            // in its own words rather than inflating that count (entry 191).
+            const bool rebuilt = vocem::fonts_build_count() != builds_before;
+            if (rebuilt) {
+                VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(wanted_pixels));
+            } else {
+                VOCEM_GLOG("colour emoji folded into the font atlas");
+            }
             vocem::configure_style(config);
+            // A fold changed a few 32-pixel squares of an atlas the texture
+            // already holds, so only those go up (entry 192): the whole atlas
+            // is a 64 MB glTexImage2D, 11.5 to 16.9 ms on its own (entry 145).
+            // A build replaces the texture whole, and so does a fold the
+            // regions cannot describe.
+            if (rebuilt || atlas_from_worker || !upload_folded_regions()) {
+                vocem::fonts_take_folded(nullptr, 0);  // the whole atlas carries them
+                ImGui_ImplOpenGL3_DestroyFontsTexture();
+                ImGui_ImplOpenGL3_CreateFontsTexture();
+                VOCEM_GLOG("font texture uploaded whole");
+                atlas_from_worker = false;
+            }
+        }
+        if (atlas_from_worker) {
+            // The worker's atlas, and nothing new folded into it since: the
+            // backend's texture still holds the default bitmap it was created
+            // with, so the atlas goes up whole now.
+            vocem::configure_style(config);
+            vocem::fonts_take_folded(nullptr, 0);
             ImGui_ImplOpenGL3_DestroyFontsTexture();
             ImGui_ImplOpenGL3_CreateFontsTexture();
+            VOCEM_GLOG("font texture uploaded whole");
         }
 
         // Why there are no colour emoji, and why the text is not in the font
@@ -914,6 +1049,10 @@ public:
     // call into. Inside a present hook it is; inside `glXDestroyContext` it is only
     // if the caller made the dying context current for us, and it says so.
     void release(bool gl_current) {
+        // A first atlas still being rasterised reaches the context through
+        // ImGui::GetIO() and the atlas that fonts_release() is about to clear:
+        // it finishes first (entry 192). At most the ~113 ms the build takes.
+        atlas_worker().join();
         if (backend_ready_ && gl_current) {
             ImGui_ImplOpenGL3_Shutdown();
         }
@@ -925,6 +1064,9 @@ public:
         // against the next: the failure was about that context, not about us.
         failed_ = false;
         bind_framebuffer_ = nullptr;
+        tex_sub_image_ = nullptr;
+        bind_texture_ = nullptr;
+        get_integer_ = nullptr;
         capture_warmup_frames_ = 0;
 
         // Without a current context ImGui's backend cannot be shut down, because
@@ -1125,6 +1267,12 @@ private:
         // Resolved once, beside the rest: a context without it is older than
         // framebuffer objects, in which case there is nothing to retarget.
         bind_framebuffer_ = gl_symbol<PFN_glBindFramebuffer>("glBindFramebuffer");
+        // For uploading a folded emoji into the font texture in place. Core
+        // since GL 1.1; without it a fold replaces the texture whole, as a
+        // build does.
+        tex_sub_image_ = gl_symbol<PFN_glTexSubImage2D>("glTexSubImage2D");
+        bind_texture_ = gl_symbol<PFN_glBindTexture>("glBindTexture");
+        get_integer_ = gl_symbol<PFN_glGetIntegerv>("glGetIntegerv");
         // Whose context this backend now lives in, so that the teardown hooks
         // can tell that context's death from any other's (see them below).
         remember_owner(egl);
@@ -1185,6 +1333,62 @@ private:
     int capture_warmup_frames_ = 0;
     bool failed_ = false;
     PFN_glBindFramebuffer bind_framebuffer_ = nullptr;
+    PFN_glTexSubImage2D tex_sub_image_ = nullptr;
+    PFN_glBindTexture bind_texture_ = nullptr;
+    PFN_glGetIntegerv get_integer_ = nullptr;
+
+    // The squares a fold wrote, uploaded into the font texture the backend
+    // already made, and nothing else. Runs under draw()'s PixelStoreGuard, so
+    // the unpack state is the neutral one and no pixel-unpack buffer is bound;
+    // each square is copied out of the atlas into a contiguous buffer first,
+    // because GL_UNPACK_ROW_LENGTH does not exist on ES 2 and a sub-image read
+    // straight out of a 4096-wide atlas would need it. The texture binding is
+    // the game's and goes back as it was (rule 12), exactly as the backend's
+    // own CreateFontsTexture does. False when anything is missing -- the
+    // caller then replaces the texture whole, which is always correct.
+    bool upload_folded_regions() {
+        if (!tex_sub_image_ || !bind_texture_ || !get_integer_) {
+            return false;
+        }
+        const GLuint texture =
+            static_cast<GLuint>(ImGui::GetIO().Fonts->TexID);  // an ImU64 in 1.91
+        unsigned char* pixels = nullptr;
+        int width = 0;
+        int height = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        if (texture == 0 || !pixels) {
+            return false;
+        }
+        vocem::AtlasRegion regions[vocem::kMaxFoldedRegions];
+        const uint32_t count = vocem::fonts_take_folded(regions, vocem::kMaxFoldedRegions);
+        static unsigned char square[vocem::kMaxFoldedSide * vocem::kMaxFoldedSide * 4];
+        for (uint32_t i = 0; i < count; ++i) {
+            const vocem::AtlasRegion& region = regions[i];
+            if (region.width <= 0 || region.height <= 0 ||
+                static_cast<uint32_t>(region.width * region.height * 4) > sizeof(square) ||
+                region.x + region.width > width || region.y + region.height > height) {
+                return false;
+            }
+        }
+        GLint previous = 0;
+        get_integer_(GL_TEXTURE_BINDING_2D, &previous);
+        bind_texture_(GL_TEXTURE_2D, texture);
+        for (uint32_t i = 0; i < count; ++i) {
+            const vocem::AtlasRegion& region = regions[i];
+            for (int row = 0; row < region.height; ++row) {
+                std::memcpy(square + row * region.width * 4,
+                            pixels + ((region.y + row) * width + region.x) * 4,
+                            static_cast<size_t>(region.width) * 4);
+            }
+            tex_sub_image_(GL_TEXTURE_2D, 0, region.x, region.y, region.width, region.height,
+                           GL_RGBA, GL_UNSIGNED_BYTE, square);
+        }
+        bind_texture_(GL_TEXTURE_2D, static_cast<GLuint>(previous));
+        // Said, so the arrivals scene can count it: a fold that went up whole
+        // would pass every other check (entry 192).
+        VOCEM_GLOG("font texture: %u folded square(s) copied in place", count);
+        return true;
+    }
 };
 
 GlOverlay& overlay() {
@@ -1445,6 +1649,9 @@ namespace {
 // The clean end of the journal: a process that unwinds normally runs this and
 // takes its crash marker with it; a crash does not, which is the mechanism.
 __attribute__((destructor)) void vocem_gl_journal_close() {
+    // A first atlas still being rasterised runs this library's code: it
+    // finishes before the library can be unmapped (entry 192).
+    atlas_worker().join();
     vocem::journal_end();
 }
 

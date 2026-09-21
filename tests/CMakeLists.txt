@@ -347,6 +347,20 @@ vocem_test(gl_draw_local LINK ${CMAKE_DL_LIBS} X11 rt LINK_OPTIONS -rdynamic
 vocem_test_run(gl_second_context TARGET gl_draw_local
     ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=second-context" SKIP)
 
+# Somebody joins six times with a fresh colour emoji, then a message arrives:
+# the owner's half-second freeze as a scene on the OpenGL door. "font atlas
+# built" must read 1 and "folded" once per arrival (entry 191); against the
+# 0.1.10-5 package's library it reads 8 builds. The longest swap after each
+# arrival is printed, not asserted.
+vocem_test_run(gl_arrivals TARGET gl_draw_local
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_GL_SCENARIO=arrivals" SKIP)
+
+# The game going away while the first atlas is still being rasterised on its
+# worker (entry 192): release() and the library's destructor must wait for it.
+# A guard on the worker's hazard; a library without one passes trivially.
+vocem_test_run(gl_early_exit TARGET gl_draw_local
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_GL_SCENARIO=early-exit" SKIP)
+
 # What a GL CONTEXT costs, which gl_noop_quiet (per frame) and apps_cost (per
 # ask) leave uncovered. A game that destroys the context it was drawing in and
 # makes another crashed 0.1.10-1 on the second one -- the fonts module's dead
@@ -564,9 +578,20 @@ vocem_test(emoji_bank ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
 vocem_m32_twin(emoji_bank)
 
 # A colour emoji seen in a name reaches the atlas in colour, in both weights,
-# and a new one triggers a rebuild the way a size change does. Fails against
-# the atlas as it stood: the glyph existed, white.
+# and a new one arriving later reaches it too. Fails against the atlas as it
+# stood: the glyph existed, white.
 vocem_test(emoji_atlas IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
+
+# People with no avatar share their default picture's cache key (entries 184,
+# 192): 24 keys for one file became at most six. Fails against the old key.
+vocem_test(avatar_key_default)
+vocem_m32_twin(avatar_key_default)
+
+# And it reaches it WITHOUT rasterising the atlas again -- the measurement
+# behind "the game freezes for half a second when somebody joins". A count and
+# not a clock (entry 145's reason). Against the module as it stood every new
+# emoji is another 125-146 ms build, and the count check fails on the first one.
+vocem_test(emoji_incremental IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
 
 # The decoration symbols a server names its channels with have glyphs, pinned
 # one per added block, both weights. "?? ... ??" in a toast is what a miss
@@ -861,6 +886,22 @@ vocem_test_run(vk_present_daemon_gone TARGET vk_present_draw
 vocem_test_run(vk_present_idle TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=idle" SKIP)
 
+# Somebody joins, six times, each with a colour emoji nobody in the channel had,
+# and then a message arrives with one more: the owner's "the game freezes for
+# half a second when somebody joins or a message arrives", as a scene on the
+# real layer and a real swapchain. The layer's own lines are the count (entry
+# 191): "font atlas rebuilt" must not appear, "folded" must, once per arrival.
+# Against the 0.1.10-5 package's library it reads seven rebuilds. The longest
+# present after each arrival is printed, not asserted (entries 145, 185).
+vocem_test_run(vk_present_arrivals TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=arrivals" SKIP)
+
+# The device, the instance and the process gone while the first atlas is still
+# being rasterised on its worker (entry 192): vocem_DestroyDevice and the
+# layer's destructor must wait for it. A guard, not a refutation.
+vocem_test_run(vk_present_early_exit TARGET vk_present_draw
+    ENV ${VOCEM_VK_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=early-exit" SKIP)
+
 # A Flatpak game with the master switch off, as the daemon hears of it. The
 # layer enters the bridge and tells the daemon whether this sandbox is drawing;
 # it used to say `allowed` where the GL side said `enabled && allowed`, so the
@@ -899,6 +940,12 @@ foreach(scene recreate in_flight second_device daemon_gone idle)
     vocem_m32_twin_run(vk_present_${scene} TARGET vk_present_${scene}
         ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=${scene_value}")
 endforeach()
+# The arrivals at 32 bits too: the fold writes into atlas pixels by offset and
+# registers glyphs by hand, which is exactly the arithmetic a width can break.
+vocem_m32_twin_run(vk_present_arrivals TARGET vk_present_arrivals
+    ENV ${VOCEM_VK_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=arrivals")
+vocem_m32_twin_run(vk_present_early_exit TARGET vk_present_early_exit
+    ENV ${VOCEM_VK_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=early-exit")
 
 # The same present hook under the Khronos validation layer, where the machine
 # has one: the witness knows the handful of calls this project's rules name,
@@ -907,7 +954,8 @@ endforeach()
 vocem_script_test(vk_present_validated ARGS
     "-DPROBE=$<TARGET_FILE:vocem_vk_present_draw>"
     "-DMANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json"
-    "-DLIBRARY=$<TARGET_FILE:vocem_vk>")
+    "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
+    "-DEMOJI_BANK=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
 
 # The Vulkan half inside gamescope, with gamescope's own WSI layer in the chain --
 # the one place a gamescope update can reach us, since its WSI layer replaces
@@ -999,13 +1047,16 @@ if(TARGET vocem-config)
     # then wrote over an edit made outside, with the button grey and nothing
     # saying the two differed.
     # The GUI's own dependencies, found here because tests/ is a directory of
-    # its own and gui/'s find_package does not reach it.
-    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Quick Widgets)
+    # its own and gui/'s find_package does not reach it -- QUIET and inside
+    # `if(TARGET vocem-config)`, so a build without the window never asks. Gui,
+    # Qml and fontconfig are what config_bridge.cpp actually reaches; it was
+    # linking Quick and Widgets as well, which the probe's own header measures.
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
     find_package(Fontconfig QUIET)
     vocem_test(config_bridge_switches
         SOURCES config_bridge_switches.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
         INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
-        LINK vocem_common Qt6::Quick Qt6::Widgets Fontconfig::Fontconfig
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
         DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
     set_target_properties(vocem_config_bridge_switches PROPERTIES AUTOMOC ON)
 

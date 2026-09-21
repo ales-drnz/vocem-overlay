@@ -23,7 +23,11 @@
 // it cannot press a Switch, and these three settings have no other interface.
 // So the bridge is built here directly, the way tests/daemon_ws_bounds.cpp
 // compiles daemon/src/websocket.cpp and talks to it from a stub -- no window,
-// no QML, no engine. VOCEM_CONFIG_NO_DAEMON keeps the constructor's probes
+// no QML, no engine. It links Qt6::Gui (the bridge reaches QClipboard and
+// QWindow), Qt6::Qml (its QML_ELEMENT registration) and fontconfig (the font
+// list), and deliberately not Quick or Widgets: it was linking both, which
+// measured 14 NEEDED entries and 79 shared objects at load against 11 and 73
+// without them. VOCEM_CONFIG_NO_DAEMON keeps the constructor's probes
 // away from the owner's systemd (config_bridge.cpp's `harness` flag), and
 // XDG_CONFIG_HOME is a scratch directory, so nothing here can reach the
 // settings a running game is reading.
@@ -34,7 +38,6 @@
 //   * the window's own copy follows it, so the next Apply does not write over
 //     it.
 
-#include <QCoreApplication>
 #include <QGuiApplication>
 #include <QTemporaryDir>
 

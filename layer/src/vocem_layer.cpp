@@ -711,7 +711,15 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
     dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    // READ as well as WRITE: loadOp LOAD reads the game's finished frame, and a
+    // dependency that makes only writes visible leaves that read unordered
+    // against the game's own rendering. Reported by the Khronos validation
+    // layer's synchronisation checks (SYNC-HAZARD-READ-AFTER-WRITE at
+    // vkCmdBeginRenderPass) the first time it sat BELOW the overlay instead
+    // of above it -- entry 192; every earlier "clean" run was validating the
+    // test's own calls and never saw this render pass.
+    dependency.dstAccessMask =
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
     VkRenderPassCreateInfo rp_info{};
     rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -854,7 +862,8 @@ constexpr uint32_t kMaxWaitSemaphores = 16;
 // the construction is 133 ms of atlas and 80 MB of pixels and the one thing
 // worth knowing before paying it is whether there is anything to draw.
 VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint32_t image_index,
-                         const VkSemaphore* wait_semaphores, uint32_t wait_count, bool& wanted) {
+                         const VkSemaphore* wait_semaphores, uint32_t wait_count, bool& wanted,
+                         uint32_t& sizing) {
     const DeviceDispatch& d = dev.disp;
     if (image_index >= sc.command_buffers.size() || wait_count > kMaxWaitSemaphores) {
         return VK_NULL_HANDLE;
@@ -889,6 +898,13 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     // whether it CAN be drawn, which is a different question and not one the
     // renderer should be built for.
     wanted = true;
+    // And the height the atlas will be sized from, the one OverlayRenderer::draw
+    // computes: the display's, not the swapchain's. The renderer used to be
+    // built at the swapchain's height and its first draw then asked for the
+    // display's, so a windowed game rasterised the whole atlas twice in its
+    // first two frames -- 125-146 ms thrown away, measured by the arrivals
+    // scene as one "rebuilt" before anybody arrived (entry 192).
+    sizing = vocem::sizing_height(snapshot->display_height, sc.extent.height);
 
     // Initialisation happens after the present returns, never here: ImGui's
     // Vulkan backend uploads its font atlas with vkQueueWaitIdle, and blocking on
@@ -1014,18 +1030,17 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
 // static decided at the first present, which made the switch live in one path
 // and next-restart in the other. Letting an application back in builds the
 // swapchain resources at the next present -- the same cost the first frame
-// always paid; hiding one skips the drawing without releasing anything, which
-// is what the Vulkan enabled switch has always done (entry 37's footnote).
+// always paid; hiding one now hands the backend and the atlas back at the
+// bottom of this hook, which is what entry 37's footnote recorded this side as
+// never having done and entry 149 gave it.
 //
 // The decision, its evidence in the log and the word to the daemon across the
-// bridge are the session's (vocem/overlay_session.h), one spelling with the GL
-// side -- which is where this side's omission showed: it told the daemon
-// `allowed` where the GL side told it `enabled && allowed`, so a Flatpak game
-// with the master switch off kept receiving the channel and every face from a
-// daemon that believed it was drawing (entry 138).
-// Whether this process should be carrying the overlay at all: the lists, the
-// verdict and the master switch, in one sentence the caller cannot ask by
-// halves (vocem/overlay_session.h).
+// bridge are the session's (vocem/overlay_session.h): the lists, the verdict
+// and the master switch in one sentence the caller cannot ask by halves. That
+// last part is this side's own omission -- it told the daemon `allowed` where
+// the GL side told it `enabled && allowed`, so a Flatpak game with the master
+// switch off kept receiving the channel and every face from a daemon that
+// believed it was drawing (entry 138).
 bool overlay_wanted_here() {
     return vocem::session().decide(vocem::renderer().current_config());
 }
@@ -1115,85 +1130,103 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         drawable = pPresentInfo->swapchainCount == 1;
         if (drawable) {
             auto it = g_swapchains.find(pPresentInfo->pSwapchains[0]);
-            const bool want = it != g_swapchains.end() && overlay_wanted_here();
-            // A verdict that turns off is a moment, not just a state: this
-            // process is holding a renderer, an atlas and a descriptor set per
-            // face, and "stop drawing" without "give it back" is what entry 37's
-            // footnote recorded the Vulkan switch as always having done. The
-            // OpenGL side has released on this transition since it had a
-            // transition to release on; this is that, on the other path.
-            if (g_drawing >= 0 && want != (g_drawing == 1)) {
-                VOCEM_LOG("%s in '%s'", want ? "switched on" : "switched off",
-                          vocem::process_name().c_str());
-                switched_off = !want;
-            }
+            // One question at a time. `want` used to be
+            // `it != g_swapchains.end() && overlay_wanted_here()`, which is two
+            // different questions in one bool -- "is this a swapchain we know"
+            // and "does the overlay belong in this process" -- and the code
+            // below then had to take them apart again: the verdict was RECORDED
+            // only for a known swapchain and the transition was ACTED ON for
+            // any, so an unknown one would read as the overlay being switched
+            // off, release the backend and the 80 MB atlas, and the next
+            // present on a known one would say "switched on" and build them
+            // back. Not reachable today -- the only erasures are
+            // vkDestroySwapchainKHR and the device's own teardown, so a live
+            // swapchain the layer saw created is always in the map -- which is
+            // exactly why it was worth asking once instead of guarding the
+            // answer twice.
             if (it != g_swapchains.end()) {
+                const bool want = overlay_wanted_here();
+                // A verdict that turns off is a moment, not just a state: this
+                // process is holding a renderer, an atlas and a descriptor set
+                // per face, and "stop drawing" without "give it back" is what
+                // entry 37's footnote recorded the Vulkan switch as always
+                // having done. The OpenGL side has released on this transition
+                // since it had a transition to release on; this is that, on the
+                // other path.
+                if (g_drawing >= 0 && want != (g_drawing == 1)) {
+                    VOCEM_LOG("%s in '%s'", want ? "switched on" : "switched off",
+                              vocem::process_name().c_str());
+                    switched_off = !want;
+                }
                 g_drawing = want ? 1 : 0;
-            }
-            if (want) {
-                SwapchainData& sc = it->second;
+                if (want) {
+                    SwapchainData& sc = it->second;
 
-                auto family_it = dev->queue_families.find(queue);
-                uint32_t family =
-                    family_it == dev->queue_families.end() ? UINT32_MAX : family_it->second;
-                // A family that cannot take a render pass -- a compute or a
-                // transfer queue presenting, which the specification allows --
-                // gets the frame back untouched, and so does a swapchain
-                // presented from a family other than the one its command pool
-                // was built on: a pool's buffers may only be submitted to its
-                // own family. Nothing used to ask either question.
-                const bool graphics =
-                    family == UINT32_MAX || family >= dev->family_flags.size() ||
-                    (dev->family_flags[family] & VK_QUEUE_GRAPHICS_BIT) != 0;
-                if (!graphics || (sc.attempted && sc.queue_family != family)) {
-                    if (!sc.said_pass_through) {
-                        sc.said_pass_through = true;
-                        VOCEM_LOG("not drawing into this swapchain: presented on queue family %u, "
-                                  "which %s", family,
-                                  graphics ? "is not the family its command pool was built on"
-                                           : "has no graphics capability");
+                    auto family_it = dev->queue_families.find(queue);
+                    uint32_t family =
+                        family_it == dev->queue_families.end() ? UINT32_MAX : family_it->second;
+                    // A family that cannot take a render pass -- a compute or a
+                    // transfer queue presenting, which the specification allows --
+                    // gets the frame back untouched, and so does a swapchain
+                    // presented from a family other than the one its command pool
+                    // was built on: a pool's buffers may only be submitted to its
+                    // own family. Nothing used to ask either question.
+                    const bool graphics =
+                        family == UINT32_MAX || family >= dev->family_flags.size() ||
+                        (dev->family_flags[family] & VK_QUEUE_GRAPHICS_BIT) != 0;
+                    if (!graphics || (sc.attempted && sc.queue_family != family)) {
+                        if (!sc.said_pass_through) {
+                            sc.said_pass_through = true;
+                            VOCEM_LOG(
+                                "not drawing into this swapchain: presented on queue family "
+                                "%u, which %s", family,
+                                graphics ? "is not the family its command pool was built on"
+                                         : "has no graphics capability");
+                        }
+                        family = UINT32_MAX;
                     }
-                    family = UINT32_MAX;
-                }
 
-                if (!sc.attempted && family != UINT32_MAX) {
-                    if (!build_swapchain_resources(*dev, sc, pPresentInfo->pSwapchains[0], family)) {
-                        destroy_swapchain_resources(dev->disp, dev->device, sc);
+                    if (!sc.attempted && family != UINT32_MAX) {
+                        if (!build_swapchain_resources(*dev, sc, pPresentInfo->pSwapchains[0],
+                                                       family)) {
+                            destroy_swapchain_resources(dev->disp, dev->device, sc);
+                        }
                     }
-                }
 
-                if (sc.usable && family != UINT32_MAX) {
-                    bool wanted = false;
-                    overlay_semaphore =
-                        draw_overlay(*dev, sc, queue, pPresentInfo->pImageIndices[0],
-                                     pPresentInfo->pWaitSemaphores,
-                                     pPresentInfo->waitSemaphoreCount, wanted);
-                    // Built only for a frame that had something on it. This
-                    // used to be decided from the swapchain and the
-                    // application's verdict alone -- everything except whether
-                    // there was anything to draw -- so a game the overlay is
-                    // allowed in built the whole renderer, 133 ms of atlas and
-                    // 80 MB of pixels and a descriptor pool, while the owner
-                    // was simply not in a voice channel: the ordinary state of
-                    // a machine with the tray icon up. The OpenGL path has
-                    // always had this door and one more: its draw() returns at
-                    // the poll and again at these two predicates, both above
-                    // ensure_backend(). The cost of asking late is the first
-                    // frame with something on it, which rule 10 spends anyway.
-                    if (wanted && !vocem::renderer().ready()) {
-                        needs_init = true;
-                        pending_target.instance = dev->instance;
-                        pending_target.physical_device = dev->physical_device;
-                        pending_target.device = dev->device;
-                        pending_target.render_pass = sc.render_pass;
-                        pending_target.format = sc.format;
-                        pending_target.queue = queue;
-                        pending_target.queue_family = sc.queue_family;
-                        pending_target.image_count = static_cast<uint32_t>(sc.images.size());
-                        pending_target.height = sc.extent.height;
-                        pending_target.gipa = dev->gipa;
-                        pending_target.gdpa = dev->disp.GetDeviceProcAddr;
-                        pending_target.set_loader_data = dev->set_device_loader_data;
+                    if (sc.usable && family != UINT32_MAX) {
+                        bool wanted = false;
+                        uint32_t sizing = sc.extent.height;
+                        overlay_semaphore =
+                            draw_overlay(*dev, sc, queue, pPresentInfo->pImageIndices[0],
+                                         pPresentInfo->pWaitSemaphores,
+                                         pPresentInfo->waitSemaphoreCount, wanted, sizing);
+                        // Built only for a frame that had something on it. This
+                        // used to be decided from the swapchain and the
+                        // application's verdict alone -- everything except whether
+                        // there was anything to draw -- so a game the overlay is
+                        // allowed in built the whole renderer, 133 ms of atlas and
+                        // 80 MB of pixels and a descriptor pool, while the owner
+                        // was simply not in a voice channel: the ordinary state of
+                        // a machine with the tray icon up. The OpenGL path has
+                        // always had this door and one more: its draw() returns at
+                        // the poll and again at these two predicates, both above
+                        // ensure_backend(). The cost of asking late is the first
+                        // frame with something on it, which rule 10 spends anyway.
+                        if (wanted && !vocem::renderer().ready()) {
+                            needs_init = true;
+                            pending_target.instance = dev->instance;
+                            pending_target.physical_device = dev->physical_device;
+                            pending_target.device = dev->device;
+                            pending_target.render_pass = sc.render_pass;
+                            pending_target.format = sc.format;
+                            pending_target.queue = queue;
+                            pending_target.queue_family = sc.queue_family;
+                            pending_target.image_count = static_cast<uint32_t>(sc.images.size());
+                            pending_target.height = sizing;
+                            pending_target.gipa = dev->gipa;
+                            pending_target.gdpa = dev->disp.GetDeviceProcAddr;
+                            pending_target.set_loader_data = dev->set_device_loader_data;
+                        }
                     }
                 }
             }
@@ -1225,7 +1258,6 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // The journal line a build inside the present held back (rule 8): a file
     // write, done here where file work is allowed.
     bool daemon_left = false;
-    bool daemon_attached = false;
     if (drawable) {
         std::lock_guard<std::mutex> guard(g_lock);
         auto it = g_swapchains.find(pPresentInfo->pSwapchains[0]);
@@ -1236,7 +1268,6 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         // Read under the lock the poll itself runs under, acted on below with
         // the lock let go: shutdown() takes the renderer's own.
         daemon_left = g_state.daemon_left();
-        daemon_attached = g_state.attached();
     }
 
     // The daemon stopped -- the tray's Quit, or `systemctl --user stop`. This
@@ -1263,16 +1294,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // Safe here: the present has returned, so the queue is ours to block on. Costs
     // one stall on the first frame that has something to draw, once per swapchain.
     //
-    // And only while a daemon is publishing. `needs_init` above is decided from
-    // the swapchain and the application's verdict alone, which is everything
-    // except whether there is anything to draw: a game the overlay is allowed in
-    // built its whole renderer -- 133 ms rasterising an atlas, 80 MB of pixels,
-    // a descriptor pool -- with the daemon stopped and nothing to put in it, and
-    // built it again on the present after the release below. The OpenGL path
-    // never had this door, because its draw() returns at the poll, above
-    // ensure_backend(). tests/vk_present_draw.cpp's daemon-gone scenario counts
-    // "backend ready": twice before this line, once after.
-    if (needs_init && !vocem::renderer().ready() && daemon_attached) {
+    // `needs_init` is the whole condition, and it is a narrow one: it is set
+    // only where `wanted` came back true from draw_overlay, which is past the
+    // state poll and past both feature predicates, so a daemon that is
+    // publishing something to draw is already part of the question. This used
+    // to be asked a second time here, as `&& g_state.attached()`, under a
+    // comment saying `needs_init` was decided "from the swapchain and the
+    // application's verdict alone" -- which was true until the `wanted`
+    // parameter, added in the same release, made it false. Two spellings of one
+    // gate, and the surviving one is the one that can also see an idle channel.
+    // The re-check of ready() stays: prepare() runs with the lock let go, so a
+    // second presenting thread may have built the backend in between.
+    if (needs_init && !vocem::renderer().ready()) {
         // Deliberately unlocked: prepare() resolves entry points through the
         // chain, and the loader can route those back into this layer. Its
         // answer is remembered inside: a failure is said once and not retried
@@ -1431,6 +1464,10 @@ namespace {
 // this and takes its marker with it; a crash does not, which is the mechanism
 // (vocem/journal.h).
 __attribute__((destructor)) void vocem_layer_journal_close() {
+    // A font atlas still being rasterised off the game's thread (entry 192)
+    // runs this library's code: it finishes before the library can be
+    // unmapped -- by exit, or by the loader's dlclose after vkDestroyInstance.
+    vocem::renderer().join_atlas_worker();
     vocem::journal_end();
 }
 

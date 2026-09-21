@@ -55,21 +55,33 @@
 #
 # A macro and not a function, deliberately: `return()` has to leave the
 # including script, which is what every call site already does.
+#
+# The optional third argument names what was run, for the one script here whose
+# `execute_process` child is not the window itself: `single_instance.cmake`
+# runs a shell script that starts three windows and always ends `exit 0`. That
+# script was the **seventeenth** and entry 166's sweep did not reach it -- it
+# kept the hand-written shape verbatim, so a race that hung reported a skip and
+# `ctest` exited 0, which is the whole of the defect entry 166 is about, in a
+# script the entry says was swept.
 
 macro(vocem_window_ran _result _errors)
+    set(_subject "the window")
+    if(${ARGC} GREATER 2)
+        set(_subject "${ARGV2}")
+    endif()
     if(NOT "${_result}" STREQUAL "0")
         if("${_result}" MATCHES "^[0-9]+$")
             message(FATAL_ERROR
-                "the window exited ${_result}. It ran and decided to fail, which on this "
-                "machine is a QML error or a startup fault rather than an environment that "
-                "cannot run it -- measured: a missing platform plugin aborts, and no display "
-                "at all is exit 0. This used to be reported as a skip, which ctest counts as "
-                "a pass.\n${_errors}")
+                "${_subject} exited ${_result}. It ran and decided to fail, which is news "
+                "rather than an environment that cannot run it -- measured of the window "
+                "itself: a missing platform plugin aborts, and no display at all is exit 0. "
+                "This used to be reported as a skip, which ctest counts as a pass."
+                "\n${_errors}")
         endif()
         message(FATAL_ERROR
-            "the window did not come back from its run: ${_result}.\n"
-            "That is a signal or a timeout, not an exit code, so it is this window crashing or "
-            "hanging -- and it used to be reported as a skip, which ctest counts as a pass.\n"
+            "${_subject} did not come back from its run: ${_result}.\n"
+            "That is a signal or a timeout, not an exit code, so it is a crash or a hang -- "
+            "and it used to be reported as a skip, which ctest counts as a pass.\n"
             "${_errors}")
     endif()
 endmacro()

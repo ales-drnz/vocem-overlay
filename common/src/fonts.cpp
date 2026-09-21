@@ -167,12 +167,48 @@ constexpr uint32_t kMaxSeenCodepoints = 512;
 // texture (kEmojiCeiling above says what that is worth).
 constexpr uint32_t kMaxBankGlyphs = 96;
 constexpr uint32_t kSeenInBank = 0x80000000u;
+// Whether this codepoint's pixels are already in the atlas. A codepoint is at
+// most U+10FFFF, so the two flags and the value share a word without arithmetic.
+constexpr uint32_t kSeenFolded = 0x40000000u;
+constexpr uint32_t kCodepointMask = 0x00FFFFFFu;
+static_assert(kCodepointMask >= 0x10FFFFu, "every Unicode codepoint fits below the flags");
 uint32_t g_seen[kMaxSeenCodepoints];
 uint32_t g_seen_count = 0;
 // How many bank emoji are wanted, and how many the current atlas carries;
-// fewer built than wanted means the next ensure_fonts() rebuilds.
+// fewer built than wanted means the next ensure_fonts() folds the difference in.
 uint32_t g_wanted_count = 0;
 uint32_t g_built_count = 0;
+
+// One rect per weight per bank emoji, ALL of them reserved by every build
+// whether or not an emoji has been seen yet -- which is what lets a new one be
+// folded into the atlas in place instead of rasterising the whole atlas again.
+// The number of weights is named and the sizes follow it, so a third weight
+// fails to compile instead of writing past an array inside a game.
+constexpr uint32_t kAtlasWeights = 2;
+constexpr uint32_t kMaxRects = kMaxBankGlyphs * kAtlasWeights;
+static_assert(kAtlasWeights == 2, "one rect per weight, and there are two");
+// The reserved rectangles of the CURRENT atlas, in build order: slot i holds
+// the two rects of the (i)th emoji to be folded. -1 until a build fills them.
+int g_emoji_rects[kMaxRects];
+// The vertical offset the emoji glyphs are placed at, which follows the atlas's
+// pixel size and is therefore the build's, not the fold's.
+float g_emoji_offset_y = 0.0f;
+// How many slots the current atlas has handed out, and whether the reservation
+// happened at all (it does not when the two weights are the same font).
+uint32_t g_emoji_slots = 0;
+bool g_emoji_reserved = false;
+// The rectangles folded since a caller last asked (fonts_take_folded). At most
+// every reserved rect of one atlas, so the array cannot overflow.
+static_assert(kMaxFoldedRegions == kMaxRects, "fonts.h promises the caller's capacity");
+static_assert(static_cast<float>(kMaxFoldedSide) >= kEmojiCeiling,
+              "a folded square is an emoji square, at most the ceiling on a side");
+AtlasRegion g_folded[kMaxRects];
+uint32_t g_folded_count = 0;
+// Every run of the rasteriser, counted (fonts.h says why a count and not a
+// clock). Both of build_atlas()'s calls are in it, including the second one a
+// refused typeface forces: that IS a rasterisation, and a count that hid it
+// would be measuring what it wished for.
+uint32_t g_build_count = 0;
 EmojiBank g_emoji_bank;
 // Set when a codepoint arrived with the table already full: past the cap a new
 // colour emoji stays monochrome for the session, which is a decision worth
@@ -400,7 +436,7 @@ bool bank_verdict(uint32_t codepoint) {
     long high = static_cast<long>(g_seen_count) - 1;
     while (low <= high) {
         const long middle = low + (high - low) / 2;
-        const uint32_t entry = g_seen[middle] & ~kSeenInBank;
+        const uint32_t entry = g_seen[middle] & kCodepointMask;
         if (entry == codepoint) {
             return (g_seen[middle] & kSeenInBank) != 0;  // seen before, verdict remembered either way
         }
@@ -546,6 +582,17 @@ void fonts_note_emoji_in(Snapshot& snapshot) {
     fonts_prepare_text(snapshot.notification.body, sizeof(snapshot.notification.body));
 }
 
+uint32_t fonts_build_count() { return g_build_count; }
+
+uint32_t fonts_take_folded(AtlasRegion* out, uint32_t capacity) {
+    const uint32_t count = g_folded_count < capacity ? g_folded_count : capacity;
+    for (uint32_t i = 0; i < count && out; ++i) {
+        out[i] = g_folded[i];
+    }
+    g_folded_count = 0;
+    return count;
+}
+
 const char* fonts_font_status() { return g_font_reason; }
 
 const char* fonts_emoji_status() {
@@ -601,8 +648,21 @@ void fonts_release() {
     g_fonts.strong = nullptr;
     g_fonts.pixel_size = 0.0f;
     // What is in the atlas, not what the session has seen: the emoji the text
-    // asked for are still wanted, and the next build carries them again.
+    // asked for are still wanted, and the next build carries them again. Clear()
+    // took the reserved rectangles with everything else, so nothing is folded
+    // any more either -- said here as well as in build_atlas(), because a module
+    // whose state describes an atlas that no longer exists is how a pointer into
+    // a dead atlas gets used (entry 37).
     g_built_count = 0;
+    g_folded_count = 0;
+    g_emoji_reserved = false;
+    g_emoji_slots = 0;
+    for (uint32_t i = 0; i < kMaxRects; ++i) {
+        g_emoji_rects[i] = -1;
+    }
+    for (uint32_t i = 0; i < g_seen_count; ++i) {
+        g_seen[i] &= ~kSeenFolded;
+    }
     g_asked_body[0] = '\0';
     g_asked_strong[0] = '\0';
     g_body_path[0] = '\0';
@@ -648,6 +708,111 @@ namespace {
 // overlay that draws no text while reporting nothing is the silence entry 38 is
 // about. The second run is the carried Inter alone, which is the one build this
 // project knows always works.
+// Puts every wanted bank emoji that is not in the atlas yet INTO the atlas,
+// without rebuilding it: the pixels go into a rectangle Build() already packed,
+// and the glyph is registered by hand with exactly the four lines
+// ImFontAtlasBuildFinish runs for a custom-rect glyph (imgui_draw.cpp, "Register
+// custom rectangle glyphs"). Returns whether anything was folded, which is the
+// caller's signal that the font texture on the GPU no longer matches the atlas.
+//
+// This is the whole point of reserving the rects. Adding one emoji used to mean
+// atlas->Clear() and atlas->Build(): 14,954 glyphs in two weights rasterised
+// again to make room for one 32x32 square -- measured at 125 to 146 ms, six
+// times over, on the machine DESIGN's numbers come from. The same emoji folded
+// in here is 0.25 to 0.65 ms, measured three times. A person joining a channel
+// with an emoji in their name, or a message arriving with one in it, is exactly
+// when that used to be spent, which is why the owner felt it as a freeze.
+//
+// Still post-present work, and still not free: a bank read, a resample, two
+// memcpys and a lookup table per weight. It belongs where the rebuild belonged.
+bool fold_wanted_emoji(ImFontAtlas* atlas) {
+    if (!g_emoji_reserved || g_built_count >= g_wanted_count) {
+        return false;
+    }
+    // The RGBA the fold writes into. Built by the first caller to ask; after
+    // that this is the cached pointer and costs nothing (measured at 0.0 ms).
+    unsigned char* pixels = nullptr;
+    int atlas_width = 0;
+    int atlas_height = 0;
+    atlas->GetTexDataAsRGBA32(&pixels, &atlas_width, &atlas_height);
+    if (!pixels) {
+        return false;
+    }
+
+    unsigned char record[kEmojiBankRgbaBytes];
+    unsigned char scaled[kEmojiBankRgbaBytes];
+    bool folded_any = false;
+    bool lookup_dirty = false;
+    for (uint32_t i = 0; i < g_seen_count && g_emoji_slots < kMaxBankGlyphs; ++i) {
+        if ((g_seen[i] & kSeenInBank) == 0 || (g_seen[i] & kSeenFolded) != 0) {
+            continue;
+        }
+        const uint32_t codepoint = g_seen[i] & kCodepointMask;
+        // Whatever happens below, this codepoint is not asked about again: a
+        // bank read that fails now fails the same way next frame, and a rect
+        // that did not pack will not pack later either. Marked before the work
+        // so no path out of here leaves it to be retried every frame -- that is
+        // the shape the font-path bug of entry 129's neighbourhood had, 61 ms a
+        // frame forever because a failure did not settle.
+        g_seen[i] |= kSeenFolded;
+        ++g_built_count;
+
+        if (!g_emoji_bank.load(codepoint, record)) {
+            continue;
+        }
+        const uint32_t slot = g_emoji_slots;
+        ImFont* const weights[kAtlasWeights] = {g_fonts.body, g_fonts.strong};
+        bool placed = false;
+        for (uint32_t weight = 0; weight < kAtlasWeights; ++weight) {
+            const int index = g_emoji_rects[slot * kAtlasWeights + weight];
+            if (index < 0) {
+                continue;
+            }
+            const ImFontAtlasCustomRect* rect = atlas->GetCustomRectByIndex(index);
+            if (!rect->IsPacked()) {
+                continue;
+            }
+            emoji_bank_resample(record, scaled, static_cast<uint32_t>(rect->Width));
+            for (int row = 0; row < rect->Height; ++row) {
+                std::memcpy(pixels + ((rect->Y + row) * atlas_width + rect->X) * 4,
+                            scaled + row * rect->Width * 4,
+                            static_cast<size_t>(rect->Width) * 4);
+            }
+            ImVec2 uv0;
+            ImVec2 uv1;
+            atlas->CalcCustomRectUV(rect, &uv0, &uv1);
+            weights[weight]->AddGlyph(nullptr, static_cast<ImWchar>(codepoint), 0.0f,
+                                      g_emoji_offset_y, static_cast<float>(rect->Width),
+                                      g_emoji_offset_y + static_cast<float>(rect->Height),
+                                      uv0.x, uv0.y, uv1.x, uv1.y,
+                                      static_cast<float>(rect->Width + 1));
+            weights[weight]->Glyphs.back().Colored = 1;
+            if (g_folded_count < kMaxRects) {
+                g_folded[g_folded_count++] = AtlasRegion{rect->X, rect->Y, rect->Width, rect->Height};
+            }
+            lookup_dirty = true;
+            placed = true;
+        }
+        if (placed) {
+            ++g_emoji_slots;
+            folded_any = true;
+        }
+    }
+
+    // Once, after all of them, and not once per glyph: AddGlyph only marks the
+    // table dirty, and outside Build() nobody else rebuilds it. It is also what
+    // makes the fold safe -- Glyphs may have reallocated under AddGlyph, and
+    // BuildLookupTable is what points FallbackGlyph at a live one again.
+    if (lookup_dirty) {
+        for (ImFont* font : {g_fonts.body, g_fonts.strong}) {
+            if (font) {
+                font->BuildLookupTable();
+            }
+        }
+    }
+    return folded_any;
+}
+
 bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     // See fonts_release(): nobody else unlocks an atlas this module owns.
     atlas->Locked = false;
@@ -745,72 +910,52 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
         g_fonts.strong = g_fonts.body;
     }
 
-    // The colour emoji the session has seen, as coloured glyphs. Each weight
-    // gets its own rect (a merged glyph belongs to the font it was merged into
-    // -- the same lesson the monochrome emoji taught), reserved before Build
-    // and filled with the bank's pixels after, resampled to the emoji size the
-    // atlas is using. Straight alpha, which is what the atlas holds for every
-    // other glyph. The monochrome font stays merged underneath: a codepoint
-    // past the seen-cap, or a session with no bank on disk, draws exactly as
-    // it did before this existed.
+    // The space the colour emoji will occupy, reserved now and bound to a
+    // codepoint later. Each weight gets its own rect (a merged glyph belongs to
+    // the font it was merged into -- the same lesson the monochrome emoji
+    // taught), and EVERY rect the session's cap allows is reserved here, seen or
+    // not: 96 emoji in two weights at 32 px is 1.2% of a 4096x4096 atlas, and it
+    // is what buys fold_wanted_emoji() a place to put a new emoji without
+    // rasterising the other fourteen thousand glyphs again. The monochrome font
+    // stays merged underneath: a codepoint past the seen-cap, or a session with
+    // no bank on disk, draws exactly as it did before this existed.
+    //
+    // Reserved as REGULAR rects, with no font and no glyph id, so Build() packs
+    // them and registers nothing; the binding is fold_wanted_emoji()'s, and it
+    // does by hand exactly what ImFontAtlasBuildFinish does for a glyph rect.
     const int emoji_px = static_cast<int>(emoji_size);
-    const float emoji_offset_y = std::round((pixel_size - emoji_size) * 0.5f);
-    // One rect per weight per bank emoji. The arrays are exactly full at the
-    // cap, with no margin at all -- so the number of weights is named, the size
-    // follows it, and a third weight fails to compile instead of writing past
-    // two stack arrays inside a game.
-    constexpr uint32_t kAtlasWeights = 2;
-    constexpr uint32_t kMaxRects = kMaxBankGlyphs * kAtlasWeights;
-    int rect_index[kMaxRects];
-    uint32_t rect_codepoint[kMaxRects];
-    uint32_t rect_count = 0;
-    if (g_fonts.body && g_fonts.strong && g_fonts.body != g_fonts.strong) {
-        for (uint32_t i = 0; i < g_seen_count; ++i) {
-            if (!(g_seen[i] & kSeenInBank)) {
-                continue;
-            }
-            if (rect_count + kAtlasWeights > kMaxRects) {
-                break;
-            }
-            const uint32_t codepoint = g_seen[i] & ~kSeenInBank;
-            for (ImFont* font : {g_fonts.body, g_fonts.strong}) {
-                static_assert(kAtlasWeights == 2, "one rect per weight, and there are two");
-                const int index = atlas->AddCustomRectFontGlyph(
-                    font, static_cast<ImWchar>(codepoint), emoji_px, emoji_px,
-                    static_cast<float>(emoji_px + 1), ImVec2(0.0f, emoji_offset_y));
-                atlas->CustomRects[index].GlyphColored = 1;
-                rect_index[rect_count] = index;
-                rect_codepoint[rect_count] = codepoint;
-                ++rect_count;
-            }
+    g_emoji_offset_y = std::round((pixel_size - emoji_size) * 0.5f);
+    for (uint32_t i = 0; i < kMaxRects; ++i) {
+        g_emoji_rects[i] = -1;
+    }
+    g_emoji_slots = 0;
+    g_emoji_reserved = g_fonts.body && g_fonts.strong && g_fonts.body != g_fonts.strong;
+    if (g_emoji_reserved) {
+        for (uint32_t i = 0; i < kMaxRects; ++i) {
+            g_emoji_rects[i] = atlas->AddCustomRectRegular(emoji_px, emoji_px);
         }
     }
+
+    // Nothing in the new atlas carries anybody's pixels yet, whatever the old
+    // one carried: the flags belong to the atlas, not to the session's memory of
+    // what it has seen.
+    for (uint32_t i = 0; i < g_seen_count; ++i) {
+        g_seen[i] &= ~kSeenFolded;
+    }
+    g_built_count = 0;
+    g_folded_count = 0;
 
     // The rasteriser's own answer, which nothing used to ask for. False means it
     // could not parse one of the sources: the atlas has no pixels, every font in
     // it is unloaded, and the caller has to build something else.
     const bool built = atlas->Build();
+    ++g_build_count;
 
-    if (built && rect_count > 0) {
-        unsigned char* pixels = nullptr;
-        int atlas_width = 0;
-        int atlas_height = 0;
-        atlas->GetTexDataAsRGBA32(&pixels, &atlas_width, &atlas_height);
-        unsigned char record[kEmojiBankRgbaBytes];
-        unsigned char scaled[kEmojiBankRgbaBytes];
-        for (uint32_t i = 0; i < rect_count; ++i) {
-            const ImFontAtlasCustomRect* rect = atlas->GetCustomRectByIndex(rect_index[i]);
-            if (!pixels || !rect->IsPacked() ||
-                !g_emoji_bank.load(rect_codepoint[i], record)) {
-                continue;
-            }
-            emoji_bank_resample(record, scaled, static_cast<uint32_t>(rect->Width));
-            for (int row = 0; row < rect->Height; ++row) {
-                std::memcpy(pixels + ((rect->Y + row) * atlas_width + rect->X) * 4,
-                            scaled + row * rect->Width * 4,
-                            static_cast<size_t>(rect->Width) * 4);
-            }
-        }
+    if (built) {
+        fold_wanted_emoji(atlas);
+        // Folded into a texture that does not exist yet: the caller uploads the
+        // whole atlas after a build, so these are already in it.
+        g_folded_count = 0;
     }
 
     return built;
@@ -859,8 +1004,22 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
     // the two ways of noticing from outside both fail (fonts.h says how).
     if (atlas == fonts_atlas() && g_fonts.pixel_size > 0.0f &&
         pixel_size > g_fonts.pixel_size - 0.5f && pixel_size < g_fonts.pixel_size + 0.5f &&
-        g_built_count == g_wanted_count && same_font) {
-        return false;
+        same_font) {
+        // The size and the typeface are the ones in the atlas, so the only thing
+        // that can be missing is a colour emoji nobody had seen when it was
+        // built -- and that is the one change this module can make without
+        // building anything. It used to fall through to the full rebuild below,
+        // which is the 125-146 ms a new person's name or an arriving message
+        // spent in somebody's game (fold_wanted_emoji says the rest).
+        if (g_built_count == g_wanted_count) {
+            return false;
+        }
+        const bool folded = fold_wanted_emoji(atlas);
+        // Settled either way. A fold that could not happen -- no reserved rects,
+        // because the two weights are the same font -- must not leave the counts
+        // apart, or every frame from here on rebuilds the atlas.
+        g_built_count = g_wanted_count;
+        return folded;
     }
 
     // A new build answers for itself: a refusal from the last one would

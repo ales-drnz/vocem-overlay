@@ -17,6 +17,9 @@
 
 #include <vulkan/vulkan.h>
 
+#include <pthread.h>
+
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -38,7 +41,9 @@ struct RendererTarget {
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t queue_family = 0;
     uint32_t image_count = 2;
-    // The swapchain's height, which decides the size the font atlas is built at.
+    // The height the font atlas is built at: sizing_height() of the display the
+    // daemon published and the swapchain, the same answer draw() gives, so the
+    // first frame does not rebuild what prepare() just built (entry 192).
     uint32_t height = 1080;
     PFN_vkGetInstanceProcAddr gipa = nullptr;
     PFN_vkGetDeviceProcAddr gdpa = nullptr;
@@ -97,6 +102,12 @@ public:
     // rebuilds the font atlas when the output size or the user's scale changed.
     void process_uploads();
 
+    // Waits for the atlas worker if one is running. For the layer's ELF
+    // destructor: the library must not be unmapped under a thread executing
+    // its code. Takes no lock of the renderer's, so it cannot deadlock against
+    // a thread that exits while holding one.
+    void join_atlas_worker();
+
     bool ready() const { return backend_ready_; }
 
     // The settings as this process currently sees them. The present hook asks
@@ -123,6 +134,35 @@ private:
     std::mutex lock_;
 
     bool context_ready_ = false;
+    // The ImGui context exists but the atlas is still being rasterised on
+    // atlas_worker_ (entry 192): 113 ms of stb_truetype that used to run on the
+    // game's thread in the frame the panel first appeared, measured as the bulk
+    // of a 182-190 ms present. The game keeps presenting while it runs; the
+    // panel appears once it is done. Nothing on the game's thread touches ImGui
+    // or the fonts module meanwhile -- draw() and process_uploads() both wait
+    // for backend_ready_ -- and every path that tears the renderer down joins
+    // the worker first (join_atlas_worker).
+    bool context_created_ = false;
+    // A pthread and not a std::thread: the injected code is built without
+    // exceptions, and std::thread reports a refused clone by throwing -- which
+    // would end the game. pthread_create answers with a code, and the build
+    // then happens on the game's thread as it always did.
+    pthread_t atlas_worker_{};
+    bool atlas_worker_running_ = false;
+    // What the worker builds, copied in before it starts.
+    struct AtlasJob {
+        float pixels = 0.0f;
+        float reference = 16.0f;
+        std::string body;
+        std::string strong;
+    };
+    AtlasJob atlas_job_;
+    static void* rasterise_atlas(void* renderer);
+    // Guards starting and joining atlas_worker_ and nothing else: the ELF
+    // destructor joins it without lock_, and joining one thread twice is
+    // undefined.
+    std::mutex worker_lock_;
+    std::atomic<bool> atlas_rasterised_{false};
     bool backend_ready_ = false;
     bool functions_loaded_ = false;
     // prepare() failed against the current device; nothing will be retried
@@ -147,6 +187,13 @@ private:
     std::string wanted_font_path_;
     std::string wanted_font_path_strong_;
     TextureCache textures_;
+    // Whether the font atlas's texture is the cache's own (entry 192) rather
+    // than imgui_impl_vulkan's. True whenever the cache came up; without it
+    // the stock upload and its lazy NewFrame stay, exactly as before.
+    bool own_font_texture_ = false;
+    // Uploads the atlas through whichever of the two owns it, whole or only
+    // the squares a fold wrote. False when neither managed.
+    bool upload_font_texture(bool whole);
     LiveConfig config_;
     // The message's words: which toast draw() wants them for, and this
     // process's copy of them, fetched post-present through the session and

@@ -49,9 +49,16 @@ PFN_vkVoidFunction resolve_function(const char* name, void* user_data) {
         return nullptr;
     }
     // Device-level functions first: they are the hot ones and the dispatch is
-    // cheaper. Instance-level lookups (memory properties, for example) fall back
-    // to the instance chain.
-    if (context->gdpa && context->device) {
+    // cheaper. Instance-level ones go straight to the instance chain: asking
+    // vkGetDeviceProcAddr for a physical-device or surface function is outside
+    // what it promises, and the validation layer says so once per name the
+    // first time it sits below the overlay (entry 192). The test is by name
+    // because the caller (ImGui's loader, the texture cache) only has names;
+    // vkGetInstanceProcAddr answers device functions correctly too, so a name
+    // this sends the long way round costs a trampoline and nothing else.
+    const bool instance_level = std::strstr(name, "PhysicalDevice") != nullptr ||
+                                std::strstr(name, "SurfaceKHR") != nullptr;
+    if (!instance_level && context->gdpa && context->device) {
         if (PFN_vkVoidFunction function = context->gdpa(context->device, name)) {
             return function;
         }
@@ -135,24 +142,57 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
     }
 
     if (!context_ready_) {
-        IMGUI_CHECKVERSION();
-        // With the fonts module's atlas: this context dies with the device and
-        // another takes its place in the same process, and the ImFont pointers
-        // the module caches have to survive that (vocem/fonts.h).
-        ImGui::CreateContext(fonts_atlas());
-        ImGuiIO& io = ImGui::GetIO();
-        io.IniFilename = nullptr;   // never write files from inside a game
-        io.LogFilename = nullptr;
-        io.BackendPlatformName = "vocem";
-        io.DisplaySize = ImVec2(1.0f, 1.0f);
+        if (!context_created_) {
+            IMGUI_CHECKVERSION();
+            // With the fonts module's atlas: this context dies with the device and
+            // another takes its place in the same process, and the ImFont pointers
+            // the module caches have to survive that (vocem/fonts.h).
+            ImGui::CreateContext(fonts_atlas());
+            ImGuiIO& io = ImGui::GetIO();
+            io.IniFilename = nullptr;   // never write files from inside a game
+            io.LogFilename = nullptr;
+            io.BackendPlatformName = "vocem";
+            io.DisplaySize = ImVec2(1.0f, 1.0f);
+            context_created_ = true;
 
-        // Built before the backend exists, so ImGui_ImplVulkan_Init's first
-        // NewFrame uploads the atlas we want rather than the default bitmap and
-        // then throws it away. The size comes from the swapchain we are attaching
-        // to, which is why this cannot happen at library load time.
-        ensure_fonts(font_pixel_size(target.height, config_.current().scale,
-                                     config_.current().font_size),
-                     config_.current().font_size);
+            // Built before the backend exists, so the upload below sends the
+            // atlas we want rather than the default bitmap. The size comes from
+            // the target, which is why this cannot happen at library load time.
+            //
+            // OFF the game's thread (entry 192). The context is created first
+            // because ensure_fonts() reaches the atlas through ImGui::GetIO(),
+            // and GImGui is a plain global the new thread sees from its start.
+            // The RGBA widening goes with it: 11 ms more that the upload would
+            // otherwise pay on the game's thread. Everything the worker reads is
+            // copied into it here.
+            const Config& config = config_.current();
+            atlas_job_.pixels = font_pixel_size(target.height, config.scale, config.font_size);
+            atlas_job_.reference = config.font_size;
+            atlas_job_.body = config.font_path;
+            atlas_job_.strong = config.font_path_strong;
+            atlas_rasterised_.store(false, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> worker_guard(worker_lock_);
+                atlas_worker_running_ =
+                    pthread_create(&atlas_worker_, nullptr, &OverlayRenderer::rasterise_atlas,
+                                   this) == 0;
+            }
+            if (atlas_worker_running_) {
+                // Named, so a stack in a game's crash report says whose it is.
+                pthread_setname_np(atlas_worker_, "vocem-atlas");
+                VOCEM_RLOG("rasterising the font atlas at %.0f px off the game's thread",
+                           static_cast<double>(atlas_job_.pixels));
+                return false;  // asked again on the next frame with something on it
+            }
+            // No thread to be had (a sandbox that refuses clone, resources): the
+            // build happens here, as it always used to.
+            VOCEM_RLOG("no thread for the font atlas; rasterising it on the game's thread");
+            rasterise_atlas(this);
+        }
+        if (!atlas_rasterised_.load(std::memory_order_acquire)) {
+            return false;  // still rasterising; the game goes on presenting meanwhile
+        }
+        join_atlas_worker();  // finished: this returns at once
         configure_style(config_.current());
         context_ready_ = true;
     }
@@ -221,8 +261,30 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         // saying initialisation happens after the present while the atlas was
         // being uploaded inside it; tests/vk_witness_layer.cpp is what sees a
         // queue wait inside a present now.
-        if (!ImGui_ImplVulkan_CreateFontsTexture() || g_backend_failed) {
+        //
+        // By the texture cache when it comes up (entry 192): it owns the font
+        // texture so that a new colour emoji can be copied into it as a 32x32
+        // square instead of replacing 64 MB between two vkQueueWaitIdle. The
+        // cache is initialised here, before the atlas, for that reason; it
+        // used to come after, as the avatars' alone.
+        if (!avatar_adapter_) {
+            static Adapter adapter(textures_);
+            avatar_adapter_ = &adapter;
+        }
+        own_font_texture_ = false;
+        if (!textures_.init(target.device, target.physical_device, target.queue,
+                            target.queue_family, resolve_function, &g_loader_context,
+                            target.set_loader_data)) {
+            // Avatars are optional: without them the panel still shows names and
+            // speaking state, so this is not a reason to disable the overlay.
+            // The font texture then stays the backend's own, stock upload.
+            VOCEM_RLOG("avatar textures unavailable, falling back to plain circles");
+        } else {
+            own_font_texture_ = true;
+        }
+        if (!upload_font_texture(true) || g_backend_failed) {
             VOCEM_RLOG("font atlas upload failed");
+            textures_.shutdown();
             ImGui_ImplVulkan_Shutdown();
             failed_ = true;
             return false;
@@ -244,18 +306,44 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         device_wait_idle_ = reinterpret_cast<PFN_vkDeviceWaitIdle>(
             resolve_function("vkDeviceWaitIdle", &g_loader_context));
 
-        if (!avatar_adapter_) {
-            static Adapter adapter(textures_);
-            avatar_adapter_ = &adapter;
-        }
-        if (!textures_.init(target.device, target.physical_device, target.queue,
-                            target.queue_family, resolve_function, &g_loader_context,
-                            target.set_loader_data)) {
-            // Avatars are optional: without them the panel still shows names and
-            // speaking state, so this is not a reason to disable the overlay.
-            VOCEM_RLOG("avatar textures unavailable, falling back to plain circles");
-        }
     }
+    return true;
+}
+
+bool OverlayRenderer::upload_font_texture(bool whole) {
+    if (!own_font_texture_) {
+        return ImGui_ImplVulkan_CreateFontsTexture();
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    if (!pixels || width <= 0 || height <= 0) {
+        return false;
+    }
+    if (!whole) {
+        AtlasRegion regions[kMaxFoldedRegions];
+        const uint32_t count = fonts_take_folded(regions, kMaxFoldedRegions);
+        if (textures_.update_font_atlas(pixels, static_cast<uint32_t>(width),
+                                        static_cast<uint32_t>(height), regions, count)) {
+            // Said, so the arrivals scene can count it: a fold that went up
+            // whole would pass every other check (entry 192).
+            VOCEM_RLOG("font texture: %u folded square(s) copied in place", count);
+            return true;
+        }
+        // The image does not match the atlas: replace it whole, which is
+        // always correct and is what every fold cost before.
+    } else {
+        fonts_take_folded(nullptr, 0);  // already in the whole atlas
+    }
+    const ImTextureID id = textures_.upload_font_atlas(pixels, static_cast<uint32_t>(width),
+                                                       static_cast<uint32_t>(height));
+    if (id == 0) {
+        return false;
+    }
+    io.Fonts->SetTexID(id);
+    VOCEM_RLOG("font texture uploaded whole (%dx%d)", width, height);
     return true;
 }
 
@@ -321,7 +409,13 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     // above makes), and the noting rewrites an emoji sequence into its key.
     fonts_note_emoji_in(const_cast<Snapshot&>(snapshot));
 
-    ImGui_ImplVulkan_NewFrame();
+    // The backend's NewFrame does one thing: create its own font texture if it
+    // has none. With the cache owning that texture (entry 192) it has none by
+    // design, and calling it would build a second, stock one here -- inside the
+    // present, 64 MB and a queue wait, which is rule 10's whole subject.
+    if (!own_font_texture_) {
+        ImGui_ImplVulkan_NewFrame();
+    }
     ImGui::NewFrame();
     AvatarProvider* avatars = textures_.ready() ? avatar_adapter_ : nullptr;
     // A frame can be for the toast alone -- a message arriving outside a voice
@@ -349,17 +443,25 @@ void OverlayRenderer::process_uploads() {
 
     // Resolution changed, or the user moved the size slider: rasterise the atlas
     // again at the new size instead of stretching the old one. Safe here and only
-    // here -- ImGui_ImplVulkan_CreateFontsTexture waits on the queue before
-    // replacing the texture, which is legal after the present has returned and
-    // would deadlock inside it.
+    // here -- replacing the font texture waits on the queue first (the cache's
+    // upload_font_atlas, or the stock ImGui_ImplVulkan_CreateFontsTexture),
+    // which is legal after the present has returned and would deadlock inside it.
+    // A new colour emoji answers true too, FOLDED into space the build
+    // reserved rather than rasterised (entry 191), and only its squares go up,
+    // with no wait (entry 192). The line says which of the two it was, because
+    // a log that called a fold a rebuild would be counting the cost that is gone.
+    const uint32_t builds_before = fonts_build_count();
     if (wanted_font_size_ > 0.0f &&
         ensure_fonts(wanted_font_size_, wanted_reference_, wanted_font_path_.c_str(),
                      wanted_font_path_strong_.c_str())) {
         configure_style(config_.current());
-        if (!ImGui_ImplVulkan_CreateFontsTexture()) {
+        const bool rebuilt = fonts_build_count() != builds_before;
+        if (!upload_font_texture(rebuilt)) {
             VOCEM_RLOG("font texture upload failed at %.1f px", wanted_font_size_);
-        } else {
+        } else if (rebuilt) {
             VOCEM_RLOG("font atlas rebuilt at %.1f px", wanted_font_size_);
+        } else {
+            VOCEM_RLOG("colour emoji folded into the font atlas");
         }
     }
 
@@ -381,6 +483,26 @@ void OverlayRenderer::process_uploads() {
     textures_.process_pending();
 }
 
+void* OverlayRenderer::rasterise_atlas(void* self) {
+    auto* renderer = static_cast<OverlayRenderer*>(self);
+    const AtlasJob& job = renderer->atlas_job_;
+    ensure_fonts(job.pixels, job.reference, job.body.c_str(), job.strong.c_str());
+    unsigned char* rgba = nullptr;
+    int width = 0;
+    int height = 0;
+    fonts_atlas()->GetTexDataAsRGBA32(&rgba, &width, &height);
+    renderer->atlas_rasterised_.store(true, std::memory_order_release);
+    return nullptr;
+}
+
+void OverlayRenderer::join_atlas_worker() {
+    std::lock_guard<std::mutex> worker_guard(worker_lock_);
+    if (atlas_worker_running_) {
+        pthread_join(atlas_worker_, nullptr);
+        atlas_worker_running_ = false;
+    }
+}
+
 void OverlayRenderer::shutdown() {
     std::lock_guard<std::mutex> guard(lock_);
     shutdown_locked();
@@ -395,9 +517,10 @@ void OverlayRenderer::shutdown_locked() {
     // an arbitrary present of a live, presenting device -- and the property went
     // with it. The overlay's submit for the previous image is at most one
     // present old and no fence on this path consults it; textures_.shutdown()
-    // frees the images and the command pool it reads, and
-    // ImGui_ImplVulkan_Shutdown() frees the vertex ring, the font image, the
-    // pipeline and the descriptor pool (imgui_impl_vulkan.cpp has no wait of its
+    // frees the images -- the font atlas's among them (entry 192) -- and the
+    // command pool it reads, and
+    // ImGui_ImplVulkan_Shutdown() frees the vertex ring, its own font image
+    // where it made one, the pipeline and the descriptor pool (imgui_impl_vulkan.cpp has no wait of its
     // own -- checked). The wait belongs here rather than at the new call site so
     // that the next caller inherits it: entry 131 fixed exactly this shape for
     // the second-device case and it came back through a door nobody had yet.
@@ -413,13 +536,18 @@ void OverlayRenderer::shutdown_locked() {
     // The next device's first frame must not measure the gap between devices as
     // one animation step.
     session().reset_clock();
+    // A rasterisation still running uses the context and the atlas that are
+    // about to go: it finishes first. At most the ~113 ms the build takes, and
+    // only when a device dies or the overlay is switched off inside that window.
+    join_atlas_worker();
     textures_.shutdown();
     if (backend_ready_) {
         ImGui_ImplVulkan_Shutdown();
         backend_ready_ = false;
     }
-    if (context_ready_) {
+    if (context_created_) {
         ImGui::DestroyContext();
+        context_created_ = false;
         context_ready_ = false;
     }
     // The next prepare() belongs to a different device, so the backend's function

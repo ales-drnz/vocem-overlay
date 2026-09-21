@@ -140,6 +140,42 @@ void fonts_release();
 bool ensure_fonts(float pixel_size, float reference, const char* body_path = nullptr,
                   const char* strong_path = nullptr);
 
+// How many times this process has rasterised the atlas.
+//
+// A count and not a clock, for entry 145's reason: a build's wall time on this
+// machine is partly the machine's, and the thing worth holding is that a build
+// does not happen. It is what tells the two costs apart from outside -- an atlas
+// RASTERISED (14,954 glyphs in two weights, 125 to 146 ms measured) against an
+// emoji FOLDED into space the build already reserved (0.3 to 0.9 ms). A session
+// that draws for an hour and meets forty new emoji should say 1.
+uint32_t fonts_build_count();
+
+// A rectangle of the atlas's RGBA32 pixels, in pixels.
+struct AtlasRegion {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+};
+
+// The rectangles fold_wanted_emoji() has written since the last call, handed
+// over and forgotten: exactly the pixels a new colour emoji changed, so a
+// caller whose font texture already holds the rest of the atlas can upload
+// these and nothing else. A 32x32 square is 4 KB; the whole atlas is 64 MB and
+// on the Vulkan path its stock upload is two vkQueueWaitIdle on the game's own
+// queue, measured at 34 to 44 ms of every arrival once the rebuild was gone
+// (entry 192).
+//
+// Only meaningful when ensure_fonts() answered true WITHOUT fonts_build_count()
+// moving. After a real build the texture has to be replaced whole, and this
+// list is empty: a build forgets what earlier folds wrote, because the new
+// atlas carries it anyway. Returns how many were written into `out`; at most
+// two per emoji (one per weight), so a capacity of kMaxFoldedRegions never
+// truncates; each is at most kMaxFoldedSide pixels on a side.
+constexpr uint32_t kMaxFoldedRegions = 2 * 96;
+constexpr int kMaxFoldedSide = 32;
+uint32_t fonts_take_folded(AtlasRegion* out, uint32_t capacity);
+
 // Why the overlay is not drawing in the font that was asked for, or nullptr
 // while there is nothing to say. Same contract as fonts_emoji_status(): a
 // literal, so "once" is a pointer comparison, and both injected paths log it.

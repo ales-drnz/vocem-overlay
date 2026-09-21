@@ -31,7 +31,7 @@
 #define VOCEM_TEST_PROBE_ALARM_H
 
 #include <signal.h>
-#include <string.h>
+#include <stddef.h>
 #include <unistd.h>
 
 namespace vocem_test {
@@ -75,7 +75,7 @@ inline void set_alarm(unsigned seconds, const char* what) {
     for (const char* p = middle; *p && out < end; ++p) {
         *out++ = *p;
     }
-    for (const char* p = what; what && *p && out < end; ++p) {
+    for (const char* p = what ? what : ""; *p && out < end; ++p) {
         *out++ = *p;
     }
     *out++ = '\n';

@@ -292,33 +292,18 @@ int main() {
             if (result == vocem::WebSocket::Result::Timeout) {
                 continue;
             }
-            // `allow_exceptions = false` covers a parse ERROR and nothing
-            // else: an allocation that fails is not a parse error, and it
-            // comes straight back out as std::bad_alloc. Measured under the
-            // unit's own MemoryMax of 128 MiB, with RLIMIT_AS standing in for
-            // it: 8 MiB of '[' -- which is exactly kMaxMessageBytes, the cap
-            // entry 72 put on reassembly -- throws, nothing catches it, and
-            // the daemon dies by abort(). Restart=on-failure then brings it
-            // back, and an abort runs no destructor, so every turn of that
-            // loop leaves /dev/shm/vocem-<uid>, the note's words and every
-            // Flatpak mirror behind: entry 81's leftover, through a door
-            // entry 134 did not close. (8 MiB of string, by contrast, parses
-            // in 47 MB and is fine -- it is the DEPTH that costs, and
-            // nlohmann bounds neither.)
-            //
-            // A message this daemon cannot hold is a message it drops. Said
-            // once, because a peer that does it once will do it again and the
-            // journal is what somebody reads afterwards.
-            // Bounded before it is parsed, not after. nlohmann limits neither
-            // depth nor element count, so the cost of a message is the peer's
-            // to choose: 8 MiB of '[' -- exactly kMaxMessageBytes, entry 72's
-            // reassembly cap -- costs 624 MB, measured twice, and then comes
-            // back discarded because it is invalid. Against the unit's
-            // MemoryMax of 128M that is the cgroup killing this process, and a
-            // SIGKILL runs no destructor: the segment, the note's words and
-            // every Flatpak mirror stay behind, and Restart=on-failure does it
-            // again. vocem::json_depth_within says what the scan costs and why
-            // the ceiling is where it is.
+            // Bounded before it is parsed, not after. `allow_exceptions =
+            // false` bounds parse ERRORS and nothing else, and nlohmann limits
+            // neither depth nor element count, so the cost of a message is the
+            // peer's to choose: 8 MiB of '[' -- exactly kMaxMessageBytes,
+            // entry 72's reassembly cap -- costs 624 MB, measured twice, and
+            // then comes back discarded because it is invalid. Against the
+            // unit's MemoryMax of 128M that is the cgroup killing this
+            // process, and a SIGKILL runs no destructor: the segment, the
+            // note's words and every Flatpak mirror stay behind -- entry 81's
+            // leftover, through a door entry 134 did not close -- and
+            // Restart=on-failure does it again. vocem::json_depth_within says
+            // what the scan costs and why the ceiling is where it is.
             //
             // Said once: a peer that does this once will do it again, and the
             // journal is what somebody reads afterwards.
@@ -332,9 +317,15 @@ int main() {
                 }
                 continue;
             }
-            // And a second line for what a bound cannot foresee: an allocation
-            // that fails is not a parse error, so it arrives as an exception
-            // whatever `allow_exceptions = false` says.
+            // And a second line for what the depth ceiling does not bound,
+            // which is worth naming rather than leaving as "anything else".
+            // Measured on this machine, 8 MiB of each shape through nlohmann
+            // alone: one string is 47.6 MB, a FLAT array of 4.2 million
+            // elements is 88.2 MB, and the nesting the ceiling refuses is
+            // 634 MB. So depth is where the money was and the flat case is the
+            // residual this catch is for -- an allocation that fails is not a
+            // parse error, so it arrives as an exception whatever
+            // `allow_exceptions = false` says.
             json message;
             try {
                 message = json::parse(raw, nullptr, false);

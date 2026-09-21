@@ -139,6 +139,8 @@
 
 #include "private_shm.h"
 #include "probe_alarm.h"
+#include "probe_name.h"
+#include "vocem/avatar_rgba.h"
 #include "vocem/shm.h"
 
 namespace {
@@ -396,8 +398,12 @@ struct Interval {
     long long to;
     long long handed_down;
 };
-Interval g_presents[256];
+Interval g_presents[2048];
 int g_present_count = 0;
+// When the scene's own frames began, after the warm-up. The chain analysis
+// reads only what came after: the warm-up presents with no semaphores of the
+// probe's, and the rule for a chained frame is not the rule for those.
+long long g_scene_began = 0;
 
 long long now_ns() {
     timespec now{};
@@ -561,6 +567,9 @@ ChainReport analyse_chain(const char* path) {
         if (sscanf(line, "%lld %127s", &stamp, word) != 2) {
             continue;
         }
+        if (stamp < g_scene_began) {
+            continue;  // the warm-up's frames, not the scene's
+        }
         if (strcmp(word, "submit") == 0) {
             if (!inside_a_present(stamp) || submit_count >= 4096) {
                 continue;  // the probe's own, outside its presents
@@ -663,6 +672,8 @@ int main() {
     const bool in_flight = strcmp(scenario, "in-flight") == 0;
     const bool daemon_gone = strcmp(scenario, "daemon-gone") == 0;
     const bool idle = strcmp(scenario, "idle") == 0;
+    const bool arrivals = strcmp(scenario, "arrivals") == 0;
+    const bool early_exit = strcmp(scenario, "early-exit") == 0;
     const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
                             strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
     const char* witness_manifest = getenv("VOCEM_VK_WITNESS_MANIFEST");
@@ -695,21 +706,21 @@ int main() {
     snprintf(path, sizeof(path), "%s/vocem", root);
     mkdir(path, 0700);
     // shown_apps names THIS binary, read off /proc/self/exe rather than written
-    // out as a literal. The literal cost a measurement: built at -m32 the
+    // out as a literal -- through tests/probe_name.h, which is the one spelling
+    // of it (entry 168). This file kept a hand-rolled copy of that readlink for
+    // a release after the header was written FOR it: entry 168 swept the nine
+    // OpenGL probes and left the Vulkan one, which is the probe entry 129 is
+    // about and where the rule came from.
+    // The literal cost a measurement: built at -m32 the
     // executable is vocem_vk_present_draw32, the literal said
     // vocem_vk_present_draw, the detection quite correctly declined a process
     // nobody had asked for -- and a run that reported "the 32-bit Vulkan layer
     // loads and draws nothing" looked exactly like entries 30/33/34's defect
     // until the log was read (`not drawing ...: does not look like a game`).
-    char self[4096] = {0};
-    if (const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1); n > 0) {
-        self[n] = '\0';
-    }
-    const char* slash = strrchr(self, '/');
-    const char* own_name = slash ? slash + 1 : "vocem_vk_present_draw";
+    const std::string own_name = vocem_test::own_name("vocem_vk_present_draw");
     char config[900];
     snprintf(config, sizeof(config), "enabled = %s\nshown_apps = %s\n",
-             flatpak_off ? "false" : "true", own_name);
+             flatpak_off ? "false" : "true", own_name.c_str());
     snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     write_file(path, config);
     setenv("XDG_CONFIG_HOME", root, 1);
@@ -809,28 +820,52 @@ int main() {
     // whose component_layers list IS the chain, first entry nearest the
     // application. Whether that held is what the positive control in the
     // report says, every run.
+    //
+    // VOCEM_VK_BELOW names one more layer to put under the overlay the same way
+    // -- the Khronos validation layer, for vk_present_validated. An extra
+    // manifest alone lands it wherever the loader likes, and measured with
+    // VK_LOADER_DEBUG=layer it lands ABOVE the overlay: Application ->
+    // validation -> overlay -> driver, a chain in which the validation layer
+    // checks the probe's calls and never sees one command buffer, submit or
+    // barrier of the overlay's own (entry 192).
     char witness_report[800] = {0};
-    if (witness_manifest && witness_manifest[0]) {
+    const char* below = getenv("VOCEM_VK_BELOW");
+    const bool have_witness = witness_manifest && witness_manifest[0];
+    if (have_witness) {
         snprintf(destination, sizeof(destination), "%s/layers/witness.json", root);
         if (!copy_file(witness_manifest, destination)) {
             printf("FAIL could not copy the witness manifest %s\n", witness_manifest);
             return 1;
         }
+    }
+    if (have_witness || (below && below[0])) {
+        std::string components = "\"VK_LAYER_VOCEM_overlay\"";
+        if (below && below[0]) {
+            components += std::string(", \"") + below + "\"";
+        }
+        if (have_witness) {
+            components += ", \"VK_LAYER_VOCEM_witness\"";
+        }
         snprintf(destination, sizeof(destination), "%s/layers/VkLayer_override.json", root);
-        write_file(destination,
-                   "{\n"
-                   "    \"file_format_version\": \"1.1.2\",\n"
-                   "    \"layer\": {\n"
-                   "        \"name\": \"VK_LAYER_LUNARG_override\",\n"
-                   "        \"type\": \"GLOBAL\",\n"
-                   "        \"api_version\": \"1.4.350\",\n"
-                   "        \"implementation_version\": \"1\",\n"
-                   "        \"description\": \"vocem test chain: overlay above the witness\",\n"
-                   "        \"component_layers\": [\"VK_LAYER_VOCEM_overlay\", "
-                   "\"VK_LAYER_VOCEM_witness\"],\n"
-                   "        \"disable_environment\": { \"VOCEM_VK_NO_OVERRIDE\": \"1\" }\n"
-                   "    }\n"
-                   "}\n");
+        const std::string override_manifest =
+            "{\n"
+            "    \"file_format_version\": \"1.1.2\",\n"
+            "    \"layer\": {\n"
+            "        \"name\": \"VK_LAYER_LUNARG_override\",\n"
+            "        \"type\": \"GLOBAL\",\n"
+            "        \"api_version\": \"1.4.350\",\n"
+            "        \"implementation_version\": \"1\",\n"
+            "        \"description\": \"vocem test chain: the overlay above what watches it\",\n"
+            "        \"component_layers\": [" + components + "],\n"
+            "        \"disable_environment\": { \"VOCEM_VK_NO_OVERRIDE\": \"1\" }\n"
+            "    }\n"
+            "}\n";
+        write_file(destination, override_manifest.c_str());
+        if (below && below[0]) {
+            printf("     below the overlay: %s\n", below);
+        }
+    }
+    if (have_witness) {
         snprintf(witness_report, sizeof(witness_report), "%s/witness.txt", root);
         setenv("VOCEM_WITNESS", "1", 1);
         setenv("VOCEM_WITNESS_REPORT", witness_report, 1);
@@ -851,7 +886,8 @@ int main() {
     // VK_LOADER_DEBUG output by hand.
     char stderr_log[800];
     snprintf(stderr_log, sizeof(stderr_log), "%s/stderr.txt", root);
-    if ((second_device || daemon_gone || idle) && !getenv("VOCEM_VK_KEEP_STDERR")) {
+    if ((second_device || daemon_gone || idle || arrivals || early_exit) &&
+        !getenv("VOCEM_VK_KEEP_STDERR")) {
         if (FILE* teed = fopen(stderr_log, "w")) {
             fflush(stderr);
             dup2(fileno(teed), 2);
@@ -862,6 +898,31 @@ int main() {
     // test counts.
     unsetenv("MANGOHUD");
     setenv("VOCEM_DEBUG", "1", 1);
+
+    // The arrivals scene's faces, in a cache of its own: nobody in it has an
+    // avatar hash, so every one of them -- the nine in the channel and the
+    // message's author -- is drawn from default_<(id >> 22) % 6>.rgba, which for
+    // these small ids is default_0 for all ten. That is entry 184's measurement
+    // made a scene (ten cache keys for one file), and it is also what gives the
+    // texture cache something to upload at all: the scenes used to read the
+    // owner's real ~/.cache, where default_0 happens not to exist.
+    if (arrivals) {
+        char cache[800];
+        snprintf(cache, sizeof(cache), "%s/cache", root);
+        mkdir(cache, 0700);
+        setenv("XDG_CACHE_HOME", cache, 1);
+        char dir[900];
+        snprintf(dir, sizeof(dir), "%s/vocem", cache);
+        mkdir(dir, 0700);
+        snprintf(dir, sizeof(dir), "%s/vocem/avatars", cache);
+        mkdir(dir, 0700);
+        char face[1024];
+        vocem::avatar_rgba_path(face, sizeof(face), 700, "");
+        static unsigned char pixels[vocem::kAvatarRgbaBytes];
+        memset(pixels, 0x7f, sizeof(pixels));
+        check(vocem::avatar_rgba_write(face, pixels, vocem::kAvatarPixels, vocem::kAvatarPixels),
+              "the scene's default picture is in its own avatar cache");
+    }
 
     // ---- The channel, published by this process -----------------------------
     vocem::StateWriter writer;
@@ -876,10 +937,16 @@ int main() {
             state.user_count = 0;
         });
     } else {
-        writer.publish([](vocem::SharedState& state) {
+        writer.publish([arrivals](vocem::SharedState& state) {
             state.connected = 1;
             state.in_channel = 1;
             state.status = 2;  // Connected
+            // The arrivals scene publishes the owner's display from the first
+            // frame, as vocemd always does: otherwise the first arrival is also
+            // a change of size, which is a real rebuild and not what it measures.
+            if (arrivals) {
+                state.display_height = 2160;
+            }
             snprintf(state.channel_name, sizeof(state.channel_name), "present-hook");
             state.user_count = 3;
             for (uint32_t i = 0; i < 3; ++i) {
@@ -1200,8 +1267,9 @@ int main() {
     whole.layerCount = 1;
 
     // ---- The frames --------------------------------------------------------
-    // 45 of them: the overlay skips its first thirty while ImGui sizes itself,
-    // and a few more make the count independent of that detail. No semaphores --
+    // 45 of them, and at least a second's worth (see below): the overlay skips
+    // its first frames while ImGui sizes itself, and the first atlas is built
+    // off the game's thread. No semaphores --
     // acquire waits on a fence and the queue is drained between frames, so the
     // ordering this test needs is the simplest kind that is still correct.
     // A lambda because the recreate and second-device scenarios run it again
@@ -1250,7 +1318,7 @@ int main() {
             const long long before = now_ns();
             const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
             const long long after = now_ns();
-            if (g_present_count < 256) {
+            if (g_present_count < 2048) {
                 g_presents[g_present_count++] = {before, after, 0};
             }
             if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
@@ -1361,7 +1429,7 @@ int main() {
             const long long before = now_ns();
             const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
             const long long after = now_ns();
-            if (g_present_count < 256) {
+            if (g_present_count < 2048) {
                 g_presents[g_present_count++] = {before, after, 0};
             }
             if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
@@ -1381,12 +1449,72 @@ int main() {
         }
         return ok;
     };
-    if (in_flight) {
-        if (!run_frames_in_flight(swapchain, images, kFrames)) {
+    if (early_exit) {
+        // Two frames with a channel on them: the first starts the atlas worker
+        // (entry 192), the second finds it still rasterising. Then the game
+        // goes away at once -- device, swapchain, instance, process -- inside
+        // the ~113 ms the build takes. vocem_DestroyDevice has to wait for the
+        // worker before tearing the context down, and the layer's destructor
+        // before the library can be unmapped; a crash, a hang or a non-zero
+        // exit here is the failure. It cannot fail against a layer that has no
+        // worker, which is said rather than implied: this is a guard on the
+        // hazard the worker brings, not a refutation of anything older.
+        if (!run_frames(swapchain, images, 2)) {
             return 1;
         }
-    } else if (!run_frames(swapchain, images, kFrames)) {
-        return 1;
+        vk.vkDeviceWaitIdle(device);
+        vk.vkDestroyFence(device, fence, nullptr);
+        vk.vkDestroyCommandPool(device, pool, nullptr);
+        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        vk.vkDestroyDevice(device, nullptr);
+        vk.vkDestroySurfaceKHR(instance, surface, nullptr);
+        vk.vkDestroyInstance(instance, nullptr);
+        XCloseDisplay(display);
+        fflush(stderr);
+        const long started = lines_containing(stderr_log, "off the game's thread");
+        const long ready = lines_containing(stderr_log, "backend ready");
+        printf("     the layer started the atlas worker %ld time(s), said \"backend ready\" %ld "
+               "time(s)\n", started, ready);
+        check(started == 1, "the atlas worker was running when the game went away");
+        check(ready == 0, "and the renderer was never finished, so the teardown met it mid-build");
+        char cleanup[800];
+        snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
+        if (system(cleanup) != 0) {
+            printf("     (the scratch root %s outlived the test)\n", root);
+        }
+        printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
+        return failures == 0 ? 0 : 1;
+    }
+    // A second of plain frames first. The first atlas is rasterised on a worker
+    // now (entry 192), so the panel appears ~113 ms after the first frame with
+    // a channel on it, and longer on a loaded machine; the 45 frames below are
+    // about 250 ms, which was twice that alone and not always enough inside
+    // the full suite (vk_inside_gamescope failed on it once, passed alone).
+    // Before the scene's own frames and not after them: the in-flight scene
+    // chains its 45 through semaphores it creates per call, and splitting that
+    // call made the witness pair presents with a previous call's recycled
+    // handles (5 "mismatched", measured). A deadline, not a measurement.
+    //
+    // The in-flight scene is the exception: it is the one that checks the
+    // frames the overlay passes through untouched while its renderer is still
+    // being built -- each must wait on the probe's own semaphore -- so its
+    // build has to happen INSIDE its chained frames. One call, long enough to
+    // contain the build with room: 300 chained frames.
+    if (in_flight) {
+        if (!run_frames_in_flight(swapchain, images, 300)) {
+            return 1;
+        }
+    } else {
+        const long long warm_until = now_ns() + 1000000000LL;
+        while (now_ns() < warm_until) {
+            if (!run_frames(swapchain, images, 5)) {
+                return 1;
+            }
+        }
+        g_scene_began = now_ns();
+        if (!run_frames(swapchain, images, kFrames)) {
+            return 1;
+        }
     }
 
     // ---- The scenarios, before the read-back --------------------------------
@@ -1491,6 +1619,100 @@ int main() {
             if (!run_frames_in_flight(swapchain, images, 10)) {
                 return 1;
             }
+        }
+    }
+
+    // What each arrival cost the game, in the probe's own present calls: the
+    // layer's post-present work runs before vkQueuePresentKHR returns, so the
+    // longest call after an event is the hitch a game would feel. PRINTED and
+    // not asserted -- a present's wall time here is the GPU's answer as much
+    // as ours (entries 145 and 185); what is asserted is the layer's own count.
+    double arrival_worst_ms[8] = {};
+    int arrival_events = 0;
+    if (arrivals) {
+        // The first frame with a channel on it is where the renderer and the
+        // atlas are built -- the one cost the fold cannot remove. Printed here
+        // because nothing else in the suite states it.
+        {
+            long long worst = 0;
+            for (int i = 0; i < g_present_count; ++i) {
+                const long long span = g_presents[i].to - g_presents[i].from;
+                worst = span > worst ? span : worst;
+            }
+            printf("     >>> the panel first appears: the longest present took %.1f ms\n",
+                   static_cast<double>(worst) / 1.0e6);
+        }
+        // People join one at a time, each with a colour emoji in the name that
+        // nobody in the channel had, and then a message arrives with one more
+        // in its sender line -- the owner's report, "when somebody joins the
+        // call or a message arrives the game freezes for half a second", as a
+        // scene. Each is a codepoint the atlas does not hold yet.
+        static const char* const kJoined[] = {
+            "Arriva \xF0\x9F\x98\x80",  // grin
+            "Arriva \xF0\x9F\x94\xA5",  // fire
+            "Arriva \xF0\x9F\x8E\xAE",  // gamepad
+            "Arriva \xF0\x9F\x9A\x80",  // rocket
+            "Arriva \xF0\x9F\x8D\x95",  // pizza
+            "Arriva \xF0\x9F\x90\xB1",  // cat
+        };
+        constexpr int kJoinedCount = static_cast<int>(sizeof(kJoined) / sizeof(kJoined[0]));
+        const auto worst_since = [&](int first) {
+            long long worst = 0;
+            for (int i = first; i < g_present_count; ++i) {
+                const long long span = g_presents[i].to - g_presents[i].from;
+                worst = span > worst ? span : worst;
+            }
+            return static_cast<double>(worst) / 1.0e6;
+        };
+        for (int joined = 1; joined <= kJoinedCount + 1; ++joined) {
+            const bool message = joined > kJoinedCount;
+            const int users = message ? kJoinedCount : joined;
+            timespec monotonic{};
+            clock_gettime(CLOCK_MONOTONIC, &monotonic);
+            const double now_seconds =
+                static_cast<double>(monotonic.tv_sec) + static_cast<double>(monotonic.tv_nsec) / 1e9;
+            writer.publish([&](vocem::SharedState& state) {
+                state.connected = 1;
+                state.in_channel = 1;
+                state.status = 2;  // Connected
+                // What vocemd publishes on the owner's machine (a 3840x2160
+                // display), so the atlas is the size a game there builds and
+                // the printed times are that game's, not a 360-pixel window's.
+                state.display_height = 2160;
+                snprintf(state.channel_name, sizeof(state.channel_name), "present-hook");
+                state.user_count = 3 + static_cast<uint32_t>(users);
+                for (uint32_t i = 0; i < 3; ++i) {
+                    state.users[i].id = 700 + i;
+                    snprintf(state.users[i].name, sizeof(state.users[i].name), "Present %u",
+                             i + 1);
+                }
+                for (int i = 0; i < users; ++i) {
+                    state.users[3 + i].id = 800 + static_cast<uint64_t>(i);
+                    snprintf(state.users[3 + i].name, sizeof(state.users[3 + i].name), "%s",
+                             kJoined[i]);
+                }
+                if (message) {
+                    state.notification.serial = 1;
+                    state.notification.user_id = 900;
+                    state.notification.received = now_seconds;
+                    snprintf(state.notification.title, sizeof(state.notification.title),
+                             "Messaggio \xF0\x9F\x93\xA3");  // megaphone
+                }
+            });
+            const int first = g_present_count;
+            // Chained, two in flight, no idle anywhere -- a game's shape, and
+            // the only one in which the font image is still being sampled when
+            // the fold's copy is submitted. The idling loop drains the queue
+            // after every present, so a copy with no barrier at all would be
+            // just as correct there and the validation layer would have nothing
+            // to object to: measured, a mutation that dropped the barrier's
+            // dependency on the earlier reads passed under run_frames.
+            if (!run_frames_in_flight(swapchain, images, 8)) {
+                return 1;
+            }
+            arrival_worst_ms[arrival_events++] = worst_since(first);
+            printf("     >>> %s: the longest present after it took %.1f ms\n",
+                   message ? "a message arrives" : "somebody joins", arrival_worst_ms[arrival_events - 1]);
         }
     }
 
@@ -1605,10 +1827,25 @@ int main() {
     // vk_inside_gamescope and gl_beside_mangohud have and a standalone run does
     // not -- said here rather than left to be assumed.
     constexpr long kRecordedForeign = 733;
-    printf("     background byte: %d, foreign pixels: %ld (DESIGN records %ld)\n", background,
-           foreign, kRecordedForeign);
-    if (foreign > 0 && (foreign * 10 < kRecordedForeign * 9 ||
-                        foreign * 9 > kRecordedForeign * 10)) {
+    // And the comparison belongs to the scene the figure was taken in. What
+    // DESIGN records is the PLAIN panel over this probe's own clear colour;
+    // two scenes deliberately draw something else, and both tripped the note on
+    // every green run. Measured, all ten scenes: `recreate` clears through the
+    // other format and reads background 89 against 25, so "foreign" counts a
+    // different thing -- **1775**; `daemon-gone` reads back the frame after a
+    // daemon RETURNED, which is a second snapshot's panel -- **1404**. Every
+    // other scene reads exactly 733, at both widths. So the note fired four
+    // times in every suite run (the two 32-bit twins included) and was wrong
+    // four times, which is the failure entry 165 exists to prevent arriving
+    // from the other side: a warning that is always there is a warning nobody
+    // reads, and the day 733 really moves it says what it has been saying all
+    // along. The figure is still PRINTED for every scene -- that costs nothing
+    // and is how somebody sees 1775 at all.
+    const bool plain_scene = !recreate && !daemon_gone && !arrivals;
+    printf("     background byte: %d, foreign pixels: %ld (DESIGN records %ld for the plain "
+           "scene)\n", background, foreign, kRecordedForeign);
+    if (plain_scene && foreign > 0 &&
+        (foreign * 10 < kRecordedForeign * 9 || foreign * 9 > kRecordedForeign * 10)) {
         printf("     note: that is more than a tenth away from the recorded figure. If the "
                "drawing changed on purpose, this constant and DESIGN's entries 129, 130 and "
                "165 move with it.\n");
@@ -1651,6 +1888,10 @@ int main() {
     // ---- What the chain saw -------------------------------------------------
     // Read after the instance is gone, so every line the witness had to write
     // has been written.
+    // Filled by the witness block for the arrivals scene: waits inside a present
+    // but after the hand-down, the post-present phase. -1 without a witness
+    // (the 32-bit twin runs the plain chain).
+    long waits_inside_arrivals = -1;
     if (witness_report[0]) {
         place_hand_downs(witness_report);
         long submits_inside = 0;
@@ -1661,6 +1902,7 @@ int main() {
         const long submits =
             count_events(witness_report, "submit", &submits_inside, &submits_on_path);
         const long waits = count_events(witness_report, "wait", &waits_inside, &waits_on_path);
+        waits_inside_arrivals = waits_inside - waits_on_path;
         const long signalled =
             count_events(witness_report, "submit-signalled-fence", nullptr, nullptr);
         const long pipelines = count_events(witness_report, "pipeline-created", nullptr, nullptr);
@@ -1753,14 +1995,15 @@ int main() {
               "for the daemon that came back");
         const long handed = lines_containing(stderr_log, "releasing the backend and the font atlas");
         printf("     the layer released what it held %ld time(s)\n", handed);
+        // Two and not three, which is the nothing-to-draw gate asked here: this
+        // scenario is the one that spends four seconds with a segment and no
+        // channel on it, and a layer that decides `needs_init` from the
+        // swapchain and the verdict alone -- everything except whether there is
+        // anything on the screen -- says "backend ready" a third time inside
+        // that window. The `idle` scene below makes the same claim from zero.
         check(handed == 1,
               "and hands back the backend, the atlas and every face when the daemon stops, "
               "instead of holding them for the life of the game");
-        // The nothing-to-draw gate, asked here because this scenario is the one
-        // that spends four seconds with a segment and no channel on it. A layer
-        // that builds its renderer from the swapchain and the application's
-        // verdict alone -- everything except whether there is anything on the
-        // screen -- says "backend ready" a third time in that window.
     }
     if (idle) {
         fflush(stderr);
@@ -1778,6 +2021,60 @@ int main() {
               "not built at all");
         check(lines_containing(stderr_log, "nothing to draw") == 1,
               "and the layer says once why it is spending no frames");
+    }
+    if (arrivals) {
+        fflush(stderr);
+        // The count that tells the two costs apart, in the layer's own words
+        // (entry 191): "rebuilt" is the rasteriser run again, 125-146 ms of
+        // CPU; "folded" is the emoji put into space the build had reserved.
+        // Against the layer as it stood -- the 0.1.10-5 package is the
+        // exemplar -- every arrival is a rebuild and this reads seven.
+        const long rebuilt = lines_containing(stderr_log, "font atlas rebuilt");
+        const long folded = lines_containing(stderr_log, "folded into the font atlas");
+        const long ready = lines_containing(stderr_log, "backend ready");
+        printf("     the layer said \"font atlas rebuilt\" %ld time(s), \"folded\" %ld time(s), "
+               "\"backend ready\" %ld time(s)\n", rebuilt, folded, ready);
+        check(ready == 1, "the renderer was built once, for the first frame with a channel on it");
+        check(rebuilt == 0,
+              "nobody joining and no message arriving rasterised the font atlas again");
+        check(folded >= arrival_events,
+              "and every arrival's emoji reached the atlas, folded in (the positive control: a "
+              "layer that noticed nothing would also rebuild nothing)");
+        // And reached the GPU as the squares it changed, not as the whole atlas:
+        // the stock upload is 64 MB between two vkQueueWaitIdle on the game's
+        // queue, 34 to 44 ms of every arrival once the rebuild was gone.
+        const long whole = lines_containing(stderr_log, "font texture uploaded whole");
+        const long in_place = lines_containing(stderr_log, "copied in place");
+        printf("     the font texture went up whole %ld time(s), in place %ld time(s)\n", whole,
+               in_place);
+        check(whole == 1, "the font texture was uploaded whole once, when the renderer was built");
+        check(in_place >= arrival_events,
+              "and every arrival after that copied only its folded squares into it");
+        // And the first atlas was rasterised OFF the game's thread (entry 192):
+        // 113 ms of stb_truetype that stood the game still in the frame the
+        // panel first appeared. A fallback is allowed where no thread can be
+        // had, and says so; on this machine one always can.
+        // The faces (entry 184 and the upload's own wait). Ten people with no
+        // avatar share one picture on disk; each upload of it is a staging
+        // buffer, a copy and a descriptor set, and each used to end in
+        // WaitForFences on the game's queue after the present.
+        const long faces = lines_containing(stderr_log, "texture] uploaded ");
+        const long post_present_waits = waits_inside_arrivals;
+        printf("     the default picture was uploaded %ld time(s); the witness saw %ld wait(s) "
+               "inside a present after the hand-down\n", faces, post_present_waits);
+        check(faces == 1, "ten people with no avatar share one upload of the one picture they share");
+        if (post_present_waits >= 0) {
+            check(post_present_waits == 0,
+                  "and nothing the overlay uploads makes the game's thread wait for the GPU");
+        } else {
+            printf("     (no witness in this chain, so the waits are not counted here)\n");
+        }
+        const long off_thread = lines_containing(stderr_log, "off the game's thread");
+        const long no_thread = lines_containing(stderr_log, "no thread for the font atlas");
+        printf("     the atlas was rasterised off the game's thread %ld time(s), on it %ld\n",
+               off_thread, no_thread);
+        check(off_thread == 1 && no_thread == 0,
+              "the first font atlas was rasterised on a worker, not in the game's frame");
     }
     if (second_device) {
         fflush(stderr);

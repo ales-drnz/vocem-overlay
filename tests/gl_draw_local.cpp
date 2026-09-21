@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <X11/Xlib.h>
@@ -136,6 +137,8 @@ int main() {
     }
     const char* scenario = getenv("VOCEM_GL_SCENARIO") ? getenv("VOCEM_GL_SCENARIO") : "";
     const bool second_context = strcmp(scenario, "second-context") == 0;
+    const bool arrivals = strcmp(scenario, "arrivals") == 0;
+    const bool early_exit = strcmp(scenario, "early-exit") == 0;
     if (!getenv("VOCEM_GL_LIBRARY") || !getenv("VOCEM_SHIM_PRELOADED")) {
         printf("skip meant to run with the shim preloaded and VOCEM_GL_LIBRARY set\n");
         return 77;
@@ -185,10 +188,16 @@ int main() {
     // tell it from the daemon, which is the point.
     vocem::StateWriter writer;
     check(writer.open(), "the private state segment opens");
-    writer.publish([](vocem::SharedState& state) {
+    writer.publish([arrivals](vocem::SharedState& state) {
         state.connected = 1;
         state.in_channel = 1;
         state.status = 2;  // Connected
+        // The arrivals scene publishes the owner's display from the first
+        // frame, as vocemd always does: otherwise the first arrival is also a
+        // change of size, which is a real rebuild and not what it measures.
+        if (arrivals) {
+            state.display_height = 2160;
+        }
         snprintf(state.channel_name, sizeof(state.channel_name), "dlopen-local");
         state.user_count = 3;
         for (uint32_t i = 0; i < 3; ++i) {
@@ -254,15 +263,52 @@ int main() {
 
     // 45 frames: the overlay skips its first thirty while ImGui sizes itself,
     // and a few more make the count independent of that detail.
+    // The longest swap of these frames is printed by the arrivals scene: the
+    // first frame with a channel on it is where the atlas is built.
+    double first_frames_worst_ms = 0.0;
     const auto run_frames = [&](int frames) {
         for (int frame = 0; frame < frames; ++frame) {
             clear_colour(0.10f, 0.15f, 0.20f, 1.0f);
             clear(0x00004000 /*GL_COLOR_BUFFER_BIT*/);
+            timespec before{};
+            timespec after{};
+            clock_gettime(CLOCK_MONOTONIC, &before);
             swap(display, window);
+            clock_gettime(CLOCK_MONOTONIC, &after);
+            const double span = static_cast<double>(after.tv_sec - before.tv_sec) * 1e3 +
+                                static_cast<double>(after.tv_nsec - before.tv_nsec) / 1e6;
+            first_frames_worst_ms = span > first_frames_worst_ms ? span : first_frames_worst_ms;
             usleep(16000);
         }
     };
+    if (early_exit) {
+        // vk_present_draw's early-exit, on the OpenGL door: two frames start
+        // the atlas worker, then the context dies and the process exits inside
+        // the build. glXDestroyContext reaches release(), which has to wait for
+        // the worker; exit reaches the library's destructor, which has to wait
+        // too. A guard on the worker's hazard, not a refutation: a library with
+        // no worker passes it trivially.
+        run_frames(2);
+        make_current(display, 0, nullptr);
+        destroy(display, context);
+        XCloseDisplay(display);
+        const long started = lines_containing(log_path, "off the game's thread");
+        const long ready = lines_containing(log_path, "font texture uploaded whole");
+        printf("     the overlay started the atlas worker %ld time(s), uploaded an atlas %ld "
+               "time(s)\n", started, ready);
+        check(started == 1, "the atlas worker was running when the context died");
+        check(ready == 0, "and no atlas had reached the GPU, so the teardown met it mid-build");
+        char cleanup[700];
+        snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
+        system(cleanup);
+        printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
+        return failures == 0 ? 0 : 1;
+    }
     run_frames(45);
+    if (arrivals) {
+        printf("     >>> the panel first appears: the longest swap took %.1f ms\n",
+               first_frames_worst_ms);
+    }
 
     // The texture census, with the backend up and no faces in the scene: the
     // font atlas is the one texture the overlay should hold.
@@ -295,6 +341,77 @@ int main() {
         run_frames(15);
     }
 
+    // Somebody joins, six times, each with a colour emoji nobody in the channel
+    // had, and then a message arrives with one more -- vk_present_draw's
+    // `arrivals` scene, on the OpenGL door. The overlay draws INSIDE the
+    // game's glXSwapBuffers, atlas work included, so the longest swap after
+    // an arrival is the hitch the game feels: printed, not asserted (entries
+    // 145 and 185). The overlay's own lines are the count (entry 191).
+    long arrival_swaps = 0;
+    if (arrivals) {
+        static const char* const kJoined[] = {
+            "Arriva \xF0\x9F\x98\x80",  // grin
+            "Arriva \xF0\x9F\x94\xA5",  // fire
+            "Arriva \xF0\x9F\x8E\xAE",  // gamepad
+            "Arriva \xF0\x9F\x9A\x80",  // rocket
+            "Arriva \xF0\x9F\x8D\x95",  // pizza
+            "Arriva \xF0\x9F\x90\xB1",  // cat
+        };
+        constexpr int kJoinedCount = static_cast<int>(sizeof(kJoined) / sizeof(kJoined[0]));
+        for (int joined = 1; joined <= kJoinedCount + 1; ++joined) {
+            const bool message = joined > kJoinedCount;
+            const int users = message ? kJoinedCount : joined;
+            timespec monotonic{};
+            clock_gettime(CLOCK_MONOTONIC, &monotonic);
+            const double now_seconds =
+                static_cast<double>(monotonic.tv_sec) + static_cast<double>(monotonic.tv_nsec) / 1e9;
+            writer.publish([&](vocem::SharedState& state) {
+                state.connected = 1;
+                state.in_channel = 1;
+                state.status = 2;  // Connected
+                // What vocemd publishes on the owner's machine (a 3840x2160
+                // display), so the atlas is the size a game there builds and
+                // the printed times are that game's, not a 360-pixel window's.
+                state.display_height = 2160;
+                snprintf(state.channel_name, sizeof(state.channel_name), "dlopen-local");
+                state.user_count = 3 + static_cast<uint32_t>(users);
+                for (uint32_t i = 0; i < 3; ++i) {
+                    state.users[i].id = 500 + i;
+                    snprintf(state.users[i].name, sizeof(state.users[i].name), "Local %u", i + 1);
+                }
+                for (int i = 0; i < users; ++i) {
+                    state.users[3 + i].id = 600 + static_cast<uint64_t>(i);
+                    snprintf(state.users[3 + i].name, sizeof(state.users[3 + i].name), "%s",
+                             kJoined[i]);
+                }
+                if (message) {
+                    state.notification.serial = 1;
+                    state.notification.user_id = 900;
+                    state.notification.received = now_seconds;
+                    snprintf(state.notification.title, sizeof(state.notification.title),
+                             "Messaggio \xF0\x9F\x93\xA3");  // megaphone
+                }
+            });
+            double worst_ms = 0.0;
+            for (int frame = 0; frame < 8; ++frame) {
+                clear_colour(0.10f, 0.15f, 0.20f, 1.0f);
+                clear(0x00004000 /*GL_COLOR_BUFFER_BIT*/);
+                timespec before{};
+                timespec after{};
+                clock_gettime(CLOCK_MONOTONIC, &before);
+                swap(display, window);
+                clock_gettime(CLOCK_MONOTONIC, &after);
+                const double span = static_cast<double>(after.tv_sec - before.tv_sec) * 1e3 +
+                                    static_cast<double>(after.tv_nsec - before.tv_nsec) / 1e6;
+                worst_ms = span > worst_ms ? span : worst_ms;
+                usleep(16000);
+            }
+            ++arrival_swaps;
+            printf("     >>> %s: the longest swap after it took %.1f ms\n",
+                   message ? "a message arrives" : "somebody joins", worst_ms);
+        }
+    }
+
     // What ended up on screen, read out of the front buffer the way the capture
     // aid reads it. Anything that is not the clear colour was drawn by somebody
     // else, and the only somebody else in here is the overlay.
@@ -320,6 +437,39 @@ int main() {
         const long ready = lines_containing(log_path, "OpenGL backend ready");
         printf("     the overlay said \"OpenGL backend ready\" %ld time(s)\n", ready);
         check(ready == 1, "and its backend came up once: the helper's death did not tear it down");
+    }
+
+    if (arrivals) {
+        // "font atlas built" is the rasteriser; "folded" is an emoji put into
+        // space the build reserved. Against the 0.1.10-5 package's library the
+        // first reads eight -- the first frame's build and one per arrival.
+        const long built = lines_containing(log_path, "font atlas built");
+        const long folded = lines_containing(log_path, "folded into the font atlas");
+        printf("     the overlay said \"font atlas built\" %ld time(s), \"folded\" %ld time(s)\n",
+               built, folded);
+        check(built == 1,
+              "the atlas was rasterised once, for the first frame, and not again for anybody "
+              "joining or any message arriving");
+        check(folded >= arrival_swaps,
+              "and every arrival's emoji reached the atlas, folded in (the positive control)");
+        // As the squares it changed, not the 64 MB atlas (entry 192).
+        const long whole = lines_containing(log_path, "font texture uploaded whole");
+        const long in_place = lines_containing(log_path, "copied in place");
+        printf("     the font texture went up whole %ld time(s), in place %ld time(s)\n", whole,
+               in_place);
+        check(whole == 1, "the font texture was uploaded whole once, for the first frame");
+        check(in_place >= arrival_swaps,
+              "and every arrival after that copied only its folded squares into it");
+        // And the first atlas was rasterised OFF the game's thread (entry 192):
+        // 113 ms of stb_truetype that stood the game still in the frame the
+        // panel first appeared. A fallback is allowed where no thread can be
+        // had, and says so; on this machine one always can.
+        const long off_thread = lines_containing(log_path, "off the game's thread");
+        const long no_thread = lines_containing(log_path, "no thread for the font atlas");
+        printf("     the atlas was rasterised off the game's thread %ld time(s), on it %ld\n",
+               off_thread, no_thread);
+        check(off_thread == 1 && no_thread == 0,
+              "the first font atlas was rasterised on a worker, not in the game's frame");
     }
 
     destroy(display, context);

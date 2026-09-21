@@ -195,6 +195,18 @@ def main() -> int:
     # be the last statements of main() with no try/finally, so an interrupted
     # run left whatever it had fetched sitting untracked in third_party/fonts.
     def take(url: str, name: str) -> Path:
+        # PINS is the list, not a table beside one. The names are written twice
+        # -- here and in PINS -- and a seventh font added without an entry
+        # would be fetched, never pinned, and never deleted by the `finally`
+        # below, which walks PINS. Two of the six are not matched by
+        # .gitignore's "-Variable.ttf" pattern, so that leftover is one
+        # `git add -A` from a 10 MB binary in a public repository (entry 175).
+        if name not in PINS:
+            raise SystemExit(
+                f"{name} has no entry in PINS, so it would be fetched without a pin and "
+                "left behind after the run. Add it to the table, empty if there is no "
+                "digest to write yet."
+            )
         return fetch(url, FONT_DIR / name, repin)
 
     variable_font = take(SOURCE, "Inter-Variable.ttf")

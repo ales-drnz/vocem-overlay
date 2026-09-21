@@ -73,6 +73,8 @@ bool TextureCache::init(VkDevice device, VkPhysicalDevice physical_device, VkQue
     VOCEM_RESOLVE(CreateFence);
     VOCEM_RESOLVE(DestroyFence);
     VOCEM_RESOLVE(WaitForFences);
+    VOCEM_RESOLVE(GetFenceStatus);
+    VOCEM_RESOLVE(QueueWaitIdle);
 
 #undef VOCEM_RESOLVE
 
@@ -136,6 +138,9 @@ ImTextureID TextureCache::get(uint64_t user_id, const char* avatar_hash) {
             return 0;  // already queued
         }
     }
+    if (in_flight_.active && in_flight_.key == key) {
+        return 0;  // on its way to the GPU
+    }
 
     char path[768];
     avatar_rgba_path(path, sizeof(path), user_id, avatar_hash);
@@ -148,12 +153,23 @@ ImTextureID TextureCache::get(uint64_t user_id, const char* avatar_hash) {
 }
 
 void TextureCache::process_pending() {
-    if (!ready_ || pending_.empty()) {
+    if (!ready_) {
+        return;
+    }
+    // The font texture's last copy, whole or in part, freed once it is done;
+    // never waited for here.
+    retire_font_update(false);
+    // The face already on its way first: until its copy is done nothing else
+    // starts, which keeps the one-face-per-call budget.
+    if (in_flight_.active && !finish_in_flight(false)) {
+        return;
+    }
+    if (pending_.empty()) {
         return;
     }
 
-    // The first request that is due. One per call: the upload blocks on a fence,
-    // and a frame's worth of stalls for a whole channel would be visible.
+    // The first request that is due. One per call: a channel's worth of
+    // uploads in one frame would be visible even without a wait.
     const double now = avatar_now_seconds();
     size_t index = pending_.size();
     for (size_t i = 0; i < pending_.size(); ++i) {
@@ -210,7 +226,7 @@ void TextureCache::process_pending() {
     }
 
     if (upload(request.key, request.path)) {
-        VOCEM_TLOG("uploaded %s", request.path.c_str());
+        // Submitted; "uploaded" is said by finish_in_flight when it is done.
     } else {
         VOCEM_TLOG("failed to load %s", request.path.c_str());
         // The file is there and will not decode, which asking again cannot fix:
@@ -381,20 +397,18 @@ bool TextureCache::upload(const AvatarKey& key, const std::string& path) {
         if (fn_.QueueSubmit(queue_, 1, &submit, fence) != VK_SUCCESS) {
             break;
         }
-        // Safe to block: process_pending() only runs after the present returned.
-        if (fn_.WaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-            break;
-        }
-
-        texture.descriptor = ImGui_ImplVulkan_AddTexture(sampler_, texture.view,
-                                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        if (texture.descriptor == VK_NULL_HANDLE) {
-            break;
-        }
-        ++descriptor_count_;
-
-        textures_.emplace(key, texture);
-        success = true;
+        // Not waited for (InFlight says why): the temporaries and the texture
+        // go to in_flight_, and finish_in_flight hands the face over once the
+        // fence has signalled. This used to be WaitForFences(UINT64_MAX) here.
+        in_flight_.active = true;
+        in_flight_.key = key;
+        in_flight_.path = path;
+        in_flight_.texture = texture;
+        in_flight_.fence = fence;
+        in_flight_.staging = staging;
+        in_flight_.staging_memory = staging_memory;
+        in_flight_.command = command_buffer;
+        return true;
     } while (false);
 
     if (fence != VK_NULL_HANDLE) {
@@ -414,6 +428,416 @@ bool TextureCache::upload(const AvatarKey& key, const std::string& path) {
         destroy(texture);
     }
     return success;
+}
+
+bool TextureCache::create_image(uint32_t width, uint32_t height, Texture* texture) {
+    VkImageCreateInfo image_info{};
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_info.extent = {width, height, 1};
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (fn_.CreateImage(device_, &image_info, nullptr, &texture->image) != VK_SUCCESS) {
+        return false;
+    }
+    VkMemoryRequirements requirements{};
+    fn_.GetImageMemoryRequirements(device_, texture->image, &requirements);
+    VkMemoryAllocateInfo allocation{};
+    allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex =
+        find_memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (allocation.memoryTypeIndex == UINT32_MAX ||
+        fn_.AllocateMemory(device_, &allocation, nullptr, &texture->memory) != VK_SUCCESS ||
+        fn_.BindImageMemory(device_, texture->image, texture->memory, 0) != VK_SUCCESS) {
+        return false;
+    }
+    VkImageViewCreateInfo view_info{};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = texture->image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.layerCount = 1;
+    return fn_.CreateImageView(device_, &view_info, nullptr, &texture->view) == VK_SUCCESS;
+}
+
+bool TextureCache::create_staging(VkDeviceSize size, VkBuffer* buffer, VkDeviceMemory* memory,
+                                  void** mapped) {
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = size;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (fn_.CreateBuffer(device_, &buffer_info, nullptr, buffer) != VK_SUCCESS) {
+        return false;
+    }
+    VkMemoryRequirements requirements{};
+    fn_.GetBufferMemoryRequirements(device_, *buffer, &requirements);
+    VkMemoryAllocateInfo allocation{};
+    allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex =
+        find_memory_type(requirements.memoryTypeBits,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (allocation.memoryTypeIndex == UINT32_MAX ||
+        fn_.AllocateMemory(device_, &allocation, nullptr, memory) != VK_SUCCESS ||
+        fn_.BindBufferMemory(device_, *buffer, *memory, 0) != VK_SUCCESS) {
+        return false;
+    }
+    return fn_.MapMemory(device_, *memory, 0, size, 0, mapped) == VK_SUCCESS;
+}
+
+namespace {
+
+VkImageMemoryBarrier font_barrier(VkImage image, VkImageLayout from, VkImageLayout to,
+                                  VkAccessFlags src, VkAccessFlags dst) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = from;
+    barrier.newLayout = to;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = src;
+    barrier.dstAccessMask = dst;
+    return barrier;
+}
+
+}  // namespace
+
+ImTextureID TextureCache::upload_font_atlas(const unsigned char* rgba, uint32_t width,
+                                            uint32_t height) {
+    if (!ready_ || !rgba || width == 0 || height == 0) {
+        return 0;
+    }
+    // The frames in flight may still be sampling the old image, and it is
+    // about to be destroyed: the same wait the stock upload makes, on the same
+    // queue, and only on this path -- a real build, which is rare.
+    if (font_.image != VK_NULL_HANDLE) {
+        fn_.QueueWaitIdle(queue_);
+    }
+    retire_font_update(true);
+    destroy_font();
+
+    const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
+    Texture texture;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    bool success = false;
+    do {
+        void* mapped = nullptr;
+        if (!create_image(width, height, &texture) ||
+            !create_staging(size, &staging, &staging_memory, &mapped)) {
+            break;
+        }
+        std::memcpy(mapped, rgba, static_cast<size_t>(size));
+        fn_.UnmapMemory(device_, staging_memory);
+
+        VkCommandBufferAllocateInfo command_info{};
+        command_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        command_info.commandPool = pool_;
+        command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        command_info.commandBufferCount = 1;
+        if (fn_.AllocateCommandBuffers(device_, &command_info, &command_buffer) != VK_SUCCESS) {
+            break;
+        }
+        // Rule 5, as for an avatar's command buffer.
+        if (set_loader_data_) {
+            set_loader_data_(device_, command_buffer);
+        }
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (fn_.BeginCommandBuffer(command_buffer, &begin) != VK_SUCCESS) {
+            break;
+        }
+        const VkImageMemoryBarrier to_transfer =
+            font_barrier(texture.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+        fn_.CmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                               &to_transfer);
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = {width, height, 1};
+        fn_.CmdCopyBufferToImage(command_buffer, staging, texture.image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        const VkImageMemoryBarrier to_shader = font_barrier(
+            texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT);
+        fn_.CmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                               &to_shader);
+        if (fn_.EndCommandBuffer(command_buffer) != VK_SUCCESS) {
+            break;
+        }
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (fn_.CreateFence(device_, &fence_info, nullptr, &fence) != VK_SUCCESS) {
+            break;
+        }
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &command_buffer;
+        if (fn_.QueueSubmit(queue_, 1, &submit, fence) != VK_SUCCESS) {
+            break;
+        }
+        // Not waited for (entry 192): the first draw that samples this image is
+        // submitted later to the same queue and ordered after the copy by the
+        // barrier above; the descriptor does not depend on the pixels. The
+        // staging buffer is freed once the fence says the copy is done, which
+        // is what the wait here used to buy at the price of the game's thread
+        // standing still for a 64 MB transfer.
+        font_fence_ = fence;
+        font_command_ = command_buffer;
+        font_staging_ = staging;
+        font_staging_memory_ = staging_memory;
+        fence = VK_NULL_HANDLE;
+        command_buffer = VK_NULL_HANDLE;
+        staging = VK_NULL_HANDLE;
+        staging_memory = VK_NULL_HANDLE;
+        texture.descriptor = ImGui_ImplVulkan_AddTexture(sampler_, texture.view,
+                                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        success = texture.descriptor != VK_NULL_HANDLE;
+    } while (false);
+
+    if (fence != VK_NULL_HANDLE) {
+        fn_.DestroyFence(device_, fence, nullptr);
+    }
+    if (command_buffer != VK_NULL_HANDLE) {
+        fn_.FreeCommandBuffers(device_, pool_, 1, &command_buffer);
+    }
+    if (staging != VK_NULL_HANDLE) {
+        fn_.DestroyBuffer(device_, staging, nullptr);
+    }
+    if (staging_memory != VK_NULL_HANDLE) {
+        fn_.FreeMemory(device_, staging_memory, nullptr);
+    }
+    if (!success) {
+        // The copy may be in flight into the image about to be destroyed.
+        retire_font_update(true);
+        font_ = texture;
+        destroy_font();
+        return 0;
+    }
+    font_ = texture;
+    font_width_ = width;
+    font_height_ = height;
+    return reinterpret_cast<ImTextureID>(font_.descriptor);
+}
+
+bool TextureCache::update_font_atlas(const unsigned char* rgba, uint32_t atlas_width,
+                                     uint32_t atlas_height, const AtlasRegion* regions,
+                                     uint32_t count) {
+    if (!ready_ || !rgba || font_.image == VK_NULL_HANDLE || atlas_width != font_width_ ||
+        atlas_height != font_height_ || count > kMaxFoldedRegions) {
+        return false;
+    }
+    if (count == 0) {
+        return true;
+    }
+    VkDeviceSize size = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const AtlasRegion& r = regions[i];
+        if (r.width <= 0 || r.height <= 0 || r.x < 0 || r.y < 0 ||
+            static_cast<uint32_t>(r.x + r.width) > atlas_width ||
+            static_cast<uint32_t>(r.y + r.height) > atlas_height) {
+            return false;
+        }
+        size += static_cast<VkDeviceSize>(r.width) * r.height * 4;
+    }
+    // One update in flight at a time. The previous one is a few kilobytes
+    // copied a frame ago and has long finished; if it has not, waiting for it
+    // is waiting for a copy, not for the game.
+    retire_font_update(true);
+
+    VkBufferImageCopy copies[kMaxFoldedRegions];
+    bool success = false;
+    do {
+        void* mapped = nullptr;
+        if (!create_staging(size, &font_staging_, &font_staging_memory_, &mapped)) {
+            break;
+        }
+        VkDeviceSize offset = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            const AtlasRegion& r = regions[i];
+            unsigned char* out = static_cast<unsigned char*>(mapped) + offset;
+            for (int row = 0; row < r.height; ++row) {
+                std::memcpy(out + static_cast<size_t>(row) * r.width * 4,
+                            rgba + (static_cast<size_t>(r.y + row) * atlas_width + r.x) * 4,
+                            static_cast<size_t>(r.width) * 4);
+            }
+            VkBufferImageCopy& copy = copies[i];
+            copy = VkBufferImageCopy{};
+            copy.bufferOffset = offset;
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageOffset = {r.x, r.y, 0};
+            copy.imageExtent = {static_cast<uint32_t>(r.width), static_cast<uint32_t>(r.height), 1};
+            offset += static_cast<VkDeviceSize>(r.width) * r.height * 4;
+        }
+        fn_.UnmapMemory(device_, font_staging_memory_);
+
+        VkCommandBufferAllocateInfo command_info{};
+        command_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        command_info.commandPool = pool_;
+        command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        command_info.commandBufferCount = 1;
+        if (fn_.AllocateCommandBuffers(device_, &command_info, &font_command_) != VK_SUCCESS) {
+            break;
+        }
+        if (set_loader_data_) {
+            set_loader_data_(device_, font_command_);
+        }
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (fn_.BeginCommandBuffer(font_command_, &begin) != VK_SUCCESS) {
+            break;
+        }
+        // The image is live: frames already submitted to this queue sample it.
+        // A barrier's first scope is every command submitted before it on the
+        // same queue, so the copy waits for those reads on the GPU and the
+        // CPU waits for nothing. The whole image changes layout, and the rest
+        // of its contents survive a SHADER_READ_ONLY -> TRANSFER_DST transition.
+        const VkImageMemoryBarrier to_transfer = font_barrier(
+            font_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT);
+        fn_.CmdPipelineBarrier(font_command_, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                               &to_transfer);
+        fn_.CmdCopyBufferToImage(font_command_, font_staging_, font_.image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count, copies);
+        const VkImageMemoryBarrier to_shader = font_barrier(
+            font_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT);
+        fn_.CmdPipelineBarrier(font_command_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                               &to_shader);
+        if (fn_.EndCommandBuffer(font_command_) != VK_SUCCESS) {
+            break;
+        }
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (fn_.CreateFence(device_, &fence_info, nullptr, &font_fence_) != VK_SUCCESS) {
+            break;
+        }
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &font_command_;
+        if (fn_.QueueSubmit(queue_, 1, &submit, font_fence_) != VK_SUCCESS) {
+            break;
+        }
+        success = true;
+    } while (false);
+
+    if (!success) {
+        // Nothing was submitted, or the submit failed: nothing the GPU holds.
+        if (font_fence_ != VK_NULL_HANDLE) {
+            fn_.DestroyFence(device_, font_fence_, nullptr);
+            font_fence_ = VK_NULL_HANDLE;
+        }
+        retire_font_update(false);
+        return false;
+    }
+    return true;
+}
+
+void TextureCache::retire_font_update(bool wait) {
+    if (font_fence_ != VK_NULL_HANDLE) {
+        if (wait) {
+            fn_.WaitForFences(device_, 1, &font_fence_, VK_TRUE, UINT64_MAX);
+        } else if (fn_.GetFenceStatus(device_, font_fence_) != VK_SUCCESS) {
+            return;  // still copying; asked again next time
+        }
+        fn_.DestroyFence(device_, font_fence_, nullptr);
+        font_fence_ = VK_NULL_HANDLE;
+    }
+    if (font_command_ != VK_NULL_HANDLE) {
+        fn_.FreeCommandBuffers(device_, pool_, 1, &font_command_);
+        font_command_ = VK_NULL_HANDLE;
+    }
+    if (font_staging_ != VK_NULL_HANDLE) {
+        fn_.DestroyBuffer(device_, font_staging_, nullptr);
+        font_staging_ = VK_NULL_HANDLE;
+    }
+    if (font_staging_memory_ != VK_NULL_HANDLE) {
+        fn_.FreeMemory(device_, font_staging_memory_, nullptr);
+        font_staging_memory_ = VK_NULL_HANDLE;
+    }
+}
+
+void TextureCache::destroy_font() {
+    if (font_.descriptor != VK_NULL_HANDLE) {
+        ImGui_ImplVulkan_RemoveTexture(font_.descriptor);
+        font_.descriptor = VK_NULL_HANDLE;
+    }
+    if (font_.view != VK_NULL_HANDLE) {
+        fn_.DestroyImageView(device_, font_.view, nullptr);
+        font_.view = VK_NULL_HANDLE;
+    }
+    if (font_.image != VK_NULL_HANDLE) {
+        fn_.DestroyImage(device_, font_.image, nullptr);
+        font_.image = VK_NULL_HANDLE;
+    }
+    if (font_.memory != VK_NULL_HANDLE) {
+        fn_.FreeMemory(device_, font_.memory, nullptr);
+        font_.memory = VK_NULL_HANDLE;
+    }
+    font_width_ = 0;
+    font_height_ = 0;
+}
+
+bool TextureCache::finish_in_flight(bool wait) {
+    if (!in_flight_.active) {
+        return true;
+    }
+    if (wait) {
+        fn_.WaitForFences(device_, 1, &in_flight_.fence, VK_TRUE, UINT64_MAX);
+    } else if (fn_.GetFenceStatus(device_, in_flight_.fence) != VK_SUCCESS) {
+        return false;
+    }
+    fn_.DestroyFence(device_, in_flight_.fence, nullptr);
+    fn_.FreeCommandBuffers(device_, pool_, 1, &in_flight_.command);
+    fn_.DestroyBuffer(device_, in_flight_.staging, nullptr);
+    fn_.FreeMemory(device_, in_flight_.staging_memory, nullptr);
+    Texture texture = in_flight_.texture;
+    const AvatarKey key = in_flight_.key;
+    const std::string path = in_flight_.path;
+    in_flight_ = InFlight{};
+    if (wait) {
+        destroy(texture);  // shutting down: nobody will draw it
+        return true;
+    }
+    texture.descriptor = ImGui_ImplVulkan_AddTexture(sampler_, texture.view,
+                                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (texture.descriptor == VK_NULL_HANDLE) {
+        destroy(texture);
+        return true;
+    }
+    ++descriptor_count_;
+    textures_.emplace(key, texture);
+    VOCEM_TLOG("uploaded %s", path.c_str());
+    return true;
 }
 
 void TextureCache::destroy(Texture& texture) {
@@ -442,11 +866,18 @@ void TextureCache::shutdown() {
     if (!ready_) {
         return;
     }
+    // A face still copying goes first: its image and staging buffer are in
+    // the GPU's hands until the fence says otherwise.
+    finish_in_flight(true);
     for (auto& entry : textures_) {
         destroy(entry.second);
     }
     textures_.clear();
     pending_.clear();
+    // The font texture too; the renderer shuts this down only once the GPU is
+    // done with everything (shutdown_locked), so the wait is a formality.
+    retire_font_update(true);
+    destroy_font();
 
     if (sampler_ != VK_NULL_HANDLE) {
         fn_.DestroySampler(device_, sampler_, nullptr);

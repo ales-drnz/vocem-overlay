@@ -33,14 +33,13 @@ if(NOT EXISTS "${CONFIG_BINARY}")
     message(STATUS "skip the configuration window was not built")
     return()
 endif()
+include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
 
 set(scratch "${CMAKE_CURRENT_BINARY_DIR}/single-instance")
 file(REMOVE_RECURSE "${scratch}")
 file(MAKE_DIRECTORY "${scratch}/config/vocem" "${scratch}/cache" "${scratch}/data" "${scratch}/run")
 file(WRITE "${scratch}/config/vocem/config.ini" "")
 
-# The script: A in the background, B 100 ms later, C once B has answered. What
-# it prints is the evidence; the checks below read it.
 # The script: A in the background, B 100 ms later, C once B has answered. B
 # and C are waited for with a bound, because against the window as it stood B
 # never exits -- it IS the second window -- and a script that waited on it
@@ -104,10 +103,14 @@ message("${report}")
 # the Flatpak manifest copies the checkout as a source, and a socket under
 # build/tests failed 0.1.8's first export: the copy stops at a special file.
 file(REMOVE_RECURSE "${scratch}/run")
-if(NOT status EQUAL 0)
-    message(STATUS "skip the race could not be run here: ${status} ${errors}")
-    return()
-endif()
+# What the RESULT_VARIABLE means, in the one place that says it
+# (window_status.cmake, entry 166). race.sh ends `exit 0` whatever the windows
+# did, so a number here is the shell failing to run it and anything that is not
+# a number is a signal or a timeout -- three windows one of which would not die.
+# Neither is a property of this machine, and both used to return `skip`, which
+# ctest counts as a pass: this was the seventeenth window-driving script and the
+# only one entry 166's sweep did not reach.
+vocem_window_ran("${status}" "${errors}" "the race script")
 if(NOT report MATCHES "A alive")
     file(READ "${scratch}/a.err" a_err)
     message(STATUS "skip the first window did not stay up offscreen here: ${a_err}")

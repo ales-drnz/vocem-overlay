@@ -27,6 +27,7 @@
 #include "imgui.h"
 #include "vocem/avatar_file.h"
 #include "vocem/avatar_key.h"
+#include "vocem/fonts.h"
 #include "vocem/shared_state.h"
 
 namespace vocem {
@@ -70,6 +71,31 @@ public:
     // Called after the present returns. Uploads at most one pending avatar.
     void process_pending();
 
+    // The font atlas's texture, owned here rather than by imgui_impl_vulkan
+    // (entry 192). The stock ImGui_ImplVulkan_CreateFontsTexture replaces the
+    // whole 64 MB image between two vkQueueWaitIdle on the game's queue --
+    // 34 to 44 ms of every arrival once the rebuild was gone -- and a new
+    // colour emoji changes a 32x32 square of it. The backend cannot update a
+    // part of its image and is a submodule, not ours to patch; its NewFrame
+    // does nothing but create that texture lazily, so the renderer does not
+    // call it and hands ImGui this one through SetTexID instead.
+    //
+    // upload_font_atlas: the whole atlas into a new image, after a real
+    // build. Waits the queue idle first when an old image exists, exactly as
+    // the stock upload does, because the frames in flight may still sample it
+    // and it is about to be destroyed. The copy itself is not waited for:
+    // its staging buffer is retired like a region update's. Returns the
+    // descriptor for SetTexID, or 0 on failure. Post-present only.
+    ImTextureID upload_font_atlas(const unsigned char* rgba, uint32_t width, uint32_t height);
+    // update_font_atlas: only the squares a fold wrote, copied into the image
+    // that is already live, with no wait at all: the copy is ordered after
+    // the frames that sample it by a barrier on the same queue, and before
+    // the next one by queue order. The staging buffer is freed on a later
+    // call once its fence has signalled. False when the image does not match
+    // the atlas -- the caller then uploads it whole.
+    bool update_font_atlas(const unsigned char* rgba, uint32_t atlas_width,
+                           uint32_t atlas_height, const AtlasRegion* regions, uint32_t count);
+
     void shutdown();
 
     bool ready() const { return ready_; }
@@ -83,6 +109,13 @@ private:
     };
 
     bool upload(const AvatarKey& key, const std::string& path);
+    bool create_image(uint32_t width, uint32_t height, Texture* texture);
+    bool create_staging(VkDeviceSize size, VkBuffer* buffer, VkDeviceMemory* memory,
+                        void** mapped);
+    void destroy_font();
+    // Frees the last region update's staging buffer and command buffer once
+    // its fence has signalled, or waits for it when `wait` is set.
+    void retire_font_update(bool wait);
     uint32_t find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags properties) const;
     void destroy(Texture& texture);
 
@@ -116,7 +149,21 @@ private:
         PFN_vkCreateFence CreateFence = nullptr;
         PFN_vkDestroyFence DestroyFence = nullptr;
         PFN_vkWaitForFences WaitForFences = nullptr;
+        PFN_vkGetFenceStatus GetFenceStatus = nullptr;
+        PFN_vkQueueWaitIdle QueueWaitIdle = nullptr;
     } fn_;
+
+    // The font atlas's texture (upload_font_atlas), outside textures_ and
+    // outside the avatar budget: kDescriptorPoolSets already counts "the font
+    // atlas set", which the stock upload took from the same pool.
+    Texture font_;
+    uint32_t font_width_ = 0;
+    uint32_t font_height_ = 0;
+    // The region update still in flight, if any.
+    VkFence font_fence_ = VK_NULL_HANDLE;
+    VkBuffer font_staging_ = VK_NULL_HANDLE;
+    VkDeviceMemory font_staging_memory_ = VK_NULL_HANDLE;
+    VkCommandBuffer font_command_ = VK_NULL_HANDLE;
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
@@ -143,6 +190,30 @@ private:
     };
 
     std::vector<Pending> pending_;
+
+    // The one face whose copy is on the GPU and not yet known to be finished
+    // (entry 192). upload() used to end in WaitForFences on the game's queue,
+    // after the present: the game's thread standing still until everything
+    // it had just submitted was done, once per new face. Now the copy is
+    // submitted and left; process_pending() asks the fence on a later call and
+    // only then hands the face to ImGui, so a face appears a frame or two
+    // later and the game never waits for it. One at a time, which is the
+    // one-face-per-call budget the cache already had.
+    struct InFlight {
+        bool active = false;
+        AvatarKey key;
+        std::string path;
+        Texture texture;
+        VkFence fence = VK_NULL_HANDLE;
+        VkBuffer staging = VK_NULL_HANDLE;
+        VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+        VkCommandBuffer command = VK_NULL_HANDLE;
+    };
+    InFlight in_flight_;
+    // Frees the in-flight face's temporaries once its fence has signalled (or
+    // at once when `wait` is set), and hands the face to ImGui. False while
+    // the copy is still running.
+    bool finish_in_flight(bool wait);
 };
 
 }  // namespace vocem

@@ -2,10 +2,18 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// What a piece of text from Discord has taken out of it before it is shown,
-// logged or written into the segment.
+// What this daemon does to a piece of text from Discord before it trusts it.
 //
-// Two kinds of character go, for two reasons:
+// Two things, which is one more than the file's name suggests and is said here
+// rather than left to be found: `sanitise_text` takes characters OUT of a
+// string before it is shown, logged or written into the segment, and
+// `json_depth_within` at the bottom refuses a whole message before it is
+// parsed. What they have in common is where they live rather than what they
+// do -- header-only and dependency-free, so a test compiles either alone,
+// which is the reason entry 133 put the first one here and entry 183 the
+// second.
+//
+// The characters first. Two kinds go, for two reasons:
 //
 //   * The bidirectional formatting characters. Discord wraps every name it
 //     interpolates into a sentence in Unicode's directional isolates, so that
@@ -33,8 +41,7 @@
 //
 // This lived inside main.cpp's anonymous namespace as `without_bidi_marks`,
 // where nothing could test it; entry 66's second defect had no test of its
-// own for exactly that reason. Header-only and dependency-free, so a test
-// compiles it alone.
+// own for exactly that reason.
 
 #ifndef VOCEM_DAEMON_TEXT_H
 #define VOCEM_DAEMON_TEXT_H

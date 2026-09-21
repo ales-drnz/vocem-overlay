@@ -104,9 +104,13 @@ int main() {
     check(chroma_body > 40, "and its atlas pixels carry colour, not a white shape");
 
     // A new emoji arriving later -- somebody renames, somebody joins -- must
-    // trigger a rebuild at the same size, exactly as a size change does.
+    // reach the atlas at the same size, and ensure_fonts must say so, because
+    // its answer is what makes the caller re-upload the font texture. It is
+    // FOLDED into reserved space rather than rasterised now; the count that
+    // holds that apart is emoji_incremental.cpp's, and what matters here is
+    // that the glyph arrives either way.
     vocem::fonts_note_emoji("\xF0\x9F\xA5\xA2");  // chopsticks
-    check(vocem::ensure_fonts(16.0f, 16.0f), "a new emoji rebuilds at the same size");
+    check(vocem::ensure_fonts(16.0f, 16.0f), "a new emoji reaches the atlas at the same size");
     check(body_now()->FindGlyphNoFallback(0x1F962) != nullptr,
           "and the chopsticks arrive");
     check(!vocem::ensure_fonts(16.0f, 16.0f), "with nothing new, the dead band holds");

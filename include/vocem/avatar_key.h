@@ -29,12 +29,30 @@ struct AvatarKey {
     // zeroes, which no sane hash (hex and underscores) can collide with.
     char hash[kAvatarHashCapacity] = {};
 
+    // Somebody with no avatar -- or one whose hash is not sane -- is drawn from
+    // default_<(id >> 22) % 6>.rgba, and the key says so: one of six keys for
+    // the six pictures, whoever wears them. It used to be the user's own id,
+    // which made a channel of 24 people without avatars 24 textures of one
+    // file, 24 uploads and, on the Vulkan side, 24 images, views and
+    // descriptor sets (entry 184, measured and left; closed by entry 192). The
+    // test is avatar_hash_is_sane, the same one avatar_rgba_path decides the
+    // file with, so the key and the file cannot disagree about what a picture
+    // is. Both caches derive the path from the arguments, never from the key,
+    // which is why collapsing it costs the loader nothing.
+    //
+    // The six ids sit at the top of the 64-bit range. A Discord snowflake is a
+    // millisecond timestamp shifted left 22 bits and stays below 2^63 until
+    // the year 2084; the tags are within six of 2^64.
+    static constexpr uint64_t kDefaultPictureTag = ~0ull - 5;
+
     static AvatarKey make(uint64_t user_id, const char* avatar_hash) {
         AvatarKey key;
-        key.id = user_id;
-        if (avatar_hash && avatar_hash[0]) {
-            std::strncpy(key.hash, avatar_hash, sizeof(key.hash) - 1);
+        if (!avatar_hash_is_sane(avatar_hash)) {
+            key.id = kDefaultPictureTag + (user_id >> 22) % 6;
+            return key;
         }
+        key.id = user_id;
+        std::strncpy(key.hash, avatar_hash, sizeof(key.hash) - 1);
         return key;
     }
 

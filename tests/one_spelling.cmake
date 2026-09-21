@@ -70,6 +70,50 @@ foreach(source IN LISTS sources)
     endforeach()
 endforeach()
 
+# The fourth fact, and the one probe directory of its own.
+#
+# The three rules above walk the SHIPPED code; this one walks tests/, because
+# the copy that grew back was in there. `tests/probe_name.h` is entry 168's one
+# spelling of "what is this probe called": readlink /proc/self/exe, take the
+# basename untruncated, fall back to the probe's old literal. Entry 168 swept
+# nine OpenGL probes and left `vk_present_draw.cpp` -- the probe entry 129 is
+# about, which is where the rule came from -- with a hand-rolled copy three
+# lines long, in the same release that added the header for it.
+#
+# The rule is narrow on purpose. Three probes readlink /proc/self/exe for the
+# PATH, to re-exec themselves under bwrap or to fork (`private_shm.h`,
+# `gl_noop_quiet.cpp`, `emoji_bank_arrives.cpp`, `gl_emoji_colour.cpp`), and
+# that is a different fact with a different answer. What only own_name() may do
+# is take the BASENAME of that buffer.
+file(GLOB test_sources "${SOURCE_DIR}/tests/*.cpp" "${SOURCE_DIR}/tests/*.h")
+list(LENGTH test_sources test_count)
+if(test_count LESS 40)
+    message(FATAL_ERROR
+        "one_spelling: only ${test_count} test sources found under ${SOURCE_DIR}/tests -- "
+        "the walk has lost the probes, which is not agreement")
+endif()
+message(STATUS "     ${test_count} test sources examined for the probe's own name")
+
+foreach(source IN LISTS test_sources)
+    if(source MATCHES "tests/probe_name\\.h$")
+        continue()
+    endif()
+    file(READ "${source}" whole)
+    if(NOT whole MATCHES "/proc/self/exe")
+        continue()
+    endif()
+    file(STRINGS "${source}" lines)
+    set(number 0)
+    foreach(line IN LISTS lines)
+        math(EXPR number "${number} + 1")
+        string(REGEX REPLACE "^[ \t]*(//|\\*|/\\*).*" "" code "${line}")
+        if(code MATCHES "(strrchr|find_last_of)[ \t]*\\([ \t]*(::)?self")
+            list(APPEND offenders
+                "${source}:${number}: a second basename of /proc/self/exe (probe_name.h's own_name() is the one)")
+        endif()
+    endforeach()
+endforeach()
+
 if(offenders)
     message("A fact that lives in one file grew a second copy:")
     foreach(offender IN LISTS offenders)
@@ -78,4 +122,5 @@ if(offenders)
     message(FATAL_ERROR "one spelling per fact -- entry 33 is what a second one costs")
 endif()
 
-message("ok   the clock, the mkdir -p and the curl sink each live in one file")
+message("ok   the clock, the mkdir -p, the curl sink and the probe's own name each "
+        "live in one file")

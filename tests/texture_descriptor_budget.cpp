@@ -176,6 +176,12 @@ VKAPI_ATTR VkResult VKAPI_CALL stub_WaitForFences(VkDevice, uint32_t, const VkFe
                                                   uint64_t) {
     return VK_SUCCESS;
 }
+// Resolved at init since entry 192: the font texture's upload and the face
+// uploads, which are no longer waited for, ask the fence with GetFenceStatus
+// on a later call. Signalled at once here, so a face finishes on the next
+// process_pending().
+VKAPI_ATTR VkResult VKAPI_CALL stub_GetFenceStatus(VkDevice, VkFence) { return VK_SUCCESS; }
+VKAPI_ATTR VkResult VKAPI_CALL stub_QueueWaitIdle(VkQueue) { return VK_SUCCESS; }
 
 struct NameAndFunction {
     const char* name;
@@ -218,6 +224,8 @@ PFN_vkVoidFunction resolve(const char* name, void*) {
         {"vkCreateFence", reinterpret_cast<PFN_vkVoidFunction>(stub_CreateFence)},
         {"vkDestroyFence", reinterpret_cast<PFN_vkVoidFunction>(stub_DestroyFence)},
         {"vkWaitForFences", reinterpret_cast<PFN_vkVoidFunction>(stub_WaitForFences)},
+        {"vkGetFenceStatus", reinterpret_cast<PFN_vkVoidFunction>(stub_GetFenceStatus)},
+        {"vkQueueWaitIdle", reinterpret_cast<PFN_vkVoidFunction>(stub_QueueWaitIdle)},
     };
     for (const NameAndFunction& entry : table) {
         if (strcmp(entry.name, name) == 0) {

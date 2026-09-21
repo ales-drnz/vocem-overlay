@@ -61,7 +61,10 @@ set_source_files_properties(
 # once per width in common/ (common/CMakeLists.txt says what the objects agree
 # on -- hidden visibility above all, or the archive's symbols would be exported
 # past the four entry points).
-target_link_libraries(vocem_gl PRIVATE vocem_common ${CMAKE_DL_LIBS})
+# Threads: the first font atlas is rasterised on a worker (entry 192). The
+# shim is a separate target and stays libc-only.
+find_package(Threads REQUIRED)
+target_link_libraries(vocem_gl PRIVATE vocem_common ${CMAKE_DL_LIBS} Threads::Threads)
 
 # --- shim -------------------------------------------------------------------
 # The only library that gets preloaded. Kept deliberately tiny: it is mapped into
