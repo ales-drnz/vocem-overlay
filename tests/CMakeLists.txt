@@ -26,7 +26,7 @@ vocem_test_run(config_roundtrip_it TARGET config_roundtrip ARGS it_IT.UTF-8 SKIP
 
 # The parser on a file a person writes: quotes, capitals, words where numbers
 # go, and the three switches written on top of the file as it stands
-# (Config::write_switches). Header-only, like the roundtrip above.
+# (Config::write_switch). Header-only, like the roundtrip above.
 vocem_test(config_parse)
 
 # Two writes inside one second must both reach the overlay: the live reload
@@ -201,6 +201,21 @@ vocem_script_test(gl_entry_points ARGS
     "-DLIBRARY=$<TARGET_FILE:vocem_gl>"
     "-DLIBRARY32=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
 
+# The RPC probe's own client across a pause at a frame boundary and one inside
+# a frame: both frames, in order, and no close before the peer's (DESIGN 206).
+vocem_script_test(rpc_probe_frames)
+
+# Every package a test was refuted against is on the list a clean-up checks
+# before deleting anything (packaging/EXEMPLARS.md, DESIGN 205).
+vocem_script_test(exemplars_listed)
+
+# The layer's exports, the same rule (entry 16): the three names the loader
+# asks for, nothing else, at both widths (layer_exports.cmake says what
+# escaped a build without LTO before a version script stated the list).
+vocem_script_test(layer_exports ARGS
+    "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
+    "-DLIBRARY32=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+
 # A crash is reported inside the window's Debug section, and nowhere else: the
 # dead process's journal appears in the page, and no separate crashReport
 # window exists any more (it was built, fixed to be genuinely top-level -- the
@@ -355,6 +370,14 @@ vocem_test_run(gl_second_context TARGET gl_draw_local
 vocem_test_run(gl_arrivals TARGET gl_draw_local
     ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_GL_SCENARIO=arrivals" SKIP)
 
+# A second window with an unshared context PRESENTS (gl_draw_local.cpp's
+# header): the backend's object names belong to the first context, and in the
+# second they are that context's own textures. Nothing drawn there, no GL error
+# left there, its textures untouched through a fold and a whole upload, and the
+# first window drawing again after it.
+vocem_test_run(gl_two_windows TARGET gl_draw_local
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_GL_SCENARIO=two-windows" SKIP)
+
 # The game going away while the first atlas is still being rasterised on its
 # worker (entry 192): release() and the library's destructor must wait for it.
 # A guard on the worker's hazard; a library without one passes trivially.
@@ -454,18 +477,19 @@ vocem_test(shared_state_layout)
 vocem_m32_twin(shared_state_layout)
 if(VOCEM_HAVE_M32)
     # 64 writes, 32 reads -- the daemon-to-Isaac direction, which is the one that
-    # was broken -- and then the other way round for symmetry. The dependencies
-    # make the order real rather than hoped for.
+    # was broken -- and then the other way round for symmetry. Each reader
+    # REQUIRES its writer as a fixture, so the file it reads is the one this run
+    # wrote: with DEPENDS, which only orders tests that are both selected,
+    # `ctest -R cross_read32` read a segment64.bin left by an earlier build and
+    # passed against a writer whose layout had moved since.
     vocem_test_run(shared_state_cross_write64 TARGET shared_state_layout
-        ARGS write "${CMAKE_CURRENT_BINARY_DIR}/segment64.bin")
+        ARGS write "${CMAKE_CURRENT_BINARY_DIR}/segment64.bin" SETUP segment64)
     vocem_test_run(shared_state_cross_read32 TARGET shared_state_layout32
-        ARGS read "${CMAKE_CURRENT_BINARY_DIR}/segment64.bin"
-        DEPENDS shared_state_cross_write64 SKIP)
+        ARGS read "${CMAKE_CURRENT_BINARY_DIR}/segment64.bin" REQUIRES segment64 SKIP)
     vocem_test_run(shared_state_cross_write32 TARGET shared_state_layout32
-        ARGS write "${CMAKE_CURRENT_BINARY_DIR}/segment32.bin")
+        ARGS write "${CMAKE_CURRENT_BINARY_DIR}/segment32.bin" SETUP segment32)
     vocem_test_run(shared_state_cross_read64 TARGET shared_state_layout
-        ARGS read "${CMAKE_CURRENT_BINARY_DIR}/segment32.bin"
-        DEPENDS shared_state_cross_write32 SKIP)
+        ARGS read "${CMAKE_CURRENT_BINARY_DIR}/segment32.bin" REQUIRES segment32 SKIP)
 endif()
 
 # A face on screen, at both widths, through the GL path -- because the width that
@@ -576,6 +600,13 @@ vocem_test(texture_descriptor_budget
     SOURCES texture_descriptor_budget.cpp "${PROJECT_SOURCE_DIR}/layer/src/texture_cache.cpp"
     INCLUDE ${VOCEM_TEXTURE_CACHE_INCLUDE} DEFINES IMGUI_USE_WCHAR32 LINK vocem_common)
 
+# The font texture's copies against a GPU that is behind (DESIGN 194): a fold
+# does not wait for the copies before it, and a whole replacement that fails
+# leaves the descriptor ImGui draws with alive. The same stub device.
+vocem_test(texture_font_copies
+    SOURCES texture_font_copies.cpp "${PROJECT_SOURCE_DIR}/layer/src/texture_cache.cpp"
+    INCLUDE ${VOCEM_TEXTURE_CACHE_INCLUDE} DEFINES IMGUI_USE_WCHAR32 LINK vocem_common)
+
 # The colour emoji bank's reader, at both widths: written by a 64-bit script,
 # read inside games of both, which is the exact shape of entries 30/33/34.
 vocem_test(emoji_bank ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
@@ -594,7 +625,7 @@ vocem_m32_twin(avatar_key_default)
 # And it reaches it WITHOUT rasterising the atlas again -- the measurement
 # behind "the game freezes for half a second when somebody joins". A count and
 # not a clock (entry 145's reason). Against the module as it stood every new
-# emoji is another 125-146 ms build, and the count check fails on the first one.
+# emoji is another 125-145 ms build, and the count check fails on the first one.
 vocem_test(emoji_incremental IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
 
 # The decoration symbols a server names its channels with have glyphs, pinned
@@ -719,6 +750,11 @@ if(TARGET vocemd)
     # stub answers.
     vocem_test_run(daemon_stop_in_handshake TARGET daemon_stop_unlinks
         ENV ${VOCEM_DAEMON_ENV} "VOCEM_DAEMON_STOP_SCENARIO=handshake" TIMEOUT 150 SKIP)
+    # And the handshake answered a byte every tenth of a second: the stop flag
+    # was read only when a slice expired empty, which a trickle never lets
+    # happen, so the stop waited out the handshake's ten seconds (entry 196).
+    vocem_test_run(daemon_stop_in_trickle TARGET daemon_stop_unlinks
+        ENV ${VOCEM_DAEMON_ENV} "VOCEM_DAEMON_STOP_SCENARIO=trickle" TIMEOUT 150 SKIP)
 
     # And what a CLEAN stop leaves in a Flatpak sandbox. `bridge.stop()` emptied
     # the list of mirrors before `note().clear()` fired the hook that unlinks
@@ -924,9 +960,11 @@ vocem_test_run(vk_present_flatpak_off TARGET vk_present_draw
 # one flag apart, so a difference here is the architecture's and nothing else's,
 # which is the widths.cpp pattern entries 30/33/34 bought. build32's manifest and
 # library are looked for when the test runs.
+set(VOCEM_VK_PROBE32_ENV
+    "VOCEM_VK_MANIFEST=${VOCEM_BUILD32_DIR}/dev/VkLayer_vocem_overlay.x86.json"
+    "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
 vocem_m32_twin(vk_present_draw
-    ENV "VOCEM_VK_MANIFEST=${VOCEM_BUILD32_DIR}/dev/VkLayer_vocem_overlay.x86.json"
-        "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so"
+    ENV ${VOCEM_VK_PROBE32_ENV}
     BUILD32 "${VOCEM_BUILD32_DIR}/dev/VkLayer_vocem_overlay.x86.json"
             "${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
 
@@ -935,10 +973,8 @@ vocem_m32_twin(vk_present_draw
 # 32, and every one of them is about lifetimes and bookkeeping in a process
 # where a pointer and a size_t are a different size. The witness is left out --
 # it is a 64-bit layer -- so these run with the plain 32-bit chain, which is
-# what `vk_present_draw32` itself uses.
-set(VOCEM_VK_PROBE32_ENV
-    "VOCEM_VK_MANIFEST=${VOCEM_BUILD32_DIR}/dev/VkLayer_vocem_overlay.x86.json"
-    "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+# what `vk_present_draw32` itself uses, and the same BUILD32 files, so that a
+# machine without build32 reads a skip for each of them as it does for the probe.
 foreach(scene recreate in_flight second_device daemon_gone idle)
     string(REPLACE "_" "-" scene_value "${scene}")
     vocem_m32_twin_run(vk_present_${scene} TARGET vk_present_${scene}

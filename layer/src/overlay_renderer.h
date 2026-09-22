@@ -67,12 +67,13 @@ public:
     // (vocem_layer.cpp says so in the log).
     static constexpr uint32_t kRingSlots = 8;
 
-    // Initialises on first call; the caller only asks while ready() is false.
-    // A replaced device arrives as shutdown() then a fresh prepare(). Returns
-    // false if the overlay cannot be drawn, and remembers that: a backend
-    // that failed to come up against this device is not tried again on every
-    // present (the pool, the pipeline and the shaders were being rebuilt per
-    // frame). A new device -- shutdown() -- starts afresh.
+    // Brings the renderer up across as many calls as the first atlas takes;
+    // the caller only asks while ready() is false. False while the atlas is
+    // still being rasterised on its worker (asked again next frame), and false
+    // for a backend that failed to come up against this device -- which is
+    // remembered, so the pool, the pipeline and the shaders are not rebuilt on
+    // every present. A replaced device arrives as shutdown() then a fresh
+    // prepare(), and starts afresh.
     bool prepare(const RendererTarget& target);
 
     // Records draw commands into an already-begun render pass. `pipeline` is
@@ -98,14 +99,15 @@ public:
     }
 
     // Called after the present returns: does the queued avatar uploads, which
-    // block on a fence and therefore cannot happen on the present path, and
-    // rebuilds the font atlas when the output size or the user's scale changed.
+    // submit work and therefore stay off the present path, rebuilds the font
+    // atlas when the output size or the user's scale changed, and folds a new
+    // colour emoji into it.
     void process_uploads();
 
     // Waits for the atlas worker if one is running. For the layer's ELF
     // destructor: the library must not be unmapped under a thread executing
-    // its code. Takes no lock of the renderer's, so it cannot deadlock against
-    // a thread that exits while holding one.
+    // its code. Takes only the worker's own lock, never the renderer's, so it
+    // cannot deadlock against a thread that exits while holding that one.
     void join_atlas_worker();
 
     bool ready() const { return backend_ready_; }
@@ -191,6 +193,11 @@ private:
     // than imgui_impl_vulkan's. True whenever the cache came up; without it
     // the stock upload and its lazy NewFrame stay, exactly as before.
     bool own_font_texture_ = false;
+    // A font texture that did not go up after a rebuild: the atlas on the CPU
+    // no longer matches the image the GPU holds, so nothing is drawn with it
+    // until it does, and the whole upload is tried again once a second
+    // (process_uploads). 0 while the texture matches.
+    double font_retry_at_ = 0.0;
     // Uploads the atlas through whichever of the two owns it, whole or only
     // the squares a fold wrote. False when neither managed.
     bool upload_font_texture(bool whole);

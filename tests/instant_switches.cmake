@@ -58,7 +58,7 @@ endif()
 
 # What actually writes without waiting for Apply. Three calls, and the switches
 # above stand for exactly those.
-file(STRINGS "${SOURCE_DIR}/gui/src/config_bridge.cpp" instant REGEX "^[ \t]*persistNow\\(\\);")
+file(STRINGS "${SOURCE_DIR}/gui/src/config_bridge.cpp" instant REGEX "^[ \t]*persistNow\\(")
 list(LENGTH instant instant_count)
 if(NOT instant_count EQUAL 3)
     list(APPEND offenders

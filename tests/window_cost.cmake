@@ -58,8 +58,22 @@ endforeach()
 
 include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
 
+# A /dev/shm of the window's own, so "nothing changed for the whole run" below
+# is a fact and not a hope: the window reads the daemon's segment on its tick,
+# and the owner's daemon is running while this suite runs. Measured with a
+# segment whose participant count changed twice during the walk: three
+# stateChanged emits, and a FAIL that said the window was wasteful when the
+# daemon had simply spoken (entry 200). debug_section.cmake does the same for
+# the same reason.
+find_program(BWRAP_BINARY bwrap)
+if(NOT BWRAP_BINARY)
+    message(STATUS "skip bwrap is missing, so the window cannot be given a /dev/shm of its own")
+    return()
+endif()
+
 execute_process(
-    COMMAND "${CONFIG_BINARY}"
+    COMMAND "${BWRAP_BINARY}" --dev-bind / / --tmpfs /dev/shm --die-with-parent
+            "${CONFIG_BINARY}"
     RESULT_VARIABLE status
     ERROR_VARIABLE errors
     OUTPUT_QUIET
@@ -121,8 +135,9 @@ check("the fixture's ${ENTRIES} entries are the ones scanned, and nothing of the
       entries EQUAL ${ENTRIES})
 check("the walk was long enough for the sweep to run more than twice (${sweeps})"
       sweeps GREATER_EQUAL 3)
-# Nothing changed for the whole run -- no daemon, no display, the same records
-# -- so the state was announced once: at the first tick, and never again.
+# Nothing changed for the whole run -- no daemon in the window's /dev/shm, no
+# display, the same records -- so the state was announced once: at the first
+# tick, and never again.
 check("an idle window announces its state once, not once per tick (${emits})"
       emits LESS_EQUAL 2)
 # The segment and the display tree are asked on the sweep, not on the tick.

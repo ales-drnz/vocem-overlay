@@ -696,18 +696,31 @@ float ui_scale() {
 
 namespace {
 
-// One whole build of the atlas, from the two paths already recorded in
-// g_body_path / g_strong_path, answering whether the rasteriser accepted what it
-// was given.
-//
-// A function rather than a stretch of ensure_fonts() because it has to be
-// runnable twice: a chosen face that gets past looks_like_a_font() and still
-// cannot be rasterised leaves ImGui with an atlas of no pixels at all -- measured
-// at 0x0, with every font pointer unloaded, against a variable OpenType
-// (Cantarell-VF.otf: CFF2, which stb_truetype does not implement) -- and an
-// overlay that draws no text while reporting nothing is the silence entry 38 is
-// about. The second run is the carried Inter alone, which is the one build this
-// project knows always works.
+// The one lookup entry a folded glyph needs, written in place: what
+// BuildLookupTable() would set for it, and nothing else. BuildLookupTable itself
+// clears and re-grows both index arrays to the highest codepoint in the font
+// and walks every glyph, twice per fold -- and once a sequence key (U+F0000 up,
+// entry 142) is in the font that is 984,119 entries a weight: measured at 1.6
+// to 4.2 ms a fold against 0.24 to 0.50 with none, three runs each, on the
+// path the fold runs on (entry 209). The index grows once, to the new highest
+// codepoint, with the fallback advance BuildLookupTable gives an empty entry.
+void index_folded_glyph(ImFont* font, uint32_t codepoint) {
+    const int index = font->Glyphs.Size - 1;
+    const int at = static_cast<int>(codepoint);
+    if (at >= font->IndexLookup.Size) {
+        const int old_size = font->IndexAdvanceX.Size;
+        font->GrowIndex(at + 1);
+        for (int i = old_size; i < font->IndexAdvanceX.Size; ++i) {
+            font->IndexAdvanceX[i] = font->FallbackAdvanceX;
+        }
+    }
+    font->IndexAdvanceX[at] = font->Glyphs[index].AdvanceX;
+    font->IndexLookup[at] = static_cast<ImU16>(index);
+    const int page = at / 8192;
+    font->Used8kPagesMap[page >> 3] |= static_cast<ImU8>(1 << (page & 7));
+    font->DirtyLookupTables = false;
+}
+
 // Puts every wanted bank emoji that is not in the atlas yet INTO the atlas,
 // without rebuilding it: the pixels go into a rectangle Build() already packed,
 // and the glyph is registered by hand with exactly the four lines
@@ -717,14 +730,15 @@ namespace {
 //
 // This is the whole point of reserving the rects. Adding one emoji used to mean
 // atlas->Clear() and atlas->Build(): 14,954 glyphs in two weights rasterised
-// again to make room for one 32x32 square -- measured at 125 to 146 ms, six
+// again to make room for one 32x32 square -- measured at 125 to 145 ms, six
 // times over, on the machine DESIGN's numbers come from. The same emoji folded
-// in here is 0.25 to 0.65 ms, measured three times. A person joining a channel
+// in here is 0.3 to 0.9 ms, three runs (entry 191). A person joining a channel
 // with an emoji in their name, or a message arriving with one in it, is exactly
 // when that used to be spent, which is why the owner felt it as a freeze.
 //
-// Still post-present work, and still not free: a bank read, a resample, two
-// memcpys and a lookup table per weight. It belongs where the rebuild belonged.
+// Still not free: a bank read, a resample, two memcpys and a lookup table per
+// weight. It runs where the rebuild ran -- after the present on the Vulkan path,
+// inside the swap call on the OpenGL one.
 bool fold_wanted_emoji(ImFontAtlas* atlas) {
     if (!g_emoji_reserved || g_built_count >= g_wanted_count) {
         return false;
@@ -787,6 +801,7 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
                                       uv0.x, uv0.y, uv1.x, uv1.y,
                                       static_cast<float>(rect->Width + 1));
             weights[weight]->Glyphs.back().Colored = 1;
+            index_folded_glyph(weights[weight], codepoint);
             if (g_folded_count < kMaxRects) {
                 g_folded[g_folded_count++] = AtlasRegion{rect->X, rect->Y, rect->Width, rect->Height};
             }
@@ -799,20 +814,36 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
         }
     }
 
-    // Once, after all of them, and not once per glyph: AddGlyph only marks the
-    // table dirty, and outside Build() nobody else rebuilds it. It is also what
-    // makes the fold safe -- Glyphs may have reallocated under AddGlyph, and
-    // BuildLookupTable is what points FallbackGlyph at a live one again.
+    // Once, after all of them: Glyphs may have reallocated under AddGlyph, and
+    // FallbackGlyph is a pointer into it -- entry 37's hazard in a new place.
+    // The index entries were written glyph by glyph above; only the pointer is
+    // left to put back on a live glyph.
     if (lookup_dirty) {
         for (ImFont* font : {g_fonts.body, g_fonts.strong}) {
-            if (font) {
-                font->BuildLookupTable();
+            if (!font) {
+                continue;
+            }
+            font->FallbackGlyph = font->FindGlyphNoFallback(font->FallbackChar);
+            if (!font->FallbackGlyph) {
+                font->BuildLookupTable();  // what ImGui itself does to find one
             }
         }
     }
     return folded_any;
 }
 
+// One whole build of the atlas, from the two paths already recorded in
+// g_body_path / g_strong_path, answering whether the rasteriser accepted what it
+// was given.
+//
+// A function rather than a stretch of ensure_fonts() because it has to be
+// runnable twice: a chosen face that gets past looks_like_a_font() and still
+// cannot be rasterised leaves ImGui with an atlas of no pixels at all -- measured
+// at 0x0, with every font pointer unloaded, against a variable OpenType
+// (Cantarell-VF.otf: CFF2, which stb_truetype does not implement) -- and an
+// overlay that draws no text while reporting nothing is the silence entry 38 is
+// about. The second run is the carried Inter alone, which is the one build this
+// project knows always works.
 bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     // See fonts_release(): nobody else unlocks an atlas this module owns.
     atlas->Locked = false;
@@ -956,6 +987,23 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
         // Folded into a texture that does not exist yet: the caller uploads the
         // whole atlas after a build, so these are already in it.
         g_folded_count = 0;
+        // The RGBA32 copy is the atlas from here on: both backends upload it,
+        // and a fold writes its colour glyph into it. The alpha8 image the
+        // rasteriser drew is read once, by the widening (in a fold above or the call below), and was then
+        // kept for the life of the atlas -- 16 MB at a 4K display's text size,
+        // in every process that draws, which is a fifth of what this module
+        // holds. Measured on gl_daemon_gone: 83,452 kB handed back at a quit
+        // before this and 67,064 after, three runs each to the kB (entry 207). ImGui rebuilds the whole atlas if
+        // anything asks it for alpha8 afterwards (GetTexDataAsAlpha8 calls
+        // Build() on a null image); nothing in the injected code does, and the
+        // widening only asks for it while the RGBA copy does not exist, which
+        // after a Clear() is a rebuild anyway.
+        unsigned char* rgba = nullptr;
+        atlas->GetTexDataAsRGBA32(&rgba, nullptr, nullptr);
+        if (rgba && atlas->TexPixelsAlpha8) {
+            IM_FREE(atlas->TexPixelsAlpha8);
+            atlas->TexPixelsAlpha8 = nullptr;
+        }
     }
 
     return built;
@@ -1009,7 +1057,7 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
         // that can be missing is a colour emoji nobody had seen when it was
         // built -- and that is the one change this module can make without
         // building anything. It used to fall through to the full rebuild below,
-        // which is the 125-146 ms a new person's name or an arriving message
+        // which is the 125-145 ms a new person's name or an arriving message
         // spent in somebody's game (fold_wanted_emoji says the rest).
         if (g_built_count == g_wanted_count) {
             return false;
@@ -1017,7 +1065,8 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
         const bool folded = fold_wanted_emoji(atlas);
         // Settled either way. A fold that could not happen -- no reserved rects,
         // because the two weights are the same font -- must not leave the counts
-        // apart, or every frame from here on rebuilds the atlas.
+        // apart, or every frame from here on walks back into the fold for
+        // nothing.
         g_built_count = g_wanted_count;
         return folded;
     }

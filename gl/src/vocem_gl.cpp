@@ -392,8 +392,9 @@ private:
 // every frame until it is done, goes out without the overlay; the panel then
 // appears about a tenth of a second later instead of the game standing still.
 //
-// At file scope, not in GlOverlay, so the ELF destructor below can wait for it
-// without constructing the overlay in a process that never drew. A pthread and
+// Outside GlOverlay -- a heap object behind atlas_worker(), leaked at exit the
+// way overlay() is -- so the ELF destructor below can wait for it without
+// constructing the overlay in a process that never drew. A pthread and
 // not a std::thread: this library is built without exceptions and std::thread
 // reports a refused clone by throwing, which would end the game; a refusal
 // here is a return code, and the build then happens on the game's thread as it
@@ -751,11 +752,10 @@ public:
         // drawing -- see `release()`. Turning it back on costs one frame, in which
         // the backend is built again from nothing.
         // The decision, its evidence and the word to the daemon across the
-        // bridge are one spelling with the Vulkan layer's now
+        // bridge are one spelling with the Vulkan layer's, master switch
+        // included: spelling the switch here as well short-circuited past the
+        // sentence that tells the daemon whether this sandbox is drawing
         // (vocem/overlay_session.h).
-        // decide() carries the master switch itself now: spelling it here as
-        // well short-circuited past the sentence that tells the daemon whether
-        // this sandbox is drawing (vocem/overlay_session.h).
         const bool want = session_.decide(config);
         if (want) {
             // The session's journal (vocem/journal.h): opened at the first
@@ -785,7 +785,7 @@ public:
                 // The atlas does not live in the context: it belongs to the
                 // fonts module and survives release() on purpose, so that a game
                 // cycling its context pays nothing. Being switched off is the
-                // other case, and there 80 MB of rasterised glyphs in somebody
+                // other case, and there 64 MB of rasterised glyphs in somebody
                 // else's process is exactly what release() exists to give back.
                 vocem::fonts_release();
             }
@@ -837,17 +837,44 @@ public:
         // note segment is opened at all (vocem/note.h). Three syscalls per
         // message, none per frame -- the snapshot is this process's own copy,
         // so writing the text into it touches nothing anybody else can see,
-        // and forget() above wipes it the moment the toast is over.
+        // and forget() above wipes it the moment the toast is over. A message
+        // that arrived without its words is said once, in the session (the one
+        // failure this path has that looks like success).
         if (toast_frame) {
-            // The snapshot is this process's own copy -- poll_state() reads
-            // the segment into it -- so filling the body here reaches nobody
-            // else. A message that arrived without its words is said once, in
-            // the session (the one failure this path has that looks like
-            // success).
             std::snprintf(snapshot->notification.body, sizeof(snapshot->notification.body),
                           "%s", session_.note_words(snapshot->notification.serial));
         } else {
             session_.note_forget();
+        }
+        // The backend's objects are names in the context it was built in, and
+        // in any other unshared context the same names are that context's own
+        // textures, programs and buffers -- or nothing. A game presenting a
+        // second window from a second context (a tool window, an emulator's
+        // debugger) used to get the whole frame drawn with them: measured, the
+        // second context's texture 1 became a 2048x4096 atlas under a fold and
+        // a whole upload, and every one of its swaps left a GL error in its
+        // queue. The open risk DESIGN states -- the overlay in one of the two
+        // windows -- is what this makes true (entry 210).
+        //
+        // A context that is not the owner is drawn nothing into -- until the
+        // owner has not presented for kHandOverSeconds. Then the backend moves:
+        // a game that showed its loading screen from one context and the game
+        // itself from another, keeping the first alive for its loader, would
+        // otherwise have no overlay for the whole session (the review of this
+        // very change found it). The old context's GL objects cannot be deleted
+        // from here -- it is not current -- and go with that context.
+        if (backend_ready_) {
+            switch (whose_present(egl, now)) {
+                case Present::Owner:
+                    break;
+                case Present::Foreign:
+                    return;
+                case Present::Abandoned:
+                    VOCEM_GLOG("the backend's context has not presented for %.0f s: moving the "
+                               "overlay to the one that does", kHandOverSeconds);
+                    release(false);
+                    break;
+            }
         }
         if (!ensure_backend(egl)) {
             return;
@@ -882,23 +909,18 @@ public:
         // as one animation step. `now` is the frame's one clock, taken above.
         io.DeltaTime = session_.delta_time(now);
 
-        // Rasterise the atlas at the size this drawable needs. Unlike the Vulkan
-        // side there is nothing to defer to: replacing a GL texture is immediate,
-        // and the backend saves and restores GL_TEXTURE_BINDING_2D around it
-        // (rule 12), so the application's state is untouched.
-        // Recreated explicitly rather than left to NewFrame: the backend only
-        // builds the font texture as part of creating its device objects, and
-        // those already exist by now.
-        // Which colour emoji this frame's text needs: noted before the atlas
-        // question, so a name with a new emoji triggers the same rebuild a
-        // size change does.
+        // The atlas at the size this drawable needs: the first one from the
+        // worker, a rebuild for a new size or typeface here, and a new colour
+        // emoji -- noted from this frame's text before the question is asked --
+        // folded in and its squares copied, never a rebuild (entries 191, 192).
+        //
         // Everything below touches GL through the ImGui backend, and the backend
         // reads and writes the application's pixel-store state: CreateFontsTexture
-        // sets GL_UNPACK_ROW_LENGTH to 0 and never restores it, and it is reached
-        // both from the rebuild below and lazily from NewFrame the first time. One
-        // guard over the whole of it, so the game gets its state back whichever
-        // path ran. Measured against the library before it: a game that left the
-        // row length at 2048 found it at 0 after the overlay's first frame.
+        // sets GL_UNPACK_ROW_LENGTH to 0 and never restores it. One guard over the
+        // whole of it -- a whole upload, the folded squares, the draw -- so the
+        // game gets its state back whichever path ran. Measured against the
+        // library before it: a game that left the row length at 2048 found it at
+        // 0 after the overlay's first frame.
         const PixelStoreGuard unpack = avatars_.pixel_store_guard();
 
         // The FIRST atlas of this process, or the first after fonts_release(),
@@ -1067,6 +1089,9 @@ public:
         tex_sub_image_ = nullptr;
         bind_texture_ = nullptr;
         get_integer_ = nullptr;
+        current_context_ = nullptr;
+        foreign_said_ = nullptr;
+        owner_seen_ = 0.0;
         capture_warmup_frames_ = 0;
 
         // Without a current context ImGui's backend cannot be shut down, because
@@ -1078,6 +1103,33 @@ public:
         if (ImGui::GetCurrentContext()) {
             ImGui::DestroyContext();
         }
+    }
+
+    // Whether the context presenting now is the one the backend lives in,
+    // asked with the API it arrived through: one getter call per frame, only
+    // once a backend exists; a getter that could not be resolved answers
+    // "the owner", which is how every frame was drawn before this was asked.
+    // A foreign context is Abandoned-for once the owner has been silent for
+    // kHandOverSeconds, and the caller moves the backend to it.
+    enum class Present { Owner, Foreign, Abandoned };
+    static constexpr double kHandOverSeconds = 2.0;
+    Present whose_present(bool egl, double now) {
+        void* owner = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
+        void* current = current_context_ ? current_context_() : owner;
+        if (current == owner && __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == (egl ? 1 : 0)) {
+            owner_seen_ = now;
+            return Present::Owner;
+        }
+        if (owner_seen_ > 0.0 && now - owner_seen_ >= kHandOverSeconds) {
+            return Present::Abandoned;
+        }
+        if (current != foreign_said_) {
+            foreign_said_ = current;
+            VOCEM_GLOG("not drawing in context %p: the backend does not live in it (it "
+                       "belongs to context %p, which presented %.1f s ago)", current, owner,
+                       now - owner_seen_);
+        }
+        return Present::Foreign;
     }
 
     // Whether the backend lives in `context` on `display` -- or, with a null
@@ -1290,17 +1342,16 @@ private:
         using PFN_current = void* (*)();
         void* context = nullptr;
         void* display = nullptr;
+        current_context_ = gl_symbol<PFN_current>(egl ? "eglGetCurrentContext"
+                                                      : "glXGetCurrentContext");
+        if (current_context_) {
+            context = current_context_();
+        }
         if (egl) {
-            if (auto current = gl_symbol<PFN_current>("eglGetCurrentContext")) {
-                context = current();
-            }
             if (auto current = gl_symbol<PFN_current>("eglGetCurrentDisplay")) {
                 display = current();
             }
         } else {
-            if (auto current = gl_symbol<PFN_current>("glXGetCurrentContext")) {
-                context = current();
-            }
             if (auto current = gl_symbol<PFN_current>("glXGetCurrentDisplay")) {
                 display = current();
             }
@@ -1308,6 +1359,7 @@ private:
         __atomic_store_n(&g_owner_display, display, __ATOMIC_RELEASE);
         __atomic_store_n(&g_owner_egl, egl ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_owner_context, context, __ATOMIC_RELEASE);
+        owner_seen_ = vocem::monotonic_seconds();
         VOCEM_GLOG("backend belongs to %s context %p", egl ? "EGL" : "GLX", context);
     }
 
@@ -1336,6 +1388,15 @@ private:
     PFN_glTexSubImage2D tex_sub_image_ = nullptr;
     PFN_glBindTexture bind_texture_ = nullptr;
     PFN_glGetIntegerv get_integer_ = nullptr;
+    // The owner API's "get current context", resolved once when the backend
+    // comes up (remember_owner) so the per-frame ask below is one call into
+    // the dispatcher and no lookup.
+    void* (*current_context_)() = nullptr;
+    // The last context told it has no overlay, so a game alternating two
+    // windows says so once and not every other frame.
+    void* foreign_said_ = nullptr;
+    // When the owner context last presented (whose_present), on the frame clock.
+    double owner_seen_ = 0.0;
 
     // The squares a fold wrote, uploaded into the font texture the backend
     // already made, and nothing else. Runs under draw()'s PixelStoreGuard, so
@@ -1649,8 +1710,10 @@ namespace {
 // The clean end of the journal: a process that unwinds normally runs this and
 // takes its crash marker with it; a crash does not, which is the mechanism.
 __attribute__((destructor)) void vocem_gl_journal_close() {
-    // A first atlas still being rasterised runs this library's code: it
-    // finishes before the library can be unmapped (entry 192).
+    // A first atlas still being rasterised runs this library's code and reads
+    // the atlas: it finishes before exit goes on to tear the process down
+    // (entry 192). The shim never dlcloses this library, so exit is the one
+    // way this runs.
     atlas_worker().join();
     vocem::journal_end();
 }

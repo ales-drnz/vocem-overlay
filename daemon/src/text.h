@@ -7,7 +7,7 @@
 // Two things, which is one more than the file's name suggests and is said here
 // rather than left to be found: `sanitise_text` takes characters OUT of a
 // string before it is shown, logged or written into the segment, and
-// `json_depth_within` at the bottom refuses a whole message before it is
+// `json_within` at the bottom refuses a whole message before it is
 // parsed. What they have in common is where they live rather than what they
 // do -- header-only and dependency-free, so a test compiles either alone,
 // which is the reason entry 133 put the first one here and entry 183 the
@@ -109,27 +109,39 @@ inline std::string sanitise_text(const std::string& source) {
     return out;
 }
 
-// How deeply a JSON text nests, up to `ceiling`, without parsing it.
+// Whether a JSON text is within a shape this daemon can afford to parse:
+// nested at most `depth_ceiling` levels and made of at most `token_ceiling`
+// structural tokens (every `[`, `{`, `,` and `:` outside a string), without
+// parsing it.
 //
 // `json::parse(raw, nullptr, false)` bounds parse ERRORS and nothing else:
 // nlohmann has no depth or element limit, so the cost of a message is the
-// peer's to choose. Measured twice: **8 MiB of `[`** -- which is exactly
-// `kMaxMessageBytes`, the reassembly cap entry 72 put on a frame -- costs
-// **624 MB** of resident memory and then comes back `discarded`, because it is
-// invalid. The unit says `MemoryMax=128M`, so what really happens is the
-// cgroup killing the daemon: a SIGKILL runs no destructor, which leaves
-// `/dev/shm/vocem-<uid>`, the note's words and every Flatpak mirror behind --
-// the leftover entry 81 forbids -- and `Restart=on-failure` then does it
-// again. Entry 72 capped the reassembly buffer and never re-derived the cap
-// for what happens to the bytes next.
+// peer's to choose, up to `kMaxMessage` -- 8 MiB, the reassembly cap entry 72
+// put on a frame. Measured through nlohmann alone, 8 MiB of each shape:
+// **nested `[` 624 MB** (entry 183), and flat, which a depth ceiling cannot
+// see (entry 199): `[{},{},...]` **221 MB**, strings 171 MB, `{"a":0}`
+// objects 168 MB, empty arrays 136 MB, numbers 65 MB. The unit says
+// `MemoryMax=128M`, and measured under exactly that with this machine's zram
+// swap, the parse is not killed: it survives with ~436 MB pushed into swap,
+// the daemon stalled while it happens. Without swap it is a SIGKILL
+// (`MemorySwapMax=0`: exit 137, measured) -- which runs no destructor and
+// leaves `/dev/shm/vocem-<uid>`, the note's words and every Flatpak mirror
+// behind, the leftover entry 81 forbids.
 //
-// One pass over the bytes, no allocation, stopping at the ceiling: strings are
-// skipped so a name full of brackets is not counted, and `\` escapes the next
-// byte inside one. Discord's RPC messages nest about five levels; the ceiling
-// is far above anything the client sends and far below anything that costs
-// memory worth noticing.
-inline bool json_depth_within(const std::string& text, int ceiling) {
+// The ceilings come from what Discord sends: the largest of the 539 real
+// payloads phase 0b kept (a GET_CHANNEL with its messages) is 17 KB, 1342
+// tokens and 8 levels deep. 64 levels and 131072 tokens are far above that and
+// bound the worst shape to ~10 MB.
+//
+// One pass over the bytes, no allocation, stopping at a ceiling: strings are
+// skipped so a name full of brackets or commas is not counted, and `\`
+// escapes the next byte inside one.
+constexpr int kJsonDepthCeiling = 64;
+constexpr size_t kJsonTokenCeiling = 131072;
+
+inline bool json_within(const std::string& text, int depth_ceiling, size_t token_ceiling) {
     int depth = 0;
+    size_t tokens = 0;
     bool in_string = false;
     for (size_t i = 0; i < text.size(); ++i) {
         const char c = text[i];
@@ -143,12 +155,20 @@ inline bool json_depth_within(const std::string& text, int ceiling) {
         }
         if (c == '"') {
             in_string = true;
-        } else if (c == '[' || c == '{') {
-            if (++depth > ceiling) {
+            continue;
+        }
+        if (c == '[' || c == '{') {
+            if (++depth > depth_ceiling) {
                 return false;
             }
         } else if (c == ']' || c == '}') {
             --depth;
+            continue;
+        } else if (c != ',' && c != ':') {
+            continue;
+        }
+        if (++tokens > token_ceiling) {
+            return false;
         }
     }
     return true;

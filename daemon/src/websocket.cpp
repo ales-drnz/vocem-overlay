@@ -59,16 +59,21 @@ constexpr int kConnectTimeoutMs = 2000;
 // How long a single poll() may wait while there is a stop flag to notice.
 //
 // The daemon's SIGTERM handler sets a variable and nothing else -- it cannot,
-// safely -- so a poll() already asleep on a silent peer does not wake up for
-// it. Every wait inside this client is therefore taken in slices with the flag
-// read between them. This is the last instance of a class that has been
-// repaired four times in four different functions (entries 72, 77, 102, 112):
-// the handshake had an absolute deadline and honoured it, and honouring it
+// safely -- and a poll() already asleep on a silent peer wakes for it only when
+// the signal happens to land on this thread rather than on the avatar worker's.
+// Every wait inside this client is therefore taken in slices with the flag
+// read between them. The class has been repaired in one function after another
+// (entries 77, 102, 112, 161 and the token exchange before 161, then 196 for a
+// peer busy enough that no slice ever expired): the handshake had an absolute
+// deadline and honoured it, and honouring it
 // meant waiting the whole ten seconds out while `g_stop` was already set, so
 // `systemctl --user stop` -- and the tray's Quit, which does the same -- ended
 // in SIGKILL with the segment, the note's words and every Flatpak mirror still
 // published, the leftover entry 81 forbids. 200 ms is five reads a second on an
-// idle descriptor and invisible against the unit's TimeoutStopSec of ten.
+// idle descriptor and invisible against the unit's TimeoutStopSec of ten. The
+// slice is what bounds a SILENT peer; a busy one is bounded by reading the flag
+// on every turn of the loop (read_exact, write_all), because a byte every
+// 100 ms never lets a slice expire (entry 196).
 constexpr int kStopSliceMs = 200;
 
 // Milliseconds left before `deadline`, never negative -- poll() reads a negative
@@ -121,6 +126,12 @@ bool WebSocket::write_all(const void* data, size_t length, Clock::time_point dea
     // waits in the kernel with no way out: the daemon would sit there through its
     // own SIGTERM. Wait on the descriptor instead, against the caller's deadline.
     while (written < length) {
+        // Read on every turn and not only when a slice expires empty: a peer
+        // that takes a byte at a time keeps every slice from expiring (see
+        // read_exact, entry 196).
+        if (stopping()) {
+            return false;
+        }
         struct pollfd pfd{fd_, POLLOUT, 0};
         const int ready = ::poll(&pfd, 1, wait_ms(deadline));
         if (ready == 0) {
@@ -164,6 +175,15 @@ bool WebSocket::read_exact(void* dest, size_t length, Clock::time_point by) {
     auto* bytes = static_cast<uint8_t*>(dest);
     size_t read_total = 0;
     while (read_total < length) {
+        // The stop flag on every turn, whatever poll() answered. It used to be
+        // read only when a slice expired empty, and a peer trickling a byte
+        // every 100 ms -- an upgrade that never ends, a frame that never
+        // finishes -- never lets one expire: measured, a stop inside such a
+        // handshake waited 9.2 s, the handshake's own deadline against the
+        // unit's TimeoutStopSec of ten (entry 196).
+        if (stopping()) {
+            return false;
+        }
         struct pollfd pfd{fd_, POLLIN, 0};
         // The deadline is for the whole read, not for each chunk of it. Per chunk,
         // a peer that announced a 64 KiB frame and then sent one byte every two

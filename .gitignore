@@ -37,9 +37,9 @@ __pycache__/
 third_party/fonts/*-Variable.ttf
 # Two of the six are not named "-Variable": the pattern above was written when
 # there were three fonts, and NotoSansMath-Regular.ttf and
-# NotoSansSymbols2-Regular.ttf fell outside it. The script unlinks all six at
-# the end of main(), with no try/finally, so an interrupted run leaves whatever
-# it had fetched.
+# NotoSansSymbols2-Regular.ttf fell outside it. The script unlinks all six in
+# a `finally` now (entry 182); these two lines are for a run killed before it
+# gets there.
 third_party/fonts/NotoSansMath-Regular.ttf
 third_party/fonts/NotoSansSymbols2-Regular.ttf
 

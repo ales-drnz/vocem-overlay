@@ -123,6 +123,7 @@
 //     layer as shipped in 0.1.8 the file reads `drawing=1`.
 
 #include <dlfcn.h>
+#include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1944,6 +1945,21 @@ int main() {
     vk.vkDestroySurfaceKHR(instance, surface, nullptr);
     vk.vkDestroyInstance(instance, nullptr);
     XCloseDisplay(display);
+    // What is left of the overlay once the last instance is gone, and the
+    // loader has unloaded the layer: the font atlas is a heap block far over
+    // malloc's mmap threshold, so it is counted exactly in the mmapped heap.
+    // Measured against the layer before the last instance handed it back: 8197
+    // kB in the plain scene (the atlas at this window's size), 16389 kB after
+    // daemon-gone rebuilt it at 16 px, 1 kB in the idle scene, which never built
+    // one -- the same to the kB on every run. A count and not a clock (entry
+    // 211).
+    {
+        const size_t mapped_kb = mallinfo2().hblkhd / 1024;
+        printf("     heap blocks still mapped after the last instance: %zu kB\n", mapped_kb);
+        check(mapped_kb < 1024,
+              "the font atlas does not outlive the last instance, whose library the loader "
+              "unloads with the only pointer to it");
+    }
 
     // ---- What the chain saw -------------------------------------------------
     // Read after the instance is gone, so every line the witness had to write
@@ -2085,7 +2101,7 @@ int main() {
     if (arrivals) {
         fflush(stderr);
         // The count that tells the two costs apart, in the layer's own words
-        // (entry 191): "rebuilt" is the rasteriser run again, 125-146 ms of
+        // (entry 191): "rebuilt" is the rasteriser run again, 125-145 ms of
         // CPU; "folded" is the emoji put into space the build had reserved.
         // Against the layer as it stood -- the 0.1.10-5 package is the
         // exemplar -- every arrival is a rebuild and this reads seven.
@@ -2102,7 +2118,7 @@ int main() {
               "layer that noticed nothing would also rebuild nothing)");
         // And reached the GPU as the squares it changed, not as the whole atlas:
         // the stock upload is 64 MB between two vkQueueWaitIdle on the game's
-        // queue, 34 to 44 ms of every arrival once the rebuild was gone.
+        // queue, 36 to 43 ms of every arrival once the rebuild was gone.
         const long whole = lines_containing(stderr_log, "font texture uploaded whole");
         const long in_place = lines_containing(stderr_log, "copied in place");
         printf("     the font texture went up whole %ld time(s), in place %ld time(s)\n", whole,

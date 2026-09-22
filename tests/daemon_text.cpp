@@ -33,7 +33,7 @@ void check(bool condition, const char* what) {
 }  // namespace
 
 int main() {
-    using vocem::json_depth_within;
+    using vocem::json_within;
     using vocem::sanitise_text;
 
     // Entry 66: the title as the owner's journal recorded it, isolates and all.
@@ -63,33 +63,57 @@ int main() {
     check(sanitise_text("\xE2\x81") == "\xE2\x81",
           "a truncated sequence is copied through, never read past");
 
-    // --- how deep a message may nest before it is parsed at all -----------
+    // --- what shape a message may have before it is parsed at all ---------
     //
     // nlohmann bounds neither depth nor element count, so what a message costs
-    // is the peer's to choose. Measured twice: 8 MiB of '[' -- exactly
-    // kMaxMessageBytes, the reassembly cap entry 72 put on a frame -- costs
-    // **624 MB** of resident memory and then comes back discarded, because it
-    // is invalid. The unit says MemoryMax=128M, so on the owner's machine that
-    // is the cgroup killing the daemon with a SIGKILL, which runs no
-    // destructor: the segment, the note's words and every Flatpak mirror stay
-    // behind (the leftover entry 81 forbids) and Restart=on-failure does it
-    // again. The scan below is what stops it reaching the parser.
-    check(json_depth_within(R"({"cmd":"DISPATCH","evt":"SPEAKING_START",)"
-                            R"("data":{"user_id":"1"}})", 64),
-          "a real RPC message is nowhere near the ceiling");
-    check(json_depth_within(std::string(64, '[') + std::string(64, ']'), 64),
-          "a message exactly at the ceiling is allowed");
-    check(!json_depth_within(std::string(65, '[') + std::string(65, ']'), 64),
+    // is the peer's to choose, up to the 8 MiB kMaxMessage lets through: 624
+    // MB nested, 221 MB as a flat array of empty objects, against a unit whose
+    // MemoryMax is 128M (text.h has every shape's figure and what the cgroup
+    // then does). The scan below is what stops either reaching the parser, at
+    // the ceilings the daemon itself uses.
+    const int depth = vocem::kJsonDepthCeiling;
+    const size_t tokens = vocem::kJsonTokenCeiling;
+    check(json_within(R"({"cmd":"DISPATCH","evt":"SPEAKING_START",)"
+                      R"("data":{"user_id":"1"}})", depth, tokens),
+          "a real RPC message is nowhere near either ceiling");
+    check(json_within(std::string(depth, '[') + std::string(depth, ']'), depth, tokens),
+          "a message exactly at the depth ceiling is allowed");
+    check(!json_within(std::string(depth + 1, '[') + std::string(depth + 1, ']'), depth, tokens),
           "and one level past it is not");
-    check(!json_depth_within(std::string(8u * 1024 * 1024, '['), 64),
+    check(!json_within(std::string(8u * 1024 * 1024, '['), depth, tokens),
           "8 MiB of nesting is refused without being parsed");
+    // Flat, which the depth ceiling cannot see (entry 199).
+    std::string flat = "[";
+    while (flat.size() + 4 < 8u * 1024 * 1024) {
+        flat += "{},";
+    }
+    flat += "{}]";
+    check(!json_within(flat, depth, tokens),
+          "8 MiB of empty objects in one flat array is refused without being parsed");
+    // The largest message phase 0b ever saw from Discord: a GET_CHANNEL with
+    // its messages, 1342 tokens and 8 levels. Built to that count, and
+    // allowed with the ceiling a hundred times over it.
+    std::string channel = "{\"messages\":[";
+    for (int i = 0; i < 1342 / 4; ++i) {
+        channel += "{\"a\":1,\"b\":2},";
+    }
+    channel += "{}]}";
+    check(json_within(channel, depth, tokens), "and Discord's largest message measured is allowed");
+    std::string at = "[";
+    at.reserve(2 * tokens + 4);
+    for (size_t i = 0; i + 1 < tokens; ++i) {
+        at += "0,";
+    }
+    at += "0]";
+    check(json_within(at, depth, tokens), "a message exactly at the token ceiling is allowed");
+    check(!json_within("[0," + at.substr(1), depth, tokens), "and one token past it is not");
     // A name is data, and a name full of brackets is a name. This is why the
     // scan skips strings rather than counting every byte that looks like
     // structure -- a channel decorated from a symbol site (entry 128) is
     // exactly the shape that would trip a naive counter.
-    check(json_depth_within(R"({"nick":"[[[[[[[[[[ hello ]]]]]]]]]]"})", 4),
-          "brackets inside a name are not nesting");
-    check(json_depth_within(R"({"n":"say \" [[[[["})", 4),
+    check(json_within(R"({"nick":"[[[[[[[[[[ hello, ]]]]]]]]]]:"})", 4, 2),
+          "brackets, commas and colons inside a name are not structure");
+    check(json_within(R"({"n":"say \" [[[[["})", 4, 2),
           "and a backslash-escaped quote does not end the string early");
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");

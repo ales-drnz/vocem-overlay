@@ -313,16 +313,37 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateInstance(const VkInstanceCreateInfo* 
 VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
                                                  const VkAllocationCallbacks* pAllocator) {
     PFN_vkDestroyInstance destroy = nullptr;
+    bool last = false;
     {
         std::lock_guard<std::mutex> guard(g_lock);
         auto it = g_instances.find(dispatch_key(instance));
         if (it != g_instances.end()) {
             destroy = it->second.DestroyInstance;
             g_instances.erase(it);
+            last = g_instances.empty();
         }
     }
     if (destroy) {
         destroy(instance, pAllocator);
+    }
+    // The loader unloads this library after the last instance goes, and the
+    // font atlas is a heap object the fonts module keeps for the life of the
+    // process on purpose (entry 144): the pointer to it is in this library's
+    // statics and goes with the unload, and the next vkCreateInstance loads a
+    // fresh copy that builds another. Measured before this: the atlas's 8 MB
+    // at the probe's size -- 16 MB at a 4K display's -- still mapped after the
+    // instance was gone, once per instance a game creates and destroys after
+    // drawing. With no instance there is no device and nothing that can draw,
+    // so this is the moment to give it back; shutdown() also joins a build
+    // still running and destroys a context whose device died before its
+    // backend was ready (entry 211).
+    // Only where an atlas was ever built: a process that never drew -- most of
+    // the Vulkan processes of a session -- has nothing here, and asking would
+    // construct the renderer and the atlas object just to clear them.
+    if (last && vocem::fonts_build_count() > 0) {
+        vocem::renderer().shutdown();
+        vocem::fonts_release();
+        VOCEM_LOG("the last instance is gone: the font atlas handed back");
     }
 }
 
@@ -857,10 +878,11 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
 constexpr uint32_t kMaxWaitSemaphores = 16;
 
 // `wanted` is set when this frame had something to put on the screen -- past the
-// poll, past the master switch and past both feature guards -- whatever happens
-// after. It is what the caller gates the renderer's construction on, because
-// the construction is 133 ms of atlas and 80 MB of pixels and the one thing
-// worth knowing before paying it is whether there is anything to draw.
+// poll and past both feature guards; the master switch is the caller's, in
+// overlay_wanted_here() -- whatever happens after. It is what the caller gates
+// the renderer's construction on, because the construction is a font atlas, a
+// 64 MB upload and a descriptor pool, and the one thing worth knowing before
+// paying it is whether there is anything to draw.
 VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint32_t image_index,
                          const VkSemaphore* wait_semaphores, uint32_t wait_count, bool& wanted,
                          uint32_t& sizing) {
@@ -902,7 +924,7 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     // computes: the display's, not the swapchain's. The renderer used to be
     // built at the swapchain's height and its first draw then asked for the
     // display's, so a windowed game rasterised the whole atlas twice in its
-    // first two frames -- 125-146 ms thrown away, measured by the arrivals
+    // first two frames -- 125-145 ms thrown away, measured by the arrivals
     // scene as one "rebuilt" before anybody arrived (entry 192).
     sizing = vocem::sizing_height(snapshot->display_height, sc.extent.height);
 
@@ -910,8 +932,9 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     // Vulkan backend uploads its font atlas with vkQueueWaitIdle, and blocking on
     // the queue from inside a queue operation is a stall at best. That upload
     // is made in prepare() explicitly, because the backend's NewFrame -- which
-    // draw() below calls, inside this present -- would otherwise make it here
-    // the first time (overlay_renderer.cpp says how that was found).
+    // draw() below calls inside this present when the texture cache did not
+    // come up and the stock upload is the one left -- would otherwise make it
+    // here the first time (overlay_renderer.cpp says how that was found).
     if (!vocem::renderer().ready()) {
         return VK_NULL_HANDLE;
     }
@@ -1091,8 +1114,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // So rule 8 as it holds is: no PER-FRAME blocking I/O, a once-per-process
     // verdict on the first frame, and a handful of deliberate, cadenced
     // syscalls the design accepts by name. A claim wider than that is where the
-    // next violation hides (entry 42) -- and DESIGN's rule 8 is currently the
-    // wider claim, which is why this paragraph exists.
+    // next violation hides (entry 42). DESIGN's rule 8 names these exceptions
+    // again since entry 158; this paragraph is where they were kept while it
+    // did not.
     //
     // Kept that way on purpose, and not because 2.4 ms is small. Nothing can be
     // drawn before the verdict exists, so moving it past the present buys a
@@ -1137,7 +1161,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
             // below then had to take them apart again: the verdict was RECORDED
             // only for a known swapchain and the transition was ACTED ON for
             // any, so an unknown one would read as the overlay being switched
-            // off, release the backend and the 80 MB atlas, and the next
+            // off, release the backend and the 64 MB atlas, and the next
             // present on a known one would say "switched on" and build them
             // back. Not reachable today -- the only erasures are
             // vkDestroySwapchainKHR and the device's own teardown, so a live
@@ -1204,8 +1228,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                         // used to be decided from the swapchain and the
                         // application's verdict alone -- everything except whether
                         // there was anything to draw -- so a game the overlay is
-                        // allowed in built the whole renderer, 133 ms of atlas and
-                        // 80 MB of pixels and a descriptor pool, while the owner
+                        // allowed in built the whole renderer, a font atlas, a
+                        // 64 MB upload and a descriptor pool, while the owner
                         // was simply not in a voice channel: the ordinary state of
                         // a machine with the tray icon up. The OpenGL path has
                         // always had this door and one more: its draw() returns at
@@ -1291,8 +1315,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         vocem::fonts_release();
     }
 
-    // Safe here: the present has returned, so the queue is ours to block on. Costs
-    // one stall on the first frame that has something to draw, once per swapchain.
+    // Safe here: the present has returned, so the queue is ours to block on.
+    // prepare() is called on each present until the renderer is up -- the
+    // first atlas is rasterised on a worker meanwhile (entry 192) -- and the
+    // renderer is built once per device, not per swapchain.
     //
     // `needs_init` is the whole condition, and it is a narrow one: it is set
     // only where `wanted` came back true from draw_overlay, which is past the
@@ -1312,7 +1338,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         // on every present.
         vocem::renderer().prepare(pending_target);
     } else if (vocem::renderer().ready()) {
-        // Avatar uploads submit and wait on a fence, so they belong here too.
+        // Uploads and rebuilds submit and free what their fences say is done;
+        // a rebuild waits the queue idle before it replaces the image, which is
+        // why they belong here and not in the present.
         vocem::renderer().process_uploads();
     }
 

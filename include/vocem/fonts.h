@@ -9,10 +9,13 @@
 // ugly: the glyphs are magnified squares. Instead the atlas is rasterised from a
 // real outline font at the pixel size the output actually needs.
 //
-// Rebuilding an atlas is not free and it destroys a texture the renderer may still
-// be using, so it happens at exactly one point: the post-present phase, alongside
-// the other work that is allowed to block (rule 10 in DESIGN.md). Nothing here may
-// be called from inside vkQueuePresentKHR.
+// Rebuilding an atlas is not free and it replaces a texture the renderer may
+// still be using. On the Vulkan path it happens after the present has returned
+// (rule 10 in DESIGN.md), never inside vkQueuePresentKHR; on the OpenGL path
+// inside the swap call, because that is all there is; and the FIRST build of a
+// process, on both, on a worker thread beside the game (entry 192). The module
+// has no lock of its own: its callers never overlap it -- a draw path does not
+// touch the fonts while its worker is building.
 
 #ifndef VOCEM_FONTS_H
 #define VOCEM_FONTS_H
@@ -99,27 +102,32 @@ ImFontAtlas* fonts_atlas();
 // Hand the pixels back: the atlas above is cleared and the cached pointers
 // forgotten, so the next ensure_fonts() builds from nothing.
 //
-// For the two cases where a guest has been asked to leave and should not still
-// be holding 80 MB of rasterised glyphs (16 MB alpha8 + 64 MB RGBA32 at
-// 4096x4096, measured): the user switched the overlay off, and the daemon
-// stopped. Both injected paths call it for both, which is four call sites and
-// one rule. NOT for a context death: an atlas outliving the context is the whole
-// point, and a game that destroys and recreates one must pay nothing for it --
-// nor for a daemon that was merely replaced, which StatePoll tells apart.
+// For the cases where a guest has been asked to leave and should not still be
+// holding 64 MB of rasterised glyphs (the RGBA32 copy at 4096x4096; the 16 MB
+// alpha8 image it was widened from is freed as soon as it is widened, entry
+// 207): the user switched the overlay off, the daemon stopped, and -- on the
+// Vulkan path -- the last instance went, after which the loader unloads the
+// library holding the only pointer to it (entry 211). NOT for a context death:
+// an atlas outliving the context is the whole point, and a game that destroys
+// and recreates one must pay nothing for it -- nor for a daemon that was merely
+// replaced, which StatePoll tells apart.
 //
 // **The caller must have no live ImGui context pointing at this atlas.**
 // Clear() IM_DELETEs every ImFont in it, and ImGui's own NewFrame would then
 // dereference a freed one through GetDefaultFont() -- with IM_ASSERT compiled
-// out of both injected targets, silently. All four call sites satisfy this by
+// out of both injected targets, silently. Every call site satisfies this by
 // destroying the context first (the GL path in release(), the Vulkan path in
-// OverlayRenderer::shutdown_locked()); a fifth has to do the same.
+// OverlayRenderer::shutdown(), called just before); the next one has to do the
+// same.
 void fonts_release();
 
-// Rebuilds the atlas when the requested size differs from the current one, when
-// the chosen typeface has changed, or when fonts_note_emoji() has seen a colour
-// emoji the atlas does not carry yet. Returns true when it did, in which case
-// the caller must recreate its backend's font texture -- the old one no longer
-// matches the atlas.
+// Rebuilds the atlas when the requested size differs from the current one or
+// the chosen typeface has changed, and FOLDS into it a colour emoji
+// fonts_note_emoji() has seen and the atlas does not carry yet -- into space
+// every build reserves, without rasterising anything else (entry 191). Returns
+// true when either happened: after a rebuild (fonts_build_count() moved) the
+// caller replaces its backend's font texture whole, after a fold it copies the
+// squares fonts_take_folded() hands over.
 //
 // `body_path` and `strong_path` are the files the user chose (Config's
 // font_path / font_path_strong), or null for the carried Inter. They are
@@ -145,7 +153,7 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path = nul
 // A count and not a clock, for entry 145's reason: a build's wall time on this
 // machine is partly the machine's, and the thing worth holding is that a build
 // does not happen. It is what tells the two costs apart from outside -- an atlas
-// RASTERISED (14,954 glyphs in two weights, 125 to 146 ms measured) against an
+// RASTERISED (14,954 glyphs in two weights, 125 to 145 ms measured) against an
 // emoji FOLDED into space the build already reserved (0.3 to 0.9 ms). A session
 // that draws for an hour and meets forty new emoji should say 1.
 uint32_t fonts_build_count();
@@ -163,7 +171,7 @@ struct AtlasRegion {
 // caller whose font texture already holds the rest of the atlas can upload
 // these and nothing else. A 32x32 square is 4 KB; the whole atlas is 64 MB and
 // on the Vulkan path its stock upload is two vkQueueWaitIdle on the game's own
-// queue, measured at 34 to 44 ms of every arrival once the rebuild was gone
+// queue, measured at 36 to 43 ms of every arrival once the rebuild was gone
 // (entry 192).
 //
 // Only meaningful when ensure_fonts() answered true WITHOUT fonts_build_count()

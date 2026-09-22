@@ -205,6 +205,19 @@ function(font_menu_row_widths family out)
     set(${out} "${pairs}" PARENT_SCOPE)
 endfunction()
 
+# And Adwaita Mono has to be there. Qt resolves a family it does not have to
+# the next one in the list, which is Inter -- so on a machine without it the
+# "chosen" run draws in Inter, the defect's row measures what the fix's does,
+# and this check could not fail (entry 202). Asked of fontconfig, the same
+# library the window asks.
+execute_process(COMMAND fc-list "Adwaita Mono" family
+                OUTPUT_VARIABLE adwaita_mono RESULT_VARIABLE fc_status)
+if(NOT fc_status EQUAL 0 OR adwaita_mono STREQUAL "")
+    message(STATUS "skip Adwaita Mono is not installed, so a chosen family would resolve to "
+                   "Inter and the font menu's check below could not tell the defect from the fix "
+                   "(the preset checks above were measured)")
+    return()
+endif()
 font_menu_row_widths("" built_in_rows)
 font_menu_row_widths("Adwaita Mono" chosen_rows)
 list(LENGTH built_in_rows row_count)

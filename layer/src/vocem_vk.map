@@ -1,0 +1,14 @@
+/* What the Vulkan layer exports: the negotiation entry point and the two
+   GetProcAddr functions it hands the loader, and nothing else (DESIGN 16,
+   195). Hidden visibility cannot hold the libstdc++ templates the layer
+   instantiates, which namespace std declares with default visibility; a
+   build without LTO exported four of them at 64 bits and six at 32.
+   tests/layer_exports.cmake holds the list. */
+{
+    global:
+        vkNegotiateLoaderLayerInterfaceVersion;
+        vocem_GetInstanceProcAddr;
+        vocem_GetDeviceProcAddr;
+    local:
+        *;
+};

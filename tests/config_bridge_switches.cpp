@@ -9,7 +9,7 @@
 // switches are reachable from the header and from the tray, and a switch that
 // does nothing until a button on another page is pressed is a broken switch
 // (entry 136). So it writes on top of the file as it stands --
-// `Config::write_switches()` loads it fresh, sets the three, saves -- and an
+// `Config::write_switch()` loads it fresh, sets the one, saves -- and an
 // edit made outside the window survives on disk. What did not survive was the
 // window's own idea of that edit: the bridge stored the result in `saved_` and
 // advanced `disk_mtime_`, and left `config_`, the copy the window shows and
@@ -34,7 +34,7 @@
 //
 // Two claims, and the second is the one that was false:
 //   * the edit survives on disk -- true before this fix as well, and here so
-//     that a regression in write_switches shows up as itself;
+//     that a regression in write_switch shows up as itself;
 //   * the window's own copy follows it, so the next Apply does not write over
 //     it.
 
@@ -148,6 +148,28 @@ int main(int argc, char** argv) {
     }
     check(kept, "so the next Apply keeps the edit instead of writing the morning's value over it");
     check(after_apply.contains("avatar_gap = 7"), "and writes what the window was actually asked for");
+
+    // The OTHER switches. persistNow() wrote all three, and the two nobody
+    // touched came from the window's copy -- so an edit that turned messages
+    // off outside the window was turned back on by the next click on the
+    // panel's switch, when that click came before the four-second sweep had
+    // reloaded the file, or at any time while an edit was waiting for Apply
+    // (entry 203). Here an edit IS waiting: avatar_gap below.
+    bridge.setAvatarGap(5.0);
+    check(bridge.pending(), "an edit is waiting for Apply again");
+    write_file(path, read_file(path).replace("notifications_enabled = true",
+                                             "notifications_enabled = false"));
+    const bool planted = read_file(path).contains("notifications_enabled = false");
+    check(planted, "messages are switched off in the file, outside the window");
+    bridge.setPanelEnabled(true);
+    const QString after_other = read_file(path);
+    const bool untouched = after_other.contains("notifications_enabled = false");
+    if (!untouched) {
+        std::printf("--  after the panel's switch the file says:\n%s\n",
+                    after_other.toUtf8().constData());
+    }
+    check(untouched, "the panel's switch writes the panel's switch and not the other two");
+    check(after_other.contains("panel_enabled = true"), "and it did write the panel's");
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

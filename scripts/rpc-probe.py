@@ -113,43 +113,65 @@ except ImportError:
         def send(self, text: str) -> None:
             self._frame(0x1, text.encode())
 
-        # A frame is read whole or the stream is given up on.
+        # A frame is taken whole or not at all.
         #
         # This used to consume the two-byte header and then read the payload,
-        # so a socket timeout inside _exactly() propagated out of the MIDDLE of
-        # a frame -- and run() catches timeouts and continues, so the next
-        # recv() read two bytes of payload as a header. From there the stream is
+        # so a socket timeout inside the read propagated out of the MIDDLE of a
+        # frame -- and run() catches timeouts and continues, so the next recv()
+        # read two bytes of payload as a header. From there the stream was
         # desynchronised for the rest of the session and every garbled message
-        # lands in `except json.JSONDecodeError: continue`, which is silence.
-        # Then report() prints "the local RPC does not expose it; drop the
+        # landed in `except json.JSONDecodeError: continue`, which is silence;
+        # report() then printed "the local RPC does not expose it; drop the
         # feature from scope" on an empty list of hits. This is the instrument
-        # phase 0b was settled with, and its own comment already records that it
-        # has produced one wrong verdict.
+        # phase 0b was settled with, and its own comment already records that
+        # it has produced one wrong verdict.
         #
-        # So: anything that goes wrong mid-frame closes the connection, which
-        # the caller can see, rather than leaving a stream nobody can trust.
-        def recv(self) -> str:
+        # The first repair closed the connection on any timeout inside recv(),
+        # including one at a frame boundary with nothing read: with run()'s
+        # one-second timeout, every session ended after its first quiet second
+        # (measured with a loopback peer sending a frame, pausing 2.5 s and
+        # sending another: CLOSED at 1.0 s, the second frame never read). Now
+        # the bytes stay in the buffer until a whole frame is there, so a
+        # timeout -- at a boundary or inside a frame -- consumes nothing and is
+        # handed to the caller as the timeout it is.
+        def _whole_frame(self):
+            """(fin, opcode, payload) once a whole frame is buffered, unmasked."""
             while True:
-                try:
-                    first, second = self._exactly(2)
-                    fin = bool(first & 0x80)
-                    opcode = first & 0x0F
-                    length = second & 0x7F
-                    if length == 126:
-                        length = struct.unpack("!H", self._exactly(2))[0]
-                    elif length == 127:
-                        length = struct.unpack("!Q", self._exactly(8))[0]
+                b = self.buffer
+                if len(b) >= 2:
+                    length = b[1] & 0x7F
+                    at = 2
+                    if length == 126 and len(b) >= 4:
+                        length = struct.unpack("!H", b[2:4])[0]
+                        at = 4
+                    elif length == 127 and len(b) >= 10:
+                        length = struct.unpack("!Q", b[2:10])[0]
+                        at = 10
+                    elif length >= 126:
+                        length = None
                     # Discord does not send frames like this; a peer that does
                     # is not one this probe should try to follow.
-                    if length > 16 * 1024 * 1024:
+                    if length is not None and length > 16 * 1024 * 1024:
+                        self.sock.close()
                         raise _Closed(f"frame of {length} bytes: past anything this reads")
-                    mask = self._exactly(4) if second & 0x80 else b""
-                    payload = self._exactly(length)
-                except socket.timeout:
-                    self.sock.close()
-                    raise _Closed("timed out inside a frame: the stream can no longer be read")
-                if mask:
-                    payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+                    if length is not None:
+                        masked = bool(b[1] & 0x80)
+                        end = at + (4 if masked else 0) + length
+                        if len(b) >= end:
+                            mask = b[at:at + 4] if masked else b""
+                            payload = b[end - length:end]
+                            self.buffer = b[end:]
+                            if mask:
+                                payload = bytes(x ^ mask[i % 4] for i, x in enumerate(payload))
+                            return bool(b[0] & 0x80), b[0] & 0x0F, payload
+                chunk = self.sock.recv(65536)  # a timeout here consumes nothing
+                if not chunk:
+                    raise _Closed("connection closed")
+                self.buffer += chunk
+
+        def recv(self) -> str:
+            while True:
+                fin, opcode, payload = self._whole_frame()
                 if opcode == 0x8:
                     raise _Closed("close frame")
                 if opcode == 0x9:

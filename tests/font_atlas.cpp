@@ -116,7 +116,13 @@ int main(int argc, char** argv) {
     unsigned char* pixels = nullptr;
     int width = 0;
     int height = 0;
-    io.Fonts->GetTexDataAsAlpha8(&pixels, &width, &height);
+    // The module keeps the RGBA32 copy and nothing else (entry 207): the
+    // alpha8 image was a second 16 MB at 4K that nothing read after the
+    // widening. Asked BEFORE reading pixels, because asking ImGui for alpha8
+    // on a null image rebuilds the atlas and would put it back.
+    check(io.Fonts->TexPixelsAlpha8 == nullptr && io.Fonts->TexPixelsRGBA32 != nullptr,
+          "the atlas holds its RGBA32 copy and not the alpha8 one it was widened from");
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     std::printf("atlas: %dx%d\n", width, height);
     check(pixels != nullptr && width > 0 && height > 0, "the atlas has pixels");
     check(width <= 4096 && height <= 4096, "the atlas fits a conservative texture limit");
@@ -125,7 +131,7 @@ int main(int argc, char** argv) {
     // would pass every check above.
     long ink = 0;
     for (int i = 0; i < width * height; ++i) {
-        ink += pixels[i];
+        ink += pixels[i * 4 + 3];  // the coverage is the alpha channel
     }
     std::printf("average coverage: %.1f%%\n",
                 100.0 * static_cast<double>(ink) / (255.0 * width * height));
@@ -136,7 +142,9 @@ int main(int argc, char** argv) {
         // needed to write something that can be looked at.
         if (std::FILE* file = std::fopen(argv[1], "wb")) {
             std::fprintf(file, "P5\n%d %d\n255\n", width, height);
-            std::fwrite(pixels, 1, static_cast<size_t>(width) * height, file);
+            for (int i = 0; i < width * height; ++i) {
+                std::fputc(pixels[i * 4 + 3], file);
+            }
             std::fclose(file);
             std::printf("wrote %s\n", argv[1]);
         }

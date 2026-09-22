@@ -11,7 +11,7 @@
 // XDG_CONFIG_HOME and loaded through the same Config::load() the games run.
 //
 // And the three switches, written on top of the file as it stands:
-// Config::write_switches() loads fresh, sets them, saves -- the window used to
+// Config::write_switch() loads fresh, sets one, saves -- the window used to
 // write them over a copy it had loaded at startup, and every key edited since
 // was put back (entry 136).
 
@@ -174,11 +174,11 @@ int main() {
     {
         loaded_from("opacity = 0.33\nhidden_apps = foreign_game\nenabled = true\n");
         vocem::Config written;
-        check(vocem::Config::write_switches(false, true, false, &written),
-              "the three switches are written");
+        check(vocem::Config::write_switch(&vocem::Config::enabled, false, &written),
+              "a switch is written");
         const vocem::Config c = loaded_from(file_text().c_str());
-        check(!c.enabled && c.panel_enabled && !c.notifications_enabled,
-              "and read back as written");
+        check(!c.enabled && c.panel_enabled && c.notifications_enabled,
+              "and reads back as written, the other two as the file had them");
         check(near(c.opacity, 0.33) && c.hidden_apps == "foreign_game",
               "with every other key the file carried kept -- the file was loaded fresh, not "
               "written from a copy");

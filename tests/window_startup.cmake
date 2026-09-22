@@ -39,6 +39,7 @@ file(MAKE_DIRECTORY "${scratch}/config/vocem" "${scratch}/cache" "${scratch}/dat
 file(WRITE "${scratch}/config/vocem/config.ini" "")
 
 set(SLOW_SECONDS 2.5)
+set(SLOW_SECONDS_MS 2500)  # the same sleep, for integer arithmetic
 # The two stubs. `show-environment` is what the probe asks; anything else a
 # window might ask of systemctl answers at once, so the only thing that differs
 # between the runs is how long that one answer takes.
@@ -100,24 +101,33 @@ function(time_run stub out)
 endfunction()
 
 # Fast first, then slow, then fast again: the second fast run is the control
-# that says the difference is the stub's sleep and not the machine warming up.
+# that says the difference is the stub's sleep and not the machine warming up
+# or being busy -- and it is asserted, where it was measured and only printed
+# (entry 201): a first run slowed by a cold cache shrinks `added` and can turn
+# a spawn that really waits into a green, and nothing said so. The two fast
+# runs must agree within a quarter of the sleep, and the effect is taken
+# against their mean.
 time_run(fast fast_ms)
-if(fast_ms STREQUAL "skip")
-    return()
-endif()
 time_run(slow slow_ms)
-if(slow_ms STREQUAL "skip")
-    return()
-endif()
 time_run(fast fast_again_ms)
-if(fast_again_ms STREQUAL "skip")
-    return()
-endif()
 
-math(EXPR added "${slow_ms} - ${fast_ms}")
+math(EXPR base "(${fast_ms} + ${fast_again_ms}) / 2")
+math(EXPR added "${slow_ms} - ${base}")
+math(EXPR control "${fast_ms} - ${fast_again_ms}")
+if(control LESS 0)
+    math(EXPR control "0 - ${control}")
+endif()
+math(EXPR control_cap "${SLOW_SECONDS_MS} / 4")
 message("     window run, systemctl answering at once:      ${fast_ms} ms, then ${fast_again_ms} ms")
 message("     window run, systemctl sleeping ${SLOW_SECONDS} s first: ${slow_ms} ms")
 message("     the sleeping service manager added:            ${added} ms")
+if(control GREATER control_cap)
+    message(FATAL_ERROR
+        "the two runs with systemctl answering at once differ by ${control} ms, more than a "
+        "quarter of the stub's sleep: the machine's own noise is the size of the effect, so "
+        "this run measured nothing either way")
+endif()
+message("ok   the control agrees with the first run within ${control} ms")
 
 # Half the sleep is the line: a synchronous spawn adds all 2500 ms of it (the
 # window as it stood), an asynchronous one adds none, and the walk's own

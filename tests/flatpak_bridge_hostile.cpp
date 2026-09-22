@@ -228,6 +228,49 @@ int main() {
         check(bridge.served() == 0, "a state that is not a regular file is refused");
     }
 
+    // 4c. A state the daemon cannot open as a regular file, asked about on
+    //     every one-second rescan for as long as the directory is there. Entry
+    //     164 made the three refusals beside this one say themselves once per
+    //     name, and left these two -- the state that will not open and the one
+    //     that will not size -- speaking every second for ever: a `mkdir` in
+    //     any sandbox with the xdg-run/app grant, and `journalctl --user -u
+    //     vocemd` is unreadable (entry 198). Ten rescans, counted off stderr.
+    {
+        sandbox.reset(root, "org.example.DirectoryState");
+        make_directories(sandbox.bridge);
+        write_file(sandbox.bridge + "/" + vocem::kBridgeRequestName, "pid=1\ndrawing=1\n");
+        mkdir((sandbox.bridge + "/" + vocem::kBridgeStateName).c_str(), 0700);
+        const std::string captured = root + "/refusals.log";
+        fflush(stderr);
+        const int saved = dup(2);
+        const int out = open(captured.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        dup2(out, 2);
+        {
+            vocem::FlatpakBridge bridge;
+            bridge.start();
+            for (int i = 0; i < 10; ++i) {
+                bridge.rescan();
+            }
+            check(bridge.served() == 0, "a state that is a directory is refused");
+        }
+        fflush(stderr);
+        dup2(saved, 2);
+        close(saved);
+        close(out);
+        long said = 0;
+        if (FILE* file = fopen(captured.c_str(), "r")) {
+            char line[1024];
+            while (fgets(line, sizeof(line), file)) {
+                if (strstr(line, "refusing the Flatpak bridge for org.example.DirectoryState")) {
+                    ++said;
+                }
+            }
+            fclose(file);
+        }
+        printf("     the refusal was said %ld time(s) over ten rescans\n", said);
+        check(said == 1, "and said once, not once a rescan");
+    }
+
     // 4b. The same, at `request`, which is opened O_RDONLY -- and O_RDONLY on a
     //     named pipe waits for a writer that never comes. This is the case the
     //     S_ISREG rule does not cover on its own, because the check is on the

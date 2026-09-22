@@ -27,7 +27,7 @@ and a package cannot be rebuilt.
 | 0.1.0-64, -65 | `tests/CMakeLists.txt`, the window tests (padding, empty views, the moved channel) |
 | 0.1.0-67 | `tests/gl_unpack_state.cpp` (the ES3 GL_INVALID_ENUM the backend leaves) |
 
-## And six later ones, which this file used to give away
+## And the later ones, which this file used to give away
 
 | Package | Cited by | Rebuildable? |
 | --- | --- | --- |
@@ -37,6 +37,9 @@ and a package cannot be rebuilt.
 | 0.1.8-1 | DESIGN 138/139/140 (the bridge's drawing flag, the window's four spawns, two windows) | **no** -- its recipe hash is in no git object at all |
 | 0.1.10-1 | `tests/fonts_lifecycle.cpp`, `tests/gl_context_cycle.cpp`, `tests/CMakeLists.txt`, DESIGN 144/145 | from a commit, not a tag: there is no `v0.1.10` |
 | 0.1.10-2 | `tests/gl_inside_gamescope.cmake`, `tests/vk_present_draw.cpp`, DESIGN 147, and entries 159-164's daemon measurements | **no** -- built from an uncommitted working tree |
+| 0.1.10-3 | DESIGN 148 (the release path's wait, refutation attempted and empty) and 150 (a restart read as a stop) | **no** -- its recipe is in no git object |
+| 0.1.10-5 | `tests/CMakeLists.txt`, `tests/vk_present_draw.cpp`, `tests/gl_draw_local.cpp`, DESIGN 191/192 (the freeze: 7 and 8 rebuilds) | **no** -- built from the working tree five minutes before the commit that carries its recipe (`c35195f`) |
+| 0.1.10-6 | DESIGN 194-205 (the release review: every refutation of it ran against this package, installed) | **no** -- built from the working tree 74 minutes before the commit that carries its recipe (`3f6db50`) |
 
 **So "a tag can be rebuilt" was true of two of the six.** The sentence that
 stood here -- "The packages from 0.1.2 on are rebuilds of tagged releases; a
@@ -46,11 +49,17 @@ clean-up permission to delete the only defective binaries for entries 103, 138,
 **73 of the 88 packages here were built from a recipe that is not in git** (63
 pre-git plus ten intermediate pkgrels), and three of them -- 0.1.8-1, 0.1.8-2
 and 0.1.10-2 -- from a recipe that exists in no blob anywhere in this
-repository. `packaging/*.pkg.tar.*` is in `.gitignore`, so no copy exists
+repository. (74 of 91 on 2026-09-22, recounted the same way: every package's
+`.BUILDINFO` `pkgbuild_sha256sum` against every `PKGBUILD` and
+`PKGBUILD.local` blob in the history.) `packaging/*.pkg.tar.*` is in `.gitignore`, so no copy exists
 anywhere else either.
 
 **Nothing in this directory is deleted without checking this table first**, and
 the table is regenerated with the grep above rather than edited by hand.
+`tests/exemplars_listed.cmake` holds the half of that grep git can see: every
+package version `tests/` names has a row here. It is the half that went stale
+for 0.1.10-3, -5 and -6, which DESIGN and three tests named and this table did
+not (DESIGN 205).
 
 ## What an exemplar cannot refute for ever
 

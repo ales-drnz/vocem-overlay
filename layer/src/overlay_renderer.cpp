@@ -350,7 +350,7 @@ bool OverlayRenderer::upload_font_texture(bool whole) {
 void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snapshot,
                            uint32_t width, uint32_t height, VkPipeline pipeline) {
     std::lock_guard<std::mutex> guard(lock_);
-    if (!backend_ready_) {
+    if (!backend_ready_ || font_retry_at_ > 0.0) {
         return;
     }
 
@@ -450,15 +450,32 @@ void OverlayRenderer::process_uploads() {
     // reserved rather than rasterised (entry 191), and only its squares go up,
     // with no wait (entry 192). The line says which of the two it was, because
     // a log that called a fold a rebuild would be counting the cost that is gone.
+    if (font_retry_at_ > 0.0 && monotonic_seconds() >= font_retry_at_) {
+        if (upload_font_texture(true)) {
+            font_retry_at_ = 0.0;
+            VOCEM_RLOG("font texture went up on a later attempt: drawing again");
+        } else {
+            font_retry_at_ = monotonic_seconds() + 1.0;
+        }
+    }
     const uint32_t builds_before = fonts_build_count();
     if (wanted_font_size_ > 0.0f &&
         ensure_fonts(wanted_font_size_, wanted_reference_, wanted_font_path_.c_str(),
                      wanted_font_path_strong_.c_str())) {
         configure_style(config_.current());
         const bool rebuilt = fonts_build_count() != builds_before;
-        if (!upload_font_texture(rebuilt)) {
-            VOCEM_RLOG("font texture upload failed at %.1f px", wanted_font_size_);
+        // While a whole upload is owed, a fold would copy its squares into the
+        // old image and call that success: it goes up whole instead.
+        if (!upload_font_texture(rebuilt || font_retry_at_ > 0.0)) {
+            // The image the GPU holds no longer matches the atlas, whether the
+            // cache kept the old one alive or had nothing left to keep: nothing
+            // is drawn with it until an upload works (draw() asks), rather than
+            // text drawn from the wrong squares or a descriptor that is gone.
+            font_retry_at_ = monotonic_seconds() + 1.0;
+            VOCEM_RLOG("font texture upload failed at %.1f px: not drawing until it goes up, "
+                       "tried again every second", wanted_font_size_);
         } else if (rebuilt) {
+            font_retry_at_ = 0.0;  // the whole atlas went up: the image matches again
             VOCEM_RLOG("font atlas rebuilt at %.1f px", wanted_font_size_);
         } else {
             VOCEM_RLOG("colour emoji folded into the font atlas");
@@ -538,7 +555,8 @@ void OverlayRenderer::shutdown_locked() {
     session().reset_clock();
     // A rasterisation still running uses the context and the atlas that are
     // about to go: it finishes first. At most the ~113 ms the build takes, and
-    // only when a device dies or the overlay is switched off inside that window.
+    // only when the overlay is released, the renderer's device dies, or the
+    // last instance goes inside that window.
     join_atlas_worker();
     textures_.shutdown();
     if (backend_ready_) {
@@ -555,6 +573,7 @@ void OverlayRenderer::shutdown_locked() {
     // failure against the old device says nothing about the new one.
     functions_loaded_ = false;
     failed_ = false;
+    font_retry_at_ = 0.0;
     device_ = VK_NULL_HANDLE;
     device_wait_idle_ = nullptr;
     format_ = VK_FORMAT_UNDEFINED;

@@ -446,20 +446,22 @@ struct Config {
         return value;
     }
 
-    // The three switches the window writes the moment they are clicked, put
-    // on top of the file AS IT STANDS ON DISK: loaded fresh, changed, saved.
-    // The window used to write them over the copy it had loaded at startup --
-    // for a tray application started at login, a copy from the morning -- so
-    // every key edited by hand or by a script since then was silently put
-    // back the next time the overlay was switched off and on (entry 136).
-    // `written`, when given, receives what was saved.
-    static bool write_switches(bool enabled, bool panel_enabled, bool notifications_enabled,
-                               Config* written = nullptr) {
+    // One of the three switches the window writes the moment it is clicked,
+    // put on top of the file AS IT STANDS ON DISK: loaded fresh, that one key
+    // changed, saved. The window used to write them over the copy it had
+    // loaded at startup -- for a tray application started at login, a copy
+    // from the morning -- so every key edited by hand or by a script since then
+    // was silently put back the next time the overlay was switched off and on
+    // (entry 136). And it used to write all THREE, the two nobody clicked
+    // taken from the window's copy, so a switch turned off outside the window
+    // was turned back on by a click on another one (entry 203). `which` is the
+    // member (&Config::enabled, &Config::panel_enabled or
+    // &Config::notifications_enabled); `written`, when given, receives what was
+    // saved.
+    static bool write_switch(bool Config::*which, bool value, Config* written = nullptr) {
         Config fresh;
         fresh.load();
-        fresh.enabled = enabled;
-        fresh.panel_enabled = panel_enabled;
-        fresh.notifications_enabled = notifications_enabled;
+        fresh.*which = value;
         const bool saved = fresh.save();
         if (written) {
             *written = fresh;

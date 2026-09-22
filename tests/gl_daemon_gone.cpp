@@ -29,8 +29,8 @@
 // because what was wrong was not how many times something ran but that 117 MB
 // stayed mapped. The probe reads its own `/proc/self/smaps_rollup` before and
 // after, in one process, so the two numbers are the same process's and nothing
-// external can move them; the threshold is 40 MB against a measured 80 MB of
-// atlas alone, which is far enough from the noise (the two readings before the
+// external can move them; the threshold is 40 MB against a measured 64 MB of
+// atlas alone (80 MB before entry 207 freed the alpha8 image), which is far enough from the noise (the two readings before the
 // fix differed by 1 kB) to mean only one thing. The log line is counted beside
 // it, which is the half that says the code ran on purpose rather than by luck.
 //
@@ -46,6 +46,7 @@
 // built exactly once for the whole run, and the process must come back no
 // heavier than it went.
 
+#include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -185,7 +186,7 @@ int main() {
     setenv("VOCEM_LOG_FILE", log_path, 1);
 
     // The display height is the owner's own: it is what the atlas is sized from
-    // (entry 39), and at 2160 the atlas is the 4096x4096 one whose 80 MB this
+    // (entry 39), and at 2160 the atlas is the 4096x4096 one whose 64 MB this
     // test is about.
     vocem::StateWriter writer;
     check(writer.open(), "the private state segment opens");
@@ -276,6 +277,7 @@ int main() {
     glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
     const long drawn = foreign_pixels();
     const long held = own_pss();
+    const long held_heap = static_cast<long>(mallinfo2().hblkhd / 1024);
     printf("     drawing: %ld kB of Pss, %ld pixels the probe did not paint\n", held, drawn);
     check(drawn > 10000, "the overlay is drawing a panel in this process");
     check(held > 60 * 1024, "and holding an atlas' worth of memory for it");
@@ -308,12 +310,22 @@ int main() {
     glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
     const long after_drawn = foreign_pixels();
     const long after = own_pss();
+    const long after_heap = static_cast<long>(mallinfo2().hblkhd / 1024);
     printf("     after the quit: %ld kB of Pss, %ld pixels the probe did not paint\n", after,
            after_drawn);
 
     check(after_drawn == 0, "the overlay stops drawing");
-    printf("     handed back: %ld kB\n", held - after);
-    check(held - after > 40 * 1024,
+    // Two figures, and one of them is the assertion. The Pss difference is the
+    // whole process's -- the driver's own mappings among it, still arriving
+    // while the panel is up -- and at 32 bits under the suite's -j16 it read
+    // anywhere from 55,631 to 85,521 kB over four runs, and 20,118 once beside
+    // foreign load: noise the size of the claim once entry 207 took 16 MB out
+    // of the atlas. The heap's mmapped blocks are the atlas and nothing the
+    // driver chooses: counted exactly, as vk_present_draw counts them after
+    // the last instance (entry 211). Printed both, asserted on the heap.
+    printf("     handed back: %ld kB of Pss, %ld kB of mmapped heap (%ld -> %ld)\n", held - after,
+           held_heap - after_heap, held_heap, after_heap);
+    check(held_heap - after_heap > 40 * 1024,
           "and hands back what it was holding, instead of keeping it for the life of the process");
 
     const long said = lines_containing(log_path, "releasing the backend and the font atlas");

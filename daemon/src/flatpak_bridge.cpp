@@ -357,15 +357,23 @@ bool FlatpakBridge::adopt(const char* id) {
     mirror.directory = directory;
     mirror.drawing = request.drawing;
     mirror.state_file = open_regular(directory, kBridgeStateName, O_RDWR | O_CREAT);
+    // Both refusals below are asked again on every one-second rescan, like the
+    // ones above them, and said once per name like them (entry 198).
     if (mirror.state_file < 0) {
-        LOG("refusing the Flatpak bridge for %s: %s could not be opened as a regular file (%s)",
-            id, kBridgeStateName, std::strerror(errno));
+        const int error = errno;
+        if (say_refusal_once(id)) {
+            LOG("refusing the Flatpak bridge for %s: %s could not be opened as a regular file "
+                "(%s)", id, kBridgeStateName, std::strerror(error));
+        }
         close(mirror);
         return false;
     }
     if (::ftruncate(mirror.state_file, sizeof(SharedState)) != 0) {
-        LOG("refusing the Flatpak bridge for %s: %s cannot be sized (%s)", id, kBridgeStateName,
-            std::strerror(errno));
+        const int error = errno;
+        if (say_refusal_once(id)) {
+            LOG("refusing the Flatpak bridge for %s: %s cannot be sized (%s)", id,
+                kBridgeStateName, std::strerror(error));
+        }
         close(mirror);
         return false;
     }

@@ -36,6 +36,12 @@
 //   112) and this was the instance left; daemon_ws_bounds cannot reach it,
 //   because its stub answers.
 //
+//   `trickle` -- the same handshake, with a peer that answers it one byte
+//   every tenth of a second and never finishes. The stop flag was read only
+//   when a 200 ms slice expired empty, and a byte every 100 ms never lets one
+//   expire: the handshake's ten seconds again, against the unit's ten, through
+//   the door entry 161 had closed for a silent peer (entry 196).
+//
 //   `note-mirror` -- what a CLEAN stop leaves in a Flatpak sandbox. The daemon
 //   unlinked the mirrored copies of the STATE and then emptied its list of
 //   mirrors, and only then retired the note -- whose retirement is what unlinks
@@ -241,8 +247,9 @@ int stalled_download(const char* daemon_path, const std::string& base) {
 }
 
 // -------------------------------------------------------------------------
-// The stop arrives while the daemon is inside a handshake.
-int handshake_stop(const char* daemon_path, const std::string& base) {
+// The stop arrives while the daemon is inside a handshake, from a peer that
+// says nothing or -- `trickle` -- one byte of an upgrade that never ends.
+int handshake_stop(const char* daemon_path, const std::string& base, bool trickle) {
     // Accepts the connection and answers nothing: the shape of a client still
     // starting, or of anything else that binds the port. The daemon is right to
     // wait -- what it may not do is wait through its own stop.
@@ -263,9 +270,33 @@ int handshake_stop(const char* daemon_path, const std::string& base) {
     // Far enough into the handshake for the request to be written and the read
     // to be waiting. The deadline it is waiting on is ten seconds.
     usleep(500 * 1000);
+    pid_t trickler = -1;
+    if (trickle) {
+        // A child keeps the socket readable: the start of a 101, then a header
+        // that never ends, a byte every 100 ms -- under the 200 ms slice.
+        trickler = fork();
+        if (trickler == 0) {
+            static const char kStart[] = "HTTP/1.1 101 Switching Protocols\r\nX-Slow: ";
+            if (write(fd, kStart, sizeof(kStart) - 1) < 0) {
+                _exit(0);
+            }
+            for (int i = 0; i < 300; ++i) {
+                usleep(100 * 1000);
+                if (write(fd, "a", 1) != 1) {
+                    break;
+                }
+            }
+            _exit(0);
+        }
+        usleep(300 * 1000);  // a few bytes in, so the read is taking them
+    }
 
     int status = 0;
     const double took = term_and_reap(daemon_pid, 20.0, &status);
+    if (trickler > 0) {
+        kill(trickler, SIGKILL);
+        waitpid(trickler, nullptr, 0);
+    }
     if (took >= 0.0) {
         printf("--  the daemon exited %.1f s after SIGTERM, from inside the handshake\n", took);
     } else {
@@ -388,7 +419,10 @@ int main() {
     int result = 0;
     if (scenario == "handshake") {
         printf("--  scenario: a stop arriving inside the handshake\n");
-        result = handshake_stop(daemon_path, base);
+        result = handshake_stop(daemon_path, base, false);
+    } else if (scenario == "trickle") {
+        printf("--  scenario: a stop arriving inside a handshake answered a byte at a time\n");
+        result = handshake_stop(daemon_path, base, true);
     } else if (scenario == "note-mirror") {
         printf("--  scenario: what a clean stop leaves in a Flatpak sandbox\n");
         result = note_mirror(daemon_path, base);

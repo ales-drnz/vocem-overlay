@@ -35,6 +35,7 @@
 // missing it reports itself skipped rather than passing without having run.
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -191,27 +192,23 @@ int main(int argc, char** argv) {
     }
     check(authenticated, "and authenticated with the stored token");
 
-    // Before the message this file is named for: a frame the daemon cannot
-    // hold. `kMaxMessageBytes` is 8 MiB (entry 72's reassembly cap), and
-    // `json::parse(raw, nullptr, false)` bounds parse ERRORS and nothing else
-    // -- an allocation that fails comes back as std::bad_alloc, which used to
-    // reach main() and end the process by abort(). Measured under the unit's
-    // own MemoryMax of 128 MiB with RLIMIT_AS standing in for it: 8 MiB of '['
-    // aborts, 8 MiB of string parses in 47 MB. `Restart=on-failure` then
-    // brings the daemon back, and an abort runs no destructor -- so each turn
-    // of that loop leaves the segment, the note's words and every Flatpak
-    // mirror behind, which is the leftover entry 81 forbids.
+    // Before the message this file is named for: two frames the daemon cannot
+    // afford to parse. `kMaxMessage` is 8 MiB (entry 72's reassembly cap), and
+    // `json::parse(raw, nullptr, false)` bounds parse ERRORS and nothing else,
+    // so 8 MiB costs what its shape says -- 624 MB nested, 221 MB as a flat
+    // array of empty objects (daemon/src/text.h). Both are refused before the
+    // parser by vocem::json_within (entries 183 and 199).
     //
-    // The claim is only that the daemon is STILL THERE afterwards: everything
-    // below this line is the ordinary test, and it can only run against a
-    // daemon that survived.
+    // The claim is that the daemon is STILL THERE afterwards and paid nothing
+    // for them: everything below this block is the ordinary test, and it can
+    // only run against a daemon that survived.
     {
         // What it costs is the measurement, not whether it survives: this
         // machine has the memory to parse 624 MB, so a daemon with no cgroup
-        // around it comes through either way -- and the owner's has
-        // MemoryMax=128M, where the same allocation is a SIGKILL. So the
-        // probe reads the daemon's own high-water mark on both sides of the
-        // message.
+        // around it comes through either way -- and under the unit's
+        // MemoryMax=128M the same parse is ~436 MB pushed into swap here and a
+        // SIGKILL on a machine without it. So the probe reads the daemon's own
+        // high-water mark on both sides of the messages.
         auto peak_kb = [&]() -> long {
             char path[64];
             snprintf(path, sizeof(path), "/proc/%d/status", static_cast<int>(daemon_pid));
@@ -232,6 +229,16 @@ int main(int argc, char** argv) {
         const long before = peak_kb();
         const std::string hostile(8u * 1024 * 1024 - 64, '[');
         send_text(fd, hostile);
+        // And the same size FLAT, which the depth ceiling cannot see: 8 MiB of
+        // "[{},{},...]" is 2.8 million empty objects, 221 MB through nlohmann
+        // alone where the unit allows 128 (entry 199). Measured shapes beside
+        // it: "" 171 MB, [] 136 MB, {"a":0} 168 MB, a number 65 MB.
+        std::string flat = "[";
+        while (flat.size() + 4 < 8u * 1024 * 1024 - 64) {
+            flat += "{},";
+        }
+        flat += "{}]";
+        send_text(fd, flat);
         // Read, refused and dropped: the daemon answers its socket in order on
         // one thread, so an ordinary message sent after the hostile one is
         // handled after it, and the moment it reaches the segment the hostile
@@ -251,7 +258,8 @@ int main(int argc, char** argv) {
         }
         const bool alive = kill(daemon_pid, 0) == 0 && waitpid(daemon_pid, nullptr, WNOHANG) == 0;
         const long after = peak_kb();
-        printf("--  8 MiB of '[': the daemon's peak went %ld kB -> %ld kB\n", before, after);
+        printf("--  8 MiB of '[' and 8 MiB of '[{},{},...]': the daemon's peak went %ld kB -> "
+               "%ld kB\n", before, after);
         check(alive, "a message 8 MiB deep does not take the daemon down with it");
         if (!alive) {
             printf("--  the daemon is gone: 8 MiB of '[' ended it\n");
@@ -350,6 +358,41 @@ int main(int argc, char** argv) {
     check(reader.read(snapshot), "the mapping survives the daemon, as it does in a game");
     check(!snapshot.connected && !snapshot.in_channel && snapshot.user_count == 0,
           "and what it holds is a cleared state, not the last channel frozen");
+
+    // And nothing about the message on disk either. The daemon's journal is a
+    // file under the cache that outlives the session -- twenty of them are kept
+    // for the Debug section -- and it wrote "notification from <title>" for every
+    // message: the sender's name, the guild and the channel that entry 163 took
+    // out of the segment, kept for twenty sessions instead (entry 197). Read
+    // after the daemon has exited, so every line it was going to write is there.
+    {
+        const std::string journals = base + "/cache/vocem/journal";
+        long files = 0;
+        long mentions = 0;
+        if (DIR* dir = opendir(journals.c_str())) {
+            while (dirent* entry = readdir(dir)) {
+                if (entry->d_name[0] == '.') {
+                    continue;
+                }
+                ++files;
+                if (FILE* file = fopen((journals + "/" + entry->d_name).c_str(), "r")) {
+                    char line[512];
+                    while (fgets(line, sizeof(line), file)) {
+                        if (strstr(line, "Someone") || strstr(line, "THE-SECRET-TEXT")) {
+                            ++mentions;
+                        }
+                    }
+                    fclose(file);
+                }
+            }
+            closedir(dir);
+        }
+        printf("     the daemon's journal: %ld file(s), %ld line(s) naming the message's sender "
+               "or words\n", files, mentions);
+        check(files > 0, "the daemon kept its journal (the precondition of the next check)");
+        check(mentions == 0,
+              "and its journal names neither who sent the message nor what it said");
+    }
 
     close(fd);
     close(listener);

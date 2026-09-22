@@ -57,7 +57,7 @@ foreach(hit IN LISTS clamp_hits)
         math(EXPR clamp_count "${clamp_count} + 1")
     endif()
 endforeach()
-if(clamp_count LESS 15)
+if(clamp_count LESS 16)
     message(FATAL_ERROR "slider_bounds: only ${clamp_count} clamps read from config.h -- "
                         "the parse has stopped matching the source, which is not agreement")
 endif()
@@ -112,7 +112,7 @@ foreach(qml IN LISTS qml_files)
     endforeach()
 endforeach()
 
-if(paired LESS 12)
+if(paired LESS 14)
     message(FATAL_ERROR "slider_bounds: only ${paired} rows paired with a clamp -- "
                         "the walk has stopped seeing the pages, which is not agreement")
 endif()

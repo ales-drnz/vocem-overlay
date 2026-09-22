@@ -1,0 +1,15 @@
+/* What the heavy GL library exports: the four entry points the shim
+   resolves, and nothing else (DESIGN 16, 45, 195). Hidden visibility holds
+   our own code to that; it cannot hold the libstdc++ templates the library
+   instantiates, which namespace std declares with default visibility, so a
+   build without LTO exported four of them. tests/gl_entry_points.cmake holds
+   the whole list. */
+{
+    global:
+        vocem_gl_present_glx;
+        vocem_gl_present_egl;
+        vocem_gl_context_destroyed;
+        vocem_gl_egl_context_destroyed;
+    local:
+        *;
+};

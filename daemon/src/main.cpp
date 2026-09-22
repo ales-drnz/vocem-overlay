@@ -58,11 +58,6 @@ constexpr uint16_t kRpcPortLast = 6472;
 constexpr double kReconcileSeconds = 5.0;  // ask Discord where we are
 constexpr double kDisplaySeconds = 60.0;   // re-read /sys/class/drm
 constexpr double kBridgeSeconds = 1.0;     // sweep the Flatpak sandboxes
-// How deep a message from Discord may nest before this daemon declines to
-// parse it. Its own messages reach about five; this is far above anything the
-// client sends and far below anything that costs memory worth noticing
-// (daemon/src/text.h has the measurement).
-constexpr int kMaxJsonDepth = 64;
 constexpr int kBackoffCapSeconds = 30;     // the longest pause between attempts
 constexpr int kRecvTimeoutMs = 1000;       // one tick's worth of waiting on the socket
 
@@ -241,15 +236,15 @@ int main() {
             reached_on = port;
             break;
         }
-        // One tick per port, which is what this comment claimed for four
-        // releases while the call sat AFTER the loop's closing brace -- so ten
-        // ports that accept and say nothing were one deadline each with nothing
-        // in between: ~100 s in which expire_note(), the bridge rescan, the
-        // republish and the display re-read did not run, which is entry 112's
-        // own "a minute and a half with no expiry in it", stated there as the
-        // thing being fixed. The tick is cheap and idempotent (its two slower
-        // halves carry their own clocks), so calling it per port costs a
-        // reachable Discord nothing: the first port answers and the loop breaks.
+        // The tick above runs once per port, which is what a comment here
+        // claimed for four releases while the only call sat HERE, after the
+        // loop's closing brace -- so ten ports that accept and say nothing were
+        // one deadline each with nothing in between: ~100 s in which
+        // expire_note(), the bridge rescan, the republish and the display
+        // re-read did not run (entry 159). This one stays for the time the last
+        // attempt took, before the pause below starts ticking on its own
+        // second. The tick is cheap and idempotent (its two slower halves carry
+        // their own clocks).
         tick();
         if (reached_on == 0) {
             DBG("Discord not reachable on ports %u-%u, retrying in %ds", kRpcPortFirst,
@@ -292,40 +287,34 @@ int main() {
             if (result == vocem::WebSocket::Result::Timeout) {
                 continue;
             }
-            // Bounded before it is parsed, not after. `allow_exceptions =
-            // false` bounds parse ERRORS and nothing else, and nlohmann limits
-            // neither depth nor element count, so the cost of a message is the
-            // peer's to choose: 8 MiB of '[' -- exactly kMaxMessageBytes,
-            // entry 72's reassembly cap -- costs 624 MB, measured twice, and
-            // then comes back discarded because it is invalid. Against the
-            // unit's MemoryMax of 128M that is the cgroup killing this
-            // process, and a SIGKILL runs no destructor: the segment, the
-            // note's words and every Flatpak mirror stay behind -- entry 81's
-            // leftover, through a door entry 134 did not close -- and
-            // Restart=on-failure does it again. vocem::json_depth_within says
-            // what the scan costs and why the ceiling is where it is.
+            // Bounded before it is parsed, not after: nlohmann limits neither
+            // depth nor element count, and 8 MiB -- kMaxMessage, entry 72's
+            // reassembly cap -- costs 624 MB nested and up to 221 MB flat
+            // against the unit's MemoryMax of 128M. vocem::json_within says
+            // what each shape costs, what the cgroup then does, and where the
+            // two ceilings come from (entries 183 and 199).
             //
             // Said once: a peer that does this once will do it again, and the
             // journal is what somebody reads afterwards.
-            if (!vocem::json_depth_within(raw, kMaxJsonDepth)) {
-                static bool said_deep = false;
-                if (!said_deep) {
-                    said_deep = true;
-                    LOG("a message of %zu bytes nests deeper than %d levels; dropping it rather "
-                        "than parsing it",
-                        raw.size(), kMaxJsonDepth);
+            if (!vocem::json_within(raw, vocem::kJsonDepthCeiling, vocem::kJsonTokenCeiling)) {
+                static bool said_shape = false;
+                if (!said_shape) {
+                    said_shape = true;
+                    LOG("a message of %zu bytes nests deeper than %d levels or holds more than "
+                        "%zu values; dropping it rather than parsing it",
+                        raw.size(), vocem::kJsonDepthCeiling, vocem::kJsonTokenCeiling);
                 }
                 continue;
             }
-            // And a second line for what the depth ceiling does not bound,
-            // which is worth naming rather than leaving as "anything else".
-            // Measured on this machine, 8 MiB of each shape through nlohmann
-            // alone: one string is 47.6 MB, a FLAT array of 4.2 million
-            // elements is 88.2 MB, and the nesting the ceiling refuses is
-            // 634 MB. So depth is where the money was and the flat case is the
-            // residual this catch is for -- an allocation that fails is not a
-            // parse error, so it arrives as an exception whatever
-            // `allow_exceptions = false` says.
+            // A second line for an allocation that fails, which is not a parse
+            // error and so arrives as an exception whatever `allow_exceptions =
+            // false` says. Under the unit's MemoryMax it does not: a cgroup
+            // limit never makes malloc fail -- pages are charged when touched,
+            // and past the limit the answer is reclaim, swap or the OOM killer
+            // (measured: the 624 MB parse under MemoryMax=128M swapped and
+            // survived). What reaches this catch is an address-space limit
+            // (RLIMIT_AS) or strict overcommit, which the shape check above
+            // already keeps a message far away from.
             json message;
             try {
                 message = json::parse(raw, nullptr, false);

@@ -105,6 +105,33 @@ function(_vocem_sharing name serial locks)
     endif()
 endfunction()
 
+# The test itself, for vocem_test and vocem_test_run alike. With BUILD32 files
+# it runs through with_build32.cmake, which looks for them when the test runs
+# and skips out loud, by file name, when they are not there; a scenario of a
+# probe that needs the 32-bit tree needs it exactly as the probe does, and the
+# scenarios' twins once went straight to the executable instead, so a machine
+# without build32 read nine FAILs where the probe itself read one skip.
+function(_vocem_add_test name target build32 env args skip)
+    if(build32)
+        add_test(NAME ${name}
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DPROBE=$<TARGET_FILE:${target}>"
+                    "-DREQUIRES=${build32}"
+                    "-DENV=${env}"
+                    "-DARGS=${args}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/with_build32.cmake")
+        set_tests_properties(${name} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
+    else()
+        add_test(NAME ${name} COMMAND ${target} ${args})
+        if(env)
+            set_tests_properties(${name} PROPERTIES ENVIRONMENT "${env}")
+        endif()
+        if(skip)
+            set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endif()
+endfunction()
+
 # The one definition behind vocem_test and vocem_m32_twin.
 #
 #   SOURCES         default <name>.cpp
@@ -158,24 +185,7 @@ function(_vocem_define name m32)
         return()
     endif()
 
-    if(T_BUILD32)
-        add_test(NAME ${name}
-            COMMAND "${CMAKE_COMMAND}"
-                    "-DPROBE=$<TARGET_FILE:${target}>"
-                    "-DREQUIRES=${T_BUILD32}"
-                    "-DENV=${T_ENV}"
-                    "-DARGS=${T_ARGS}"
-                    -P "${CMAKE_CURRENT_SOURCE_DIR}/with_build32.cmake")
-        set_tests_properties(${name} PROPERTIES SKIP_REGULAR_EXPRESSION "-- skip ")
-    else()
-        add_test(NAME ${name} COMMAND ${target} ${T_ARGS})
-        if(T_ENV)
-            set_tests_properties(${name} PROPERTIES ENVIRONMENT "${T_ENV}")
-        endif()
-        if(T_SKIP)
-            set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
-        endif()
-    endif()
+    _vocem_add_test(${name} ${target} "${T_BUILD32}" "${T_ENV}" "${T_ARGS}" "${T_SKIP}")
     if(T_TIMEOUT)
         set_tests_properties(${name} PROPERTIES TIMEOUT ${T_TIMEOUT})
     endif()
@@ -192,9 +202,17 @@ endfunction()
 # Another test on an executable vocem_test already built: the same probe under
 # another environment or with other arguments.
 #   TARGET <name>   the vocem_test whose executable runs (default: <name>)
-#   ENV, ARGS, SKIP, TIMEOUT as above; DEPENDS as the test property
+#   ENV, ARGS, SKIP, TIMEOUT, BUILD32 as above
+#   SETUP <fixture>     this run produces something other runs read
+#   REQUIRES <fixture>  this run reads what a SETUP run produced: ctest runs
+#                       that one first even under -R, and does not run this one
+#                       when it failed. DEPENDS used to stand here, which only
+#                       orders two tests that are both selected -- so
+#                       `ctest -R shared_state_cross_read32` read whatever
+#                       segment64.bin an earlier run had left behind.
 function(vocem_test_run name)
-    cmake_parse_arguments(PARSE_ARGV 1 R "SKIP;SERIAL" "TARGET;TIMEOUT" "ENV;ARGS;DEPENDS;LOCK")
+    cmake_parse_arguments(PARSE_ARGV 1 R "SKIP;SERIAL" "TARGET;TIMEOUT"
+        "ENV;ARGS;LOCK;BUILD32;SETUP;REQUIRES")
     if(R_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "vocem_test_run(${name}): unknown arguments ${R_UNPARSED_ARGUMENTS}")
     endif()
@@ -207,18 +225,15 @@ function(vocem_test_run name)
     # build passing is evidence about nothing (entries 30/33/34).
     set_property(GLOBAL PROPERTY VOCEM_RUN_ARGS_${name} "${ARGN}")
     set_property(GLOBAL PROPERTY VOCEM_RUN_DEFINED_${name} ON)
-    add_test(NAME ${name} COMMAND vocem_${R_TARGET} ${R_ARGS})
-    if(R_ENV)
-        set_tests_properties(${name} PROPERTIES ENVIRONMENT "${R_ENV}")
-    endif()
-    if(R_SKIP)
-        set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
-    endif()
+    _vocem_add_test(${name} vocem_${R_TARGET} "${R_BUILD32}" "${R_ENV}" "${R_ARGS}" "${R_SKIP}")
     if(R_TIMEOUT)
         set_tests_properties(${name} PROPERTIES TIMEOUT ${R_TIMEOUT})
     endif()
-    if(R_DEPENDS)
-        set_tests_properties(${name} PROPERTIES DEPENDS "${R_DEPENDS}")
+    if(R_SETUP)
+        set_tests_properties(${name} PROPERTIES FIXTURES_SETUP "${R_SETUP}")
+    endif()
+    if(R_REQUIRES)
+        set_tests_properties(${name} PROPERTIES FIXTURES_REQUIRED "${R_REQUIRES}")
     endif()
     _vocem_sharing(${name} "${R_SERIAL}" "${R_LOCK}")
 endfunction()
@@ -245,7 +260,8 @@ function(vocem_m32_twin_run name)
         message(FATAL_ERROR "vocem_m32_twin_run(${name}): no vocem_test_run(${O_TARGET})")
     endif()
     get_property(stored GLOBAL PROPERTY VOCEM_RUN_ARGS_${O_TARGET})
-    cmake_parse_arguments(R "SKIP" "TARGET;TIMEOUT" "ENV;ARGS;DEPENDS" ${stored})
+    cmake_parse_arguments(R "SKIP;SERIAL" "TARGET;TIMEOUT" "ENV;ARGS;LOCK;BUILD32;SETUP;REQUIRES"
+        ${stored})
     if(NOT VOCEM_HAVE_M32)
         vocem_skip(${name}32
             "no 32-bit toolchain, so the ${O_TARGET} scenario is measured at one width only -- "
@@ -271,6 +287,18 @@ function(vocem_m32_twin_run name)
     endif()
     if(R_SKIP)
         list(APPEND args SKIP)
+    endif()
+    if(R_SERIAL)
+        list(APPEND args SERIAL)
+    endif()
+    if(R_LOCK)
+        list(APPEND args LOCK ${R_LOCK})
+    endif()
+    # The 32-bit tree's artefacts the probe's own twin named: a scenario of that
+    # probe runs against the same ones.
+    get_property(build32 GLOBAL PROPERTY VOCEM_TWIN_BUILD32_${R_TARGET})
+    if(build32)
+        list(APPEND args BUILD32 ${build32})
     endif()
     vocem_test_run(${name}32 ${args})
 endfunction()
@@ -307,6 +335,7 @@ function(vocem_m32_twin name)
     if(DEFINED O_BUILD32)
         set(T_BUILD32 ${O_BUILD32})
     endif()
+    set_property(GLOBAL PROPERTY VOCEM_TWIN_BUILD32_${name} "${T_BUILD32}")
     if(NOT T_SOURCES)
         set(T_SOURCES ${name}.cpp)
     endif()

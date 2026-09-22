@@ -224,13 +224,23 @@ int main() {
     // test. What is asked instead is the only question that matters: does a
     // known value written by this process come back encoded. A clear is a write
     // and is converted like any other (GL 4.6 spec, 17.3.9 "sRGB Conversion").
+    //
+    // Asked of the BACK buffer, before any swap. It was asked of the front
+    // buffer right after the first swap, and that read is where this probe died
+    // of SIGFPE inside libnvidia-glcore in two full -j16 runs of seventeen: a
+    // `div` whose divisor is the pitch of a front-buffer surface the driver has
+    // not sized yet, every field of it zero in both cores. Measured without
+    // this project at all -- no shim, VOCEM_DISABLE=1, a replica of this
+    // opening -- it happened 2 times in 1504 under the suite's load, at the
+    // same address (DESIGN 208). The clear is converted on the way into the
+    // back buffer exactly as into any other, so the question is the same one.
     {
         clear_colour(0.5f, 0.5f, 0.5f, 1.0f);
         clear(0x00004000 /*GL_COLOR_BUFFER_BIT*/);
-        swap(display, window);
         unsigned char probe[4] = {0, 0, 0, 0};
-        read_buffer(0x0404 /*GL_FRONT*/);
+        read_buffer(0x0405 /*GL_BACK*/);
         read_pixels(W / 2, H / 2, 1, 1, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, probe);
+        swap(display, window);
         // 0.5 linear encodes to 188; a drawable that stores 128 is not encoding.
         printf("     a mid grey written with sRGB on comes back %d\n", probe[0]);
         if (probe[0] < 180 || probe[0] > 196) {

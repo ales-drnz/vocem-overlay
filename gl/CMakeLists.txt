@@ -65,6 +65,12 @@ set_source_files_properties(
 # shim is a separate target and stays libc-only.
 find_package(Threads REQUIRED)
 target_link_libraries(vocem_gl PRIVATE vocem_common ${CMAKE_DL_LIBS} Threads::Threads)
+# The export list, stated: hidden visibility does not reach the libstdc++
+# templates this library instantiates (vocem_gl.map says which escaped).
+target_link_options(vocem_gl PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/vocem_gl.map")
+set_target_properties(vocem_gl PROPERTIES
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/vocem_gl.map")
 
 # --- shim -------------------------------------------------------------------
 # The only library that gets preloaded. Kept deliberately tiny: it is mapped into

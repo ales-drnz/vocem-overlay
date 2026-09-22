@@ -68,6 +68,12 @@ target_include_directories(vocem_vk PRIVATE
 # built once per width with the visibility and the ImGui definitions this
 # target needs them to have.
 target_link_libraries(vocem_vk PRIVATE vocem_common Threads::Threads)
+# The export list, stated: hidden visibility does not reach the libstdc++
+# templates this library instantiates (vocem_vk.map says which escaped).
+target_link_options(vocem_vk PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/vocem_vk.map")
+set_target_properties(vocem_vk PROPERTIES
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/vocem_vk.map")
 
 target_compile_options(vocem_vk PRIVATE
     -Wall -Wextra

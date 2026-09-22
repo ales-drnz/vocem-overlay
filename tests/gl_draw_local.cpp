@@ -44,6 +44,20 @@
 //     definition in this executable (the gl_avatar_quiet.cpp trick: the
 //     overlay resolves the name through RTLD_DEFAULT, where the main program
 //     comes first).
+//   * **VOCEM_GL_SCENARIO=two-windows**: a second window with a second,
+//     unshared context PRESENTS, the way a game with a tool window or an
+//     emulator with a debugger does. The backend lives in the first context,
+//     and its objects' names mean something else in the second -- they are
+//     that context's own textures, programs and buffers, or nothing. The
+//     second context makes eight textures of its own, one texel of a known
+//     colour each, and presents while a new colour emoji arrives (a fold,
+//     glTexSubImage2D into the atlas's name) and the display changes (a whole
+//     upload, glDeleteTextures of the atlas's name). Three witnesses in that
+//     context: no pixel of the overlay's, no GL error, and all eight textures
+//     alive with their texel -- and the first window drawing again afterwards,
+//     so an overlay that simply stopped would not pass. Against the library
+//     of 0.1.10-6: texture 1 became a 2048x4096 atlas and 45 GL errors were
+//     left in the second context's queue, one per swap (entry 210).
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -139,6 +153,7 @@ int main() {
     const bool second_context = strcmp(scenario, "second-context") == 0;
     const bool arrivals = strcmp(scenario, "arrivals") == 0;
     const bool early_exit = strcmp(scenario, "early-exit") == 0;
+    const bool two_windows = strcmp(scenario, "two-windows") == 0;
     if (!getenv("VOCEM_GL_LIBRARY") || !getenv("VOCEM_SHIM_PRELOADED")) {
         printf("skip meant to run with the shim preloaded and VOCEM_GL_LIBRARY set\n");
         return 77;
@@ -358,6 +373,176 @@ int main() {
         check(g_overlay_make_current - before == 0,
               "a context that is not the backend's is not made current by the overlay");
         run_frames(15);
+    }
+
+    if (two_windows) {
+        using PFN_glGenTextures = void (*)(int, unsigned int*);
+        using PFN_glBindTexture = void (*)(unsigned int, unsigned int);
+        using PFN_glTexImage2D = void (*)(unsigned int, int, int, int, int, int, unsigned int,
+                                          unsigned int, const void*);
+        using PFN_glGetTexImage = void (*)(unsigned int, int, unsigned int, unsigned int, void*);
+        using PFN_glGetError = unsigned int (*)();
+        using PFN_glGetTexLevelParameteriv = void (*)(unsigned int, int, unsigned int, int*);
+        auto* gen_textures = reinterpret_cast<PFN_glGenTextures>(dlsym(gl, "glGenTextures"));
+        auto* bind_texture = reinterpret_cast<PFN_glBindTexture>(dlsym(gl, "glBindTexture"));
+        auto* tex_image = reinterpret_cast<PFN_glTexImage2D>(dlsym(gl, "glTexImage2D"));
+        auto* get_tex_image = reinterpret_cast<PFN_glGetTexImage>(dlsym(gl, "glGetTexImage"));
+        auto* get_error = reinterpret_cast<PFN_glGetError>(dlsym(gl, "glGetError"));
+        auto* level_parameter = reinterpret_cast<PFN_glGetTexLevelParameteriv>(
+            dlsym(gl, "glGetTexLevelParameteriv"));
+        check(gen_textures && bind_texture && tex_image && get_tex_image && get_error &&
+                  level_parameter,
+              "the texture functions resolve off the private handle");
+        if (failures) {
+            return 1;
+        }
+        Window window_b = XCreateWindow(display, RootWindow(display, visual->screen), -4000,
+                                        400, W, H, 0, visual->depth, InputOutput,
+                                        visual->visual, CWColormap | CWOverrideRedirect, &swa);
+        XMapWindow(display, window_b);
+        void* context_b = create(display, visual, nullptr, 1);
+        check(context_b != nullptr, "a second window's unshared context comes up");
+        make_current(display, window_b, context_b);
+
+        // The second context's own textures. A fresh context hands out names
+        // from 1, and so did the first one when the overlay made its atlas.
+        constexpr int kOwn = 8;
+        unsigned int own[kOwn] = {};
+        gen_textures(kOwn, own);
+        for (int i = 0; i < kOwn; ++i) {
+            const unsigned char texel[4] = {static_cast<unsigned char>(20 + 20 * i), 7, 9, 255};
+            bind_texture(0x0DE1 /*GL_TEXTURE_2D*/, own[i]);
+            tex_image(0x0DE1, 0, 0x1908 /*GL_RGBA*/, 1, 1, 0, 0x1908, 0x1401, texel);
+        }
+        bind_texture(0x0DE1, own[0]);
+        while (get_error() != 0) {
+        }
+
+        long errors = 0;
+        // Both windows presenting, the second nine frames in ten -- a game with
+        // a tool window -- unless `alone`: then the first is silent, which is
+        // what the hand-over below is about. The first window's frames keep the
+        // owner fresh here however slowly a loaded machine runs this.
+        const auto frames_b = [&](int frames, bool alone = false) {
+            for (int frame = 0; frame < frames; ++frame) {
+                if (!alone && frame % 10 == 0) {
+                    make_current(display, window, context);
+                    clear_colour(0.10f, 0.15f, 0.20f, 1.0f);
+                    clear(0x00004000 /*GL_COLOR_BUFFER_BIT*/);
+                    swap(display, window);
+                    make_current(display, window_b, context_b);
+                }
+                clear_colour(0.10f, 0.15f, 0.20f, 1.0f);
+                clear(0x00004000 /*GL_COLOR_BUFFER_BIT*/);
+                swap(display, window_b);
+                while (get_error() != 0) {
+                    ++errors;
+                }
+                usleep(16000);
+            }
+        };
+        const auto publish = [&](const char* third, uint32_t display_height) {
+            writer.publish([&](vocem::SharedState& state) {
+                state.connected = 1;
+                state.in_channel = 1;
+                state.status = 2;  // Connected
+                state.display_height = display_height;
+                snprintf(state.channel_name, sizeof(state.channel_name), "dlopen-local");
+                state.user_count = 3;
+                for (uint32_t i = 0; i < 3; ++i) {
+                    state.users[i].id = 500 + i;
+                    snprintf(state.users[i].name, sizeof(state.users[i].name), "Local %u",
+                             i + 1);
+                }
+                snprintf(state.users[2].name, sizeof(state.users[2].name), "%s", third);
+            });
+        };
+        frames_b(15);
+        publish("Local 3 \xF0\x9F\x94\xA5", 0);  // fire: a fold, were anything drawn here
+        frames_b(15);
+        publish("Local 3 \xF0\x9F\x94\xA5", 1440);  // a new size: a whole upload
+        frames_b(15);
+
+        static unsigned char pixels_b[360 * 360 * 4];
+        read_buffer(0x0404 /*GL_FRONT*/);
+        read_pixels(0, 0, W, H, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, pixels_b);
+        long foreign_b = 0;
+        for (long i = 0; i < (long)W * H; ++i) {
+            const int dr = pixels_b[i * 4 + 0] > 26 ? pixels_b[i * 4 + 0] - 26 : 26 - pixels_b[i * 4 + 0];
+            const int dg = pixels_b[i * 4 + 1] > 38 ? pixels_b[i * 4 + 1] - 38 : 38 - pixels_b[i * 4 + 1];
+            const int db = pixels_b[i * 4 + 2] > 51 ? pixels_b[i * 4 + 2] - 51 : 51 - pixels_b[i * 4 + 2];
+            if (dr > 40 || dg > 40 || db > 40) {
+                ++foreign_b;
+            }
+        }
+        long intact = 0;
+        for (int i = 0; i < kOwn; ++i) {
+            unsigned char texel[4] = {0, 0, 0, 0};
+            if (!is_texture(own[i])) {
+                printf("     texture %u is gone\n", own[i]);
+                continue;
+            }
+            bind_texture(0x0DE1, own[i]);
+            // Its size first: read whole, a texture that is no longer one
+            // texel is written into a four-byte buffer (the first version of
+            // this check crashed there, on a 4096x4096 atlas under name 1).
+            int width = 0;
+            int height = 0;
+            level_parameter(0x0DE1, 0, 0x1000 /*GL_TEXTURE_WIDTH*/, &width);
+            level_parameter(0x0DE1, 0, 0x1001 /*GL_TEXTURE_HEIGHT*/, &height);
+            if (width != 1 || height != 1) {
+                printf("     texture %u is %dx%d now, not the 1x1 it was made\n", own[i], width,
+                       height);
+                continue;
+            }
+            get_tex_image(0x0DE1, 0, 0x1908, 0x1401, texel);
+            if (texel[0] == 20 + 20 * i && texel[1] == 7 && texel[2] == 9) {
+                ++intact;
+            } else {
+                printf("     texture %u holds %d,%d,%d where it was given %d,7,9\n", own[i],
+                       texel[0], texel[1], texel[2], 20 + 20 * i);
+            }
+        }
+        while (get_error() != 0) {
+        }
+        printf("     in the second window: %ld foreign pixel(s), %ld GL error(s) after its "
+               "swaps, %ld of %d of its own textures intact\n",
+               foreign_b, errors, intact, kOwn);
+        check(foreign_b == 0, "the overlay draws nothing in a context its backend does not live in");
+        check(errors == 0, "and leaves no GL error in that context's queue");
+        check(intact == kOwn, "and that context's own textures are untouched, name for name");
+        check(lines_containing(log_path, "does not live in") >= 1,
+              "and the log says why the second window has no overlay");
+
+        // And the second window alone, for longer than the hand-over's two
+        // seconds: the first context is alive and silent -- a loading screen
+        // kept for its loader -- and the overlay has to move to the window the
+        // game is actually showing, or that window has none for the session.
+        const long moved_before = lines_containing(log_path, "moving the overlay");
+        frames_b(180, true);  // ~3 s at 16 ms a frame
+        read_buffer(0x0404 /*GL_FRONT*/);
+        read_pixels(0, 0, W, H, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, pixels_b);
+        long moved = 0;
+        for (long i = 0; i < (long)W * H; ++i) {
+            const int dr = pixels_b[i * 4 + 0] > 26 ? pixels_b[i * 4 + 0] - 26 : 26 - pixels_b[i * 4 + 0];
+            const int dg = pixels_b[i * 4 + 1] > 38 ? pixels_b[i * 4 + 1] - 38 : 38 - pixels_b[i * 4 + 1];
+            const int db = pixels_b[i * 4 + 2] > 51 ? pixels_b[i * 4 + 2] - 51 : 51 - pixels_b[i * 4 + 2];
+            if (dr > 40 || dg > 40 || db > 40) {
+                ++moved;
+            }
+        }
+        printf("     the second window alone for three seconds: %ld foreign pixel(s), %ld GL "
+               "error(s) in all\n", moved, errors);
+        check(lines_containing(log_path, "moving the overlay") == moved_before + 1,
+              "once the first context has been silent, the overlay moves to the one presenting");
+        check(moved > 500, "and draws there");
+        check(errors == 0, "with no GL error left in that context's queue");
+
+        make_current(display, window, context);
+        destroy(display, context_b);
+        // The first window again: the second context is gone, so its backend
+        // went with it (the destroy hook) and the first gets one of its own.
+        run_frames(45);
     }
 
     // Somebody joins, six times, each with a colour emoji nobody in the channel

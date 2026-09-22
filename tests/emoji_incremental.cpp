@@ -117,8 +117,16 @@ int main() {
     const auto body_now = [] { return const_cast<ImFont*>(vocem::fonts().body); };
     const auto strong_now = [] { return const_cast<ImFont*>(vocem::fonts().strong); };
 
+    // The glyphs a fold adds, counted: one per weight per emoji, and nothing
+    // else. A fold that rebuilt the whole lookup table appended a second TAB
+    // glyph each time (BuildLookupTable's "FIXME: Flaky" branch), which is the
+    // countable trace of the rebuild entry 209 took out -- 984,119 entries a
+    // weight with a sequence key in the font, 1.6 to 4.2 ms a fold.
+    const int glyphs_before = body_now()->Glyphs.Size;
+    const unsigned arrivals = sizeof(kArrivals) / sizeof(kArrivals[0]);
+
     // Now people arrive, one per frame, each with an emoji nobody had seen.
-    for (unsigned i = 0; i < sizeof(kArrivals) / sizeof(kArrivals[0]); ++i) {
+    for (unsigned i = 0; i < arrivals; ++i) {
         const Arrival& arrival = kArrivals[i];
         char name[128];
         snprintf(name, sizeof(name), "somebody %s", arrival.utf8);
@@ -132,6 +140,10 @@ int main() {
                  vocem::fonts_build_count());
         check(vocem::fonts_build_count() == 1, said);
     }
+    printf("     the body font grew by %d glyphs for %u folded emoji\n",
+           body_now()->Glyphs.Size - glyphs_before, arrivals);
+    check(body_now()->Glyphs.Size - glyphs_before == static_cast<int>(arrivals),
+          "each fold adds its glyph and nothing else: the lookup table is not rebuilt");
 
     // The fold is not an excuse to draw nothing: every one of them, in both
     // weights, with colour in the pixels.

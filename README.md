@@ -399,21 +399,25 @@ the source.
 
 ### 5. What it costs a game
 
-* A program that never draws a frame pays for one mapping of an 18 KB file: 24 kB
-  resident, 8 kB of that its own share, measured in three processes of a live
-  session.
-* A program that draws but is not a game loads the overlay library, 56 kB
-  resident and 20 kB of it its own share on the same measurement, decides once,
-  and draws nothing. On a desktop session that is most graphical applications.
+* A program that never draws a frame pays for one mapping of an 18 KB file: 16
+  to 24 kB resident, 0 to 8 kB of that its own share, measured across the 134
+  processes of a live session that had it mapped.
+* A program that draws but is not a game loads the overlay library, 150 to
+  420 kB resident and 78 to 182 kB of it its own share in the four processes
+  measured, decides once, and draws nothing. On a desktop session that is most
+  graphical applications.
 * A game that gets the overlay also holds its font atlas, and that is the large
-  number: 16 MB of glyph coverage plus a 64 MB RGBA copy at a 4K display's text
-  size, 80 MB in all. It is built at the first frame that draws something and
-  kept until the overlay is switched off, the daemon stops, or the game exits.
+  number: 64 MB of RGBA at a 4K display's text size, once the 16 MB coverage
+  image it is widened from has been freed. It is built at the first frame that
+  draws something and kept until the overlay is switched off, the daemon stops,
+  or the game exits.
   Six fonts are merged into each of two weights, which is what buys the coverage.
-* The Vulkan layer does its expensive work after the frame has been presented:
-  the font atlas and every avatar upload. The OpenGL interposer has no
-  after-the-present to work in, because it is the swap call itself, so its
-  uploads and its atlas builds are inside that call, one upload per frame.
+* The first font atlas is rasterised on a thread of its own beside the game, on
+  both paths, and the panel appears a frame or two after it is ready. The Vulkan
+  layer does the rest of its expensive work after the frame has been presented:
+  uploads and later rebuilds. The OpenGL interposer has no after-the-present to
+  work in, because it is the swap call itself, so its uploads and later rebuilds
+  are inside that call, one avatar upload per frame.
 
 ### 6. OpenGL games
 

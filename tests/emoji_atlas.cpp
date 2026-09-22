@@ -147,7 +147,7 @@ int main() {
             }
         });
         check(key != 0 && codepoints == 7, "Fazen, the lime's key and the lemon: seven codepoints");
-        check(vocem::ensure_fonts(16.0f, 16.0f), "the key rebuilds the atlas like any new emoji");
+        check(vocem::ensure_fonts(16.0f, 16.0f), "the key is folded into the atlas like any new emoji");
         const ImFontGlyph* lime_body = body_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
         const ImFontGlyph* lime_strong = strong_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
         check(lime_body && lime_body->Colored, "the lime is a coloured glyph in the body weight");
@@ -234,7 +234,8 @@ int main() {
     check(pizza && pizza->Colored,
           "and an emoji arriving after them is still coloured");
 
-    // The cap. The seen table holds 96 codepoints; the mechanism past it --
+    // The cap. The atlas takes 96 bank glyphs (the seen table, which only
+    // remembers verdicts, holds 512 -- entry 118); the mechanism past it --
     // cap check above the bank lookup, the refusal said out loud by
     // fonts_emoji_status() -- had no witness until here: nothing failed
     // against a build that mishandled the table being full. Emoticons and
@@ -251,7 +252,7 @@ int main() {
     }
     check(vocem::fonts_emoji_status() != nullptr,
           "past the cap, the refusal is said rather than silent");
-    check(vocem::ensure_fonts(16.0f, 16.0f), "the flood of new emoji rebuilds once");
+    check(vocem::ensure_fonts(16.0f, 16.0f), "the flood of new emoji is folded in at once");
     // A fresh bank emoji arriving after the cap stays monochrome: noted-and-
     // refused costs no lookup and triggers no rebuild.
     vocem::fonts_note_emoji("\xF0\x9F\x9A\xB2");  // bicycle, U+1F6B2, in the bank

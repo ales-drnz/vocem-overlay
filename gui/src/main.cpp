@@ -35,6 +35,7 @@
 #include <QQuickWindow>
 #include <QTimer>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -497,9 +498,18 @@ int main(int argc, char* argv[]) {
         // that has to be outlived -- leave it alone, because shortening it would
         // change what they measure. The first step always waits the full 700:
         // that one is the window coming up.
+        // A value that is not a number keeps the 700 and says so: toInt() reads
+        // "abc" or "700ms" as 0, which is the fastest walk and not the default.
         int step_ms = 700;
         if (const char* asked = std::getenv("VOCEM_CONFIG_STEP_MS"); asked && *asked) {
-            step_ms = qBound(0, QString::fromLocal8Bit(asked).toInt(), 5000);
+            bool number = false;
+            const int value = QString::fromLocal8Bit(asked).toInt(&number);
+            if (number) {
+                step_ms = qBound(0, value, 5000);
+            } else {
+                std::fprintf(stderr, "VOCEM_CONFIG_STEP_MS=%s is not a number; stepping at 700 ms\n",
+                             asked);
+            }
         }
         auto* step = new QTimer(window);
         auto* index = new int(0);

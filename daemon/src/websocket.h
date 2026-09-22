@@ -53,8 +53,11 @@ public:
     void close();
 
     // A flag this client reads while it waits: the daemon's SIGTERM handler
-    // sets it, and every poll() in here is taken in slices so that a stop is
-    // noticed rather than waited out. Without it the handshake's own deadline
+    // sets it, the connect's and the handshake's waits are taken in slices, and
+    // every read and write loop reads it on each turn, so that a stop is
+    // noticed rather than waited out -- by a silent peer or by one trickling a
+    // byte at a time (entry 196). recv()'s own wait is bounded by its caller's
+    // one second instead. Without it the handshake's own deadline
     // was honoured to the letter -- ten seconds of it, inside a stop the unit
     // gives ten (websocket.cpp, kStopSliceMs). Optional: the bounds tests
     // construct this client without one.

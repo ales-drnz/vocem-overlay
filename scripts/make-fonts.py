@@ -190,7 +190,7 @@ def fetch(url: str, destination: Path, repin: bool = False) -> Path:
 def main() -> int:
     repin = "--repin" in sys.argv
     # One name per font, and the cleanup at the bottom of the file walks the
-    # same PINS table rather than repeating them: two of the six are not
+    # same PINS table rather than repeating them: two of the six were not
     # matched by .gitignore's "-Variable.ttf" pattern, and the unlinks used to
     # be the last statements of main() with no try/finally, so an interrupted
     # run left whatever it had fetched sitting untracked in third_party/fonts.
@@ -251,9 +251,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     # The fetched originals go whatever happens -- an exception, a Ctrl-C, a
-    # refused pin. They are large, two of the six are not covered by
-    # .gitignore's pattern, and what is committed is the subsets under
-    # common/fonts/.
+    # refused pin. They are large, two of the six are ignored only by name
+    # rather than by .gitignore's pattern, and what is committed is the
+    # subsets under common/fonts/.
     try:
         status = main()
     finally:

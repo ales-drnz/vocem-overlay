@@ -8,8 +8,9 @@
 // (vocem/avatar_rgba.h is the whole format); this only turns them into Vulkan
 // images. Two rules shape the design:
 //
-//   * Uploading needs a command buffer submit and a fence wait, so it happens in
-//     the post-present phase, never inside vkQueuePresentKHR (layer rule 10).
+//   * Uploading needs a command buffer submit, so it happens in the
+//     post-present phase, never inside vkQueuePresentKHR (layer rule 10). The
+//     fence is not waited for: a later call frees what it says is done.
 //   * One upload per frame at most. A busy channel filling up must not cost a
 //     visible hitch; a few frames without an avatar is invisible.
 
@@ -74,25 +75,30 @@ public:
     // The font atlas's texture, owned here rather than by imgui_impl_vulkan
     // (entry 192). The stock ImGui_ImplVulkan_CreateFontsTexture replaces the
     // whole 64 MB image between two vkQueueWaitIdle on the game's queue --
-    // 34 to 44 ms of every arrival once the rebuild was gone -- and a new
+    // 36 to 43 ms of every arrival once the rebuild was gone -- and a new
     // colour emoji changes a 32x32 square of it. The backend cannot update a
     // part of its image and is a submodule, not ours to patch; its NewFrame
     // does nothing but create that texture lazily, so the renderer does not
     // call it and hands ImGui this one through SetTexID instead.
     //
     // upload_font_atlas: the whole atlas into a new image, after a real
-    // build. Waits the queue idle first when an old image exists, exactly as
-    // the stock upload does, because the frames in flight may still sample it
-    // and it is about to be destroyed. The copy itself is not waited for:
-    // its staging buffer is retired like a region update's. Returns the
-    // descriptor for SetTexID, or 0 on failure. Post-present only.
+    // build. The new image and its staging buffer are made FIRST, and only
+    // then is the old one retired -- after a queue idle, exactly as the stock
+    // upload waits, because the frames in flight may still sample it -- so a
+    // replacement that fails (64 MB twice, the moment memory is short) leaves
+    // the descriptor handed out before it alive rather than freed under
+    // ImGui's TexID. The copy itself is not waited for: its staging buffer is
+    // retired like a region update's. Returns the descriptor for SetTexID, or
+    // 0 on failure. Post-present only.
     ImTextureID upload_font_atlas(const unsigned char* rgba, uint32_t width, uint32_t height);
     // update_font_atlas: only the squares a fold wrote, copied into the image
-    // that is already live, with no wait at all: the copy is ordered after
-    // the frames that sample it by a barrier on the same queue, and before
-    // the next one by queue order. The staging buffer is freed on a later
-    // call once its fence has signalled. False when the image does not match
-    // the atlas -- the caller then uploads it whole.
+    // that is already live, with no CPU wait: the copy is ordered after the
+    // frames that sample it by a barrier on the same queue, and before the
+    // next one by queue order. Up to kFontCopiesInFlight copies are in flight
+    // at once, each freed on a later call once its fence has signalled; only
+    // when all of them are still copying does the oldest get waited for. False
+    // when the image does not match the atlas -- the caller then uploads it
+    // whole.
     bool update_font_atlas(const unsigned char* rgba, uint32_t atlas_width,
                            uint32_t atlas_height, const AtlasRegion* regions, uint32_t count);
 
@@ -112,10 +118,24 @@ private:
     bool create_image(uint32_t width, uint32_t height, Texture* texture);
     bool create_staging(VkDeviceSize size, VkBuffer* buffer, VkDeviceMemory* memory,
                         void** mapped);
+    // A copy into the font image still on the GPU: its fence, its command
+    // buffer and its staging buffer, freed together once the fence has
+    // signalled.
+    struct FontCopy {
+        VkFence fence = VK_NULL_HANDLE;
+        VkCommandBuffer command = VK_NULL_HANDLE;
+        VkBuffer staging = VK_NULL_HANDLE;
+        VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+        uint64_t order = 0;
+    };
     void destroy_font();
-    // Frees the last region update's staging buffer and command buffer once
-    // its fence has signalled, or waits for it when `wait` is set.
-    void retire_font_update(bool wait);
+    // Frees every font copy whose fence has signalled, or waits for all of
+    // them when `wait` is set (the image is about to go).
+    void retire_font_copies(bool wait);
+    void free_font_copy(FontCopy& copy);
+    // An empty slot for the next copy: the ones already done are freed first,
+    // and only with every slot still copying is the oldest waited for.
+    FontCopy& take_font_copy();
     uint32_t find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags properties) const;
     void destroy(Texture& texture);
 
@@ -159,11 +179,17 @@ private:
     Texture font_;
     uint32_t font_width_ = 0;
     uint32_t font_height_ = 0;
-    // The region update still in flight, if any.
-    VkFence font_fence_ = VK_NULL_HANDLE;
-    VkBuffer font_staging_ = VK_NULL_HANDLE;
-    VkDeviceMemory font_staging_memory_ = VK_NULL_HANDLE;
-    VkCommandBuffer font_command_ = VK_NULL_HANDLE;
+    // The copies into it still in flight. One used to be all, and the next
+    // update waited for it with WaitForFences(UINT64_MAX) -- a fence that
+    // covers everything submitted before it on the game's queue, so a fold one
+    // frame after the whole atlas went up (the panel appearing in a channel
+    // that already has an emoji in it) or after another fold stood the game's
+    // thread still for the frames the GPU was behind. Measured with a GPU
+    // held behind in tests/texture_font_copies.cpp: one wait per such fold
+    // before, none now.
+    static constexpr uint32_t kFontCopiesInFlight = 4;
+    FontCopy font_copies_[kFontCopiesInFlight];
+    uint64_t font_copy_order_ = 0;
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;

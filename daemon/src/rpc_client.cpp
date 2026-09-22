@@ -376,12 +376,14 @@ void RpcClient::apply_notification(const json& data) {
         : str_field(data, "body").empty() ? "from the message's content"
                                           : "from the notification's body");
     {
-        // The sender, never the text: the journal is the Debug section's
-        // log, and the body's privacy rule (Session::publish) applies to it
-        // too. Sanitised, because the journal is lines and a name is not
-        // allowed to be two of them.
-        char note[160];
-        std::snprintf(note, sizeof(note), "notification from %.100s", sender.c_str());
+        // That a message arrived and how long it was, and nothing about who
+        // sent it or where: the journal is a file that outlives the session
+        // (twenty are kept for the Debug section), and the title is the
+        // sender's name with the guild and the channel -- exactly what entry
+        // 163 retired from the segment the moment the toast is over. This line
+        // used to carry it, for twenty sessions (entry 197).
+        char note[96];
+        std::snprintf(note, sizeof(note), "notification received (%zu bytes of text)", body.size());
         journal_note(note);
     }
     session_.notify(author_id, title, body, avatar);

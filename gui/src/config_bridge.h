@@ -653,7 +653,8 @@ signals:
 
 private:
     void persist();
-    void persistNow();
+    // The one switch that was clicked, written on top of the file (config.h).
+    void persistNow(bool vocem::Config::*which);
     // One numeric setting, held to config.h's bounds by its key (Config::clamped)
     // rather than by a copy of the numbers here -- there were fifteen copies.
     void setNumber(const char* key, float vocem::Config::*member, qreal value);

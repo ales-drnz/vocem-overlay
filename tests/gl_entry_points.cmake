@@ -70,6 +70,21 @@ foreach(library IN LISTS libraries)
                                 "a second hook table is growing back (entry 45)")
         endif()
     endforeach()
+    # And nothing else at all (entry 16): hidden visibility holds our own code
+    # to the four names and cannot hold the libstdc++ templates the library
+    # instantiates, which is how a build without LTO came to export four of
+    # them (entry 195) while this test, reading only the vocem_gl_* lines,
+    # passed.
+    string(REGEX MATCHALL "[0-9a-f]+ [A-Za-z] [^\n]+" defined_raw "${symbols}")
+    foreach(line IN LISTS defined_raw)
+        string(REGEX REPLACE "^[0-9a-f]+ [A-Za-z] " "" name "${line}")
+        list(FIND asked "${name}" position)
+        if(position EQUAL -1)
+            message(FATAL_ERROR "${library} exports ${name}, which is not one of the entry "
+                                "points the shim resolves: an injected library exports its "
+                                "entry points and nothing else (entry 16)")
+        endif()
+    endforeach()
     message(STATUS "ok ${library}: exactly the ${asked_count} names the shim resolves")
 endforeach()
 

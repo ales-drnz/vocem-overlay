@@ -273,23 +273,26 @@ void ConfigBridge::persist() {
 // switch that does nothing until a button on some other page is pressed is a
 // broken switch. Written straight through, on top of the file as it stands, so a
 // half-finished edit on another page is neither applied nor lost.
-void ConfigBridge::persistNow() {
-    // On top of the file as it is NOW, not as it was when this window started:
-    // Config::write_switches loads it fresh, sets the three, and saves.
+void ConfigBridge::persistNow(bool vocem::Config::*which) {
+    // On top of the file as it is NOW, not as it was when this window started,
+    // and only the switch that moved: Config::write_switch loads the file
+    // fresh, sets that one key, and saves.
     vocem::Config written;
-    const bool saved = vocem::Config::write_switches(config_.enabled, config_.panel_enabled,
-                                                     config_.notifications_enabled, &written);
+    const bool saved = vocem::Config::write_switch(which, config_.*which, &written);
     if (reportSave(saved)) {
         saved_ = written;
         saved_.start_at_login = config_.start_at_login;
         // This write IS the file moving under the window, and `written` is the
         // file as it now stands -- every key, including anything edited outside
-        // since this window opened, which write_switches reloads rather than
-        // overwrites (entry 136). The timestamp is advanced here, so
-        // reloadIfMoved() will never look at those keys again: without the line
-        // below the window went on showing its own morning copy, the Apply
+        // since this window opened, which write_switch reloads rather than
+        // overwrites (entry 136). The copy the window shows and Apply writes
+        // takes it from here, when nothing is waiting for Apply: without the
+        // line below the window went on showing its own morning copy, the Apply
         // button stayed grey because nothing was pending, nothing said the two
         // differed, and the next Apply wrote the window's copy over the edit.
+        // The timestamp is not advanced: the next sweep reloads the file it
+        // just wrote, which changes nothing, and a write that lands between
+        // this save and that sweep is read rather than adopted unread.
         //
         // With an edit waiting for Apply the window keeps its own copy, exactly
         // as reloadIfMoved decides it: Apply means "what the window shows".
@@ -1419,7 +1422,7 @@ void ConfigBridge::setPanelEnabled(bool value) {
         return;
     }
     config_.panel_enabled = value;
-    persistNow();
+    persistNow(&vocem::Config::panel_enabled);
 }
 
 void ConfigBridge::setAvatarSize(qreal value) {
@@ -1683,7 +1686,7 @@ void ConfigBridge::setNotificationsEnabled(bool value) {
         return;
     }
     config_.notifications_enabled = value;
-    persistNow();
+    persistNow(&vocem::Config::notifications_enabled);
 }
 
 // Upright or sideways. Refused rather than clamped for anything else: an
@@ -1757,5 +1760,5 @@ void ConfigBridge::setEnabled(bool value) {
         return;
     }
     config_.enabled = value;
-    persistNow();
+    persistNow(&vocem::Config::enabled);
 }

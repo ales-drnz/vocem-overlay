@@ -104,7 +104,9 @@ RowLayout {
 
         // Held in a plain property and only replaced when the enumeration
         // itself changed: a model bound straight to config.displays would be
-        // reassigned on every state tick.
+        // reassigned on every displaysChanged, the enumeration's own signal
+        // since entry 139, and a ComboBox whose model is replaced goes back to
+        // row 0.
         //
         // **Assigned, not bound.** It used to be initialised with an expression
         // over `config.displays`, which is a NOTIFY property -- so that
