@@ -1,40 +1,43 @@
-## [0.1.10] - 2026-09-19
+## [0.1.10] - 2026-09-22
 
 ### Added
 
-- The avatars of the people not talking are quieter, as their names are, set by the new Quiet avatars slider on the Appearance page: 55% by default, 100% keeps every avatar lit.
+- The avatars of the people not talking are dimmed like their names, set by the new Quiet avatars slider on the Appearance page.
 
 ### Fixed
 
-- Somebody joining a channel, or a message arriving, no longer freezes the game: a new colour emoji cost a Vulkan game 150 to 200 ms and an OpenGL one 125 to 145, and now costs a few milliseconds.
-- A Vulkan game in a window builds the overlay's font atlas once when the panel first appears, not twice.
-- The panel's first appearance in a game no longer stops it for 180 ms: the font atlas is built beside the game instead of inside its frame.
-- People without an avatar share one picture instead of one copy each, and a new face never makes a Vulkan game wait for the GPU.
-- The Vulkan layer's drawing waits for the game's frame before reading it, as the Vulkan specification requires. Only a validation layer placed below the overlay could see the difference.
-- A game that destroys the OpenGL context it was drawing in and creates another keeps its overlay: the panel came back without its text, and often took the game down with it.
-- The overlay's font atlas outlives the context it was built for, so a game cycling contexts no longer pays 133 ms of rasterisation for each one.
-- Stopping the overlay hands back what every running game was holding for it: the font atlas, the renderer's objects and a texture per face, 81 MB in a three-person channel.
-- Switching the overlay off hands the Vulkan layer's renderer and font atlas back too. That half had never released anything, on any path out of a game.
-- The Vulkan layer builds its renderer only while the daemon is publishing and only for a frame with something on it. A game it was allowed to draw in built the whole thing, atlas included, with nobody in a voice channel.
-- A game notices the overlay stopping within a second, whatever its frame rate. The wait was a count of frames: two seconds at 144 of them and ten at thirty.
-- Restarting the daemon no longer costs every running game its font atlas. A daemon that had been replaced was read as one that had stopped, and each game rasterised its glyphs again.
-- A Flatpak game drawing through OpenGL with the overlay switched off is served a cleared state, not the channel and every face. The daemon was told the sandbox was drawing, and the log said the same.
-- Hiding a running game on the Applications page is written to the log, with the reason. The overlay left the game within two seconds and nothing recorded why.
-- Emoji sequences draw as one glyph inside a game that is itself a Flatpak. The extension shipped the bank without the table that has to sit beside it, so 0.1.9's fix reached every game but those.
-- The Flatpak extension carries the licence texts of the six fonts and of Dear ImGui that its libraries are built from, as both packages already did.
-- `vocem-run` preloads the shim from the directory it was installed in. It named `/usr` whatever the prefix was, so after an install under `~/.local` it started every program with a preload error and no overlay.
-- A message's words leave every Flatpak sandbox when the daemon stops. The tray's Quit left the last message's text in the sandbox of every game that was drawing, until logout.
-- Who sent a message leaves the shared segment when its toast ends, as the words already did. The sender's name, the channel and the time stayed in the segment every game maps until the next message.
-- A stop reaches the daemon within a second while it is waiting on a peer that accepted the connection and said nothing. It waited the whole handshake out and was killed with the segment still published.
-- A Discord session that ends as soon as it starts is retried once a second. Discord restarting could make the daemon reconnect thousands of times a second, flickering every game's panel on and off.
-- A message's words are retired on time while the daemon is looking for Discord across its ten ports. A port that accepted and said nothing held them for the whole walk.
-- A directory under the runtime app directory that no Flatpak made is refused once instead of once a second, and so are the two refusals beside it.
-- The settings window keeps the display pinned in "Map shows" when a monitor is plugged in, unplugged or re-moded. The dropdown fell back to "Automatic" while the map under it went on drawing the pinned display.
-- The window's map and preview draw the voice panel faint while its switch is off, as they already did for messages. They drew it at full strength for a game that was drawing nothing.
-- A row's description and its label are both drawn as plain text. A description carries a record's own fields, written from inside another process.
-- Switching the overlay off or on no longer discards a settings file edited outside the window, and says so when that write fails.
-- `vocem-why` says it could not look inside a process instead of reporting that the overlay is absent from it. It read a memory map it had no permission to read as an empty one.
-- The daemon declines a message that nests past 64 levels instead of parsing it. One 8 MiB message of brackets cost 624 MB, enough for the memory limit to end the daemon and leave its segment behind.
+- A new colour emoji in a name or a message no longer freezes the game for up to 200 ms.
+- The panel's first appearance costs a game about 50 ms instead of 180: the font atlas is built beside the game.
+- A Vulkan game in a window builds the font atlas once, not twice.
+- A Vulkan game no longer waits for the GPU when a face or an emoji arrives.
+- People without an avatar share one upload of their default picture.
+- The Vulkan layer waits for the game's frame before drawing over it, as the specification requires.
+- A Vulkan game short of memory no longer draws with a font texture that has been freed.
+- A Vulkan game that recreates its instance no longer keeps the previous font atlas, up to 64 MB each time.
+- An OpenGL game with a second window keeps that window's textures, and the overlay follows the game to its second context.
+- A game that recreates its OpenGL context keeps its overlay and no longer rebuilds the font atlas for it.
+- The font atlas takes 16 MB less memory in every game that draws the overlay.
+- Stopping the overlay or switching it off hands back what every game was holding for it.
+- The Vulkan layer builds its renderer only when there is something to draw.
+- A game notices the overlay stopping within a second, whatever its frame rate.
+- Restarting the daemon no longer costs every running game its font atlas.
+- A Flatpak game with the overlay switched off is no longer sent the channel and its faces.
+- Hiding a running game on the Applications page is written to the log, with the reason.
+- Emoji sequences draw as one glyph in Flatpak games too.
+- The Flatpak extension carries the licences of the fonts and of Dear ImGui.
+- `vocem-run` works after an install under `~/.local`.
+- A message's words and its sender leave every game and sandbox when the toast ends or the daemon stops, and the daemon's journal no longer names who sent it.
+- The daemon stops within a second whatever the peer it is talking to is doing.
+- The daemon no longer reconnects thousands of times a second when Discord restarts.
+- A message's words are retired on time while the daemon is looking for Discord.
+- The Flatpak bridge logs each refusal once instead of every second.
+- The daemon refuses a message too large to parse safely instead of spending hundreds of megabytes on it.
+- The settings window keeps the pinned display when a monitor is plugged in or removed.
+- The window's previews draw the voice panel faint while its switch is off.
+- A row's description is drawn as plain text.
+- The overlay's switches no longer undo settings edited outside the window, and say so when a write fails.
+- `vocem-why` says when it cannot look inside a process instead of reporting the overlay absent.
+- The injected libraries export only their entry points in any build.
 
 ## [0.1.9] - 2026-09-08
 

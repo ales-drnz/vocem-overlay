@@ -287,6 +287,58 @@ else()
     endif()
 endif()
 
+# 4c. And every bullet, unless the metainfo's own comment names the release as
+#     showing fewer. 4b holds the words and allows a subset, and a subset is
+#     how 0.1.10 left out the five bullets it was cut for -- the freeze, the
+#     first appearance, the faces -- with this test green (entry 204). The
+#     subsets are read out of the comment ("subsets: 0.1.6 eight of eleven,
+#     ..."), so an omission has to be written down where the next reader sees
+#     it. Releases written as a paragraph, before the lists existed, are not
+#     lists and are not counted.
+if(NOT metainfo_text MATCHES "subsets: ([^)]*)\\)")
+    list(APPEND problems
+        "the metainfo's comment no longer carries its \"subsets: ...\" sentence, so which releases may show fewer bullets cannot be read.")
+else()
+    string(REGEX MATCHALL "[0-9]+\\.[0-9]+\\.[0-9]+" subset_versions "${CMAKE_MATCH_1}")
+    string(REGEX MATCHALL "<release version=\"[0-9.]+\"[^>]*>.*</release>" releases_blob "${metainfo_text}")
+    set(counted 0)
+    foreach(version IN LISTS metainfo_versions)
+        string(REPLACE "." "\\." version_re "${version}")
+        if(NOT metainfo_text MATCHES "<release version=\"${version_re}\"[^>]*>(.*)")
+            continue()
+        endif()
+        set(tail "${CMAKE_MATCH_1}")
+        string(FIND "${tail}" "</release>" release_end)
+        string(SUBSTRING "${tail}" 0 ${release_end} release_body)
+        string(REGEX MATCHALL "<li>" release_items "${release_body}")
+        list(LENGTH release_items release_item_count)
+        if(release_item_count EQUAL 0)
+            continue()
+        endif()
+        if(NOT changelog_text MATCHES "## \\[${version_re}\\][^\n]*\n(.*)")
+            list(APPEND problems "the metainfo lists ${version}, which has no CHANGELOG section.")
+            continue()
+        endif()
+        set(section "${CMAKE_MATCH_1}")
+        string(FIND "${section}" "\n## [" section_end)
+        if(NOT section_end EQUAL -1)
+            string(SUBSTRING "${section}" 0 ${section_end} section)
+        endif()
+        string(REGEX MATCHALL "\n- " section_bullets "\n${section}")
+        list(LENGTH section_bullets section_bullet_count)
+        list(FIND subset_versions "${version}" is_subset)
+        if(is_subset EQUAL -1 AND NOT release_item_count EQUAL section_bullet_count)
+            list(APPEND problems
+                "the metainfo shows ${release_item_count} of ${version}'s ${section_bullet_count} CHANGELOG bullets and its comment does not name ${version} among the subsets.")
+        endif()
+        math(EXPR counted "${counted} + 1")
+    endforeach()
+    if(counted LESS 4)
+        list(APPEND problems
+            "only ${counted} releases with a bullet list were counted in the metainfo: the parsing is what is broken.")
+    endif()
+endif()
+
 # 5. Newest first, and the newest is either the last release or the one being
 #    written (its entry and its tag are made in one pass).
 set(previous "")
