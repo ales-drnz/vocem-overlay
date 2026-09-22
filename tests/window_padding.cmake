@@ -129,6 +129,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
             "XDG_CACHE_HOME=set:${scratch}/${fixture}/cache"
             "QT_QPA_PLATFORM=set:offscreen"
             "VOCEM_CONFIG_SECTIONS=set:9"
+            "VOCEM_CONFIG_STEP_MS=set:0"
             "VOCEM_CONFIG_SIZE=set:${size}"
             "VOCEM_CONFIG_GEOMETRY=set:${dump}")
     vocem_window_ran("${status}" "${errors}")

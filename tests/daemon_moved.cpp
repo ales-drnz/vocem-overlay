@@ -44,7 +44,9 @@
 // with a private /dev/shm, so the real daemon's segment is never touched, and a
 // private network namespace, so port 6463 is free while Discord is running.
 
+#include <algorithm>
 #include <arpa/inet.h>
+#include <functional>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -114,11 +116,24 @@ bool wait_for(vocem::StateReader& reader, vocem::Snapshot& snapshot, double seco
 // one". Returns how many channel questions were asked, which is itself a
 // measurement -- a daemon that never asks cannot recover. `saw_connection_sub`,
 // when given, records whether the daemon subscribed to VOICE_CONNECTION_STATUS.
+//
+// `done`, when given, ends the serving early: it is asked of the segment every
+// tenth of a second, so a window lasts until what it waits for has happened
+// and not a fixed span. It was only fixed spans -- 3, 12, 8 and 4 s, 27 s a
+// run whatever the daemon did (DESIGN 193).
 int serve(int fd, std::string& buffer, const std::string& answer, double until,
-          bool* saw_connection_sub = nullptr) {
+          bool* saw_connection_sub = nullptr,
+          const std::function<bool()>& done = nullptr) {
     int asked = 0;
     std::string message;
-    while (monotonic() < until && recv_text(fd, buffer, message, until)) {
+    while (monotonic() < until) {
+        if (done && done()) {
+            break;
+        }
+        const double slice = std::min(until, monotonic() + 0.1);
+        if (!recv_text(fd, buffer, message, slice)) {
+            continue;
+        }
         if (saw_connection_sub &&
             message.find("\"cmd\":\"SUBSCRIBE\"") != std::string::npos &&
             message.find("VOICE_CONNECTION_STATUS") != std::string::npos) {
@@ -136,6 +151,32 @@ int serve(int fd, std::string& buffer, const std::string& answer, double until,
     }
     return asked;
 }
+
+// Waits for the daemon's own five-second reconciliation -- a
+// GET_SELECTED_VOICE_CHANNEL nobody prompted -- and answers it with `answer`.
+// What it buys is a clock: `channel_checked` is reset only there
+// (daemon/src/main.cpp), so for five seconds after this returns the daemon
+// will not reconcile again, and anything it asks in that span it asked
+// because of an event. The two claims below that rest on an event (our own
+// voice state going away, the voice connection changing state) send it right
+// after this and require the daemon to follow within two seconds: without the
+// clock, the reconciliation answered them for it and both passed with the
+// event's handling deleted (DESIGN 193, measured by mutation).
+bool await_reconcile(int fd, std::string& buffer, const std::string& answer, double until) {
+    std::string message;
+    while (monotonic() < until && recv_text(fd, buffer, message, until)) {
+        if (message.find("\"cmd\":\"GET_SELECTED_VOICE_CHANNEL\"") != std::string::npos) {
+            send_text(fd, R"({"cmd":"GET_SELECTED_VOICE_CHANNEL","evt":null,"nonce":"chan","data":)" +
+                              answer + "}");
+            return true;
+        }
+    }
+    return false;
+}
+
+// How long the daemon has, after an event, to follow it on its own: well under
+// the five seconds before its next reconciliation can come.
+constexpr double kEventSeconds = 2.0;
 
 // A channel, as either query returns it.
 std::string channel_json(const char* id, const char* name, const char* self_name) {
@@ -226,7 +267,19 @@ int main() {
     const std::string wrapped_name = std::string(fsi) + "Lele" + pdi;
     const std::string first = channel_json("111", "Chilling", wrapped_name.c_str());
 
-    serve(fd, buffer, first, monotonic() + 3.0, &watches_connection);
+    // The segment names `channel` and has its people in it: the name and the
+    // participants are published apart, and the checks after each wait read
+    // both -- a wait that ended at the name alone read an empty user list.
+    const auto names = [&](const char* channel) {
+        return [&reader, &snapshot, channel] {
+            return (reader.valid() || reader.open()) && reader.read(snapshot) &&
+                   snapshot.in_channel && strcmp(snapshot.channel_name, channel) == 0 &&
+                   snapshot.user_count >= 1;
+        };
+    };
+    serve(fd, buffer, first, monotonic() + 8.0, &watches_connection, [&] {
+        return watches_connection && names("Chilling")();
+    });
     check(watches_connection,
           "it subscribed to VOICE_CONNECTION_STATUS, the documented event for a voice "
           "connection that changed without the client having joined anything");
@@ -242,16 +295,19 @@ int main() {
     // This is what being dragged into another channel looks like from the
     // subscription we still hold on the old one. No VOICE_CHANNEL_SELECT at all.
     const std::string second = channel_json("222", "Gaming", "Lele");
+    check(await_reconcile(fd, buffer, first, monotonic() + 8.0),
+          "the daemon reconciled on its own clock (the start of the span the event is timed in)");
     send_text(fd,
               R"({"cmd":"DISPATCH","evt":"VOICE_STATE_DELETE","nonce":null,)"
               R"("data":{"user":{"id":"99","username":"stub"}}})");
-    const int asked = serve(fd, buffer, second, monotonic() + 12.0);
+    const double moved_at = monotonic();
+    const int asked = serve(fd, buffer, second, moved_at + kEventSeconds, nullptr, names("Gaming"));
+    const double followed = monotonic() - moved_at;
+    printf("     followed the move in %.2f s (the next reconciliation is five away)\n", followed);
     check(asked > 0, "being moved made the daemon ask where it is, rather than assume");
-    check(wait_for(reader, snapshot, 10.0,
-                   [](const vocem::Snapshot& s) {
-                       return s.in_channel && strcmp(s.channel_name, "Gaming") == 0;
-                   }),
-          "and it now names the channel the user is actually in");
+    check(names("Gaming")(),
+          "and it names the channel the user is actually in within two seconds, before its "
+          "own reconciliation could have done it");
     check(snapshot.user_count == 1 && strcmp(snapshot.users[0].name, "Lele") == 0,
           "with that channel's people, not the old channel's");
 
@@ -271,7 +327,10 @@ int main() {
         // a stub that lied forever would be testing the stub.
         const double until = monotonic() + 8.0;
         std::string incoming;
-        while (monotonic() < until && recv_text(fd, buffer, incoming, until)) {
+        while (monotonic() < until && !(asked_by_id && names("Studio")())) {
+            if (!recv_text(fd, buffer, incoming, std::min(until, monotonic() + 0.1))) {
+                continue;
+            }
             if (incoming.find("\"cmd\":\"GET_CHANNEL\"") != std::string::npos) {
                 // And about the right channel: the id the event carried.
                 if (incoming.find("\"channel_id\":\"333\"") != std::string::npos) {
@@ -303,18 +362,20 @@ int main() {
     // is acted on: the payload carries the last twenty pings, so this event
     // arrives while nothing is happening.
     const std::string fourth = channel_json("444", "Musica", "Lele");
+    check(await_reconcile(fd, buffer, third, monotonic() + 8.0),
+          "the daemon reconciled on its own clock again");
     send_text(fd,
               R"({"cmd":"DISPATCH","evt":"VOICE_CONNECTION_STATUS","nonce":null,)"
               R"("data":{"state":"AWAITING_ENDPOINT","pings":[20],"average_ping":20}})");
     send_text(fd,
               R"({"cmd":"DISPATCH","evt":"VOICE_CONNECTION_STATUS","nonce":null,)"
               R"("data":{"state":"VOICE_CONNECTED","pings":[20],"average_ping":20}})");
-    serve(fd, buffer, fourth, monotonic() + 4.0);
-    check(wait_for(reader, snapshot, 8.0,
-                   [](const vocem::Snapshot& s) {
-                       return s.in_channel && strcmp(s.channel_name, "Musica") == 0;
-                   }),
-          "a voice connection that changed state made the daemon ask, and it followed");
+    const double changed_at = monotonic();
+    serve(fd, buffer, fourth, changed_at + kEventSeconds, nullptr, names("Musica"));
+    printf("     followed the connection's change in %.2f s\n", monotonic() - changed_at);
+    check(names("Musica")(),
+          "a voice connection that changed state made the daemon ask, and it followed within "
+          "two seconds, before its own reconciliation could have");
 
     // ---- 4. a notification title carrying the isolates, as Discord composes it
     // for a message written in a channel's chat.

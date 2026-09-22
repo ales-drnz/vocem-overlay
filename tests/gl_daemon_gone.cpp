@@ -244,6 +244,34 @@ int main() {
         }
     };
 
+    // Presents until `ready()` answers or `deadline` passes, asking every
+    // twentieth frame (~60 ms): for the waits that only wait for something to
+    // happen, so they end when it has. They were fixed spans -- 5 and 3 s --
+    // that the suite paid in full on every run whatever the overlay did (DESIGN
+    // 193). The spans that ARE part of a claim stay spans: the first 1.5 s
+    // (below), the second in which the drawing must stop, the restart's gap,
+    // and the four seconds in which a release must NOT happen.
+    const auto present_until_ready = [&](double deadline, const auto& ready) {
+        for (int frame = 0; seconds() < deadline; ++frame) {
+            glClearColor(0.10f, 0.15f, 0.20f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            eglSwapBuffers(display, surface);
+            usleep(3000);
+            if (frame % 20 == 19 && ready()) {
+                return;
+            }
+        }
+    };
+    const auto panel_up = [&] {
+        glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
+        return foreign_pixels() > 10000;
+    };
+
+    // A span and not a condition, measured: the panel is up well before the
+    // memory behind it is all there -- at 32 bits the first frame with a panel
+    // read 308 MB of Pss where the same process holds 372 MB a second later --
+    // and "what it was holding" has to be read once the holding is done, or the
+    // hand-back below is a difference against a moment in the middle of a build.
     present_until(seconds() + 1.5);
     glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
     const long drawn = foreign_pixels();
@@ -267,7 +295,16 @@ int main() {
     glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
     check(foreign_pixels() == 0, "the overlay stops drawing within a second of the daemon going");
 
-    present_until(seconds() + 5.0);
+    // The release comes StatePoll::kReleaseAfterSeconds after the poll that
+    // found the segment gone -- two to three seconds after the unlink -- and
+    // the line is written in the same swap that releases, just before it. So
+    // the wait ends at the line (or five seconds, the old fixed span, as the
+    // deadline), and a quarter of a second of frames after it lets anything the
+    // driver hands back late be handed back before Pss is read.
+    present_until_ready(seconds() + 5.0, [&] {
+        return lines_containing(log_path, "releasing the backend and the font atlas") > 0;
+    });
+    present_until(seconds() + 0.25);
     glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
     const long after_drawn = foreign_pixels();
     const long after = own_pss();
@@ -301,7 +338,7 @@ int main() {
             snprintf(state.users[i].name, sizeof(state.users[i].name), "Ospite %u", i + 1);
         }
     });
-    present_until(seconds() + 3.0);
+    present_until_ready(seconds() + 5.0, panel_up);
     glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, g_pixels);
     const long again = foreign_pixels();
     const long back = own_pss();

@@ -136,9 +136,6 @@ int main() {
         for (int frame = 0; frame < 1000; ++frame) {
             note_every_string();
         }
-        // And a codepoint never seen before, past nothing: this one is ALLOWED
-        // to look, so it stays outside the loop -- proving the loop's silence is
-        // about repetition and not about the filter having stopped everything.
         _exit(0);
     }
     if (pid < 0) {
@@ -166,5 +163,40 @@ int main() {
         return 1;
     }
     printf("ok   1000 frames of the same names: not one file syscall\n");
+
+    // The positive control, which this file described and never ran: a comment
+    // said "a codepoint never seen before" would follow the loop to prove its
+    // silence is about repetition, and the child exited straight after the
+    // loop -- so a filter that stopped nothing, or a text path that never
+    // reached the bank, would have printed the line above just the same (DESIGN
+    // 193). Here the same filter meets a codepoint the warm-up never showed,
+    // whose bank lookup is a pread per step of the search (vocem/emoji_bank.h),
+    // and the child has to die of it.
+    fflush(stdout);
+    const pid_t control = fork();
+    if (control == 0) {
+        // Its death is the expected answer, so it leaves no core behind: without
+        // this every suite run put one SIGSYS dump of this probe into the
+        // machine's coredumpctl, beside the real crashes somebody goes there to
+        // read.
+        prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+        if (!forbid_file_syscalls()) {
+            _exit(77);
+        }
+        char fresh[32];
+        snprintf(fresh, sizeof(fresh), "%s", "Uni \xF0\x9F\xA6\x84");  // U+1F984, not above
+        vocem::fonts_prepare_text(fresh, sizeof(fresh));
+        _exit(0);
+    }
+    int control_status = 0;
+    waitpid(control, &control_status, 0);
+    if (!WIFSIGNALED(control_status)) {
+        printf("FAIL a codepoint never seen before was looked up under the same filter and the "
+               "child lived: the filter or the lookup is not what the check above assumes, so "
+               "its silence proves nothing\n");
+        return 1;
+    }
+    printf("ok   and the same filter kills a first lookup (signal %d), so it would have caught one "
+           "in the loop\n", WTERMSIG(control_status));
     return 0;
 }

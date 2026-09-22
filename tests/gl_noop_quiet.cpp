@@ -90,10 +90,17 @@ int count_requests() {
 }
 
 // Parent mode: run self in child mode with a chosen environment, read the rate.
-bool child_rate(const char* self, const char* environment, double& rate) {
+// Started and read in two halves so the two children run at once: each counts
+// the requests on its own X connection, so a neighbour cannot move its figure,
+// and the 1120 vsync-paced swaps of the two -- 8 s one after the other, which
+// was this test's whole cost -- overlap instead (DESIGN 193).
+FILE* start_child(const char* self, const char* environment) {
     char command[4400];
     snprintf(command, sizeof(command), "%s %s --count-requests", environment, self);
-    FILE* pipe = popen(command, "r");
+    return popen(command, "r");
+}
+
+bool child_rate(FILE* pipe, double& rate) {
     if (!pipe) {
         return false;
     }
@@ -155,10 +162,6 @@ int main(int argc, char** argv) {
 
     double disabled = 0.0;
     double declining = 0.0;
-    if (!child_rate(self, "VOCEM_DISABLE=1", disabled)) {
-        printf("skip the disabled baseline could not run (no GLX here?)\n");
-        return 77;
-    }
     // The declining child also logs to a file, which is the positive control:
     // "declining" and "disabled" make the same silence on the X wire, so
     // without this the comparison below is satisfied by a library that never
@@ -169,7 +172,15 @@ int main(int argc, char** argv) {
     char decline_log[700];
     snprintf(decline_log, sizeof(decline_log), "%s/decline.log", root);
     snprintf(decline_env, sizeof(decline_env), "VOCEM_DEBUG=1 VOCEM_LOG_FILE=%s", decline_log);
-    if (!child_rate(self, decline_env, declining)) {
+    FILE* disabled_child = start_child(self, "VOCEM_DISABLE=1");
+    FILE* declining_child = start_child(self, decline_env);
+    const bool disabled_ran = child_rate(disabled_child, disabled);
+    const bool declining_ran = child_rate(declining_child, declining);
+    if (!disabled_ran) {
+        printf("skip the disabled baseline could not run (no GLX here?)\n");
+        return 77;
+    }
+    if (!declining_ran) {
         printf("FAIL the active child could not run\n");
         return 1;
     }

@@ -56,9 +56,16 @@ function(now_ms out)
 endfunction()
 
 # One run of the window: the Debug section (which reads the preload property)
-# once, offscreen, with `${stub}` first on PATH and no shim in LD_PRELOAD (a
+# three times, offscreen, with `${stub}` first on PATH and no shim in LD_PRELOAD (a
 # hit there is answered without asking systemctl, which is not the case under
 # measurement). Returns the run's wall time in milliseconds.
+#
+# Three grabs and not one, because the walk has to outlast the slow stub: a
+# window that exits while `sleep` is still running leaves it holding the
+# stderr pipe this function reads, and execute_process then waits for the
+# sleep -- which would charge the fix with the very 2.5 s it removed. "8,8,8"
+# is about 4.7 s; the walk was every section up to 8, 11 s, until the suite's
+# review (DESIGN 193) took out the pages this test never reads.
 function(time_run stub out)
     now_ms(before)
     execute_process(
@@ -74,7 +81,7 @@ function(time_run stub out)
             "XDG_CACHE_HOME=set:${scratch}/cache"
             "XDG_DATA_HOME=set:${scratch}/data"
             "QT_QPA_PLATFORM=set:offscreen"
-            "VOCEM_CONFIG_SECTIONS=set:8"
+            "VOCEM_CONFIG_SECTIONS=set:8,8,8"
             "VOCEM_CONFIG_GEOMETRY=set:${scratch}/${stub}.json")
     now_ms(after)
     # window_status.cmake's rule, in a function that cannot use its macro

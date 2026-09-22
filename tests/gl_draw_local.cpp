@@ -188,14 +188,21 @@ int main() {
     // tell it from the daemon, which is the point.
     vocem::StateWriter writer;
     check(writer.open(), "the private state segment opens");
-    writer.publish([arrivals](vocem::SharedState& state) {
+    writer.publish([arrivals, early_exit](vocem::SharedState& state) {
         state.connected = 1;
         state.in_channel = 1;
         state.status = 2;  // Connected
         // The arrivals scene publishes the owner's display from the first
         // frame, as vocemd always does: otherwise the first arrival is also a
         // change of size, which is a real rebuild and not what it measures.
-        if (arrivals) {
+        // And so does early-exit, for a reason of its own: its whole subject is
+        // a context that dies while the atlas worker is still rasterising, and
+        // the drawable's own height gives an 11 px atlas that is built in a few
+        // frames. Under a loaded machine (the suite at -j16) two frames were
+        // slower than that build, the atlas landed before the teardown, and the
+        // scene's own precondition failed in two runs of three (DESIGN 193). At
+        // the display's 32 px the build is ~120 ms against two frames.
+        if (arrivals || early_exit) {
             state.display_height = 2160;
         }
         snprintf(state.channel_name, sizeof(state.channel_name), "dlopen-local");
@@ -282,13 +289,23 @@ int main() {
         }
     };
     if (early_exit) {
-        // vk_present_draw's early-exit, on the OpenGL door: two frames start
+        // vk_present_draw's early-exit, on the OpenGL door: one frame starts
         // the atlas worker, then the context dies and the process exits inside
         // the build. glXDestroyContext reaches release(), which has to wait for
         // the worker; exit reaches the library's destructor, which has to wait
         // too. A guard on the worker's hazard, not a refutation: a library with
         // no worker passes it trivially.
-        run_frames(2);
+        //
+        // ONE frame, and it was two: the second frame was a race between the
+        // build and the frame clock, and under a loaded machine (the suite at
+        // -j16) the second swap came after the atlas was done, so it was
+        // uploaded, the teardown met nothing mid-build, and the precondition
+        // below failed in three runs of eight -- at 11 px and still at 32 px
+        // (DESIGN 193). The worker starts in the first frame (measured, 3 of 3),
+        // and with no second frame there is no present for an upload to happen
+        // in: the teardown meets the build by construction rather than by
+        // timing. A frame drawn DURING the build is every other scene's warm-up.
+        run_frames(1);
         make_current(display, 0, nullptr);
         destroy(display, context);
         XCloseDisplay(display);
@@ -297,6 +314,8 @@ int main() {
         printf("     the overlay started the atlas worker %ld time(s), uploaded an atlas %ld "
                "time(s)\n", started, ready);
         check(started == 1, "the atlas worker was running when the context died");
+        // Guaranteed by the single frame above, and kept: it is what says so if
+        // the scene is ever changed back into a race.
         check(ready == 0, "and no atlas had reached the GPU, so the teardown met it mid-build");
         char cleanup[700];
         snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);

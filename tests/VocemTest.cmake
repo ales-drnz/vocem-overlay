@@ -19,6 +19,15 @@
 #   vocem_script_test(<name> ...) a cmake -P script, with the one skip spelling
 #   vocem_skip(<name> <reason>)   a test that only says why it did not run
 #
+# Every shape but the skip also takes the two words that decide what may run
+# beside it under `ctest -j` (DESIGN 193):
+#   LOCK <resource>...  ctest's RESOURCE_LOCK: never at the same time as
+#                       another test holding the same name
+#   SERIAL              ctest's RUN_SERIAL: never beside anything at all
+# Neither is a default. The suite runs in parallel because it was MEASURED to
+# (eight -j8/-j16 runs), and each lock names the contention a run showed or the
+# inventory found -- a lock nobody measured is how the next one would hide.
+#
 # Two rules every shape carries. A skip is exit code 77 from a compiled probe
 # and the STATUS-prefixed `-- skip ` line from a script or a fallback -- never
 # the bare word, which two passing tests speak in sentences. And a 32-bit
@@ -82,9 +91,19 @@ function(vocem_skip name)
 endfunction()
 
 # The keywords vocem_test and vocem_m32_twin share.
-set(_VOCEM_TEST_FLAGS SKIP IMGUI NO_TEST)
+set(_VOCEM_TEST_FLAGS SKIP IMGUI NO_TEST SERIAL)
 set(_VOCEM_TEST_ONE TIMEOUT)
-set(_VOCEM_TEST_MANY SOURCES LINK ENV ARGS DEFINES INCLUDE COMPILE_OPTIONS LINK_OPTIONS BUILD32)
+set(_VOCEM_TEST_MANY SOURCES LINK ENV ARGS DEFINES INCLUDE COMPILE_OPTIONS LINK_OPTIONS BUILD32 LOCK)
+
+# LOCK and SERIAL, spelled once for every shape.
+function(_vocem_sharing name serial locks)
+    if(serial)
+        set_tests_properties(${name} PROPERTIES RUN_SERIAL ON)
+    endif()
+    if(locks)
+        set_tests_properties(${name} PROPERTIES RESOURCE_LOCK "${locks}")
+    endif()
+endfunction()
 
 # The one definition behind vocem_test and vocem_m32_twin.
 #
@@ -160,6 +179,7 @@ function(_vocem_define name m32)
     if(T_TIMEOUT)
         set_tests_properties(${name} PROPERTIES TIMEOUT ${T_TIMEOUT})
     endif()
+    _vocem_sharing(${name} "${T_SERIAL}" "${T_LOCK}")
 endfunction()
 
 # An executable vocem_<name> and the test <name> that runs it. Keywords above.
@@ -174,7 +194,7 @@ endfunction()
 #   TARGET <name>   the vocem_test whose executable runs (default: <name>)
 #   ENV, ARGS, SKIP, TIMEOUT as above; DEPENDS as the test property
 function(vocem_test_run name)
-    cmake_parse_arguments(PARSE_ARGV 1 R "SKIP" "TARGET;TIMEOUT" "ENV;ARGS;DEPENDS")
+    cmake_parse_arguments(PARSE_ARGV 1 R "SKIP;SERIAL" "TARGET;TIMEOUT" "ENV;ARGS;DEPENDS;LOCK")
     if(R_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "vocem_test_run(${name}): unknown arguments ${R_UNPARSED_ARGUMENTS}")
     endif()
@@ -200,6 +220,7 @@ function(vocem_test_run name)
     if(R_DEPENDS)
         set_tests_properties(${name} PROPERTIES DEPENDS "${R_DEPENDS}")
     endif()
+    _vocem_sharing(${name} "${R_SERIAL}" "${R_LOCK}")
 endfunction()
 
 # The 32-bit twin of a vocem_test_run: the same scenario against the 32-bit
@@ -313,7 +334,7 @@ endfunction()
 # absence cost.
 #   SCRIPT <file>   default <name>.cmake, in this directory
 function(vocem_script_test name)
-    cmake_parse_arguments(PARSE_ARGV 1 S "" "SCRIPT;TIMEOUT" "ARGS")
+    cmake_parse_arguments(PARSE_ARGV 1 S "SERIAL" "SCRIPT;TIMEOUT" "ARGS;LOCK")
     if(S_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "vocem_script_test(${name}): unknown arguments ${S_UNPARSED_ARGUMENTS}")
     endif()
@@ -330,4 +351,5 @@ function(vocem_script_test name)
     if(S_TIMEOUT)
         set_tests_properties(${name} PROPERTIES TIMEOUT ${S_TIMEOUT})
     endif()
+    _vocem_sharing(${name} "${S_SERIAL}" "${S_LOCK}")
 endfunction()

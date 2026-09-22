@@ -76,6 +76,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
             "VOCEM_DRM_ROOT=set:${scratch}/drm"
             "QT_QPA_PLATFORM=set:offscreen"
             "VOCEM_CONFIG_SECTIONS=set:0"
+            "VOCEM_CONFIG_STEP_MS=set:0"
             "VOCEM_CONFIG_GEOMETRY=set:${dump}")
     set(status "${status}" PARENT_SCOPE)
     set(errors "${errors}" PARENT_SCOPE)
@@ -175,6 +176,7 @@ execute_process(
         "QT_QPA_PLATFORM=set:offscreen"
         "VOCEM_DRM_ROOT=set:${single}/drm"
         "VOCEM_CONFIG_SECTIONS=set:0"
+        "VOCEM_CONFIG_STEP_MS=set:0"
         "VOCEM_CONFIG_GEOMETRY=set:${single}/geometry.json")
 
 if(NOT single_status EQUAL 0)
@@ -284,6 +286,7 @@ execute_process(
         "QT_QPA_PLATFORM=set:offscreen"
         "VOCEM_DRM_ROOT=set:${wide}/drm"
         "VOCEM_CONFIG_SECTIONS=set:0"
+        "VOCEM_CONFIG_STEP_MS=set:0"
         "VOCEM_CONFIG_GEOMETRY=set:${wide}/geometry.json")
 if(NOT wide_status EQUAL 0)
     message(FATAL_ERROR "the window failed on the horizontal panel: ${wide_status} ${wide_errors}")

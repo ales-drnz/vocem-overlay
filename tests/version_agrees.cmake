@@ -365,6 +365,7 @@ execute_process(
         "VOCEM_DRM_ROOT=set:${scratch}/drm"
         "QT_QPA_PLATFORM=set:offscreen"
         "VOCEM_CONFIG_SECTIONS=set:0"
+        "VOCEM_CONFIG_STEP_MS=set:0"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
 vocem_window_ran("${window_status}" "${window_errors}")
 

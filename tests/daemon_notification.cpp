@@ -132,6 +132,13 @@ int main(int argc, char** argv) {
         mkdir((base + leaf).c_str(), 0700);
     }
     write_file(base + "/state/vocem/token", "test-token\n");
+    // A one-second toast, from the start. It was written after the message
+    // arrived, which put the daemon's settings re-read (every two seconds,
+    // vocem/live_config.h) in front of the expiry being waited for; read at
+    // startup it costs nothing, and nothing before step 3 waits on the toast's
+    // length -- steps 1 and 2 read the segments the moment the message lands,
+    // with a second of toast and a second of margin still to run (DESIGN 193).
+    write_file(base + "/config/vocem/config.ini", "notification_seconds = 1.0\n");
 
     // The stub Discord: listening before the daemon starts, so its first
     // connection attempt is the one that lands.
@@ -225,8 +232,23 @@ int main(int argc, char** argv) {
         const long before = peak_kb();
         const std::string hostile(8u * 1024 * 1024 - 64, '[');
         send_text(fd, hostile);
-        // A moment for it to be read, refused and dropped.
-        usleep(1500 * 1000);
+        // Read, refused and dropped: the daemon answers its socket in order on
+        // one thread, so an ordinary message sent after the hostile one is
+        // handled after it, and the moment it reaches the segment the hostile
+        // one is behind the daemon -- whatever it cost is in VmHWM. It was a
+        // fixed 1.5 s, which is a guess at how long a parse takes; the parse
+        // this refuses took longer than that when it was not refused.
+        send_text(fd,
+                  R"({"cmd":"DISPATCH","evt":"NOTIFICATION_CREATE","nonce":null,"data":{)"
+                  R"("title":"Before","body":"after-the-hostile-one",)"
+                  R"("message":{"author":{"id":"41","avatar":"","global_name":"Before"}}}})");
+        {
+            vocem::StateReader behind;
+            vocem::Snapshot seen{};
+            wait_for(behind, seen, 8.0, [](const vocem::Snapshot& s) {
+                return s.notification.serial >= 1;
+            });
+        }
         const bool alive = kill(daemon_pid, 0) == 0 && waitpid(daemon_pid, nullptr, WNOHANG) == 0;
         const long after = peak_kb();
         printf("--  8 MiB of '[': the daemon's peak went %ld kB -> %ld kB\n", before, after);
@@ -243,8 +265,9 @@ int main(int argc, char** argv) {
               "and is refused before it is parsed, so it costs no memory worth naming");
     }
 
-    // The message, exactly once. What varies below is the settings file, never
-    // the notification.
+    // The message under test, exactly once -- the second of the run, since the
+    // first only marked the hostile frame as consumed. Nothing below sends
+    // another.
     send_text(fd,
               R"({"cmd":"DISPATCH","evt":"NOTIFICATION_CREATE","nonce":null,"data":{)"
               R"("title":"Someone","body":"THE-SECRET-TEXT",)"
@@ -257,7 +280,7 @@ int main(int argc, char** argv) {
     // be read *after* the notification demonstrably arrived, or an empty body
     // proves only that nothing was published yet.
     const bool arrived = wait_for(reader, snapshot, 8.0, [](const vocem::Snapshot& s) {
-        return s.notification.serial == 1;
+        return s.notification.serial == 2;
     });
     check(arrived, "the notification reached the segment");
     check(strcmp(snapshot.notification.title, "Someone") == 0, "with the author as its title");
@@ -278,7 +301,6 @@ int main(int argc, char** argv) {
     // 3. The toast outlives its seconds and the words go with it. The settings
     // file names a second so the wait is a wait rather than a sleep through
     // the default; the daemon allows itself a second of margin over it.
-    write_file(base + "/config/vocem/config.ini", "notification_seconds = 1.0\n");
     bool gone = false;
     for (int i = 0; i < 120 && !gone; ++i) {
         usleep(100000);

@@ -487,11 +487,26 @@ int main(int argc, char* argv[]) {
                 walk.append(section);
             }
         }
+        // The pause between one grab and the next section, 700 ms unless
+        // VOCEM_CONFIG_STEP_MS says otherwise. It lays nothing out -- the 400 ms
+        // before each grab is the page's moment, and the grab renders
+        // synchronously -- so a test that only reads what each page shows can
+        // ask for 0 and spend half the time (DESIGN 193: window_padding was 36 s
+        // of which 21 were this pause). The tests that use the walk as a CLOCK
+        // -- a journal planted two seconds in, a sweep that has to pass, a stub
+        // that has to be outlived -- leave it alone, because shortening it would
+        // change what they measure. The first step always waits the full 700:
+        // that one is the window coming up.
+        int step_ms = 700;
+        if (const char* asked = std::getenv("VOCEM_CONFIG_STEP_MS"); asked && *asked) {
+            step_ms = qBound(0, QString::fromLocal8Bit(asked).toInt(), 5000);
+        }
         auto* step = new QTimer(window);
         auto* index = new int(0);
         step->setInterval(700);
         QObject::connect(step, &QTimer::timeout, window,
-                         [window, path, geometry_file, index, step, walk] {
+                         [window, path, geometry_file, index, step, walk, step_ms] {
+            step->setInterval(step_ms);
             if (*index >= walk.size()) {
                 if (geometry_file->isOpen()) {
                     // What the run cost, in counts (ConfigBridge::counters):

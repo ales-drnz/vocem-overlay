@@ -149,11 +149,51 @@ int main() {
     // The resample at the sizes the atlas actually asks for, including the two
     // extremes it can reach. Nothing may write past its buffer, which is what
     // the ceiling's static_assert in fonts.cpp exists to keep true.
-    static unsigned char small_scaled[vocem::kEmojiBankRgbaBytes];
+    //
+    // Measured, not merely run: this was `check(true, ...)`, which only a crash
+    // could fail, and a write past the end of a stack or static buffer does not
+    // crash (DESIGN 193). The output sits in a buffer with a guard behind it,
+    // filled with a sentinel before every size: whatever the resample writes
+    // past size*size*4 bytes is in the guard afterwards, and a resample that
+    // writes nothing leaves its own region all sentinel. At one pixel the answer
+    // is known exactly -- the whole glyph's mean, channel by channel -- and at
+    // the bank's own size it is the glyph itself.
+    constexpr size_t kGuard = 256;
+    static unsigned char small_scaled[vocem::kEmojiBankRgbaBytes + kGuard];
+    constexpr unsigned char kSentinel = 0xA5;
+    bool within = true;
+    bool wrote = true;
     for (uint32_t size : {1u, 2u, 11u, 17u, 31u, 32u}) {
+        memset(small_scaled, kSentinel, sizeof(small_scaled));
         vocem::emoji_bank_resample(glyph, small_scaled, size);
+        const size_t used = static_cast<size_t>(size) * size * 4;
+        for (size_t i = used; i < sizeof(small_scaled); ++i) {
+            within = within && small_scaled[i] == kSentinel;
+        }
+        bool any = false;
+        for (size_t i = 0; i < used; ++i) {
+            any = any || small_scaled[i] != kSentinel;
+        }
+        wrote = wrote && any;
+        if (size == 1) {
+            for (int channel = 0; channel < 4; ++channel) {
+                uint64_t sum = 0;
+                for (uint32_t p = 0; p < vocem::kEmojiBankPixels * vocem::kEmojiBankPixels; ++p) {
+                    sum += glyph[p * 4 + channel];
+                }
+                const uint64_t mean = sum / (vocem::kEmojiBankPixels * vocem::kEmojiBankPixels);
+                check(small_scaled[channel] == mean,
+                      "at one pixel the resample is the glyph's mean, channel by channel");
+            }
+        }
+        if (size == vocem::kEmojiBankPixels) {
+            check(memcmp(small_scaled, glyph, vocem::kEmojiBankRgbaBytes) == 0,
+                  "at the bank's own size the resample is the glyph itself");
+        }
     }
-    check(true, "the resample runs at every size between 1 and the bank's own");
+    check(within, "the resample writes nothing past size*size pixels, at every size from 1 to "
+                  "the bank's own");
+    check(wrote, "and writes its own pixels at every one of them");
 
     // The sequence table beside the bank (entry 142). The lime is 🍋 + ZWJ +
     // 🟩, and the font reaches its glyph only through a ligature: without the

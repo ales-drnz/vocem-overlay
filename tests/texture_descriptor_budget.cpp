@@ -284,6 +284,14 @@ int main() {
            vocem::TextureCache::kMaxAvatarDescriptors);
     check(add_texture_calls <= static_cast<int>(vocem::TextureCache::kMaxAvatarDescriptors),
           "the cache never asks for more descriptor sets than its budget");
+    // And that it asked for exactly that many, which is the precondition of
+    // every check here: they are all ceilings, so a cache that never uploaded a
+    // face at all -- 0 calls -- passed each of them, and would have gone on
+    // passing while entry 46's pool was never approached (DESIGN 193, found by
+    // the suite's review and refuted by a mutation that stops every upload).
+    check(add_texture_calls == static_cast<int>(vocem::TextureCache::kMaxAvatarDescriptors),
+          "and it did fill the budget, so the ceilings above were reached and not merely "
+          "not exceeded");
 
     // The faces beyond the budget must resolve -- to the placeholder, at once,
     // not to a retry loop that will exhaust the pool a second later.

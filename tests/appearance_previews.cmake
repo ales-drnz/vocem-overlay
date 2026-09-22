@@ -20,7 +20,7 @@
 #      the controls: appearanceLive/panel, appearanceLive/message,
 #      spacingLive/panel and spacingLive/message, visible on their own pages.
 #
-# One offscreen run of the real window over sections 0..3, scratch XDG dirs
+# One offscreen run of the real window over sections 2 and 3, scratch XDG dirs
 # (never the real ones -- a real cache's crash journals would pop a window over
 # the page). Against the window before these previews existed the preset row
 # was a row of colour chips and neither page had a preview column, so every
@@ -61,7 +61,8 @@ execute_process(
         "XDG_CONFIG_HOME=set:${scratch}/config"
         "XDG_CACHE_HOME=set:${scratch}/cache"
         "QT_QPA_PLATFORM=set:offscreen"
-        "VOCEM_CONFIG_SECTIONS=set:3"
+        "VOCEM_CONFIG_SECTIONS=set:2,3"
+        "VOCEM_CONFIG_STEP_MS=set:0"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
 
 vocem_window_ran("${status}" "${errors}")
@@ -163,7 +164,8 @@ function(font_menu_row_widths family out)
             "XDG_CACHE_HOME=set:${scratch}/cache"
             "QT_QPA_PLATFORM=set:offscreen"
             "LC_ALL=set:C.UTF-8"
-            "VOCEM_CONFIG_SECTIONS=set:2"
+            "VOCEM_CONFIG_SECTIONS=set:2,"
+            "VOCEM_CONFIG_STEP_MS=set:0"
             "VOCEM_CONFIG_OPEN=set:fontFamilyChoice"
             "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
     if(NOT status EQUAL 0)

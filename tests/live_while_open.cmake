@@ -12,9 +12,10 @@
 # of its own.
 #
 # Nothing that reads state ONCE can be held by a dump taken at the end, so the
-# journal here is created AFTER the window is up: the harness walks its
-# sections on a timer, the sentinel journal lands two seconds in, and the
-# Debug page's dump comes later. Against a bridge that refreshes the live list
+# journal here is created AFTER the window is up: the harness visits the
+# Debug page six times on its timer (the last grab about 6.6 s in), the
+# sentinel journal lands two seconds in, and the bridge's four-second sweep
+# comes between the two. Against a bridge that refreshes the live list
 # only in its constructor, the row never appears.
 
 # Run through ctest, or with -DCMAKE_CURRENT_BINARY_DIR=<build>/tests: in script
@@ -68,7 +69,7 @@ execute_process(
         "XDG_CONFIG_HOME=set:${scratch}/config"
         "XDG_CACHE_HOME=set:${scratch}/cache"
         "QT_QPA_PLATFORM=set:offscreen"
-        "VOCEM_CONFIG_SECTIONS=set:8"
+        "VOCEM_CONFIG_SECTIONS=set:8,8,8,8,8,8"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
 
 vocem_window_ran("${status}" "${errors}")

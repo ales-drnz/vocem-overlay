@@ -54,7 +54,8 @@ execute_process(
         "XDG_CONFIG_HOME=set:${scratch}/config"
         "XDG_CACHE_HOME=set:${scratch}/cache"
         "QT_QPA_PLATFORM=set:offscreen"
-        "VOCEM_CONFIG_SECTIONS=set:8"
+        "VOCEM_CONFIG_SECTIONS=set:5,8"
+        "VOCEM_CONFIG_STEP_MS=set:0"
         "VOCEM_CONFIG_GEOMETRY=set:${scratch}/geometry.json")
 
 vocem_window_ran("${status}" "${errors}")

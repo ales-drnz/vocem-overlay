@@ -512,7 +512,11 @@ endif()
 # gamescope update can reach us through.
 find_program(VOCEM_GAMESCOPE gamescope)
 if(VOCEM_GAMESCOPE)
-    vocem_script_test(gl_inside_gamescope ARGS ${VOCEM_GL_PROBE_ARGS}
+    # LOCK gamescope: two nested headless sessions at once is the one
+    # contention the parallel suite showed (DESIGN 193) -- the two gamescope
+    # tests started in the same second of a -j16 run and one attempt hung to
+    # its 180 s cap before the retry went through.
+    vocem_script_test(gl_inside_gamescope LOCK gamescope ARGS ${VOCEM_GL_PROBE_ARGS}
         "-DGAMESCOPE=${VOCEM_GAMESCOPE}")
 else()
     vocem_skip(gl_inside_gamescope "gamescope is not installed here")
@@ -968,7 +972,7 @@ if(VOCEM_GAMESCOPE)
     find_file(VOCEM_GAMESCOPE_WSI
         NAMES VkLayer_FROG_gamescope_wsi.x86_64.json VkLayer_FROG_gamescope_wsi.json
         PATHS "/usr/share/vulkan/implicit_layer.d" NO_DEFAULT_PATH)
-    vocem_script_test(vk_inside_gamescope ARGS
+    vocem_script_test(vk_inside_gamescope LOCK gamescope ARGS
         "-DPROBE=$<TARGET_FILE:vocem_vk_present_draw>"
         "-DMANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json"
         "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
@@ -1147,7 +1151,6 @@ vocem_script_test(version_agrees ARGS
 # what has to decline the inheritance. daemon_notification's sandbox.
 if(TARGET vocemd)
     vocem_test(daemon_note_expiry LINK rt ENV ${VOCEM_DAEMON_ENV} TIMEOUT 240 SKIP)
-endif()
 
     # The same words, with the port walk made slow: three ports that accept and
     # say nothing are thirty seconds of walking, and the tick that retires a
@@ -1157,6 +1160,10 @@ endif()
     # 0.1.10-2 daemon.
     vocem_test_run(daemon_note_expiry_port_walk TARGET daemon_note_expiry
         ENV ${VOCEM_DAEMON_ENV} "VOCEM_NOTE_EXPIRY_SCENARIO=port-walk" TIMEOUT 120 SKIP)
+    # Inside the block, which it sat outside of with the indentation of the
+    # inside (DESIGN 193): a build without the daemon registered a test whose
+    # command does not exist.
+endif()
 
 # The map of the display follows the machine while the window is open.
 #
@@ -1212,7 +1219,14 @@ vocem_test(shim_private_dispatch LINK ${CMAKE_DL_LIBS}
 # five lines further down in the same file, found and fixed while this one stood.
 # Hermetic: a stub systemctl earlier on PATH, so the test never asks the owner's
 # live daemon anything and needs no skip.
-vocem_script_test(vocem_why ARGS "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}")
+#
+# SERIAL: its per-process leg asks the script about `cmake` -- the process
+# running this test -- and the script reads every `cmake` it finds with
+# pgrep. Beside other script tests under -j, one of those can exit between the
+# pgrep and the read of its maps, and the leg then reports "cannot read" and
+# fails. Not seen in eight parallel runs; read from the script, and 0.4 s
+# alone costs nothing (DESIGN 193).
+vocem_script_test(vocem_why SERIAL ARGS "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 
 # Two OpenGL interposers in one process, and which of them draws.
 #

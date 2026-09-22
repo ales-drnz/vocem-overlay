@@ -68,7 +68,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
             "XDG_CONFIG_HOME=set:${scratch}/${name}/config"
             "XDG_CACHE_HOME=set:${scratch}/${name}/cache"
             "QT_QPA_PLATFORM=set:offscreen"
-            "VOCEM_CONFIG_SECTIONS=set:7"
+            "VOCEM_CONFIG_SECTIONS=set:7,"
+            "VOCEM_CONFIG_STEP_MS=set:0"
             "VOCEM_CONFIG_GEOMETRY=set:${scratch}/${name}.json")
     vocem_window_ran("${status}" "${errors}")
     if(NOT EXISTS "${scratch}/${name}.json")

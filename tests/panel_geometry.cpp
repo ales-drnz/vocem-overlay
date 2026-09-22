@@ -1424,13 +1424,23 @@ void self_check() {
                                                 c.position_x = 1.0f; c.position_y = 1.0f; }},
     };
 
-    for (const Variant& variant : variants) {
-        for (uint32_t users : {1u, 20u}) {
-            Config config;
-            variant.apply(config);
-            verify(config, 3840, 2160, users);
-            Config small = config;
-            verify(small, 1280, 720, users);
+    // Every variant at both ends of the display range, one display at a time.
+    // The display is the outer loop because it decides the atlas's pixel size:
+    // alternating 2160 and 720 per variant rebuilt the whole atlas -- ~15,000
+    // glyphs in two weights -- on every single call, about 150 times, which was
+    // 15 s of this test at 64 bits and 31 s at 32 (DESIGN 193). Grouped, only a
+    // variant that changes the text's own size rebuilds. The set of
+    // verifications is the same; so is what each one starts from, because
+    // measure() runs every configuration until its motion has settled whatever
+    // the previous one left behind (run_frames' comment).
+    const uint32_t displays[][2] = {{3840, 2160}, {1280, 720}};
+    for (const auto& display : displays) {
+        for (const Variant& variant : variants) {
+            for (uint32_t users : {1u, 20u}) {
+                Config config;
+                variant.apply(config);
+                verify(config, display[0], display[1], users);
+            }
         }
     }
 

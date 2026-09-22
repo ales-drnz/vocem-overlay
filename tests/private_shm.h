@@ -143,6 +143,13 @@ inline void shm_explain_refusal(const char* found) {
 // a probe that needs arguments through the re-exec should pass them in the
 // environment, which bwrap keeps.
 inline int ensure_private_shm(bool unshare_net) {
+    // Every line out as it is written, in both halves of the re-exec. stdout
+    // into ctest's pipe is block-buffered, and the probe that ctest sees is
+    // bwrap: a sandboxed probe killed by a signal took all of its buffered
+    // lines with it, so ctest recorded "Failed" and an empty output -- which is
+    // what gl_srgb_write left in one -j16 run of five, with nothing to say how
+    // far it had got (DESIGN 193).
+    setvbuf(stdout, nullptr, _IOLBF, 0);
     char found[256] = {0};
     const bool is_private = shm_is_private(found, sizeof(found));
     if (is_private && !unshare_net) {

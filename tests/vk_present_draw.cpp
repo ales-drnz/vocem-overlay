@@ -898,6 +898,16 @@ int main() {
     // test counts.
     unsetenv("MANGOHUD");
     setenv("VOCEM_DEBUG", "1", 1);
+    // The layer's log again, into a file of its own, in EVERY scenario: the
+    // one logger appends each line there as well as to stderr
+    // (common/src/overlay_log.cpp, line-buffered), so this is how the probe
+    // waits for the layer rather than for a clock -- the warm-up below ends at
+    // "backend ready", the daemon-gone scene at the release and at the second
+    // build -- without taking stderr away from vk_inside_gamescope, which reads
+    // its witness there (the paragraph above).
+    char layer_log[800];
+    snprintf(layer_log, sizeof(layer_log), "%s/layer.log", root);
+    setenv("VOCEM_LOG_FILE", layer_log, 1);
 
     // The arrivals scene's faces, in a cache of its own: nobody in it has an
     // avatar hash, so every one of them -- the nine in the channel and the
@@ -937,14 +947,21 @@ int main() {
             state.user_count = 0;
         });
     } else {
-        writer.publish([arrivals](vocem::SharedState& state) {
+        writer.publish([arrivals, early_exit](vocem::SharedState& state) {
             state.connected = 1;
             state.in_channel = 1;
             state.status = 2;  // Connected
             // The arrivals scene publishes the owner's display from the first
             // frame, as vocemd always does: otherwise the first arrival is also
             // a change of size, which is a real rebuild and not what it measures.
-            if (arrivals) {
+            // And so does early-exit, for a reason of its own: its whole subject is
+            // a context that dies while the atlas worker is still rasterising, and
+            // the drawable's own height gives an 11 px atlas that is built in a few
+            // frames. Under a loaded machine (the suite at -j16) two frames were
+            // slower than that build, the atlas landed before the teardown, and the
+            // scene's own precondition failed in two runs of three (DESIGN 193). At
+            // the display's 32 px the build is ~120 ms against two frames.
+            if (arrivals || early_exit) {
                 state.display_height = 2160;
             }
             snprintf(state.channel_name, sizeof(state.channel_name), "present-hook");
@@ -1450,8 +1467,8 @@ int main() {
         return ok;
     };
     if (early_exit) {
-        // Two frames with a channel on them: the first starts the atlas worker
-        // (entry 192), the second finds it still rasterising. Then the game
+        // One frame with a channel on it, which starts the atlas worker (entry
+        // 192). Then the game
         // goes away at once -- device, swapchain, instance, process -- inside
         // the ~113 ms the build takes. vocem_DestroyDevice has to wait for the
         // worker before tearing the context down, and the layer's destructor
@@ -1459,7 +1476,14 @@ int main() {
         // exit here is the failure. It cannot fail against a layer that has no
         // worker, which is said rather than implied: this is a guard on the
         // hazard the worker brings, not a refutation of anything older.
-        if (!run_frames(swapchain, images, 2)) {
+        //
+        // ONE frame, and it was two: the second was a race between the build
+        // and the frame clock, and on the OpenGL twin of this scene it lost
+        // under load (the suite at -j16), so the atlas was up before the
+        // teardown and the scene measured nothing (DESIGN 193). The worker is
+        // started by the first present (measured, 3 of 3), and with no second
+        // there is none for the renderer to finish on.
+        if (!run_frames(swapchain, images, 1)) {
             return 1;
         }
         vk.vkDeviceWaitIdle(device);
@@ -1505,10 +1529,26 @@ int main() {
             return 1;
         }
     } else {
+        // Until the layer says its renderer is up -- or, in the idle scene, that
+        // it has nothing to draw -- and then ten frames more, so the frames the
+        // scene measures start after the build's own first frames and not on
+        // them; never longer than the second this used to be. It was the whole
+        // second in every scene, ~20 launches a suite, whatever the layer had
+        // done (DESIGN 193). The scenes where the layer never says either line
+        // -- disabled (not loaded), flatpak-off (switched off) -- still spend
+        // the full second, which in both is the window their zero is counted
+        // over.
+        const char* ready_line = idle ? "nothing to draw" : "backend ready";
         const long long warm_until = now_ns() + 1000000000LL;
         while (now_ns() < warm_until) {
             if (!run_frames(swapchain, images, 5)) {
                 return 1;
+            }
+            if (lines_containing(layer_log, ready_line) > 0) {
+                if (!run_frames(swapchain, images, 10)) {
+                    return 1;
+                }
+                break;
             }
         }
         g_scene_began = now_ns();
@@ -1586,10 +1626,23 @@ int main() {
         printf("     >>> the daemon stops: the segment is unlinked\n");
         writer.close();
         vocem::StateWriter::unlink_segment();
+        // Until the release, and one second more; four seconds at most, which
+        // is what this was as a fixed span. The release comes two to three
+        // seconds after the unlink (StatePoll: a one-second poll, then
+        // kReleaseAfterSeconds), so the fixed span left one to two seconds
+        // after it -- and those are the part that counts: a layer that builds
+        // its backend again with no daemon does it there, on the presents after
+        // the release. The second after the line is the least the old span ever
+        // gave that half.
         const long long until = now_ns() + 4000000000LL;
-        while (now_ns() < until) {
+        long long after_release = 0;
+        while (now_ns() < until && (after_release == 0 || now_ns() < after_release)) {
             if (!run_frames_in_flight(swapchain, images, 10)) {
                 return 1;
+            }
+            if (after_release == 0 &&
+                lines_containing(layer_log, "releasing the backend and the font atlas") > 0) {
+                after_release = now_ns() + 1000000000LL;
             }
         }
         // And the other half of what Quit promises: opening the window again
@@ -1614,10 +1667,17 @@ int main() {
                 snprintf(state.users[i].name, sizeof(state.users[i].name), "Ritorno %u", i + 1);
             }
         });
+        // Until the second "backend ready" and half a second of frames after it
+        // for the read-back to see the panel; three seconds at most, the old
+        // fixed span.
         const long long back_until = now_ns() + 3000000000LL;
-        while (now_ns() < back_until) {
+        long long after_ready = 0;
+        while (now_ns() < back_until && (after_ready == 0 || now_ns() < after_ready)) {
             if (!run_frames_in_flight(swapchain, images, 10)) {
                 return 1;
+            }
+            if (after_ready == 0 && lines_containing(layer_log, "backend ready") >= 2) {
+                after_ready = now_ns() + 500000000LL;
             }
         }
     }
