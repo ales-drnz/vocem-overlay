@@ -79,7 +79,28 @@ options=('!debug')
 
 _root="$startdir/.."
 
+# packaging/ is also where the defective exemplars live (EXEMPLARS.md), and they
+# cannot be rebuilt. This file and PKGBUILD.local both start their numbering at
+# pkgrel 1, so building the tag's recipe here for a release that already has a
+# local 0.1.x-1 would write straight over it: at 0.1.10 the tag recipe's
+# vocem-overlay-0.1.10-1 was the exemplar of entries 144/145, and 0.1.8-1 and
+# 0.1.9-1 were in the same position. A package this build would replace is
+# refused when EXEMPLARS.md lists its version; raise pkgrel, or set PKGDEST.
+_refuse_to_replace_an_exemplar() {
+    local table="$startdir/EXEMPLARS.md" dest="${PKGDEST:-$startdir}" existing
+    [[ -f $table ]] || return 0
+    for existing in "$dest/$pkgname-$pkgver-$pkgrel-"*.pkg.tar.*; do
+        [[ -e $existing ]] || continue
+        if grep -qE "^\| ${pkgver//./\\.}-([^|]*-)?${pkgrel}[ ,|]" "$table"; then
+            error "%s is a defective exemplar (EXEMPLARS.md) and would be replaced" \
+                "${existing##*/}"
+            return 1
+        fi
+    done
+}
+
 build() {
+    _refuse_to_replace_an_exemplar || return 1
     # 64-bit: everything, with automatic coverage enabled as in a real install.
     # CMAKE_BUILD_TYPE=None, and NDEBUG put back by hand.
     #
