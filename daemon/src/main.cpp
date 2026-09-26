@@ -19,11 +19,16 @@
 // Authorisation is its own: the daemon asks Discord for a token the first time it
 // connects and stores it. See auth.h for how, and for what that costs us.
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -65,12 +70,92 @@ volatile std::sig_atomic_t g_stop = 0;
 
 void handle_signal(int) { g_stop = 1; }
 
+// Whether this is the only daemon of this user. 1: the lock is ours, and stays
+// ours until the process ends (the descriptor is never closed, so the kernel
+// lets go of it however the process goes). 0: another daemon holds it. -1:
+// the question could not be asked, with the reason in `why`.
+//
+// The segment is opened O_CREAT without O_EXCL and its seqlock assumes one
+// writer, so a second vocemd -- started by hand beside the unit, or while it
+// was restarting -- published into the first one's segment under its own
+// count, and whichever stopped first unlinked the name the other was still
+// publishing under (tests/daemon_single_instance.cpp: the second daemon still
+// running 3 s later, and the segment gone once it was stopped).
+//
+// The lock file sits beside the segment in /dev/shm, named from the segment's
+// own name, and not in $XDG_RUNTIME_DIR: /dev/shm is what every daemon test
+// makes private, and a lock in the runtime directory would make each of them
+// collide with the live daemon. /dev/shm is world-writable, so the file is
+// opened without following a link or waiting on a FIFO and is believed only
+// when it is a regular file of this user's: one planted by somebody else is
+// not a lock this daemon can hold, and treating another user's file as "a
+// daemon is running" would let them keep this one from starting.
+int take_instance_lock(std::string& why) {
+    char segment[64];
+    vocem::shm_name(segment, sizeof(segment), static_cast<unsigned>(getuid()));
+    const std::string path = std::string("/dev/shm") + segment + ".lock";
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        why = path + ": " + std::strerror(errno);
+        return -1;
+    }
+    struct stat info {};
+    if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid()) {
+        ::close(fd);
+        why = path + " is not a regular file of this user's";
+        return -1;
+    }
+    if (::flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        return 1;  // held for the life of the process
+    }
+    const int error = errno;
+    ::close(fd);
+    if (error == EWOULDBLOCK) {
+        why = path;
+        return 0;
+    }
+    why = path + ": " + std::strerror(error);
+    return -1;
+}
+
 }  // namespace
 
 int main() {
-    std::signal(SIGINT, handle_signal);
-    std::signal(SIGTERM, handle_signal);
+    // sigaction and not std::signal, for one flag: SA_RESTART, which glibc's
+    // signal() sets. With it, a handler that only raises g_stop changes
+    // nothing for a call that is blocked -- the kernel restarts the call and
+    // the flag is never read. Measured: a FIFO planted at an avatar cache name
+    // held rescan() in open() through SIGTERM until the unit's SIGKILL left
+    // the segment published (entry 81), and a FIFO at config.ini holds the
+    // settings reload the same way -- still alive 6 s after SIGTERM with it,
+    // exited in 0.10 s without (tests/daemon_stop_blocked.cpp). Without it a
+    // blocked call returns EINTR, and every loop here reads g_stop. The avatar
+    // worker blocks both signals (avatars.cpp) so that they land on this
+    // thread, the one that has to notice.
+    struct sigaction stop_action {};
+    stop_action.sa_handler = handle_signal;
+    sigemptyset(&stop_action.sa_mask);
+    stop_action.sa_flags = 0;
+    sigaction(SIGINT, &stop_action, nullptr);
+    sigaction(SIGTERM, &stop_action, nullptr);
     std::signal(SIGPIPE, SIG_IGN);
+
+    // Before anything is opened: a second daemon must not touch the segment
+    // at all, not even to create it. Exit 0, because there is nothing wrong --
+    // the user is served -- and the unit's Restart=on-failure must not answer.
+    {
+        std::string why;
+        const int lock = take_instance_lock(why);
+        if (lock == 0) {
+            LOG("another vocemd already serves this user (it holds %s); exiting", why.c_str());
+            return 0;
+        }
+        if (lock < 0) {
+            // Cannot tell is not "somebody else is running": said, and on.
+            LOG("could not take the single-instance lock (%s); continuing without it",
+                why.c_str());
+        }
+    }
 
     vocem::StateWriter writer;
     if (!writer.open()) {
@@ -213,9 +298,11 @@ int main() {
             }
             // Who is on the other end, before a token with messages.read scope is
             // handed to it. Anything that binds the port before Discord does gets
-            // this connection; a peer owned by another user, or by a sandbox that
-            // can bind loopback but cannot read our state directory, is not
-            // Discord and is told so out loud rather than trusted quietly.
+            // this connection; a peer owned by another user, or by a Flatpak
+            // sandbox that is not Discord's own (same uid, network shared,
+            // $XDG_STATE_HOME out of reach), is not Discord and is told so out
+            // loud rather than trusted quietly. peer_identity.h says how each is
+            // told apart and what the uid alone could not.
             const vocem::PeerIdentity owner = socket.peer_owner();
             if (owner.outcome == vocem::PeerOwner::Found &&
                 static_cast<uid_t>(owner.uid) != getuid()) {
@@ -232,6 +319,28 @@ int main() {
                 // a check that quietly does not happen is worth nothing.
                 LOG("could not establish who owns the listener on port %u; continuing without "
                     "that check", port);
+            } else {
+                const vocem::PeerProcess process = vocem::socket_process(owner.inode);
+                if (process.place == vocem::PeerPlace::Flatpak &&
+                    !vocem::is_discord_flatpak(process.app_id)) {
+                    LOG("refusing port %u: the process listening there (pid %ld) is in the "
+                        "Flatpak sandbox of %s, not Discord's -- not sending it the Discord token",
+                        port, process.pid, vocem::sanitise_text(process.app_id).c_str());
+                    socket.close();
+                    continue;
+                }
+                if (process.place == vocem::PeerPlace::Unknown) {
+                    // The same rule as above, one question further: no process
+                    // holding the socket could be found, or its root could not
+                    // be read, which is a /proc this daemon cannot see into and
+                    // not evidence of anything. Said, every time.
+                    LOG("could not establish which process listens on port %u%s; continuing "
+                        "without the sandbox check",
+                        port, process.pid > 0 ? " (its root cannot be read)" : "");
+                } else if (process.place == vocem::PeerPlace::Flatpak) {
+                    DBG("port %u is answered from Discord's own Flatpak (%s)", port,
+                        process.app_id.c_str());
+                }
             }
             reached_on = port;
             break;

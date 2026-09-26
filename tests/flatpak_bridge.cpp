@@ -219,7 +219,11 @@ int main() {
 
     // What the host has: a settings file the user wrote, and one cached face.
     make_directories(config_home + "/vocem");
-    const std::string config_ini = "[general]\nnotification_seconds = 11\n";
+    // The id is listed in flatpak_apps: what the host decides by
+    // (flatpak_consent.cpp holds the decision itself), so that this file can
+    // hold what crosses once it is made.
+    const std::string config_ini =
+        "[general]\nnotification_seconds = 11\nflatpak_apps = org.example.Game\n";
     write_file(config_home + "/vocem/config.ini", config_ini.data(), config_ini.size());
     make_directories(cache_home + "/vocem/avatars");
     unsigned char avatar[vocem::kAvatarRgbaBytes];
@@ -307,7 +311,8 @@ int main() {
         runtime + "/app/" + std::string(kServed) + "/vocem/config.ini";
     struct stat before {};
     check(stat(mirrored_config.c_str(), &before) == 0, "the settings arrived");
-    const std::string longer = "[general]\nnotification_seconds = 13\nopacity = 0.5\n";
+    const std::string longer =
+        "[general]\nnotification_seconds = 13\nopacity = 0.5\nflatpak_apps = org.example.Game\n";
     write_file(config_home + "/vocem/config.ini", longer.data(), longer.size());
     bridge.refresh_files(*writer.state());
     struct stat after {};

@@ -284,6 +284,16 @@ flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-l
 the overlay inside the sandbox reads it through a directory Flatpak shares with
 the host.
 
+The daemon gives the voice channel only to a Flatpak whose desktop entry says
+it is a game (`Categories=Game`, as Steam's and most games' do). Any other
+application id gets an empty panel, and the daemon's log names it; to allow
+it, add the id to `flatpak_apps` in `~/.config/vocem/config.ini`, comma
+separated:
+
+```ini
+flatpak_apps = com.example.SomeGame
+```
+
 OpenGL has no equivalent mechanism, so a Flatpak game that renders with OpenGL
 also needs the interposer preloaded:
 

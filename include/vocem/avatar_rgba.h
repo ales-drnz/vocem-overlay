@@ -29,8 +29,10 @@
 #ifndef VOCEM_AVATAR_RGBA_H
 #define VOCEM_AVATAR_RGBA_H
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdint>
 
@@ -131,16 +133,32 @@ inline bool avatar_rgba_write(const char* path, const unsigned char* rgba, uint3
     // Temporary-and-rename, like every other file the daemon writes: the game
     // must never observe a partial file, and the size check above is only a
     // guarantee because of this.
+    //
+    // The temporary is created, never opened: whatever is at the name goes
+    // first, and O_CREAT|O_EXCL|O_NOFOLLOW makes a fresh regular file or
+    // fails -- the shape save_token() has (auth.cpp). This was a
+    // `fopen(temporary, "wb")`, which followed a link planted at the name --
+    // measured, a link to a file outside the cache had the face written
+    // into it, and a dangling one created its target -- and waited for ever
+    // on a FIFO there for a reader that never came.
     char temporary[832];
     std::snprintf(temporary, sizeof(temporary), "%s.part", path);
-    FILE* file = ::fopen(temporary, "wb");
-    if (!file) {
+    ::unlink(temporary);
+    const int fd = ::open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
         return false;
     }
-    const bool written = ::fwrite(pixels, 1, kAvatarRgbaBytes, file) == kAvatarRgbaBytes;
-    ::fclose(file);
+    size_t done = 0;
+    while (done < kAvatarRgbaBytes) {
+        const ssize_t wrote = ::write(fd, pixels + done, kAvatarRgbaBytes - done);
+        if (wrote <= 0) {
+            break;
+        }
+        done += static_cast<size_t>(wrote);
+    }
+    const bool written = ::close(fd) == 0 && done == kAvatarRgbaBytes;
     if (!written || ::rename(temporary, path) != 0) {
-        ::remove(temporary);
+        ::unlink(temporary);
         return false;
     }
     return true;

@@ -4,6 +4,8 @@
 
 #include "avatars.h"
 
+#include <pthread.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -168,6 +170,15 @@ bool AvatarCache::download(const std::string& url, std::string& body) {
 }
 
 void AvatarCache::worker() {
+    // SIGTERM and SIGINT are for the main thread, whose handler has no
+    // SA_RESTART so that a blocked call there returns (main.cpp). A process
+    // signal goes to any thread that does not block it, and one taken here
+    // would interrupt a download and leave the main thread asleep.
+    sigset_t stop_signals;
+    sigemptyset(&stop_signals);
+    sigaddset(&stop_signals, SIGTERM);
+    sigaddset(&stop_signals, SIGINT);
+    pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
     for (;;) {
         Request request;
         {

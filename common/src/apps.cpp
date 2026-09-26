@@ -761,13 +761,21 @@ void record_application(const char* api) {
 // One spelling of the file's shape, because two would drift: the reader below is
 // the only other place that knows it.
 void write_application_record(const Application& application) {
+    write_application_record(application, detail::sanitised(application.key));
+}
+
+void write_application_record(const Application& application, const std::string& file_name) {
+    if (file_name.empty() || file_name == "." || file_name == ".." ||
+        file_name.find('/') != std::string::npos) {
+        return;
+    }
     const std::string directory = apps_directory();
     // One mkdir -p for the whole project (vocem/paths.h) -- this used to be its
     // own loop at 0755 while every sibling created 0700, for no reason anybody
     // could name.
     make_directories(directory);
 
-    const std::string path = directory + "/" + detail::sanitised(application.key);
+    const std::string path = directory + "/" + file_name;
     // The temporary carries the pid, and is created exclusively.
     //
     // The record's name is the process name, so two writers of one name are

@@ -1568,3 +1568,58 @@ vocem_m32_twin_run(gl_capture_pack_buffer TARGET gl_capture_pack_buffer
 # (dev_run_gl.cmake).
 vocem_test(which_shim LINK ${CMAKE_DL_LIBS} NO_TEST)
 vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>")
+
+# ---- 0.1.11 daemon lane ----
+# Who the Flatpak bridge serves the voice channel to: a sandbox's own
+# `drawing=1` is its word, and the host decides by application id -- an
+# exported desktop entry that says Game, or the id listed in flatpak_apps.
+vocem_test(flatpak_consent
+    SOURCES flatpak_consent.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# A listener in a Flatpak sandbox that is not Discord's is not sent the token:
+# the peer socket is mapped to its process and that process's /.flatpak-info
+# read. The listener really is sandboxed -- a nested bwrap with its own user
+# and pid namespace, the network shared -- inside daemon_notification's sandbox.
+if(TARGET vocemd)
+    vocem_test(daemon_peer_sandbox INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 120 SKIP)
+endif()
+# Links and FIFOs at the avatar cache's names: the writer's `.part` and the
+# bridge's copy source. Nothing is written through a link, nothing waits on a
+# FIFO, and only a regular file of the format's one size is a face.
+vocem_test(avatar_cache_hostile
+    SOURCES avatar_cache_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# A SIGTERM ends a daemon blocked inside a system call: the handler is installed
+# without SA_RESTART, so a blocked open() returns EINTR and the flag is read.
+if(TARGET vocemd)
+    vocem_test(daemon_stop_blocked INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
+endif()
+# One daemon per user: the second takes no lock, says so and exits 0, and the
+# first keeps its segment named. Two real daemons in one private /dev/shm.
+if(TARGET vocemd)
+    vocem_test(daemon_single_instance INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
+endif()
+# One record per Flatpak sandbox, under a file name no host record can have:
+# a sandbox renaming itself cannot fill the registry or overwrite a host row.
+vocem_test(flatpak_records
+    SOURCES flatpak_records.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# A settings copy into a sandbox that failed is tried again on the next sweep,
+# rather than only after the host's config.ini next changes.
+vocem_test(flatpak_config_retry
+    SOURCES flatpak_config_retry.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# The emoji bank crosses into a sandbox once: a sandbox that stops asking and
+# asks again is not given sixteen megabytes again, on the daemon's main thread.
+vocem_test(flatpak_emoji_once
+    SOURCES flatpak_emoji_once.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# What the peer names reaches the daemon's log as one line of text: a refused
+# RPC command is logged through sanitise_text, like every other string from it.
+if(TARGET vocemd)
+    vocem_test(daemon_log_lines INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
+endif()

@@ -648,6 +648,13 @@ void record_application(const char* api);
 // writing on behalf of. One spelling of the file's shape; the reader below is
 // the only other place that knows it.
 void write_application_record(const Application& application);
+// The same record under a file name the caller chooses rather than the one
+// the key gives. The daemon's bridge writes a sandbox's record this way, under
+// a name made from the application id that no host record can have: named by
+// its key, a sandbox's record could overwrite any host application's by
+// claiming its process name. `file_name` is one path component; anything else
+// is refused and nothing is written.
+void write_application_record(const Application& application, const std::string& file_name);
 
 // Everything written down so far, for the configuration window. Not for the
 // injected code: it reads a directory and opens every file in it.

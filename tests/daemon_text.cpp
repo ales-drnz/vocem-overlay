@@ -59,6 +59,23 @@ int main() {
     check(sanitise_text("\xE2\x80\x8D\xEF\xB8\x8F") == "\xE2\x80\x8D\xEF\xB8\x8F",
           "the zero-width joiner and the variation selector -- which entry 27 put in the atlas "
           "on purpose -- are kept");
+    // The C1 controls, U+0080..U+009F, two bytes each in UTF-8. U+009B is the
+    // one-character CSI -- "\xC2\x9B" "31m" is ESC [ 31 m to a terminal that
+    // honours 8-bit controls -- and the CLI prints names raw to a terminal;
+    // U+0085 is NEXT LINE. Kept through 0.1.10 (the review's c1 probe printed
+    // c2 9b and c2 85 back out), because only below U+0020 was dropped.
+    check(sanitise_text("a\xC2\x9B" "31mb\xC2\x85" "c") == "a31mbc",
+          "the C1 controls go: the one-byte CSI and NEXT LINE are not text");
+    check(sanitise_text("\xC2\x80\xC2\x9F") == "", "all of U+0080..U+009F, both ends");
+    check(sanitise_text("\xC2\xA0" "x") == "\xC2\xA0" "x",
+          "and the no-break space just past them is kept");
+    check(sanitise_text("a\x85" "b") == "a\x85" "b",
+          "a stray byte 0x85 is copied through, not read as the code point U+0085");
+    // U+2028 and U+2029, the line and paragraph separators: a line break by
+    // Unicode's own definition (UAX #14 class BK), which a name has no more
+    // business carrying than a newline.
+    check(sanitise_text("d\xE2\x80\xA8" "e\xE2\x80\xA9" "f") == "def",
+          "and so do the line and paragraph separators");
     check(sanitise_text("") == "", "nothing in, nothing out");
     check(sanitise_text("\xE2\x81") == "\xE2\x81",
           "a truncated sequence is copied through, never read past");

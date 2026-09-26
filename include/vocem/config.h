@@ -355,6 +355,13 @@ struct Config {
     // so a list somebody added to survives.
     std::string hidden_apps;
 
+    // Flatpak application ids the daemon may serve the voice channel to, beside
+    // the ones whose exported desktop entry says Game. Comma separated, the same
+    // list syntax as the two above, matched against the id exactly
+    // (`org.example.Game`). Read by the daemon alone: a sandbox's own request
+    // is its word, and this is the user's (daemon/src/flatpak_bridge.cpp).
+    std::string flatpak_apps;
+
     // Which display each map in the window depicts, as the connector's name
     // ("DP-2", "HDMI-A-1" -- the card<N>- prefix stripped, as the window lists
     // them). Empty -- the default -- means automatic: the largest connected
@@ -575,6 +582,8 @@ struct Config {
             } else if (std::strcmp(key, "hidden_apps") == 0 ||
                        std::strcmp(key, "gl_blacklist") == 0) {
                 hidden_apps = value;
+            } else if (std::strcmp(key, "flatpak_apps") == 0) {
+                flatpak_apps = value;
             } else if (std::strcmp(key, "preview_display_panel") == 0) {
                 preview_display_panel = value;
             } else if (std::strcmp(key, "preview_display_notification") == 0) {
@@ -639,6 +648,7 @@ struct Config {
             {"behaviour", "tray_voice_icon", flag(tray_voice_icon)},
             {"behaviour", "hidden_apps", hidden_apps},
             {"behaviour", "shown_apps", shown_apps},
+            {"behaviour", "flatpak_apps", flatpak_apps},
             {"behaviour", "preview_display_panel", preview_display_panel},
             {"behaviour", "preview_display_notification", preview_display_notification},
         };

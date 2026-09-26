@@ -307,9 +307,12 @@ void RpcClient::handle(const json& message) {
     // indistinguishable from a room that is simply quiet (entry 38's
     // silence, on the wire). The dump is the error object Discord sent --
     // a code and a message, never a user's content -- and dump() escapes
-    // every control character, so this line is one line.
+    // every control character. The command is the peer's own string too, and
+    // went in raw until 0.1.11: a `cmd` with a newline in it wrote a line of
+    // its choosing into the journal (tests/daemon_log_lines.cpp), so it goes
+    // through sanitise_text like every other string from the other end.
     if (event == "ERROR") {
-        LOG("rpc refused %s: %s", command.c_str(), data.dump().c_str());
+        LOG("rpc refused %s: %s", sanitise_text(command).c_str(), data.dump().c_str());
     }
 }
 
