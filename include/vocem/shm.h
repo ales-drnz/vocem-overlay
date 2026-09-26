@@ -17,9 +17,22 @@
 #include <cstddef>
 #include <cstring>
 
+#include "vocem/clock.h"
 #include "vocem/shared_state.h"
 
 namespace vocem {
+
+// One pause in a spin: tells the core this is a wait, so a sibling hyperthread
+// -- quite possibly the daemon's publish -- gets the pipeline. Not a syscall,
+// not a yield to the scheduler; `pause` is `rep; nop` and exists on every x86
+// both widths build for.
+inline void cpu_relax() {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    asm volatile("yield" ::: "memory");
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // Writer -- vocemd only.
@@ -252,8 +265,36 @@ public:
     // it and neither has anything to hand back.
     bool still_current() const { return segment_state() == Segment::Current; }
 
-    // Lock-free consistent read. Bounded retries: a writer crashing mid-update
-    // must not spin a game's render thread forever.
+    // What a read found. Three ways not to have a snapshot, and they mean
+    // different things to a caller: no segment is "no daemon"; a foreign ABI
+    // is a daemon this reader must refuse, and the refusal has to be SAID
+    // (entry 55's silence); a busy writer is a daemon mid-publish, and the
+    // right answer to that is the previous snapshot, not a blank frame.
+    enum class Read {
+        Ok,
+        NotAttached,
+        ForeignAbi,
+        Busy,
+    };
+
+    // How long a read waits for a publish to finish before it answers Busy.
+    // A publish holds the sequence odd for a few microseconds (2.6 us measured
+    // for twelve participants, the review's seqlock_contention probe); the
+    // old bound was eight bare loads, a few nanoseconds, so a frame whose read
+    // landed inside a publish simply failed -- 7555 failed reads in 144.7
+    // million at 20 publishes a second, a blank frame every three to seven
+    // minutes at 144 fps. Twenty microseconds covers a publish several times
+    // over and is still nothing against a frame. The clock is the vDSO's, not
+    // a syscall, and it is asked once per 64 pauses. A writer that died or
+    // was descheduled mid-publish is still bounded: this answers Busy and the
+    // caller keeps what it had.
+    static constexpr double kBusyBudgetSeconds = 20e-6;
+    static constexpr int kMaxCopies = 16;
+
+    // Lock-free consistent read into `out`. On anything but Ok, `out` may hold
+    // a torn copy and must not be used -- which is why StatePoll reads into a
+    // scratch snapshot and keeps its last good one apart.
+    //
     // A word on what this is in the C++ memory model, so nobody "fixes" it: the
     // copies below read plain fields another process may be writing at that
     // moment, which is a data race by the letter of the standard. It is the
@@ -265,17 +306,35 @@ public:
     // would put a relaxed atomic load per byte on the present path. Measured
     // rather than argued (tests/shared_state_layout.cpp at both widths, the
     // segment crossed between them; shm_reattach and shm_short_segment for the
-    // lifecycle), and the writer's side of the same contract is StateWriter::
+    // lifecycle; state_poll_contention for a writer publishing beside the
+    // reader), and the writer's side of the same contract is StateWriter::
     // publish above.
-    bool read(Snapshot& out) const {
-        if (!state_ || state_->abi_version != kAbiVersion) {
-            return false;
+    Read read_state(Snapshot& out) const {
+        if (!state_) {
+            return Read::NotAttached;
         }
-        for (int attempt = 0; attempt < 8; ++attempt) {
-            uint32_t before = state_->sequence.load(std::memory_order_acquire);
+        if (state_->abi_version != kAbiVersion) {
+            return Read::ForeignAbi;
+        }
+        double give_up = 0.0;  // asked of the clock only once a wait begins
+        int pauses = 0;
+        for (int copies = 0; copies < kMaxCopies;) {
+            const uint32_t before = state_->sequence.load(std::memory_order_acquire);
             if (before & 1u) {
-                continue;  // write in progress
+                // A publish in progress: wait for it rather than count it as
+                // a try, with the clock as the bound.
+                cpu_relax();
+                if ((++pauses & 63) == 0) {
+                    const double now = monotonic_seconds();
+                    if (give_up == 0.0) {
+                        give_up = now + kBusyBudgetSeconds;
+                    } else if (now >= give_up) {
+                        return Read::Busy;
+                    }
+                }
+                continue;
             }
+            ++copies;
 
             out.status = static_cast<DaemonStatus>(state_->status);
             out.connected = state_->connected != 0;
@@ -305,11 +364,18 @@ public:
 
             std::atomic_thread_fence(std::memory_order_acquire);
             if (state_->sequence.load(std::memory_order_acquire) == before) {
-                return true;
+                return Read::Ok;
             }
         }
-        return false;
+        return Read::Busy;
     }
+
+    // The old question, for the callers with nothing to keep between reads
+    // (the CLI, the settings window, the tests): true only for Ok.
+    bool read(Snapshot& out) const { return read_state(out) == Read::Ok; }
+
+    // The ABI word the segment carries, for a refusal that says what it met.
+    uint32_t abi_version() const { return state_ ? state_->abi_version : 0; }
 
     ~StateReader() { close(); }
 

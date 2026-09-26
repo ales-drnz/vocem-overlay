@@ -19,6 +19,8 @@
 #ifndef VOCEM_STATE_POLL_H
 #define VOCEM_STATE_POLL_H
 
+#include <cstdio>
+
 #include "vocem/clock.h"
 #include "vocem/shm.h"
 
@@ -60,6 +62,15 @@ public:
     // The snapshot is this process's own copy, so the pointer is mutable on
     // purpose: the GL path fills the toast's body into it from the note
     // segment, which reaches nobody else.
+    //
+    // Two copies, not one. A read lands in the scratch half and becomes the
+    // current one only when the seqlock says it is whole; a read that met a
+    // publish still in progress (StateReader::Read::Busy) hands back the last
+    // whole snapshot instead of nothing. The single copy this used to be was
+    // both the target of the read and the thing returned, so a read that lost
+    // to a publish left it half overwritten and returned nullptr -- a blank
+    // frame, measured by tests/state_poll_contention.cpp at 39704 in a million
+    // polls beside a writer publishing flat out.
     Snapshot* poll() {
         const double now = monotonic_seconds();
         if (!reader_.valid()) {
@@ -77,6 +88,7 @@ public:
                 return nullptr;
             }
             gone_since_ = 0.0;
+            attached_afresh();
             say("attached to the vocemd state segment");
         } else if (now >= next_ask_) {
             // The same cadence, pointed the other way: a mapping outlives the
@@ -96,6 +108,7 @@ public:
                     // present, rather than by dropping to the branch above and
                     // letting a caller conclude the daemon is gone.
                     reader_.close();
+                    attached_afresh();
                     if (reader_.open()) {
                         say("the daemon was replaced: attached to the new segment");
                         break;
@@ -108,22 +121,50 @@ public:
                 case StateReader::Segment::Gone:
                     say("the daemon's state segment is gone: detaching");
                     reader_.close();
+                    attached_afresh();
                     gone_since_ = now;
                     return nullptr;
             }
         }
-        if (!reader_.read(snapshot_)) {
-            // Once, not per frame: a reader refusing a foreign ABI looks
-            // exactly like "no daemon" from outside (entry 55's silence), so
-            // the refusal has to reach the log -- and it used to on one path
-            // only.
-            if (!said_read_failure_) {
-                said_read_failure_ = true;
-                say("state read failed (abi mismatch or writer contention)");
+        Snapshot& scratch = snapshots_[current_ ^ 1];
+        switch (reader_.read_state(scratch)) {
+            case StateReader::Read::Ok:
+                current_ ^= 1;
+                have_good_ = true;
+                return &snapshots_[current_];
+            case StateReader::Read::Busy:
+                // A publish outlasted the read's wait (a daemon descheduled
+                // mid-publish, or one that died there): the previous frame's
+                // state is a better answer than no overlay. Said once per
+                // segment, so a writer stuck odd is visible in the log.
+                if (!said_busy_) {
+                    said_busy_ = true;
+                    say("a publish outlasted the read: showing the previous state");
+                }
+                return have_good_ ? &snapshots_[current_] : nullptr;
+            case StateReader::Read::ForeignAbi: {
+                // Refused and SAID, on a flag of its own. It shared one flag
+                // with contention, so the first busy read spent the only line
+                // and a foreign ABI met later was silent -- a reader refusing
+                // looks exactly like "no daemon" from outside (entry 55).
+                // Re-armed with every attachment: a new segment is news.
+                have_good_ = false;
+                if (!said_abi_) {
+                    said_abi_ = true;
+                    char line[192];
+                    std::snprintf(line, sizeof(line),
+                                  "the state segment speaks ABI version %u and this library "
+                                  "speaks %u: refusing it (the daemon and this library come "
+                                  "from different releases)",
+                                  reader_.abi_version(), kAbiVersion);
+                    say(line);
+                }
+                return nullptr;
             }
-            return nullptr;
+            case StateReader::Read::NotAttached:
+                break;
         }
-        return &snapshot_;
+        return nullptr;
     }
 
     // Whether a daemon's segment is attached right now.
@@ -154,6 +195,14 @@ public:
     }
 
 private:
+    // A new segment, or none: nothing read from the last one is carried over,
+    // and both refusals are news again.
+    void attached_afresh() {
+        have_good_ = false;
+        said_abi_ = false;
+        said_busy_ = false;
+    }
+
     void say(const char* line) {
         if (log_) {
             log_(line);
@@ -161,7 +210,11 @@ private:
     }
 
     StateReader reader_;
-    Snapshot snapshot_;
+    // The last whole read and the scratch the next one lands in; `current_`
+    // says which is which.
+    Snapshot snapshots_[2];
+    int current_ = 0;
+    bool have_good_ = false;
     // Zero, so the first present asks rather than waiting out a cadence.
     double next_ask_ = 0.0;
     // When the name stopped meaning anything, or 0 while it does. A process
@@ -169,7 +222,8 @@ private:
     // built.
     double gone_since_ = 0.0;
     bool left_ = false;
-    bool said_read_failure_ = false;
+    bool said_abi_ = false;
+    bool said_busy_ = false;
     LogFn log_;
 };
 

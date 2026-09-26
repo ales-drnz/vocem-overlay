@@ -1287,3 +1287,15 @@ vocem_script_test(gl_beside_mangohud ARGS ${VOCEM_GL_PROBE_ARGS}
 # shape is built with bwrap rather than described; see the file's header.
 vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
+
+# ---- 0.1.11 common lane ----
+
+# A publish must not blank a game's frame: a writer thread publishes about ten
+# thousand self-checking states a second while StatePoll::poll runs a million
+# times beside it, in a private /dev/shm. No nullptr after the first read, no
+# torn snapshot, and a foreign ABI said with its version even after contention
+# -- and said again after a reattachment. Both widths: the segment is read by
+# both.
+vocem_test(state_poll_contention INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread
+    TIMEOUT 150 SKIP)
+vocem_m32_twin(state_poll_contention)
