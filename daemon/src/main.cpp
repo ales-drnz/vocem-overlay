@@ -19,11 +19,16 @@
 // Authorisation is its own: the daemon asks Discord for a token the first time it
 // connects and stores it. See auth.h for how, and for what that costs us.
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -65,6 +70,54 @@ volatile std::sig_atomic_t g_stop = 0;
 
 void handle_signal(int) { g_stop = 1; }
 
+// Whether this is the only daemon of this user. 1: the lock is ours, and stays
+// ours until the process ends (the descriptor is never closed, so the kernel
+// lets go of it however the process goes). 0: another daemon holds it. -1:
+// the question could not be asked, with the reason in `why`.
+//
+// The segment is opened O_CREAT without O_EXCL and its seqlock assumes one
+// writer, so a second vocemd -- started by hand beside the unit, or while it
+// was restarting -- published into the first one's segment under its own
+// count, and whichever stopped first unlinked the name the other was still
+// publishing under (tests/daemon_single_instance.cpp: the second daemon still
+// running 3 s later, and the segment gone once it was stopped).
+//
+// The lock file sits beside the segment in /dev/shm, named from the segment's
+// own name, and not in $XDG_RUNTIME_DIR: /dev/shm is what every daemon test
+// makes private, and a lock in the runtime directory would make each of them
+// collide with the live daemon. /dev/shm is world-writable, so the file is
+// opened without following a link or waiting on a FIFO and is believed only
+// when it is a regular file of this user's: one planted by somebody else is
+// not a lock this daemon can hold, and treating another user's file as "a
+// daemon is running" would let them keep this one from starting.
+int take_instance_lock(std::string& why) {
+    char segment[64];
+    vocem::shm_name(segment, sizeof(segment), static_cast<unsigned>(getuid()));
+    const std::string path = std::string("/dev/shm") + segment + ".lock";
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        why = path + ": " + std::strerror(errno);
+        return -1;
+    }
+    struct stat info {};
+    if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid()) {
+        ::close(fd);
+        why = path + " is not a regular file of this user's";
+        return -1;
+    }
+    if (::flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        return 1;  // held for the life of the process
+    }
+    const int error = errno;
+    ::close(fd);
+    if (error == EWOULDBLOCK) {
+        why = path;
+        return 0;
+    }
+    why = path + ": " + std::strerror(error);
+    return -1;
+}
+
 }  // namespace
 
 int main() {
@@ -86,6 +139,23 @@ int main() {
     sigaction(SIGINT, &stop_action, nullptr);
     sigaction(SIGTERM, &stop_action, nullptr);
     std::signal(SIGPIPE, SIG_IGN);
+
+    // Before anything is opened: a second daemon must not touch the segment
+    // at all, not even to create it. Exit 0, because there is nothing wrong --
+    // the user is served -- and the unit's Restart=on-failure must not answer.
+    {
+        std::string why;
+        const int lock = take_instance_lock(why);
+        if (lock == 0) {
+            LOG("another vocemd already serves this user (it holds %s); exiting", why.c_str());
+            return 0;
+        }
+        if (lock < 0) {
+            // Cannot tell is not "somebody else is running": said, and on.
+            LOG("could not take the single-instance lock (%s); continuing without it",
+                why.c_str());
+        }
+    }
 
     vocem::StateWriter writer;
     if (!writer.open()) {

@@ -1315,3 +1315,9 @@ if(TARGET vocemd)
     vocem_test(daemon_stop_blocked INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
         ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
 endif()
+# One daemon per user: the second takes no lock, says so and exits 0, and the
+# first keeps its segment named. Two real daemons in one private /dev/shm.
+if(TARGET vocemd)
+    vocem_test(daemon_single_instance INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
+endif()
