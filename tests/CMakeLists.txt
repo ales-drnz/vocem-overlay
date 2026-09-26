@@ -1327,3 +1327,11 @@ vocem_test(journal_retry_cadence IMGUI LINK vocem_common ${CMAKE_DL_LIBS} SKIP)
 # be cut there. The mapping for the review's cases, then a whole journal life
 # under such a path.
 vocem_test(journal_suffix)
+
+# A daemon that reopens a segment it did not unlink clears it under the
+# seqlock: a reader's sequence before and after the reopening differ (the
+# deterministic half, on a segment left at sequence 0), and a reader thread
+# beside a writer that reopens the same object in a loop never accepts a
+# half-cleared snapshot. Private /dev/shm, both widths.
+vocem_test(shm_reopen_clear INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread SKIP)
+vocem_m32_twin(shm_reopen_clear)

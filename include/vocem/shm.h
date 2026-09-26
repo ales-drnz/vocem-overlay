@@ -114,10 +114,26 @@ public:
         }
         state_ = static_cast<SharedState*>(mapped);
 
-        // A fresh segment is zeroed; a reused one may hold stale data. Either
-        // way, start from a defined state with a stable (even) sequence. Fields
-        // are cleared individually because the struct holds an atomic and is not
-        // trivially copyable as a whole.
+        // A fresh segment is zeroed; a reused one -- a daemon that died
+        // without its unlink -- may hold stale data, and may already be mapped
+        // by every running game, which go on reading the same inode. So the
+        // clear is a write like any other, under the seqlock: odd before the
+        // first field, even after the last, and the count carried on rather
+        // than reset. It used to leave the sequence alone during the clear and
+        // store 0 at the end, which let a copy that began before the clear and
+        // ended inside it pass the check (the same sequence both times), and
+        // made the counter run 0, 2, 0, 2 across restarts -- a reader's
+        // "before" of one life equal to its "after" of the next.
+        // tests/shm_reopen_clear.cpp accepted 9291 half-cleared snapshots in
+        // three seconds of that. An odd count left by a daemon that died
+        // mid-publish is already "writing" and stays so until the clear ends.
+        // Fields are cleared individually because the struct holds an atomic
+        // and is not trivially copyable as a whole.
+        uint32_t seq = state_->sequence.load(std::memory_order_acquire);
+        if ((seq & 1u) == 0) {
+            seq = state_->sequence.fetch_add(1, std::memory_order_acq_rel) + 1;
+        }
+        std::atomic_thread_fence(std::memory_order_release);
         state_->abi_version = kAbiVersion;
         state_->connected = 0;
         state_->in_channel = 0;
@@ -127,7 +143,8 @@ public:
         std::memset(state_->channel_name, 0, sizeof(state_->channel_name));
         std::memset(state_->users, 0, sizeof(state_->users));
         std::memset(&state_->notification, 0, sizeof(state_->notification));
-        state_->sequence.store(0, std::memory_order_release);
+        std::atomic_thread_fence(std::memory_order_release);
+        state_->sequence.store(seq + 1, std::memory_order_release);  // even: stable
         return true;
     }
 
