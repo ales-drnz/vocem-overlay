@@ -1416,3 +1416,18 @@ vocem_m32_twin(gl_es_glsl
     ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
         "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
     BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# VOCEM_CAPTURE_FRAME read the frame back through the game's read framebuffer,
+# its GL_PACK_* state and its pixel-pack buffer (gl_capture_state.cpp).
+set(VOCEM_GL_PROBE32_ENV
+    "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+    "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_test(gl_capture_state LINK ${CMAKE_DL_LIBS} X11 rt
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=read-framebuffer" SKIP)
+vocem_test_run(gl_capture_pack_buffer TARGET gl_capture_state
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=pack-buffer" SKIP)
+vocem_m32_twin(gl_capture_state
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=read-framebuffer"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_m32_twin_run(gl_capture_pack_buffer TARGET gl_capture_pack_buffer
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=pack-buffer")

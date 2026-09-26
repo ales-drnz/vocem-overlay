@@ -256,30 +256,41 @@ Fn gl_symbol(const char* name) {
 //
 // Every value is read before it is written and written back afterwards: this runs
 // inside somebody else's renderer and rule 12 is that we leave no state changed.
+//
+// The same holds for the other direction: glReadPixels WRITES through GL_PACK_*
+// and the pixel-pack buffer, and the frame capture (VOCEM_CAPTURE_FRAME) is a
+// read. `Pack` is that flavour, name for name the same shape.
 class PixelStoreGuard {
 public:
+    enum class Direction { Unpack, Pack };
+
     // `es` is 0 for desktop GL, or the OpenGL ES major version. Which of these
     // names exist depends on it, and asking for one that does not is
     // GL_INVALID_ENUM -- an error in the game's queue, which is the very thing
     // this class is here to avoid. ES 2 has the alignment alone; ES 3 adds the
     // row length and the two skips but has neither of the byte-order flags;
     // desktop GL has all six and the pixel-unpack buffer, which ES gained in 3.0.
-    PixelStoreGuard(PFN_glGetIntegerv get, PFN_glPixelStorei set, PFN_glBindBuffer bind, int es)
+    PixelStoreGuard(PFN_glGetIntegerv get, PFN_glPixelStorei set, PFN_glBindBuffer bind, int es,
+                    Direction direction = Direction::Unpack)
         : get_(get), set_(set), bind_(es == 2 ? nullptr : bind),
-          count_(es == 2 ? 1u : (es >= 3 ? 4u : kCount)) {
+          count_(es == 2 ? 1u : (es >= 3 ? 4u : kCount)),
+          names_(direction == Direction::Pack ? kPackNames : kNames),
+          buffer_target_(direction == Direction::Pack ? kPixelPackBuffer : kPixelUnpackBuffer),
+          buffer_binding_(direction == Direction::Pack ? kPixelPackBufferBinding
+                                                       : kPixelUnpackBufferBinding) {
         if (!get_ || !set_) {
             return;  // without both, nothing here can be done safely
         }
         for (unsigned i = 0; i < count_; ++i) {
-            get_(kNames[i], &saved_[i]);
+            get_(names_[i], &saved_[i]);
             if (saved_[i] != kNeutral[i]) {
-                set_(kNames[i], kNeutral[i]);
+                set_(names_[i], kNeutral[i]);
             }
         }
         if (bind_) {
-            get_(kPixelUnpackBufferBinding, &buffer_);
+            get_(buffer_binding_, &buffer_);
             if (buffer_ != 0) {
-                bind_(kPixelUnpackBuffer, 0);
+                bind_(buffer_target_, 0);
             }
         }
         active_ = true;
@@ -291,11 +302,11 @@ public:
         }
         for (unsigned i = 0; i < count_; ++i) {
             if (saved_[i] != kNeutral[i]) {
-                set_(kNames[i], saved_[i]);
+                set_(names_[i], saved_[i]);
             }
         }
         if (bind_ && buffer_ != 0) {
-            bind_(kPixelUnpackBuffer, static_cast<GLuint>(buffer_));
+            bind_(buffer_target_, static_cast<GLuint>(buffer_));
         }
     }
 
@@ -317,14 +328,28 @@ private:
         0x0CF0,  // GL_UNPACK_SWAP_BYTES
         0x0CF1,  // GL_UNPACK_LSB_FIRST
     };
+    // The same six for glReadPixels, in the same order.
+    static constexpr GLenum kPackNames[kCount] = {
+        0x0D05,  // GL_PACK_ALIGNMENT
+        0x0D02,  // GL_PACK_ROW_LENGTH
+        0x0D03,  // GL_PACK_SKIP_ROWS
+        0x0D04,  // GL_PACK_SKIP_PIXELS
+        0x0D00,  // GL_PACK_SWAP_BYTES
+        0x0D01,  // GL_PACK_LSB_FIRST
+    };
     static constexpr GLint kNeutral[kCount] = {4, 0, 0, 0, 0, 0};
     static constexpr GLenum kPixelUnpackBuffer = 0x88EC;
     static constexpr GLenum kPixelUnpackBufferBinding = 0x88EF;
+    static constexpr GLenum kPixelPackBuffer = 0x88EB;
+    static constexpr GLenum kPixelPackBufferBinding = 0x88ED;
 
     PFN_glGetIntegerv get_ = nullptr;
     PFN_glPixelStorei set_ = nullptr;
     PFN_glBindBuffer bind_ = nullptr;
     unsigned count_ = kCount;
+    const GLenum* names_ = kNames;
+    GLenum buffer_target_ = kPixelUnpackBuffer;
+    GLenum buffer_binding_ = kPixelUnpackBufferBinding;
     GLint saved_[kCount] = {0};
     GLint buffer_ = 0;
     bool active_ = false;
@@ -502,6 +527,22 @@ public:
     // client-pointer path and with the same exposure.
     PixelStoreGuard pixel_store_guard() const {
         return PixelStoreGuard(get_integer_, pixel_store_, bind_buffer_, es_);
+    }
+
+    // For the frame capture's glReadPixels, which writes through GL_PACK_*.
+    PixelStoreGuard pack_store_guard() const {
+        return PixelStoreGuard(get_integer_, pixel_store_, bind_buffer_, es_,
+                               PixelStoreGuard::Direction::Pack);
+    }
+
+    // The framebuffer glReadPixels reads, as draw_framebuffer_target() below
+    // is the one the overlay draws into: its own target where the API has one,
+    // GL_FRAMEBUFFER (both at once) on ES 2.
+    GLenum read_framebuffer_target() const {
+        return es_ == 2 ? GL_FRAMEBUFFER : 0x8CA8;  // GL_READ_FRAMEBUFFER
+    }
+    GLenum read_framebuffer_binding() const {
+        return es_ == 2 ? GL_FRAMEBUFFER_BINDING : 0x8CAA;  // GL_READ_FRAMEBUFFER_BINDING
     }
 
     // For the overlay's own draw: the sRGB write state is the game's, and the
@@ -1267,8 +1308,37 @@ private:
         if (!pixels) {
             return;
         }
-        read_pixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
-                    GL_RGBA_FORMAT, GL_UNSIGNED_BYTE, pixels);
+        {
+            // From the framebuffer the overlay drew into, through neutral pack
+            // state, and everything put back. glReadPixels reads the READ
+            // framebuffer and writes through GL_PACK_* and the pixel-pack
+            // buffer, all of it the game's: a game reading from its own
+            // object got a capture of that object, one with a wide
+            // GL_PACK_ROW_LENGTH had rows written far past the end of this
+            // buffer, and one with a pack buffer bound had the pixels go into
+            // its buffer and GL_INVALID_OPERATION into its queue
+            // (tests/gl_capture_state.cpp). Without the entry points to
+            // neutralise the state there is no capture at all.
+            const PixelStoreGuard pack = avatars_.pack_store_guard();
+            if (!pack.ok()) {
+                std::free(pixels);
+                return;
+            }
+            GLint previous_read = 0;
+            const bool rebind = bind_framebuffer_ && get_integer_;
+            if (rebind) {
+                get_integer_(avatars_.read_framebuffer_binding(), &previous_read);
+                if (previous_read != 0) {
+                    bind_framebuffer_(avatars_.read_framebuffer_target(), 0);
+                }
+            }
+            read_pixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
+                        GL_RGBA_FORMAT, GL_UNSIGNED_BYTE, pixels);
+            if (rebind && previous_read != 0) {
+                bind_framebuffer_(avatars_.read_framebuffer_target(),
+                                  static_cast<GLuint>(previous_read));
+            }
+        }
 
         if (std::FILE* file = std::fopen(target, "wb")) {
             std::fprintf(file, "P6\n%u %u\n255\n", width, height);
