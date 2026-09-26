@@ -1363,11 +1363,28 @@ private:
         // probes are that game), the third road has nothing to forward to
         // until ImGui's loader resolves glXGetProcAddressARB through the
         // dlsym door and the shim remembers it -- which Init has just done.
-        // The GLSL version is settled by then, but the GL major, which gates
-        // what the context may be asked (SrgbWriteGuard), still needs the
-        // answer.
+        // The GL major gates what the context may be asked (SrgbWriteGuard).
+        //
+        // And the GLSL is not settled by then, whatever this said before: Init
+        // took ImGui's desktop default, "#version 130", and an ES context
+        // refuses it. An ES game that opens its libraries RTLD_LOCAL and
+        // never asks for a dispatcher was drawn with a program that never
+        // linked -- "OpenGL backend ready" in the log, 42 GL errors in the
+        // game's queue over 42 frames and not one pixel (tests/gl_es_glsl.cpp).
+        // An ES answer now initialises the backend again with its language;
+        // nothing has been built yet, so the second Init costs nothing.
         if (!version_known) {
             read_version();
+            if (glsl_version) {
+                VOCEM_GLOG("the context is OpenGL ES and the backend was initialised before it "
+                           "could be asked: initialising it again with %s", glsl_version);
+                ImGui_ImplOpenGL3_Shutdown();
+                if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
+                    VOCEM_GLOG("ImGui OpenGL3 backend failed to initialise");
+                    failed_ = true;
+                    return false;
+                }
+            }
         }
         // The backend's GL objects -- shader, buffers and the font texture --
         // built HERE, not left to its NewFrame. draw() replaces the font
@@ -1395,6 +1412,17 @@ private:
                 return false;
             }
         }
+        // CreateDeviceObjects answers true whether or not its program linked
+        // (it prints the compiler's complaint to the game's stderr and goes
+        // on), and a program that did not link turns every draw into an error
+        // in the game's queue. Asked here, so "ready" below is a fact.
+        if (!backend_program_linked()) {
+            VOCEM_GLOG("not drawing in this context: the backend's shader program did not link "
+                       "(ImGui's complaint is on stderr)");
+            ImGui_ImplOpenGL3_Shutdown();
+            failed_ = true;
+            return false;
+        }
         // Resolved once, beside the rest: a context without it is older than
         // framebuffer objects, in which case there is nothing to retarget.
         bind_framebuffer_ = gl_symbol<PFN_glBindFramebuffer>("glBindFramebuffer");
@@ -1414,6 +1442,41 @@ private:
     }
 
 private:
+    // The first fields of ImGui_ImplOpenGL3_Data (imgui_impl_opengl3.cpp),
+    // which the backend keeps in io.BackendRendererUserData and does not
+    // export: the program's name is the one thing needed from it, to ask GL
+    // whether it linked. Mirrored for the vendored 1.91.9 and held to it: a
+    // new ImGui fails to compile here until somebody has compared the prefix.
+    struct BackendDataPrefix {
+        GLuint gl_version;
+        char glsl_version_string[32];
+        bool profile_is_es2;
+        bool profile_is_es3;
+        bool profile_is_compat;
+        GLint profile_mask;
+        GLuint font_texture;
+        GLuint shader_handle;
+    };
+    static_assert(IMGUI_VERSION_NUM == 19190,
+                  "BackendDataPrefix mirrors ImGui_ImplOpenGL3_Data of ImGui 1.91.9: compare it "
+                  "with the new backend's struct, then change this number");
+
+    // Whether the backend's shader program linked. Unknown -- no
+    // glGetProgramiv, no backend -- is answered yes, which is how every
+    // backend was taken before this was asked.
+    bool backend_program_linked() {
+        using PFN_glGetProgramiv = void (*)(GLuint, GLenum, GLint*);
+        const auto* data =
+            static_cast<const BackendDataPrefix*>(ImGui::GetIO().BackendRendererUserData);
+        auto get_program = gl_symbol<PFN_glGetProgramiv>("glGetProgramiv");
+        if (!data || !get_program) {
+            return true;
+        }
+        GLint linked = 0;
+        get_program(data->shader_handle, 0x8B82 /*GL_LINK_STATUS*/, &linked);
+        return data->shader_handle != 0 && linked != 0;
+    }
+
     // Asked once, when the backend comes up, of the API the present arrived
     // through: which context is current right now is the one the backend's
     // objects were just created in.
