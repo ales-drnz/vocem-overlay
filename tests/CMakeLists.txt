@@ -1304,6 +1304,12 @@ vocem_m32_twin(apps_list_separator)
 # packaged vocem-config $ORIGIN:$ORIGIN/../lib. Measured on a scratch install.
 vocem_script_test(installed_runpath ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}")
 
+# A Vulkan loader in depends=() only if something shipped NEEDs libvulkan --
+# nothing does -- and the two PKGBUILDs and .SRCINFO list the same depends and
+# optdepends.
+vocem_script_test(package_depends_needed
+    ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DBUILD32_DIR=${VOCEM_BUILD32_DIR}")
+
 if(TARGET vocem-config)
     find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
     find_package(Fontconfig QUIET)
