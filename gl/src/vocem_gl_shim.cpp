@@ -319,7 +319,7 @@ bool is_system_gl(void* pointer) {
 //   correct place to forward to.
 //
 // Neither is ever cached as null: `seen` stores only successes, and `next`
-// remembers the *attempt* in a separate flag. A null answer must not become
+// remembers the *finished* attempt in a separate flag. A null answer must not become
 // permanent -- the first frame of a process can precede the library being mapped
 // -- but the lookup must not repeat forever either: `dlsym(RTLD_NEXT, ...)`
 // takes the dynamic loader's lock, and Chromium forks its children from a
@@ -391,6 +391,17 @@ Hook* find_hook(const char* name) {
 // The real function behind a hook: what the dlsym hook vetted and remembered,
 // or RTLD_NEXT, once. Null when neither has an answer *yet* -- the dlsym hook
 // keeps filling `seen` as the application resolves names.
+//
+// The attempt is remembered only AFTER the lookup has its answer, and the
+// answer is stored before the attempt. The other order -- "attempted" first,
+// then the lookup -- told every thread that arrived in between that the real
+// function did not exist: a null eglGetProcAddress("glClear") to a game, a
+// skipped real swap in a present hook. Measured with sixteen threads asking at
+// once: some thread was told null in 181 of 300 fresh processes
+// (tests/shim_lookup_race.cpp). Threads that arrive together now each look
+// the name up, which is harmless -- the lookup is idempotent, and what the
+// rule above forbids is a lookup repeated for the life of the process, which
+// the flag still prevents once one of them has finished.
 void* real_for(Hook& entry) {
     if (void* seen = __atomic_load_n(&entry.seen, __ATOMIC_ACQUIRE)) {
         return seen;
@@ -399,13 +410,16 @@ void* real_for(Hook& entry) {
         return next;
     }
     if (__atomic_load_n(&entry.next_attempted, __ATOMIC_ACQUIRE)) {
-        return nullptr;
+        // Read again: the finished attempt may have stored its answer after
+        // `next` was read above, and the acquire on the flag is what makes
+        // that store visible now.
+        return __atomic_load_n(&entry.next, __ATOMIC_ACQUIRE);
     }
-    __atomic_store_n(&entry.next_attempted, 1, __ATOMIC_RELEASE);
     void* next = real_dlsym(RTLD_NEXT, entry.name);
     if (next) {
         __atomic_store_n(&entry.next, next, __ATOMIC_RELEASE);
     }
+    __atomic_store_n(&entry.next_attempted, 1, __ATOMIC_RELEASE);
     return next;
 }
 

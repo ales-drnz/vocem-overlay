@@ -1287,3 +1287,12 @@ vocem_script_test(gl_beside_mangohud ARGS ${VOCEM_GL_PROBE_ARGS}
 # shape is built with bwrap rather than described; see the file's header.
 vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
+
+# ---- 0.1.11 gl lane ----
+
+# The shim's first lookup of a real function, asked by sixteen threads at once,
+# in three hundred fresh processes: "tried" was remembered before the lookup
+# had its answer, and a thread arriving in between was told the function did
+# not exist (shim_lookup_race.cpp). Both widths, against the shim of each.
+vocem_test(shim_lookup_race LINK EGL Threads::Threads ENV ${VOCEM_SHIM_ENV} SKIP TIMEOUT 150)
+vocem_m32_twin(shim_lookup_race ENV ${VOCEM_SHIM32_ENV})
