@@ -206,14 +206,28 @@ const char* fonts_font_status();
 // Tells the atlas which colour emoji the frame's text needs. Walks the string,
 // remembers the codepoints the bank carries (vocem/emoji_bank.h), and the next
 // ensure_fonts() folds any new ones into the atlas as coloured glyphs.
-// Allocation-free, and free of syscalls for a codepoint it has seen before -- so
-// the steady state a game spends its life in costs a UTF-8 decode and nothing
-// else. A codepoint it has NOT seen is asked of the bank, which is an open and a
-// binary search of preads: bounded by the session cap on distinct emoji, but not
-// free, and not what this comment claimed before it was measured. Without a bank
-// on disk it remembers nothing, and the monochrome emoji keep drawing exactly as
-// they always have.
+// Allocation-free, and free of syscalls once the bank has been asked for --
+// which the first ensure_fonts() does, and on the Vulkan path that is the
+// atlas worker's first build, before anything is drawn: the steady state a
+// game spends its life in costs a UTF-8 decode and nothing else, and a
+// codepoint it has NOT seen is queued for fonts_look_up_noted() below, which
+// asks the bank -- a binary search of preads -- after the present. It asked
+// the bank itself, here, inside the present, until the 0.1.10 review measured
+// it. The one open left here is the OpenGL path's first frame, which notes
+// before its first build (inside the swap call, where the build is too).
+// Without a bank on disk it remembers nothing, and the monochrome emoji keep
+// drawing exactly as they always have.
 void fonts_note_emoji(const char* utf8_text);
+
+// The lookups the noting queued: a codepoint the text showed for the first
+// time is asked of the bank HERE, and so is the bank's own open and its
+// sequence table's read, the first time this runs. The noting above and
+// fonts_prepare_text() read no file once the bank has been asked for -- they
+// run inside the present on the Vulkan path -- and a new codepoint draws from
+// the monochrome font until this has run and ensure_fonts() folded it.
+// ensure_fonts() calls this first, so a caller that folds need not; it is
+// public for a caller that notes without folding.
+void fonts_look_up_noted();
 
 // Why the overlay is drawing no colour emoji, or nullptr while there is nothing
 // to say -- either they are working or no text has needed one yet. Both injected
@@ -236,8 +250,8 @@ const char* fonts_emoji_status();
 // or for a key the bank refuses, the text is left exactly as it was and the
 // sequence draws as its coloured parts, which is what it did until 0.1.9.
 // `capacity` is the field's size; the result is never longer than the text.
-// No syscall beyond the noting's own, which is once per codepoint or key for
-// the life of the process (tests/fonts_frame_quiet.cpp).
+// No syscall once the bank has been asked for: the noting queues, and
+// fonts_look_up_noted() reads (tests/fonts_frame_quiet.cpp).
 void fonts_prepare_text(char* text, size_t capacity);
 
 // Where a sequence key lives in the TEXT and the ATLAS: the Basic Multilingual

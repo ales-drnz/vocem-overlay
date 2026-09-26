@@ -158,6 +158,9 @@
 #include "vocem/avatar_rgba.h"
 #include "vocem/shm.h"
 
+// The layer's file calls on the emoji bank, stamped (tests/vk_file_witness.cpp).
+extern "C" int vocem_file_witness_stamps(const long long** stamps);
+
 namespace {
 
 int failures = 0;
@@ -2262,8 +2265,23 @@ int main() {
     // but after the hand-down, the post-present phase. -1 without a witness
     // (the 32-bit twin runs the plain chain).
     long waits_inside_arrivals = -1;
+    // And the bank's file calls, read against the same hand-downs: on the
+    // present path, or after the hand-down. -1 without a witness.
+    long bank_calls_on_path = -1;
+    long bank_calls_after = -1;
     if (witness_report[0]) {
         place_hand_downs(witness_report);
+        const long long* file_stamps = nullptr;
+        const int file_calls = vocem_file_witness_stamps(&file_stamps);
+        bank_calls_on_path = 0;
+        bank_calls_after = 0;
+        for (int i = 0; i < file_calls; ++i) {
+            if (on_present_path(file_stamps[i])) {
+                ++bank_calls_on_path;
+            } else if (inside_a_present(file_stamps[i])) {
+                ++bank_calls_after;
+            }
+        }
         long submits_inside = 0;
         long submits_on_path = 0;
         long waits_inside = 0;
@@ -2438,6 +2456,20 @@ int main() {
                   "and nothing the overlay uploads makes the game's thread wait for the GPU");
         } else {
             printf("     (no witness in this chain, so the waits are not counted here)\n");
+        }
+        // The bank's file work: none on the present path. Every arrival is a
+        // codepoint nobody had shown, and noting one opened the bank, read its
+        // sequence table and binary-searched it with preads inside the present
+        // -- where overlay_renderer.cpp said the layer took no file work. The
+        // positive control is the post-present count: the bank WAS read, after
+        // the hand-down, which is where the verdicts and the folds belong.
+        if (bank_calls_on_path >= 0) {
+            printf("     the emoji bank's file calls: %ld on the present path, %ld after the "
+                   "hand-down\n", bank_calls_on_path, bank_calls_after);
+            check(bank_calls_after > 0,
+                  "the bank was read after the hand-down (the file witness sees the layer's calls)");
+            check(bank_calls_on_path == 0,
+                  "and not once on the present path: a new emoji costs the present no file work");
         }
         const long off_thread = lines_containing(stderr_log, "off the game's thread");
         const long no_thread = lines_containing(stderr_log, "no thread for the font atlas");

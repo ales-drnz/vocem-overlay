@@ -422,6 +422,14 @@ constexpr uint32_t kSequenceKeyRoom = kSequenceKeyLast - kSequenceKeyFirst + 1;
 static_assert(kSequenceKeyRoom == 6400, "the BMP's private use area");
 bool g_keys_past_room = false;
 
+// The codepoints the text showed this frame and nobody has looked up yet, for
+// fonts_look_up_noted(). More new codepoints than this in one frame are noted
+// again on the next -- the text arrives whole every frame -- so the bound
+// costs a frame, never a verdict.
+constexpr uint32_t kMaxLookups = 256;
+uint32_t g_lookups[kMaxLookups];
+uint32_t g_lookup_count = 0;
+
 uint32_t text_key(uint32_t bank_key) {
     const uint32_t offset = bank_key - kEmojiSequenceKeyFirst;
     if (bank_key < kEmojiSequenceKeyFirst || offset >= kSequenceKeyRoom) {
@@ -489,9 +497,55 @@ bool bank_verdict(uint32_t codepoint, bool key = false) {
             high = middle - 1;
         }
     }
+    // Not seen yet. The verdict is a file read -- the bank's open and its
+    // table the first time, a binary search of preads after that -- and this
+    // runs inside the present on the Vulkan path, whose renderer said it took
+    // no file work there while it did (39-139 us the first time, 6-8 us each
+    // new codepoint after, measured by the 0.1.10 review; 82 bank calls on the
+    // present path of vk_present_draw's arrivals scene). So nothing is read
+    // here: the codepoint is queued, and fonts_look_up_noted() -- the first
+    // thing ensure_fonts() does, after the present -- reads. Until then it is
+    // "not from the bank", which draws it from the monochrome font for a frame.
+    //
+    // The bank itself is opened by the first ensure_fonts() (the first build,
+    // fonts_look_up_noted), which on the Vulkan path is on the atlas worker
+    // and before anything can be drawn -- so a noting there always finds it
+    // asked. What can find it not asked yet is the OpenGL path's first frame,
+    // which notes before its first build, inside the swap call where the
+    // build happens too: it opens the bank here, as it always did.
+    if (!g_emoji_bank.asked()) {
+        g_emoji_bank.open();
+    }
+    for (uint32_t i = 0; i < g_lookup_count; ++i) {
+        if (g_lookups[i] == codepoint) {
+            return false;
+        }
+    }
+    if (g_lookup_count < kMaxLookups) {
+        g_lookups[g_lookup_count++] = codepoint;
+    }
+    return false;
+}
+
+// The lookup a queued codepoint waits for, and the verdict remembered.
+void look_up(uint32_t codepoint) {
+    long low = 0;
+    long high = static_cast<long>(g_seen_count) - 1;
+    while (low <= high) {
+        const long middle = low + (high - low) / 2;
+        const uint32_t entry = g_seen[middle] & kCodepointMask;
+        if (entry == codepoint) {
+            return;  // queued twice in one frame, or answered already
+        }
+        if (entry < codepoint) {
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
     if (g_seen_count >= kMaxSeenCodepoints) {
         g_capped = true;
-        return false;
+        return;
     }
     // The one bank lookup this codepoint will ever cost.
     bool in_bank = g_emoji_bank.contains(bank_codepoint(codepoint));
@@ -499,11 +553,11 @@ bool bank_verdict(uint32_t codepoint, bool key = false) {
     // the daemon copies it in on its own tick and the game's first frame beats
     // it. Writing "no colour glyph" down now would outlive the wait -- the
     // verdict here is remembered for the life of the process -- so nothing is
-    // written down at all until the bank has either opened or given up. Costs a
-    // walk of the seen table per codepoint per frame for at most thirty seconds
-    // in a sandbox, and the open behind it is rate-limited to two a second.
+    // written down at all until the bank has either opened or given up: the
+    // text notes it again next frame, and it is looked up again. The open
+    // behind it is rate-limited to two a second.
     if (!in_bank && g_emoji_bank.still_arriving()) {
-        return false;
+        return;
     }
     // The atlas budget, which is a different question from the one above: past
     // it a new colour emoji stays monochrome, and it is remembered as "not in
@@ -519,7 +573,6 @@ bool bank_verdict(uint32_t codepoint, bool key = false) {
     if (in_bank) {
         ++g_wanted_count;
     }
-    return in_bank;
 }
 
 // The remembered entry's flags (kSeenInBank, kSeenFolded, kSeenPlaced), or 0
@@ -544,6 +597,21 @@ uint32_t seen_flags(uint32_t codepoint) {
 }
 
 }  // namespace
+
+void fonts_look_up_noted() {
+    // The bank itself, the first time this runs: its open and its sequence
+    // table's read, here -- in the first build, which on the Vulkan path is the
+    // atlas worker's -- rather than inside a present. Asked whether or not any
+    // text has shown an emoji yet: the table has to be there before the text
+    // is read, or a sequence's parts are noted as emoji of their own.
+    if (!g_emoji_bank.asked()) {
+        g_emoji_bank.open();
+    }
+    for (uint32_t i = 0; i < g_lookup_count; ++i) {
+        look_up(g_lookups[i]);
+    }
+    g_lookup_count = 0;
+}
 
 void fonts_note_emoji(const char* utf8_text) {
     if (!utf8_text || !utf8_text[0]) {
@@ -576,15 +644,18 @@ void fonts_prepare_text(char* text, size_t capacity) {
             text[begin + 2] = static_cast<char>(0xBD);
         }
     });
-    // The table comes with the bank, and the bank opens on the first codepoint
-    // that could be in it -- so the first walk is the plain noting, which is
-    // what opens it. With no table (none beside the bank, or no bank) that walk
-    // is the whole cost, exactly the pre-0.1.9 one, on every frame.
+    // The table comes with the bank, which the first ensure_fonts() opened --
+    // or, on the OpenGL path's first frame, before its first build, this does:
+    // the table has to be there before the text is read, or a sequence's
+    // parts are noted as emoji of their own. With no table at all (none beside
+    // the bank, or no bank) the plain noting is the whole of it, exactly the
+    // pre-0.1.9 cost.
+    if (!g_emoji_bank.asked()) {
+        g_emoji_bank.open();
+    }
     if (g_emoji_bank.sequence_count() == 0) {
         fonts_note_emoji(text);
-        if (g_emoji_bank.sequence_count() == 0) {
-            return;
-        }
+        return;
     }
     // Decoded once into fixed arrays: the widest field a snapshot has is the
     // toast's body, and a codepoint per byte is the bound. A string wider than
@@ -1139,6 +1210,10 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
 
 bool ensure_fonts(float pixel_size, float reference, const char* body_path,
                   const char* strong_path) {
+    // What the frames' text noted and nobody has looked up: this is the
+    // post-present phase, and the lookups are file reads.
+    fonts_look_up_noted();
+
     // The reference is not a size the atlas is built at -- it is what the layout
     // divides by -- so it costs nothing to follow immediately.
     g_fonts.reference = reference > 0.0f ? reference : kReferenceSize;

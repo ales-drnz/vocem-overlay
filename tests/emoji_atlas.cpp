@@ -231,6 +231,9 @@ int main() {
             utf8[1] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
             utf8[2] = static_cast<char>(0x80 | (codepoint & 0x3F));
             vocem::fonts_note_emoji(utf8);
+            // The noting only queues (a frame's worth); the lookup is the
+            // post-present phase's, and a frame's text is noted every frame.
+            vocem::fonts_look_up_noted();
         }
     }
     vocem::ensure_fonts(16.0f, 16.0f);
@@ -256,6 +259,7 @@ int main() {
             utf8[2] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
             utf8[3] = static_cast<char>(0x80 | (codepoint & 0x3F));
             vocem::fonts_note_emoji(utf8);
+            vocem::fonts_look_up_noted();
         }
     }
     check(vocem::fonts_emoji_status() != nullptr,

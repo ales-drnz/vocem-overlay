@@ -828,7 +828,13 @@ vocem_test(hdr_srgb_pixels
 # surface format.
 set(VOCEM_VK_MANIFEST_ENV "VOCEM_VK_MANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json")
 set(VOCEM_VK_PROBE_ENV ${VOCEM_VK_MANIFEST_ENV} "VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>")
-vocem_test(vk_present_draw LINK ${CMAKE_DL_LIBS} X11 rt ENV ${VOCEM_VK_PROBE_ENV} SKIP)
+vocem_test(vk_present_draw SOURCES vk_present_draw.cpp vk_file_witness.cpp
+    LINK ${CMAKE_DL_LIBS} X11 rt
+    LINK_OPTIONS "-Wl,--export-dynamic-symbol=open,--export-dynamic-symbol=open64"
+                 "-Wl,--export-dynamic-symbol=openat,--export-dynamic-symbol=openat64"
+                 "-Wl,--export-dynamic-symbol=pread,--export-dynamic-symbol=pread64"
+                 "-Wl,--export-dynamic-symbol=close"
+    ENV ${VOCEM_VK_PROBE_ENV} SKIP)
 
 # The same binary as its own control: VOCEM_DISABLE=1 and the loader refuses the
 # layer on its disable_environment, so the presented frame must be exactly what

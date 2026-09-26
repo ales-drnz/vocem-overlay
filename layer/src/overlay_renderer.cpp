@@ -402,8 +402,9 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     // Which colour emoji this frame's text needs -- asked AFTER the words are
     // in the snapshot, because the segment's copy of the body is empty by
     // design and an emoji that appears only in a message would otherwise
-    // never be noted at all. Only noted here; the rebuild happens in
-    // process_uploads(), after the present, like every other atlas change.
+    // never be noted at all. Only noted here, with no file read -- a codepoint
+    // never seen is queued, and the bank is asked in process_uploads(), after
+    // the present, where the fold happens too, like every other atlas change.
     // The snapshot is this frame's own copy (the same const_cast the body
     // above makes), and the noting rewrites an emoji sequence into its key --
     // once the atlas has that key's glyph, which is from the frame after the

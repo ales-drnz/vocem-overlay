@@ -238,6 +238,11 @@ public:
     bool still_arriving() const {
         return fd_ < 0 && !attempted_ && first_asked_ != 0.0;
     }
+    // Whether open() has ever been called: opened, given up on, or being
+    // waited for inside a sandbox. Asking costs nothing. fonts.cpp opens the
+    // bank after a present, and until then notes nothing it would have to
+    // take back (vocem/fonts.h, fonts_look_up_noted).
+    bool asked() const { return fd_ >= 0 || attempted_ || first_asked_ != 0.0; }
     // The path the answer above is about: the candidate that opened, or the
     // installed one when none did.
     const char* path() const { return path_; }
