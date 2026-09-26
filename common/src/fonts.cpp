@@ -3,6 +3,9 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 
 #include "vocem/fonts.h"
+#ifndef VOCEM_IMCONFIG_INJECTED
+#error "vocem/imconfig_injected.h is not in effect: IM_ASSERT would be assert() inside a game"
+#endif
 
 #include <fcntl.h>
 #include <sys/stat.h>

@@ -9,6 +9,9 @@
 #include <cstdio>
 
 #include "vocem/fonts.h"
+#ifndef VOCEM_IMCONFIG_INJECTED
+#error "vocem/imconfig_injected.h is not in effect: IM_ASSERT would be assert() inside a game"
+#endif
 #include "vocem/theme.h"
 
 namespace vocem {

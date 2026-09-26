@@ -105,7 +105,7 @@ target_compile_definitions(vocem_vk PRIVATE
     IMGUI_DISABLE_DEBUG_TOOLS
     # No abort() reachable from ImGui inside a game whatever the build type:
     # gl/CMakeLists.txt says why.
-    "IM_ASSERT(_EXPR)=((void)0)"
+    IMGUI_USER_CONFIG="vocem/imconfig_injected.h"
 )
 
 # --- manifest -------------------------------------------------------------

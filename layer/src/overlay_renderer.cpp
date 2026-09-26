@@ -12,6 +12,9 @@
 
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
+#ifndef VOCEM_IMCONFIG_INJECTED
+#error "vocem/imconfig_injected.h is not in effect: IM_ASSERT would be assert() inside a game"
+#endif
 #include "vocem/clock.h"
 #include "vocem/journal.h"
 #include "vocem/fonts.h"

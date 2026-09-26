@@ -35,6 +35,9 @@
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
+#ifndef VOCEM_IMCONFIG_INJECTED
+#error "vocem/imconfig_injected.h is not in effect: IM_ASSERT would be assert() inside a game"
+#endif
 #include "real_dlsym.h"
 #include "vocem/apps.h"
 #include "vocem/avatar_file.h"

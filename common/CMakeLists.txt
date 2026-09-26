@@ -23,7 +23,8 @@
 #     every ImGui these objects are ever linked with is built under -- a layout
 #     that differed between panel.o and the ImGui beside it would be silent.
 #   * IM_ASSERT compiled out: panel.o and fonts.o go into somebody's game, where
-#     an abort() is rule 7's failure (gl/CMakeLists.txt says why). The tests
+#     an abort() is rule 7's failure (include/vocem/imconfig_injected.h says
+#     why, and why it is a header rather than a -D). The tests
 #     that link these objects get them assert-free too; their own ImGui and
 #     their own code keep their asserts, and under the default RelWithDebInfo
 #     NDEBUG makes the two the same thing anyway.
@@ -51,7 +52,7 @@ function(vocem_add_common target)
         IMGUI_USE_WCHAR32
         IMGUI_DISABLE_FILE_FUNCTIONS
         IMGUI_DISABLE_DEBUG_TOOLS
-        "IM_ASSERT(_EXPR)=((void)0)")
+        IMGUI_USER_CONFIG="vocem/imconfig_injected.h")
     target_compile_options(${target} PRIVATE -Wall -Wextra ${ARGN})
     set_target_properties(${target} PROPERTIES
         CXX_VISIBILITY_PRESET hidden

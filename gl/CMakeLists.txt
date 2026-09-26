@@ -41,11 +41,10 @@ target_compile_definitions(vocem_gl PRIVATE
     IMGUI_DISABLE_DEBUG_TOOLS
     # ImGui's IM_ASSERT is assert() (imgui.h), 387 of them in the units that
     # go into this library, every one an abort() in somebody's game if it
-    # fires (rule 7). The packaging compiles them out with NDEBUG; a Debug
-    # build of this tree did not, and a build type is not the place to keep a
-    # rule. Stated here instead, for this target alone: the tests keep their
-    # asserts.
-    "IM_ASSERT(_EXPR)=((void)0)"
+    # fires (rule 7). Compiled out for this target alone, whatever the build
+    # type, by include/vocem/imconfig_injected.h, which says why it is a
+    # header and not a -D: the tests keep their asserts.
+    IMGUI_USER_CONFIG="vocem/imconfig_injected.h"
 )
 
 set_source_files_properties(
