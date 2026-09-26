@@ -53,9 +53,9 @@ depends=(
     # session preloads into every one of them -- and a preloaded object that fails
     # to load makes ld.so print "cannot be preloaded: ignored" to the stderr of
     # every process that starts. Since 0.1.11 the injected libraries carry their
-    # C++ runtime inside (-static-libstdc++ -static-libgcc), so at 32 bits they
-    # NEED libc.so.6, libm.so.6 and ld-linux.so.2 and nothing else (readelf -d on
-    # build32): lib32-glibc, where this line said lib32-gcc-libs while they
+    # C++ runtime inside, -static-libstdc++ and -static-libgcc, so at 32 bits they
+    # NEED libc.so.6, libm.so.6 and ld-linux.so.2 and nothing else, readelf -d on
+    # build32 says: lib32-glibc, where this line said lib32-gcc-libs while they
     # NEEDed libstdc++.so.6 and libgcc_s.so.1.
     'lib32-glibc'
 )
@@ -118,7 +118,6 @@ _refuse_to_replace_an_exemplar() {
 }
 
 prepare() {
-    _refuse_to_replace_an_exemplar || return 1
     cd "$srcdir/$pkgname"
     git submodule init
     git config submodule.third_party/imgui.url "$srcdir/imgui"
@@ -128,6 +127,7 @@ prepare() {
 }
 
 build() {
+    _refuse_to_replace_an_exemplar || return 1
     cd "$srcdir/$pkgname"
 
     # 64-bit: everything.

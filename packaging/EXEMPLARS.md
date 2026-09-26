@@ -40,6 +40,7 @@ and a package cannot be rebuilt.
 | 0.1.10-3 | DESIGN 148 (the release path's wait, refutation attempted and empty) and 150 (a restart read as a stop) | **no** -- its recipe is in no git object |
 | 0.1.10-5 | `tests/CMakeLists.txt`, `tests/vk_present_draw.cpp`, `tests/gl_draw_local.cpp`, DESIGN 191/192 (the freeze: 7 and 8 rebuilds) | **no** -- built from the working tree five minutes before the commit that carries its recipe (`c35195f`) |
 | 0.1.10-6 | DESIGN 194-205 (the release review: every refutation of it ran against this package, installed) | **no** -- built from the working tree 74 minutes before the commit that carries its recipe (`3f6db50`) |
+| 0.1.10-7 | `tests/installed_runpath.cmake`, `tests/package_depends_needed.cmake` (the window's RUNPATH, the Vulkan loaders in depends), and every refutation of the 2026-09-26 review, which ran against this package installed | its .BUILDINFO recipe hash is `PKGBUILD.local` at `a97cb01`, the commit `v0.1.10` is on (sha256 05101331...) |
 
 **So "a tag can be rebuilt" was true of two of the six.** The sentence that
 stood here -- "The packages from 0.1.2 on are rebuilds of tagged releases; a
