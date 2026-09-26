@@ -37,7 +37,13 @@
 //     control characters in what a sandbox writes (`printable()` in
 //     flatpak_bridge.cpp); names, channel names and titles come from the other
 //     direction and had no such rule (entry 133). Tab included: nothing here
-//     is columnar.
+//     is columnar. The C1 controls, U+0080..U+009F, for the same reason one
+//     block up: U+009B is the single-character CSI, an escape sequence to a
+//     terminal that honours 8-bit controls, and `vocem` prints names straight
+//     to a terminal; U+0085 is NEXT LINE. Only below U+0020 went through
+//     0.1.10 (the review's c1 probe). And U+2028/U+2029, the line and
+//     paragraph separators, which are line breaks by Unicode's own definition
+//     (UAX #14 class BK): a newline spelled in three bytes is still one.
 //
 // This lived inside main.cpp's anonymous namespace as `without_bidi_marks`,
 // where nothing could test it; entry 66's second defect had no test of its
@@ -54,11 +60,13 @@ namespace vocem {
 
 // True for the code points that go. U+061C ARABIC LETTER MARK; U+200E..U+200F
 // the two directional marks; U+202A..U+202E the embeddings and overrides;
-// U+2066..U+2069 the isolates; and everything below U+0020 plus U+007F.
+// U+2066..U+2069 the isolates; U+2028..U+2029 the line and paragraph
+// separators; everything below U+0020, U+007F, and the C1 controls
+// U+0080..U+009F.
 inline bool text_drops(uint32_t code) {
-    static const uint32_t kMarks[] = {0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C,
-                                      0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069};
-    if (code < 0x20 || code == 0x7F) {
+    static const uint32_t kMarks[] = {0x061C, 0x200E, 0x200F, 0x2028, 0x2029, 0x202A, 0x202B,
+                                      0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069};
+    if (code < 0x20 || (code >= 0x7F && code <= 0x9F)) {
         return true;
     }
     for (uint32_t mark : kMarks) {
@@ -91,9 +99,11 @@ inline std::string sanitise_text(const std::string& source) {
             length = 4;
             code = lead & 0x07u;
         }
-        if (i + length > source.size()) {
-            // A truncated sequence: copy the byte and move on rather than read
-            // past the end. Nothing here is the place to repair broken UTF-8.
+        // A truncated sequence, or a byte that starts none (a stray
+        // continuation byte): copy it and move on rather than read past the
+        // end, or read the byte's value as a code point -- 0x81 alone is not
+        // U+0081. Nothing here is the place to repair broken UTF-8.
+        if (i + length > source.size() || (length == 1 && lead >= 0x80)) {
             out.push_back(source[i]);
             ++i;
             continue;
