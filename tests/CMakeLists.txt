@@ -1289,6 +1289,11 @@ vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
 
 # ---- 0.1.11 gui lane ----
+# The window's save rewrites the file in place: comments, unknown keys, a
+# symlink and the file's mode all survive a click on a switch. The fresh
+# file it used to rename over config.ini lost every one of them.
+vocem_test(config_rewrite_in_place)
+
 if(TARGET vocem-config)
     find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
     find_package(Fontconfig QUIET)
