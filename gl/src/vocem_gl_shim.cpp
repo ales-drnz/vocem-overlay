@@ -24,12 +24,15 @@
 // dynamic initialiser would emit __cxa_guard calls, which pull in libstdc++ -- and
 // this object is mapped into every process in the session, including ones that
 // never load libstdc++ themselves. Plain globals plus atomic builtins keep the
-// dependency list at libc and libdl.
+// dependency list at libc alone (glibc 2.34 folded libdl into it; NEEDED is
+// libc.so.6 and nothing else at both widths, which tests/shim_artifact.cmake
+// holds, and the link refuses anything undefined outside it).
 
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "real_dlsym.h"
 
@@ -95,22 +98,61 @@ bool disabled() {
     return value == 1;
 }
 
+// A line on stderr without stdio: write(2) of the pieces, no buffer, no
+// allocation. Used once per process at most, on the present path, for the one
+// failure this file can have that looks exactly like success.
+void say(const char* a, const char* b = "", const char* c = "", const char* d = "") {
+    const char* parts[] = {"[vocem/gl-shim] ", a, b, c, d, "\n"};
+    for (const char* part : parts) {
+        size_t length = strlen(part);
+        while (length > 0) {
+            const ssize_t written = write(2, part, length);
+            if (written <= 0) {
+                return;
+            }
+            part += written;
+            length -= static_cast<size_t>(written);
+        }
+    }
+}
+
+// One attempt at the overlay library. Under VOCEM_DEBUG a refusal is said with
+// ld.so's own words: a game whose runtime puts an older libstdc++ first on its
+// search path used to lose the overlay with nothing said anywhere -- no line,
+// no application record, because the record is written by the library that
+// did not load (tests/gl_old_libstdcxx.cpp).
+void* try_load(const char* path, bool debug) {
+    void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle && debug) {
+        const char* why = dlerror();
+        say("could not load ", path, ": ", why ? why : "no reason given");
+    }
+    return handle;
+}
+
 void load_overlay() {
     if (__atomic_load_n(&g_load_attempted, __ATOMIC_ACQUIRE)) {
         return;
     }
     __atomic_store_n(&g_load_attempted, 1, __ATOMIC_RELEASE);
+    const char* debug_env = getenv("VOCEM_DEBUG");
+    const bool debug = debug_env && debug_env[0] == '1';
 
     // An absolute path can be given explicitly, which is what running from a build
     // tree needs: without it the overlay would have to be on the library search
     // path, and putting a build directory there for every process in the session is
     // a worse trade than one extra variable.
+    //
+    // When it is given it is the only path tried. The fallbacks below used to run
+    // after it as well, so a build-tree path that failed to load was answered by
+    // the INSTALLED library -- a mixed stack, this tree's shim drawing with the
+    // package's overlay, and nothing said so.
     const char* override_path = getenv("VOCEM_GL_LIBRARY");
+    const bool overridden = override_path && override_path[0];
 
     // RTLD_LOCAL: the overlay's symbols must not leak into the application's global
     // namespace, where they could shadow something it defines itself.
-    void* handle = dlopen(override_path && override_path[0] ? override_path : "libvocem_gl.so",
-                          RTLD_NOW | RTLD_LOCAL);
+    void* handle = try_load(overridden ? override_path : "libvocem_gl.so", debug);
 
     // Inside a container, by its path on the host.
     //
@@ -137,8 +179,8 @@ void load_overlay() {
     // load-bearing: dlopen walks the filesystem, and a resolution path runs inside
     // sandboxed processes where a file syscall is SIGSYS. See the comment block
     // above the dispatch table.
-    if (!handle) {
-        handle = dlopen("/run/host" VOCEM_LIBDIR "/libvocem_gl.so", RTLD_NOW | RTLD_LOCAL);
+    if (!handle && !overridden) {
+        handle = try_load("/run/host" VOCEM_LIBDIR "/libvocem_gl.so", debug);
     }
     // And by its own path, unprefixed. Inside a Flatpak the overlay is mounted
     // from the VulkanLayer extension at a directory the loader does not search:
@@ -146,11 +188,17 @@ void load_overlay() {
     // nothing and there is no /run/host either. The build that goes into the
     // extension compiles VOCEM_LIBDIR to where it will be mounted, which is the
     // one place left to look.
-    if (!handle) {
-        handle = dlopen(VOCEM_LIBDIR "/libvocem_gl.so", RTLD_NOW | RTLD_LOCAL);
+    if (!handle && !overridden) {
+        handle = try_load(VOCEM_LIBDIR "/libvocem_gl.so", debug);
     }
     if (!handle) {
-        return;  // not installed, or the wrong architecture: stay out of the way
+        // Not installed, or the wrong architecture, or refused: stay out of the
+        // way -- and, when asked, say that this process has no overlay, so the
+        // lines above are read as the verdict and not as noise.
+        if (debug) {
+            say("no overlay in this process: the overlay library did not load");
+        }
+        return;
     }
     // Stored with the atomic builtins, like every other slot in this file: a
     // second thread presenting at the same moment reads these after seeing
@@ -319,7 +367,7 @@ bool is_system_gl(void* pointer) {
 //   correct place to forward to.
 //
 // Neither is ever cached as null: `seen` stores only successes, and `next`
-// remembers the *attempt* in a separate flag. A null answer must not become
+// remembers the *finished* attempt in a separate flag. A null answer must not become
 // permanent -- the first frame of a process can precede the library being mapped
 // -- but the lookup must not repeat forever either: `dlsym(RTLD_NEXT, ...)`
 // takes the dynamic loader's lock, and Chromium forks its children from a
@@ -391,6 +439,17 @@ Hook* find_hook(const char* name) {
 // The real function behind a hook: what the dlsym hook vetted and remembered,
 // or RTLD_NEXT, once. Null when neither has an answer *yet* -- the dlsym hook
 // keeps filling `seen` as the application resolves names.
+//
+// The attempt is remembered only AFTER the lookup has its answer, and the
+// answer is stored before the attempt. The other order -- "attempted" first,
+// then the lookup -- told every thread that arrived in between that the real
+// function did not exist: a null eglGetProcAddress("glClear") to a game, a
+// skipped real swap in a present hook. Measured with sixteen threads asking at
+// once: some thread was told null in 181 of 300 fresh processes
+// (tests/shim_lookup_race.cpp). Threads that arrive together now each look
+// the name up, which is harmless -- the lookup is idempotent, and what the
+// rule above forbids is a lookup repeated for the life of the process, which
+// the flag still prevents once one of them has finished.
 void* real_for(Hook& entry) {
     if (void* seen = __atomic_load_n(&entry.seen, __ATOMIC_ACQUIRE)) {
         return seen;
@@ -399,13 +458,16 @@ void* real_for(Hook& entry) {
         return next;
     }
     if (__atomic_load_n(&entry.next_attempted, __ATOMIC_ACQUIRE)) {
-        return nullptr;
+        // Read again: the finished attempt may have stored its answer after
+        // `next` was read above, and the acquire on the flag is what makes
+        // that store visible now.
+        return __atomic_load_n(&entry.next, __ATOMIC_ACQUIRE);
     }
-    __atomic_store_n(&entry.next_attempted, 1, __ATOMIC_RELEASE);
     void* next = real_dlsym(RTLD_NEXT, entry.name);
     if (next) {
         __atomic_store_n(&entry.next, next, __ATOMIC_RELEASE);
     }
+    __atomic_store_n(&entry.next_attempted, 1, __ATOMIC_RELEASE);
     return next;
 }
 
@@ -483,13 +545,31 @@ void present_egl(void* display, void* surface) {
 // through `eglGetProcAddress` alone, never through `dlsym`, so without keeping
 // this pointer our present hook would have nothing to forward to in exactly the
 // process the dispatch substitution exists for.
+//
+// **And only for a name of the dispatcher's own family**: egl* from
+// eglGetProcAddress, glX* from the two GLX spellings. A glvnd dispatcher asked
+// for the other family's name does not say "no" -- it answers every name it
+// does not know with a libGLdispatch stub for a GL extension function
+// (glXGetProcAddressARB("eglSwapBuffers") and eglGetProcAddress("glXSwapBuffers")
+// both do, measured). That stub is in libGLdispatch.so.0, so it passed
+// is_system_gl(), and the shim remembered it as the real eglSwapBuffers for the
+// life of the process: first sighting wins, and the application's own correct
+// resolution a moment later could not replace it. Every present then went to a
+// GL stub that does nothing (tests/shim_dispatch_family.cpp). A name of the
+// other family gets the dispatcher's answer untouched, and nothing is
+// remembered from it.
+bool same_family(const Hook& dispatcher, const char* name) {
+    const bool egl_dispatcher = dispatcher.name[0] == 'e';
+    return strncmp(name, egl_dispatcher ? "egl" : "glX", 3) == 0;
+}
+
 void* dispatch(Hook& own, const char* name) {
     void* real = real_for(own);
     if (!real) {
         return nullptr;
     }
     void* answer = reinterpret_cast<PFN_egl_get_proc>(real)(name);
-    if (answer && !disabled()) {
+    if (answer && !disabled() && name && same_family(own, name)) {
         if (Hook* entry = find_hook(name)) {
             if (is_system_gl(answer)) {
                 void* expected = nullptr;

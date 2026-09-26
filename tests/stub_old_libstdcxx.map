@@ -1,0 +1,34 @@
+/* The version nodes of libstdc++ 6.0.21 that the stub stands for (see the .c):
+   GLIBCXX_3.4 to 3.4.21 and CXXABI_1.3 to 1.3.9, each inheriting the one before. */
+GLIBCXX_3.4 { global: vocem_stub_glibcxx_3_4; local: *; };
+GLIBCXX_3.4.1 { global: vocem_stub_glibcxx_3_4_1; } GLIBCXX_3.4;
+GLIBCXX_3.4.2 { global: vocem_stub_glibcxx_3_4_2; } GLIBCXX_3.4.1;
+GLIBCXX_3.4.3 { global: vocem_stub_glibcxx_3_4_3; } GLIBCXX_3.4.2;
+GLIBCXX_3.4.4 { global: vocem_stub_glibcxx_3_4_4; } GLIBCXX_3.4.3;
+GLIBCXX_3.4.5 { global: vocem_stub_glibcxx_3_4_5; } GLIBCXX_3.4.4;
+GLIBCXX_3.4.6 { global: vocem_stub_glibcxx_3_4_6; } GLIBCXX_3.4.5;
+GLIBCXX_3.4.7 { global: vocem_stub_glibcxx_3_4_7; } GLIBCXX_3.4.6;
+GLIBCXX_3.4.8 { global: vocem_stub_glibcxx_3_4_8; } GLIBCXX_3.4.7;
+GLIBCXX_3.4.9 { global: vocem_stub_glibcxx_3_4_9; } GLIBCXX_3.4.8;
+GLIBCXX_3.4.10 { global: vocem_stub_glibcxx_3_4_10; } GLIBCXX_3.4.9;
+GLIBCXX_3.4.11 { global: vocem_stub_glibcxx_3_4_11; } GLIBCXX_3.4.10;
+GLIBCXX_3.4.12 { global: vocem_stub_glibcxx_3_4_12; } GLIBCXX_3.4.11;
+GLIBCXX_3.4.13 { global: vocem_stub_glibcxx_3_4_13; } GLIBCXX_3.4.12;
+GLIBCXX_3.4.14 { global: vocem_stub_glibcxx_3_4_14; } GLIBCXX_3.4.13;
+GLIBCXX_3.4.15 { global: vocem_stub_glibcxx_3_4_15; } GLIBCXX_3.4.14;
+GLIBCXX_3.4.16 { global: vocem_stub_glibcxx_3_4_16; } GLIBCXX_3.4.15;
+GLIBCXX_3.4.17 { global: vocem_stub_glibcxx_3_4_17; } GLIBCXX_3.4.16;
+GLIBCXX_3.4.18 { global: vocem_stub_glibcxx_3_4_18; } GLIBCXX_3.4.17;
+GLIBCXX_3.4.19 { global: vocem_stub_glibcxx_3_4_19; } GLIBCXX_3.4.18;
+GLIBCXX_3.4.20 { global: vocem_stub_glibcxx_3_4_20; } GLIBCXX_3.4.19;
+GLIBCXX_3.4.21 { global: vocem_stub_glibcxx_3_4_21; } GLIBCXX_3.4.20;
+CXXABI_1.3 { global: vocem_stub_cxxabi_1_3; };
+CXXABI_1.3.1 { global: vocem_stub_cxxabi_1_3_1; } CXXABI_1.3;
+CXXABI_1.3.2 { global: vocem_stub_cxxabi_1_3_2; } CXXABI_1.3.1;
+CXXABI_1.3.3 { global: vocem_stub_cxxabi_1_3_3; } CXXABI_1.3.2;
+CXXABI_1.3.4 { global: vocem_stub_cxxabi_1_3_4; } CXXABI_1.3.3;
+CXXABI_1.3.5 { global: vocem_stub_cxxabi_1_3_5; } CXXABI_1.3.4;
+CXXABI_1.3.6 { global: vocem_stub_cxxabi_1_3_6; } CXXABI_1.3.5;
+CXXABI_1.3.7 { global: vocem_stub_cxxabi_1_3_7; } CXXABI_1.3.6;
+CXXABI_1.3.8 { global: vocem_stub_cxxabi_1_3_8; } CXXABI_1.3.7;
+CXXABI_1.3.9 { global: vocem_stub_cxxabi_1_3_9; } CXXABI_1.3.8;

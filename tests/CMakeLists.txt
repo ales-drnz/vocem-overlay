@@ -150,7 +150,7 @@ if(VOCEM_HAVE_M32)
         -m32 -fno-exceptions -fno-rtti -fno-threadsafe-statics)
     target_compile_definitions(vocem_gl_shim32 PRIVATE
         VOCEM_LIBDIR="${CMAKE_INSTALL_PREFIX}/lib32")
-    target_link_options(vocem_gl_shim32 PRIVATE -m32 -nostdlib++ -static-libgcc)
+    target_link_options(vocem_gl_shim32 PRIVATE -m32 -nostdlib++ -static-libgcc -Wl,--no-undefined)
     target_link_libraries(vocem_gl_shim32 PRIVATE ${CMAKE_DL_LIBS})
     set(VOCEM_SHIM32_ENV "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim32>" "VOCEM_SHIM_PRELOADED=1")
 endif()
@@ -1418,3 +1418,153 @@ if(TARGET vocem-config)
     vocem_test_run(window_daemon_slow_probe TARGET window_daemon_lifecycle
         ENV "VOCEM_WINDOW_DAEMON_SCENARIO=slow-probe" SKIP)
 endif()
+
+# ---- 0.1.11 gl lane ----
+
+# The shim's first lookup of a real function, asked by sixteen threads at once,
+# in three hundred fresh processes: "tried" was remembered before the lookup
+# had its answer, and a thread arriving in between was told the function did
+# not exist (shim_lookup_race.cpp). Both widths, against the shim of each.
+vocem_test(shim_lookup_race LINK EGL Threads::Threads ENV ${VOCEM_SHIM_ENV} SKIP TIMEOUT 150)
+vocem_m32_twin(shim_lookup_race ENV ${VOCEM_SHIM32_ENV})
+
+# The owner context destroyed while not current on the destroying thread: the
+# teardown's glXMakeCurrent dance was an X error, and Xlib's default handler
+# exits the game (gl_destroy_owner.cpp). `visual` on the machine's own GLX;
+# `thread` under Mesa's software GLX, where the measured BadAccess is.
+vocem_test(gl_destroy_owner LINK ${CMAKE_DL_LIBS} X11 rt Threads::Threads LINK_OPTIONS -rdynamic
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=visual" SKIP)
+vocem_test_run(gl_destroy_owner_thread TARGET gl_destroy_owner
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=thread"
+        "__GLX_VENDOR_LIBRARY_NAME=mesa" "LIBGL_ALWAYS_SOFTWARE=1" SKIP)
+vocem_m32_twin(gl_destroy_owner
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=visual"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_m32_twin_run(gl_destroy_owner_thread TARGET gl_destroy_owner_thread
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=thread"
+        "__GLX_VENDOR_LIBRARY_NAME=mesa" "LIBGL_ALWAYS_SOFTWARE=1")
+
+# A game whose runtime ships an older libstdc++ first on its search path: the
+# heavy libraries carry their C++ runtime inside them now, so the overlay loads
+# (gl_old_libstdcxx.cpp, old-runtime), and a load that fails is said by the
+# shim under VOCEM_DEBUG, with no other library loaded in its place
+# (unloadable). The stub is libstdc++ 6.0.21's version nodes and nothing else,
+# in a directory of its own so no other test's RUNPATH can reach it. The probe
+# carries its own runtime, or it would not start under the stub.
+function(vocem_old_libstdcxx_stub target)
+    add_library(${target} SHARED stub_old_libstdcxx.cpp)
+    set_target_properties(${target} PROPERTIES
+        OUTPUT_NAME "stdc++" SOVERSION 6
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${target}"
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/stub_old_libstdcxx.map")
+    target_compile_options(${target} PRIVATE ${ARGN})
+    target_link_options(${target} PRIVATE ${ARGN} -nostdlib++
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/stub_old_libstdcxx.map")
+endfunction()
+vocem_old_libstdcxx_stub(vocem_stub_old_libstdcxx)
+vocem_test(gl_old_libstdcxx LINK GL X11 LINK_OPTIONS -static-libstdc++ -static-libgcc
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=old-runtime"
+        "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/vocem_stub_old_libstdcxx" SKIP)
+add_dependencies(vocem_gl_old_libstdcxx vocem_stub_old_libstdcxx)
+vocem_test_run(gl_unloadable_library TARGET gl_old_libstdcxx
+    ENV ${VOCEM_SHIM_ENV} "VOCEM_GL_SCENARIO=unloadable"
+        "VOCEM_GL_LIBRARY=${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/libvocem_gl.so" SKIP)
+if(VOCEM_HAVE_M32)
+    vocem_old_libstdcxx_stub(vocem_stub_old_libstdcxx32 -m32)
+endif()
+vocem_m32_twin(gl_old_libstdcxx
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=old-runtime"
+        "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/vocem_stub_old_libstdcxx32"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+if(TARGET vocem_gl_old_libstdcxx32)
+    add_dependencies(vocem_gl_old_libstdcxx32 vocem_stub_old_libstdcxx32)
+endif()
+vocem_m32_twin_run(gl_unloadable_library TARGET gl_unloadable_library
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_SCENARIO=unloadable"
+        "VOCEM_GL_LIBRARY=${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/libvocem_gl.so")
+
+# The artefact half of the same: neither injected heavy library NEEDS the C++
+# runtime or binds a symbol of its versions, both widths (injected_runtime.cmake).
+vocem_script_test(injected_runtime ARGS
+    "-DGL=$<TARGET_FILE:vocem_gl>" "-DVK=$<TARGET_FILE:vocem_vk>"
+    "-DGL32=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    "-DVK32=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+
+# The shim as built -- libc alone, its twelve hooks, no guard, nothing
+# undefined outside libc -- on this tree's, the -m32 twin's and build32's; and
+# its link, which has to refuse an undefined C++ runtime symbol rather than
+# leave it for ld.so to fail on in every process (shim_artifact.cmake).
+set(VOCEM_SHIM_ARTIFACT_ARGS
+    "-DCXX=${CMAKE_CXX_COMPILER}"
+    "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+    "-DSHIM_BUILD32=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so"
+    "-DFLAGS=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim,COMPILE_OPTIONS>,|>"
+    "-DLINK_FLAGS=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim,LINK_OPTIONS>,|>")
+if(TARGET vocem_gl_shim32)
+    list(APPEND VOCEM_SHIM_ARTIFACT_ARGS
+        "-DSHIM_TWIN32=$<TARGET_FILE:vocem_gl_shim32>"
+        "-DFLAGS32=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim32,COMPILE_OPTIONS>,|>"
+        "-DLINK_FLAGS32=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim32,LINK_OPTIONS>,|>")
+endif()
+vocem_script_test(shim_artifact ARGS ${VOCEM_SHIM_ARTIFACT_ARGS})
+
+# The backend moving between two unshared contexts (entry 210's hand-over) and
+# coming back: what it built in a context it left is deleted when that context
+# is current again, so each holds one atlas however often the overlay returns
+# (gl_handover.cpp). About eleven seconds: two round trips past the library's
+# own two-second hand-over.
+vocem_test(gl_handover LINK EGL GLESv2 rt ENV ${VOCEM_GL_PROBE_ENV} SKIP TIMEOUT 120)
+vocem_m32_twin(gl_handover
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# eglTerminate with another, unshared context current: the backend's names are
+# that context's own objects there, and the teardown deleted them
+# (gl_egl_terminate.cpp).
+vocem_test(gl_egl_terminate LINK EGL GLESv2 rt ENV ${VOCEM_GL_PROBE_ENV} SKIP)
+vocem_m32_twin(gl_egl_terminate
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# A glvnd dispatcher asked for the other family's name answers with a GL
+# dispatch stub, and the shim remembered that stub as the real present
+# function for good (shim_dispatch_family.cpp). Both widths, against the shim
+# of each.
+vocem_test(shim_dispatch_family LINK ${CMAKE_DL_LIBS} ENV ${VOCEM_SHIM_ENV} SKIP)
+vocem_m32_twin(shim_dispatch_family ENV ${VOCEM_SHIM32_ENV})
+
+# An ES game whose GL cannot be reached until after the backend has chosen its
+# shader language: the backend took desktop GLSL, the ES context refused it,
+# and the program that never linked was logged as ready (gl_es_glsl.cpp).
+vocem_test(gl_es_glsl LINK ${CMAKE_DL_LIBS} rt ENV ${VOCEM_GL_PROBE_ENV} SKIP)
+vocem_m32_twin(gl_es_glsl
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# VOCEM_CAPTURE_FRAME read the frame back through the game's read framebuffer,
+# its GL_PACK_* state and its pixel-pack buffer (gl_capture_state.cpp).
+set(VOCEM_GL_PROBE32_ENV
+    "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+    "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_test(gl_capture_state LINK ${CMAKE_DL_LIBS} X11 rt
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=read-framebuffer" SKIP)
+vocem_test_run(gl_capture_pack_buffer TARGET gl_capture_state
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=pack-buffer" SKIP)
+vocem_m32_twin(gl_capture_state
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=read-framebuffer"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_m32_twin_run(gl_capture_pack_buffer TARGET gl_capture_pack_buffer
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=pack-buffer")
+
+# scripts/dev-run-gl.sh under the session's own LD_PRELOAD: the installed shim
+# was first and took every hook, and the build tree's shim was never called
+# (dev_run_gl.cmake).
+vocem_test(which_shim LINK ${CMAKE_DL_LIBS} NO_TEST)
+vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>")

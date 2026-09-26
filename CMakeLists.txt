@@ -93,6 +93,17 @@ if(VOCEM_BUILD_HOST_TOOLS AND VOCEM_BUILD_TESTS)
     unset(CMAKE_REQUIRED_LINK_OPTIONS)
 endif()
 
+# The C++ runtime of the two injected heavy libraries (libvocem_gl.so and
+# libvocem_vk.so) is linked INTO them, not NEEDED. They are loaded into games,
+# and a game's runtime can put an older libstdc++.so.6 first on the search path
+# -- the Steam scout runtime's 6.0.21, tried by the 0.1.10 review: the build
+# NEEDS GLIBCXX_3.4.29, ld.so refuses the whole library, and the game has no
+# overlay. Both libraries' version scripts keep every symbol but their entry
+# points local, so the copy they carry is invisible to the game's own (entry
+# 195; tests/injected_runtime.cmake holds the NEEDED list at both widths). The
+# shim has its own, stricter answer in gl/CMakeLists.txt: no C++ runtime at all.
+set(VOCEM_INJECTED_RUNTIME_LINK_OPTIONS -static-libstdc++ -static-libgcc)
+
 # What both injected paths, the daemon, the window and the tests share, built
 # once per width; the two injected libraries link it, so it comes first.
 add_subdirectory(common)

@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -96,6 +97,7 @@ using PFN_glIsEnabled = unsigned char (*)(GLenum);
 using PFN_glEnable = void (*)(GLenum);
 using PFN_glDisable = void (*)(GLenum);
 using PFN_glGetString = const unsigned char* (*)(GLenum);
+using PFN_glDeleteTextures = void (*)(GLsizei, const GLuint*);
 
 // One logger for both injected paths (vocem/overlay_log.h): VOCEM_DEBUG on
 // stderr, VOCEM_LOG_FILE appended with the pid, both read once. The tag is
@@ -254,30 +256,41 @@ Fn gl_symbol(const char* name) {
 //
 // Every value is read before it is written and written back afterwards: this runs
 // inside somebody else's renderer and rule 12 is that we leave no state changed.
+//
+// The same holds for the other direction: glReadPixels WRITES through GL_PACK_*
+// and the pixel-pack buffer, and the frame capture (VOCEM_CAPTURE_FRAME) is a
+// read. `Pack` is that flavour, name for name the same shape.
 class PixelStoreGuard {
 public:
+    enum class Direction { Unpack, Pack };
+
     // `es` is 0 for desktop GL, or the OpenGL ES major version. Which of these
     // names exist depends on it, and asking for one that does not is
     // GL_INVALID_ENUM -- an error in the game's queue, which is the very thing
     // this class is here to avoid. ES 2 has the alignment alone; ES 3 adds the
     // row length and the two skips but has neither of the byte-order flags;
     // desktop GL has all six and the pixel-unpack buffer, which ES gained in 3.0.
-    PixelStoreGuard(PFN_glGetIntegerv get, PFN_glPixelStorei set, PFN_glBindBuffer bind, int es)
+    PixelStoreGuard(PFN_glGetIntegerv get, PFN_glPixelStorei set, PFN_glBindBuffer bind, int es,
+                    Direction direction = Direction::Unpack)
         : get_(get), set_(set), bind_(es == 2 ? nullptr : bind),
-          count_(es == 2 ? 1u : (es >= 3 ? 4u : kCount)) {
+          count_(es == 2 ? 1u : (es >= 3 ? 4u : kCount)),
+          names_(direction == Direction::Pack ? kPackNames : kNames),
+          buffer_target_(direction == Direction::Pack ? kPixelPackBuffer : kPixelUnpackBuffer),
+          buffer_binding_(direction == Direction::Pack ? kPixelPackBufferBinding
+                                                       : kPixelUnpackBufferBinding) {
         if (!get_ || !set_) {
             return;  // without both, nothing here can be done safely
         }
         for (unsigned i = 0; i < count_; ++i) {
-            get_(kNames[i], &saved_[i]);
+            get_(names_[i], &saved_[i]);
             if (saved_[i] != kNeutral[i]) {
-                set_(kNames[i], kNeutral[i]);
+                set_(names_[i], kNeutral[i]);
             }
         }
         if (bind_) {
-            get_(kPixelUnpackBufferBinding, &buffer_);
+            get_(buffer_binding_, &buffer_);
             if (buffer_ != 0) {
-                bind_(kPixelUnpackBuffer, 0);
+                bind_(buffer_target_, 0);
             }
         }
         active_ = true;
@@ -289,11 +302,11 @@ public:
         }
         for (unsigned i = 0; i < count_; ++i) {
             if (saved_[i] != kNeutral[i]) {
-                set_(kNames[i], saved_[i]);
+                set_(names_[i], saved_[i]);
             }
         }
         if (bind_ && buffer_ != 0) {
-            bind_(kPixelUnpackBuffer, static_cast<GLuint>(buffer_));
+            bind_(buffer_target_, static_cast<GLuint>(buffer_));
         }
     }
 
@@ -315,14 +328,28 @@ private:
         0x0CF0,  // GL_UNPACK_SWAP_BYTES
         0x0CF1,  // GL_UNPACK_LSB_FIRST
     };
+    // The same six for glReadPixels, in the same order.
+    static constexpr GLenum kPackNames[kCount] = {
+        0x0D05,  // GL_PACK_ALIGNMENT
+        0x0D02,  // GL_PACK_ROW_LENGTH
+        0x0D03,  // GL_PACK_SKIP_ROWS
+        0x0D04,  // GL_PACK_SKIP_PIXELS
+        0x0D00,  // GL_PACK_SWAP_BYTES
+        0x0D01,  // GL_PACK_LSB_FIRST
+    };
     static constexpr GLint kNeutral[kCount] = {4, 0, 0, 0, 0, 0};
     static constexpr GLenum kPixelUnpackBuffer = 0x88EC;
     static constexpr GLenum kPixelUnpackBufferBinding = 0x88EF;
+    static constexpr GLenum kPixelPackBuffer = 0x88EB;
+    static constexpr GLenum kPixelPackBufferBinding = 0x88ED;
 
     PFN_glGetIntegerv get_ = nullptr;
     PFN_glPixelStorei set_ = nullptr;
     PFN_glBindBuffer bind_ = nullptr;
     unsigned count_ = kCount;
+    const GLenum* names_ = kNames;
+    GLenum buffer_target_ = kPixelUnpackBuffer;
+    GLenum buffer_binding_ = kPixelUnpackBufferBinding;
     GLint saved_[kCount] = {0};
     GLint buffer_ = 0;
     bool active_ = false;
@@ -395,10 +422,11 @@ private:
 // Outside GlOverlay -- a heap object behind atlas_worker(), leaked at exit the
 // way overlay() is -- so the ELF destructor below can wait for it without
 // constructing the overlay in a process that never drew. A pthread and
-// not a std::thread: this library is built without exceptions and std::thread
-// reports a refused clone by throwing, which would end the game; a refusal
-// here is a return code, and the build then happens on the game's thread as it
-// always did. Started and joined under g_gl_lock or by the destructor; its own
+// not a std::thread: std::thread reports a refused clone by throwing, and
+// nothing on this path catches -- the exception would end the game (this
+// library is compiled with exceptions; the Vulkan layer is not, where the same
+// throw is a terminate()). A refusal here is a return code, and the build then
+// happens on the game's thread as it always did. Started and joined under g_gl_lock or by the destructor; its own
 // mutex makes the two exclusive.
 struct AtlasWorker {
     std::mutex lock;
@@ -478,8 +506,15 @@ public:
         tex_parameter_ = gl_symbol<PFN_glTexParameteri>("glTexParameteri");
         get_integer_ = gl_symbol<PFN_glGetIntegerv>("glGetIntegerv");
         // The two that make an upload safe in somebody else's renderer. Core
-        // since GL 1.0 and 1.5; a context without them gets no avatars rather
-        // than an upload that reads wherever the game's state points.
+        // since GL 1.0 and 1.5. A null here means no GL could be reached at
+        // all -- no symbol in scope and no dispatcher known yet -- and then
+        // there are no avatars rather than an upload that reads wherever the
+        // game's state points. It does NOT mean the context lacks them: once
+        // a dispatcher is known, gl_symbol() never answers null for a gl*
+        // name, because glvnd's dispatchers hand out a stub for any name at
+        // all (measured: glXGetProcAddressARB and eglGetProcAddress both
+        // answer "glNoSuchFunctionVocem"), and a stub for a function the
+        // context does not have does nothing.
         pixel_store_ = gl_symbol<PFN_glPixelStorei>("glPixelStorei");
         bind_buffer_ = gl_symbol<PFN_glBindBuffer>("glBindBuffer");
         // Core since GL 1.0, and not part of `resolved_`: without them the
@@ -500,6 +535,22 @@ public:
     // client-pointer path and with the same exposure.
     PixelStoreGuard pixel_store_guard() const {
         return PixelStoreGuard(get_integer_, pixel_store_, bind_buffer_, es_);
+    }
+
+    // For the frame capture's glReadPixels, which writes through GL_PACK_*.
+    PixelStoreGuard pack_store_guard() const {
+        return PixelStoreGuard(get_integer_, pixel_store_, bind_buffer_, es_,
+                               PixelStoreGuard::Direction::Pack);
+    }
+
+    // The framebuffer glReadPixels reads, as draw_framebuffer_target() below
+    // is the one the overlay draws into: its own target where the API has one,
+    // GL_FRAMEBUFFER (both at once) on ES 2.
+    GLenum read_framebuffer_target() const {
+        return es_ == 2 ? GL_FRAMEBUFFER : 0x8CA8;  // GL_READ_FRAMEBUFFER
+    }
+    GLenum read_framebuffer_binding() const {
+        return es_ == 2 ? GL_FRAMEBUFFER_BINDING : 0x8CAA;  // GL_READ_FRAMEBUFFER_BINDING
     }
 
     // For the overlay's own draw: the sRGB write state is the game's, and the
@@ -638,6 +689,19 @@ public:
 
     PFN_glGetIntegerv get_integer() const { return get_integer_; }
 
+    // The texture names held, handed over to whoever will delete them -- the
+    // backend moving away from this context (GlOverlay::move_away) -- and
+    // forgotten here. The names alone: the context they live in is the
+    // caller's to know.
+    void take_texture_names(std::vector<GLuint>& names) {
+        for (const auto& entry : textures_) {
+            if (entry.second != 0) {
+                names.push_back(static_cast<GLuint>(entry.second));
+            }
+        }
+        textures_.clear();
+    }
+
     // Every texture name we hold belongs to a GL context. Forget them.
     //
     // No `glDeleteTextures` even when the context is still alive: the two callers
@@ -700,6 +764,11 @@ private:
 void* g_owner_context = nullptr;
 void* g_owner_display = nullptr;
 int g_owner_egl = 0;
+// How many backends the overlay has moved away from and not yet deleted
+// (GlOverlay::move_away). Read by the teardown hooks before they lock, for the
+// same reason as the three above: a destroyed context that is neither the
+// owner nor one of these costs one atomic load.
+int g_left_backends = 0;
 
 class GlOverlay {
 public:
@@ -718,6 +787,15 @@ public:
     void draw(SizeQuery query_size, void* display, void* handle, bool egl) {
         if (overlay_disabled()) {
             return;
+        }
+
+        // What a backend left in a context it moved away from, deleted in the
+        // first present where that context is current again -- the only moment
+        // its objects can be reached (move_away() says why they were left).
+        // First, before anything below can return: a switched-off overlay and
+        // a stopped daemon hand everything back as well.
+        if (!left_.empty()) {
+            reclaim_left(egl);
         }
 
         // Before the first thing that derives a path. Inside a Flatpak game the
@@ -862,7 +940,8 @@ public:
         // itself from another, keeping the first alive for its loader, would
         // otherwise have no overlay for the whole session (the review of this
         // very change found it). The old context's GL objects cannot be deleted
-        // from here -- it is not current -- and go with that context.
+        // from here -- it is not current -- so they are remembered with it and
+        // deleted the next time it presents (move_away(), reclaim_left()).
         if (backend_ready_) {
             switch (whose_present(egl, now)) {
                 case Present::Owner:
@@ -872,7 +951,7 @@ public:
                 case Present::Abandoned:
                     VOCEM_GLOG("the backend's context has not presented for %.0f s: moving the "
                                "overlay to the one that does", kHandOverSeconds);
-                    release(false);
+                    move_away();
                     break;
             }
         }
@@ -1105,6 +1184,55 @@ public:
         }
     }
 
+    // The backend moves to another context and leaves this one's objects where
+    // they are, because they can only be deleted with this context current and
+    // it is not. release(false) used to be the whole of it, so the old context
+    // kept a program, two buffers, the font texture -- 16 to 64 MB -- and a
+    // texture per face for the rest of its life, and coming back built a new
+    // set beside them: 1, 2, 3, 4 textures over four visits, measured by the
+    // 0.1.10 review (tests/gl_handover.cpp). Now the ImGui context that owns
+    // the backend is kept whole, with the context it lives in and the face
+    // textures' names, and reclaim_left() shuts it down properly the first
+    // time that context is current again. A context that dies first is
+    // handed to forget_left() by the teardown hooks.
+    void move_away() {
+        atlas_worker().join();
+        void* context = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
+        ImGuiContext* imgui = ImGui::GetCurrentContext();
+        if (backend_ready_ && context && imgui) {
+            LeftBackend left;
+            left.context = context;
+            left.display = __atomic_load_n(&g_owner_display, __ATOMIC_ACQUIRE);
+            left.egl = __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == 1;
+            left.imgui = imgui;
+            avatars_.take_texture_names(left.textures);
+            left_.push_back(std::move(left));
+            __atomic_store_n(&g_left_backends, static_cast<int>(left_.size()), __ATOMIC_RELEASE);
+            // Not current any more, so release() below neither shuts it down
+            // (no context to delete in) nor destroys it (it is kept).
+            ImGui::SetCurrentContext(nullptr);
+        }
+        release(false);
+    }
+
+    // The teardown hooks' half: `context` is dying (or, null, every context on
+    // `display` with eglTerminate). A backend left in it is shut down properly
+    // when that context is current on the calling thread, and dropped without
+    // GL otherwise -- its objects go with the context, as release(false)'s do.
+    void forget_left(void* display, void* context, bool egl) {
+        for (size_t i = left_.size(); i-- > 0;) {
+            LeftBackend& left = left_[i];
+            if (left.egl != egl || (context ? left.context != context : left.display != display)) {
+                continue;
+            }
+            tear_down_left(left, context && current_context_of(egl) == context);
+            left_.erase(left_.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+        __atomic_store_n(&g_left_backends, static_cast<int>(left_.size()), __ATOMIC_RELEASE);
+    }
+
+    static bool left_anywhere() { return __atomic_load_n(&g_left_backends, __ATOMIC_ACQUIRE) > 0; }
+
     // Whether the context presenting now is the one the backend lives in,
     // asked with the API it arrived through: one getter call per frame, only
     // once a backend exists; a getter that could not be resolved answers
@@ -1188,8 +1316,37 @@ private:
         if (!pixels) {
             return;
         }
-        read_pixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
-                    GL_RGBA_FORMAT, GL_UNSIGNED_BYTE, pixels);
+        {
+            // From the framebuffer the overlay drew into, through neutral pack
+            // state, and everything put back. glReadPixels reads the READ
+            // framebuffer and writes through GL_PACK_* and the pixel-pack
+            // buffer, all of it the game's: a game reading from its own
+            // object got a capture of that object, one with a wide
+            // GL_PACK_ROW_LENGTH had rows written far past the end of this
+            // buffer, and one with a pack buffer bound had the pixels go into
+            // its buffer and GL_INVALID_OPERATION into its queue
+            // (tests/gl_capture_state.cpp). Without the entry points to
+            // neutralise the state there is no capture at all.
+            const PixelStoreGuard pack = avatars_.pack_store_guard();
+            if (!pack.ok()) {
+                std::free(pixels);
+                return;
+            }
+            GLint previous_read = 0;
+            const bool rebind = bind_framebuffer_ && get_integer_;
+            if (rebind) {
+                get_integer_(avatars_.read_framebuffer_binding(), &previous_read);
+                if (previous_read != 0) {
+                    bind_framebuffer_(avatars_.read_framebuffer_target(), 0);
+                }
+            }
+            read_pixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
+                        GL_RGBA_FORMAT, GL_UNSIGNED_BYTE, pixels);
+            if (rebind && previous_read != 0) {
+                bind_framebuffer_(avatars_.read_framebuffer_target(),
+                                  static_cast<GLuint>(previous_read));
+            }
+        }
 
         if (std::FILE* file = std::fopen(target, "wb")) {
             std::fprintf(file, "P6\n%u %u\n255\n", width, height);
@@ -1284,11 +1441,28 @@ private:
         // probes are that game), the third road has nothing to forward to
         // until ImGui's loader resolves glXGetProcAddressARB through the
         // dlsym door and the shim remembers it -- which Init has just done.
-        // The GLSL version is settled by then, but the GL major, which gates
-        // what the context may be asked (SrgbWriteGuard), still needs the
-        // answer.
+        // The GL major gates what the context may be asked (SrgbWriteGuard).
+        //
+        // And the GLSL is not settled by then, whatever this said before: Init
+        // took ImGui's desktop default, "#version 130", and an ES context
+        // refuses it. An ES game that opens its libraries RTLD_LOCAL and
+        // never asks for a dispatcher was drawn with a program that never
+        // linked -- "OpenGL backend ready" in the log, 42 GL errors in the
+        // game's queue over 42 frames and not one pixel (tests/gl_es_glsl.cpp).
+        // An ES answer now initialises the backend again with its language;
+        // nothing has been built yet, so the second Init costs nothing.
         if (!version_known) {
             read_version();
+            if (glsl_version) {
+                VOCEM_GLOG("the context is OpenGL ES and the backend was initialised before it "
+                           "could be asked: initialising it again with %s", glsl_version);
+                ImGui_ImplOpenGL3_Shutdown();
+                if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
+                    VOCEM_GLOG("ImGui OpenGL3 backend failed to initialise");
+                    failed_ = true;
+                    return false;
+                }
+            }
         }
         // The backend's GL objects -- shader, buffers and the font texture --
         // built HERE, not left to its NewFrame. draw() replaces the font
@@ -1316,8 +1490,22 @@ private:
                 return false;
             }
         }
-        // Resolved once, beside the rest: a context without it is older than
-        // framebuffer objects, in which case there is nothing to retarget.
+        // CreateDeviceObjects answers true whether or not its program linked
+        // (it prints the compiler's complaint to the game's stderr and goes
+        // on), and a program that did not link turns every draw into an error
+        // in the game's queue. Asked here, so "ready" below is a fact.
+        if (!backend_program_linked()) {
+            VOCEM_GLOG("not drawing in this context: the backend's shader program did not link "
+                       "(ImGui's complaint is on stderr)");
+            ImGui_ImplOpenGL3_Shutdown();
+            failed_ = true;
+            return false;
+        }
+        // Resolved once, beside the rest. Null only when no GL can be reached
+        // at all (see GlAvatarProvider::resolve): under glvnd a context older
+        // than framebuffer objects still gets a pointer -- a stub that does
+        // nothing -- and it is GL_FRAMEBUFFER_BINDING reading 0 there, not
+        // this pointer, that leaves nothing to retarget.
         bind_framebuffer_ = gl_symbol<PFN_glBindFramebuffer>("glBindFramebuffer");
         // For uploading a folded emoji into the font texture in place. Core
         // since GL 1.1; without it a fold replaces the texture whole, as a
@@ -1335,6 +1523,41 @@ private:
     }
 
 private:
+    // The first fields of ImGui_ImplOpenGL3_Data (imgui_impl_opengl3.cpp),
+    // which the backend keeps in io.BackendRendererUserData and does not
+    // export: the program's name is the one thing needed from it, to ask GL
+    // whether it linked. Mirrored for the vendored 1.91.9 and held to it: a
+    // new ImGui fails to compile here until somebody has compared the prefix.
+    struct BackendDataPrefix {
+        GLuint gl_version;
+        char glsl_version_string[32];
+        bool profile_is_es2;
+        bool profile_is_es3;
+        bool profile_is_compat;
+        GLint profile_mask;
+        GLuint font_texture;
+        GLuint shader_handle;
+    };
+    static_assert(IMGUI_VERSION_NUM == 19190,
+                  "BackendDataPrefix mirrors ImGui_ImplOpenGL3_Data of ImGui 1.91.9: compare it "
+                  "with the new backend's struct, then change this number");
+
+    // Whether the backend's shader program linked. Unknown -- no
+    // glGetProgramiv, no backend -- is answered yes, which is how every
+    // backend was taken before this was asked.
+    bool backend_program_linked() {
+        using PFN_glGetProgramiv = void (*)(GLuint, GLenum, GLint*);
+        const auto* data =
+            static_cast<const BackendDataPrefix*>(ImGui::GetIO().BackendRendererUserData);
+        auto get_program = gl_symbol<PFN_glGetProgramiv>("glGetProgramiv");
+        if (!data || !get_program) {
+            return true;
+        }
+        GLint linked = 0;
+        get_program(data->shader_handle, 0x8B82 /*GL_LINK_STATUS*/, &linked);
+        return data->shader_handle != 0 && linked != 0;
+    }
+
     // Asked once, when the backend comes up, of the API the present arrived
     // through: which context is current right now is the one the backend's
     // objects were just created in.
@@ -1366,6 +1589,73 @@ private:
     void forget_owner() {
         __atomic_store_n(&g_owner_context, static_cast<void*>(nullptr), __ATOMIC_RELEASE);
         __atomic_store_n(&g_owner_display, static_cast<void*>(nullptr), __ATOMIC_RELEASE);
+    }
+
+    // A backend the overlay moved away from (move_away()): the ImGui context
+    // that owns it, the GL context its objects live in, and its faces.
+    struct LeftBackend {
+        void* context = nullptr;
+        void* display = nullptr;
+        bool egl = false;
+        ImGuiContext* imgui = nullptr;
+        std::vector<GLuint> textures;
+    };
+    std::vector<LeftBackend> left_;
+    void* (*egl_current_)() = nullptr;
+    void* (*glx_current_)() = nullptr;
+
+    void* current_context_of(bool egl) {
+        auto& getter = egl ? egl_current_ : glx_current_;
+        if (!getter) {
+            getter = gl_symbol<void* (*)()>(egl ? "eglGetCurrentContext" : "glXGetCurrentContext");
+        }
+        return getter ? getter() : nullptr;
+    }
+
+    // In a present: a backend left in the context current now goes, properly.
+    void reclaim_left(bool egl) {
+        void* current = current_context_of(egl);
+        if (!current) {
+            return;
+        }
+        for (size_t i = 0; i < left_.size(); ++i) {
+            if (left_[i].egl == egl && left_[i].context == current) {
+                tear_down_left(left_[i], true);
+                left_.erase(left_.begin() + static_cast<std::ptrdiff_t>(i));
+                __atomic_store_n(&g_left_backends, static_cast<int>(left_.size()),
+                                 __ATOMIC_RELEASE);
+                return;  // one entry per context: moving away from it twice reclaims first
+            }
+        }
+    }
+
+    // With `gl_current`, the left context is current here: the backend's own
+    // Shutdown deletes its program, buffers and font texture, and the faces
+    // go with glDeleteTextures. Without, only ImGui's side is freed. Either way
+    // the live backend is untouched -- its ImGui context is put back, and so is
+    // the shared atlas's texture name, which the old backend's Shutdown zeroes
+    // (the atlas is one object across every ImGui context, vocem/fonts.h).
+    void tear_down_left(LeftBackend& left, bool gl_current) {
+        ImGuiContext* live = ImGui::GetCurrentContext();
+        const ImTextureID atlas_texture = vocem::fonts_atlas()->TexID;
+        ImGui::SetCurrentContext(left.imgui);
+        if (gl_current) {
+            ImGui_ImplOpenGL3_Shutdown();
+        }
+        ImGui::DestroyContext(left.imgui);
+        ImGui::SetCurrentContext(live);
+        vocem::fonts_atlas()->SetTexID(atlas_texture);
+        size_t faces = 0;
+        if (gl_current && !left.textures.empty()) {
+            if (auto delete_textures = gl_symbol<PFN_glDeleteTextures>("glDeleteTextures")) {
+                delete_textures(static_cast<GLsizei>(left.textures.size()), left.textures.data());
+                faces = left.textures.size();
+            }
+        }
+        VOCEM_GLOG("%s the backend left in context %p when the overlay moved (%zu face "
+                   "texture(s) deleted)",
+                   gl_current ? "deleted" : "dropped, with its context,", left.context, faces);
+        left.imgui = nullptr;
     }
 
     vocem::StatePoll state_poll_{&gl_poll_log};
@@ -1584,73 +1874,64 @@ VOCEM_EXPORT void vocem_gl_present_egl(void* display, void* surface) {
 
 // A GL context is going away, and everything we built lives in one.
 //
-// Called from the shim before the real destroy runs, so the context still exists
-// and can be made current -- which is the only way to delete what is in it. That is
-// the dance MangoHud does in its own `glXDestroyContext`: remember what is current,
-// make the dying context current, tear down, put the previous one back.
+// Called from the shim before the real destroy runs. When the dying context is
+// the one current on the calling thread, the backend is shut down properly --
+// its program, buffers and font texture deleted -- because that is the one
+// state in which GL calls reach it. In every other case the state is dropped
+// without calling GL: the objects die with the context, and what is lost is
+// ImGui's own small heap block, once -- unless another living context shares
+// the dying one's objects, in which case the backend's program, buffers and
+// font texture stay in that share group until it ends (DESIGN, Open risks).
 //
-// If any part of that is unavailable the state is dropped without calling GL. The
-// objects die with the context either way; what is lost is ImGui's own small heap
-// block, once, which is a better trade than issuing GL calls into a context that
-// may not be current.
+// There used to be a third way, MangoHud's dance: remember what is current,
+// make the dying context current with the current drawable, tear down, put the
+// previous one back. On GLX that is an X request that can fail, and a failed
+// one is an X error -- which, in a game with no error handler of its own, is
+// Xlib's default handler calling exit(1). Measured twice
+// (tests/gl_destroy_owner.cpp): a game that recreated its window and context
+// with MSAA and destroyed the old context after making the new one current
+// died of BadMatch on NVIDIA, the dying context being made current on a
+// drawable of another configuration; and an owner destroyed from a second
+// thread while still current on the render thread died of BadAccess under
+// Mesa. The overlay was killing the game inside its own glXDestroyContext, to
+// save a hundred bytes. No context is made current here any more, so there is
+// nothing to put back either.
 //
-// Without this the overlay held texture names and a shader program belonging to a
-// context that no longer existed, and used them on the next frame. Nothing said so:
-// the driver is entitled to do anything at all with a stale name, and mostly it
-// draws nothing.
+// Without this hook the overlay held texture names and a shader program
+// belonging to a context that no longer existed, and used them on the next
+// frame. Nothing said so: the driver is entitled to do anything at all with a
+// stale name, and mostly it draws nothing.
 VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
     // Only the context the backend lives in. Every context a game destroys
     // used to reach the release below -- a loader thread's helper context, a
-    // splash screen's, SDL's probe context -- and the dance underneath made
-    // the dying one current with the drawing one's drawable, deleted the
-    // backend's names in a context that never held them, and left the next
-    // frame to rebuild the whole backend (an atlas rasterised again, every
-    // face uploaded again) for a context that had never been touched. And it
+    // splash screen's, SDL's probe context -- and left the next frame to
+    // rebuild the whole backend (an atlas rasterised again, every face
+    // uploaded again) for a context that had never been touched. And it
     // reached here in every process that ever presented, browsers included,
     // whether or not a backend existed at all. Asked before the lock and
     // before the overlay is so much as constructed: "not mine" costs one
     // atomic load. tests/gl_draw_local.cpp destroys a second context and
     // counts the rebuilds.
-    if (!GlOverlay::owns(display, context, false)) {
+    if (!GlOverlay::owns(display, context, false) && !GlOverlay::left_anywhere()) {
         return;
     }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
+    // A backend the overlay moved away from, left in this context (move_away).
+    if (GlOverlay::left_anywhere()) {
+        overlay().forget_left(display, context, false);
+    }
+    // Asked again under the lock: a present on another thread may have moved
+    // the backend (the hand-over) between the look above and the lock.
+    if (!GlOverlay::owns(display, context, false)) {
+        return;
+    }
     vocem::journal_note("GLX context destroyed");
     using PFN_glXGetCurrentContext = void* (*)();
-    using PFN_glXGetCurrentDrawable = unsigned long (*)();
-    using PFN_glXMakeCurrent = int (*)(void*, unsigned long, void*);
     static PFN_glXGetCurrentContext current_context = nullptr;
-    static PFN_glXGetCurrentDrawable current_drawable = nullptr;
-    static PFN_glXMakeCurrent make_current = nullptr;
     if (!current_context) {
         current_context = gl_symbol<PFN_glXGetCurrentContext>("glXGetCurrentContext");
     }
-    if (!current_drawable) {
-        current_drawable = gl_symbol<PFN_glXGetCurrentDrawable>("glXGetCurrentDrawable");
-    }
-    if (!make_current) {
-        make_current = gl_symbol<PFN_glXMakeCurrent>("glXMakeCurrent");
-    }
-
-    if (!display || !context || !current_context || !current_drawable || !make_current) {
-        overlay().release(false);
-        return;
-    }
-
-    void* previous = current_context();
-    const unsigned long drawable = current_drawable();
-    if (previous == context) {
-        // Already current: nothing to swap, and nothing to put back afterwards
-        // either, since the context is about to stop existing.
-        overlay().release(true);
-        return;
-    }
-    if (make_current(display, drawable, context)) {
-        overlay().release(true);
-        make_current(display, drawable, previous);
-    } else {
-        overlay().release(false);
-    }
+    overlay().release(context && current_context && current_context() == context);
 }
 
 // The EGL side of the same thing. `eglDestroyContext` and `eglTerminate` both end
@@ -1661,10 +1942,18 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
     // eglTerminate -- the backend's own display. Anything else is somebody
     // else's business, including every EGL context Chromium's ANGLE creates
     // and destroys in a browser that will never draw a frame of ours.
-    if (!GlOverlay::owns(display, context, true)) {
+    if (!GlOverlay::owns(display, context, true) && !GlOverlay::left_anywhere()) {
         return;
     }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
+    // A backend left in this context -- or, eglTerminate, on this display.
+    if (GlOverlay::left_anywhere()) {
+        overlay().forget_left(display, context, true);
+    }
+    // Asked again under the lock, as on GLX: the backend may have moved.
+    if (!GlOverlay::owns(display, context, true)) {
+        return;
+    }
     using PFN_eglGetCurrentContext = void* (*)();
     using PFN_eglGetCurrentSurface = void* (*)(int);
     using PFN_eglMakeCurrent = unsigned int (*)(void*, void*, void*, void*);
@@ -1689,8 +1978,19 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
         return;
     }
     void* previous = current_context();
-    if (!context || previous == context) {
-        overlay().release(previous != nullptr);
+    if (!context) {
+        // eglTerminate: GL calls reach the backend's objects only when the
+        // context current here is the one it lives in. It used to be "any
+        // context at all", and in another, unshared context the backend's
+        // names are that context's own textures, buffers and programs --
+        // measured, one eglTerminate took 1 of 16, 2 of 16 and 1 of 4 of them
+        // (tests/gl_egl_terminate.cpp).
+        overlay().release(previous != nullptr &&
+                          previous == __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE));
+        return;
+    }
+    if (previous == context) {
+        overlay().release(true);
         return;
     }
     void* draw = current_surface(kEglDraw);
