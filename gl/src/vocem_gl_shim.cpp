@@ -543,13 +543,31 @@ void present_egl(void* display, void* surface) {
 // through `eglGetProcAddress` alone, never through `dlsym`, so without keeping
 // this pointer our present hook would have nothing to forward to in exactly the
 // process the dispatch substitution exists for.
+//
+// **And only for a name of the dispatcher's own family**: egl* from
+// eglGetProcAddress, glX* from the two GLX spellings. A glvnd dispatcher asked
+// for the other family's name does not say "no" -- it answers every name it
+// does not know with a libGLdispatch stub for a GL extension function
+// (glXGetProcAddressARB("eglSwapBuffers") and eglGetProcAddress("glXSwapBuffers")
+// both do, measured). That stub is in libGLdispatch.so.0, so it passed
+// is_system_gl(), and the shim remembered it as the real eglSwapBuffers for the
+// life of the process: first sighting wins, and the application's own correct
+// resolution a moment later could not replace it. Every present then went to a
+// GL stub that does nothing (tests/shim_dispatch_family.cpp). A name of the
+// other family gets the dispatcher's answer untouched, and nothing is
+// remembered from it.
+bool same_family(const Hook& dispatcher, const char* name) {
+    const bool egl_dispatcher = dispatcher.name[0] == 'e';
+    return strncmp(name, egl_dispatcher ? "egl" : "glX", 3) == 0;
+}
+
 void* dispatch(Hook& own, const char* name) {
     void* real = real_for(own);
     if (!real) {
         return nullptr;
     }
     void* answer = reinterpret_cast<PFN_egl_get_proc>(real)(name);
-    if (answer && !disabled()) {
+    if (answer && !disabled() && name && same_family(own, name)) {
         if (Hook* entry = find_hook(name)) {
             if (is_system_gl(answer)) {
                 void* expected = nullptr;

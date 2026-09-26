@@ -1400,3 +1400,10 @@ vocem_m32_twin(gl_egl_terminate
     ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
         "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
     BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# A glvnd dispatcher asked for the other family's name answers with a GL
+# dispatch stub, and the shim remembered that stub as the real present
+# function for good (shim_dispatch_family.cpp). Both widths, against the shim
+# of each.
+vocem_test(shim_dispatch_family LINK ${CMAKE_DL_LIBS} ENV ${VOCEM_SHIM_ENV} SKIP)
+vocem_m32_twin(shim_dispatch_family ENV ${VOCEM_SHIM32_ENV})
