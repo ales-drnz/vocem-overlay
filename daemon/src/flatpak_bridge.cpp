@@ -462,10 +462,23 @@ bool FlatpakBridge::adopt(const char* id) {
 // The entry the row's icon is looked up by is the daemon's own knowledge, not the
 // sandbox's word for it: the application id of the sandbox being served is the id
 // of the entry Flatpak exported on the host.
+//
+// One record per sandbox, under a file name made from the application id --
+// `flatpak@` and the id with its dots spelled as colons -- and never under the
+// name the sandbox gives. Through 0.1.10 it was the name the sandbox gave, and a
+// new file for every new name: measured, a sandbox rewriting its own request
+// 5000 times left 5000 files in ~/.cache/vocem/apps, and one naming itself
+// `java` replaced the host's own Minecraft record, verdict and evidence
+// included. A host record's file name is detail::sanitised() of a process name,
+// which never holds '@' or ':', so the two cannot meet; the dots are spelled
+// otherwise because the reader skips any name holding ".tmp." -- an id like
+// `com.tmp.Game` would have been a record nobody saw. A name that changes
+// replaces the sandbox's one file, and is said once.
 void FlatpakBridge::write_record_for(Mirror& mirror, const Request& request) {
     if (request.name.empty() || request.name == mirror.recorded) {
         return;
     }
+    const bool renamed = !mirror.recorded.empty();
     mirror.recorded = request.name;
     Application application;
     application.key = request.name;
@@ -474,9 +487,26 @@ void FlatpakBridge::write_record_for(Mirror& mirror, const Request& request) {
     application.desktop = mirror.id;
     application.looks_like_game = request.game;
     application.reason = request.why;
-    write_application_record(application);
-    LOG("wrote the record of '%s' for the Flatpak sandbox of %s (%s)", request.name.c_str(),
-        mirror.id.c_str(), request.why.c_str());
+    std::string file_name = "flatpak@" + mirror.id;
+    for (char& c : file_name) {
+        c = c == '.' ? ':' : c;
+    }
+    // An id is at most 255 bytes and a file name too, with the prefix and the
+    // writer's ".tmp.<pid>" on top: cut, since only two ids sharing their
+    // first 230 bytes could then meet, and only in each other's record.
+    if (file_name.size() > 230) {
+        file_name.resize(230);
+    }
+    write_application_record(application, file_name);
+    if (!renamed) {
+        LOG("wrote the record of '%s' for the Flatpak sandbox of %s (%s)", request.name.c_str(),
+            mirror.id.c_str(), request.why.c_str());
+    } else if (!mirror.rename_said) {
+        mirror.rename_said = true;
+        LOG("the Flatpak sandbox of %s renamed its record to '%s'; its one record is replaced, "
+            "and further renames are not logged",
+            mirror.id.c_str(), request.name.c_str());
+    }
 }
 
 namespace {

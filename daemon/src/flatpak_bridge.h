@@ -119,8 +119,11 @@ private:
         // sandbox the overlay is actually drawing in.
         bool emoji_bank_copied = false;
         // The name of the record already written on the host for this sandbox, so
-        // that a tick which learns nothing new writes nothing.
+        // that a tick which learns nothing new writes nothing. The record is one
+        // file per sandbox whatever the name (write_record_for), and a rename is
+        // said once.
         std::string recorded;
+        bool rename_said = false;
         // The publish failure's line, said once per sandbox: publish() runs on
         // every tick, so a mirror whose file cannot be written was one line a
         // second for as long as the sandbox existed.

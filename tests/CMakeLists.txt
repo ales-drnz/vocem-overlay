@@ -1321,3 +1321,8 @@ if(TARGET vocemd)
     vocem_test(daemon_single_instance INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
         ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
 endif()
+# One record per Flatpak sandbox, under a file name no host record can have:
+# a sandbox renaming itself cannot fill the registry or overwrite a host row.
+vocem_test(flatpak_records
+    SOURCES flatpak_records.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
