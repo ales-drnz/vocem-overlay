@@ -79,17 +79,37 @@ inline std::string journal_legacy_dir() {
     return std::string(home ? home : "/tmp") + "/.cache/vocem/crashes";
 }
 
+// Whether a journal's name -- or a path, whose end is its name -- ends in
+// `suffix` with something before it. The END: the suffix used to be found
+// with strstr over the whole path, so a cache directory whose path carries
+// the word (a Flatpak game's `~/.var/app/org.running.Game/cache`, a
+// `backup.done` folder) was cut at the directory, and the clean-exit rename
+// moved the journal out of the journal directory (tests/journal_suffix.cpp).
+inline bool journal_name_ends_with(const char* name, const char* suffix) {
+    const size_t length = ::strlen(name);
+    const size_t suffix_length = ::strlen(suffix);
+    return length > suffix_length && name[length - suffix_length - 1] != '/' &&
+           ::memcmp(name + length - suffix_length, suffix, suffix_length) == 0;
+}
+
 // The path a journal's `.stat` file sits at, from the journal's own path:
-// `<x>.running` -> `<x>.stat`, whatever `<x>` is. One spelling, because the
-// journal's name is no longer always the bare pid (journal_begin says why),
-// and the stat file has to follow it wherever it went.
+// `<x>.running` or `<x>.done` -> `<x>.stat`, whatever `<x>` is. One spelling,
+// because the journal's name is no longer always the bare pid (journal_begin
+// says why), and the stat file has to follow it wherever it went. A path that
+// ends in neither gives an empty string: there is no stat file for it, and
+// callers do nothing with an empty one.
 inline void journal_stat_path_for(const char* journal_path, char* out, size_t capacity) {
-    std::snprintf(out, capacity, "%s", journal_path);
-    if (char* suffix = ::strstr(out, ".running")) {
-        std::snprintf(suffix, capacity - static_cast<size_t>(suffix - out), ".stat");
-    } else if (char* suffix = ::strstr(out, ".done")) {
-        std::snprintf(suffix, capacity - static_cast<size_t>(suffix - out), ".stat");
+    const char* suffix = journal_name_ends_with(journal_path, ".running") ? ".running"
+                         : journal_name_ends_with(journal_path, ".done")  ? ".done"
+                                                                          : nullptr;
+    if (!suffix) {
+        if (capacity > 0) {
+            out[0] = '\0';
+        }
+        return;
     }
+    const size_t stem = ::strlen(journal_path) - ::strlen(suffix);
+    std::snprintf(out, capacity, "%.*s.stat", static_cast<int>(stem), journal_path);
 }
 
 // Whether this process can see the whole machine's pids. Inside a pid
@@ -150,8 +170,8 @@ inline int& journal_owner_pid() {
 }
 
 // Removes the oldest entries of one kind beyond a keep, by modification time.
-inline void journal_prune_kind(const std::string& dir, const char* kind, size_t kind_length,
-                               bool only_dead, int keep) {
+inline void journal_prune_kind(const std::string& dir, const char* kind, bool only_dead,
+                               int keep) {
     struct Old {
         std::string path;
         time_t when;
@@ -163,8 +183,7 @@ inline void journal_prune_kind(const std::string& dir, const char* kind, size_t 
     }
     while (struct dirent* entry = ::readdir(handle)) {
         const char* name = entry->d_name;
-        const char* suffix = ::strstr(name, kind);
-        if (!suffix || suffix[kind_length] != '\0') {
+        if (!journal_name_ends_with(name, kind)) {
             continue;
         }
         if (only_dead) {
@@ -200,10 +219,12 @@ inline void journal_prune_kind(const std::string& dir, const char* kind, size_t 
         // the directory this walk exists to bound grew with them.
         char stat_path[560];
         journal_stat_path_for(found[oldest].path.c_str(), stat_path, sizeof(stat_path));
-        ::unlink(stat_path);
-        char part_path[576];
-        std::snprintf(part_path, sizeof(part_path), "%s.part", stat_path);
-        ::unlink(part_path);
+        if (stat_path[0]) {
+            ::unlink(stat_path);
+            char part_path[576];
+            std::snprintf(part_path, sizeof(part_path), "%s.part", stat_path);
+            ::unlink(part_path);
+        }
         found.erase(found.begin() + static_cast<long>(oldest));
     }
 }
@@ -216,7 +237,7 @@ inline void journal_prune_kind(const std::string& dir, const char* kind, size_t 
 // (a daemon under Restart=on-failure above all) grew the directory without
 // limit, and this walk with it.
 inline void journal_prune(const std::string& dir) {
-    journal_prune_kind(dir, ".done", 5, false, kJournalHistoryKeep);
+    journal_prune_kind(dir, ".done", false, kJournalHistoryKeep);
     // Dead `.running` journals are known dead by their pid's absence from
     // /proc, which is only an answer where /proc shows the host's pids. A
     // game in Steam's container shares the host's cache directory and sees a
@@ -225,7 +246,7 @@ inline void journal_prune(const std::string& dir) {
     // session's start is older than any crash after it -- was unlinked
     // (entry 135). The host's processes prune; a sandbox's do not.
     if (journal_sees_host_pids()) {
-        journal_prune_kind(dir, ".running", 8, true, kJournalHistoryKeep);
+        journal_prune_kind(dir, ".running", true, kJournalHistoryKeep);
     }
 }
 
@@ -326,6 +347,9 @@ inline void journal_stat(long frames, long drawn) {
     // Beside the journal, whatever the journal's name turned out to be.
     char final_name[560];
     journal_stat_path_for(detail::journal_path_buffer(), final_name, sizeof(final_name));
+    if (!final_name[0]) {
+        return;
+    }
     char name[576];
     std::snprintf(name, sizeof(name), "%s.part", final_name);
     // Not fopen("w"): a link or a FIFO left at the temporary's name must not
@@ -363,10 +387,12 @@ inline void journal_end() {
     ::fclose(file);
     detail::journal_file() = nullptr;
     const char* running = detail::journal_path_buffer();
-    char done[520];
-    std::snprintf(done, sizeof(done), "%s", running);
-    if (char* suffix = ::strstr(done, ".running")) {
-        std::snprintf(suffix, sizeof(done) - static_cast<size_t>(suffix - done), ".done");
+    // `.running` at the END of the name becomes `.done`; journal_begin names
+    // every journal that way, so the unlink is for a path nobody made.
+    if (journal_name_ends_with(running, ".running")) {
+        char done[520];
+        const size_t stem = ::strlen(running) - 8;
+        std::snprintf(done, sizeof(done), "%.*s.done", static_cast<int>(stem), running);
         ::rename(running, done);
     } else {
         ::unlink(running);
@@ -375,7 +401,9 @@ inline void journal_end() {
     // still itself when the ELF destructor runs (the reason the buffer exists).
     char stat_name[560];
     journal_stat_path_for(running, stat_name, sizeof(stat_name));
-    ::unlink(stat_name);
+    if (stat_name[0]) {
+        ::unlink(stat_name);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -470,8 +498,8 @@ inline void journal_walk_running(const std::string& dir, bool want_alive,
     }
     while (struct dirent* entry = ::readdir(handle)) {
         const char* name = entry->d_name;
-        const char* suffix = ::strstr(name, ".running");
-        if (!suffix || suffix[8] != '\0' || !journal_is_regular_file(dir + "/" + name)) {
+        if (!journal_name_ends_with(name, ".running") ||
+            !journal_is_regular_file(dir + "/" + name)) {
             continue;
         }
         JournalEntry record = journal_entry_from(dir, name);
@@ -513,8 +541,7 @@ inline std::vector<JournalEntry> journal_history() {
     }
     while (struct dirent* entry = ::readdir(handle)) {
         const char* name = entry->d_name;
-        const char* suffix = ::strstr(name, ".done");
-        if (!suffix || suffix[5] != '\0' ||
+        if (!journal_name_ends_with(name, ".done") ||
             !detail::journal_is_regular_file(dir + "/" + name)) {
             continue;
         }
@@ -541,6 +568,9 @@ inline std::vector<JournalEntry> journal_history() {
 inline bool journal_read_stat_beside(const std::string& journal_path, long& frames, long& drawn) {
     char name[560];
     journal_stat_path_for(journal_path.c_str(), name, sizeof(name));
+    if (!name[0]) {
+        return false;
+    }
     FILE* file = ::fopen(name, "r");
     if (!file) {
         return false;

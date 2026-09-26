@@ -1321,3 +1321,9 @@ vocem_m32_twin(overlay_log_lines)
 # directory, opendir() counted by interposition -- at most one attempt's two
 # walks, and the refusal said once.
 vocem_test(journal_retry_cadence IMGUI LINK vocem_common ${CMAKE_DL_LIBS} SKIP)
+
+# A journal's suffix is the end of its name: a cache path carrying
+# ".running" or ".done" in a directory name (a Flatpak id, a backup) must not
+# be cut there. The mapping for the review's cases, then a whole journal life
+# under such a path.
+vocem_test(journal_suffix)
