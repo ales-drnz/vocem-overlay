@@ -405,7 +405,9 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     // never be noted at all. Only noted here; the rebuild happens in
     // process_uploads(), after the present, like every other atlas change.
     // The snapshot is this frame's own copy (the same const_cast the body
-    // above makes), and the noting rewrites an emoji sequence into its key.
+    // above makes), and the noting rewrites an emoji sequence into its key --
+    // once the atlas has that key's glyph, which is from the frame after the
+    // fold on this path: a sequence rewritten earlier drew as '?'.
     fonts_note_emoji_in(const_cast<Snapshot&>(snapshot));
 
     // The backend's NewFrame does one thing: create its own font texture if it

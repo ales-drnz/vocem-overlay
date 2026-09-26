@@ -224,15 +224,20 @@ void fonts_note_emoji(const char* utf8_text);
 // past which a new emoji stays monochrome for the rest of the session.
 const char* fonts_emoji_status();
 
-// The noting, and before it the rewriting: an emoji SEQUENCE the bank's table
-// knows -- 🍋‍🟩, a flag, a keycap, a family -- is collapsed in place into the
-// bank key that draws it as one coloured glyph (vocem/emoji_bank.h says what a
-// key is and why the table travels with the bank), and the result is noted.
-// Without a table, or for a key the bank refuses, the text is left exactly as
-// it was and the sequence draws as its coloured parts, which is what it did
-// until 0.1.9. `capacity` is the field's size; the result is never longer
-// than the text. No syscall beyond the noting's own, which is once per
-// codepoint or key for the life of the process (tests/fonts_frame_quiet.cpp).
+// The noting, and with it the rewriting: an emoji SEQUENCE the bank's table
+// knows -- 🍋‍🟩, a flag, a keycap, a family -- is noted as its key, and
+// collapsed in place into that key -- the bank glyph that draws it as one
+// coloured picture (vocem/emoji_bank.h says what a key is and why the table
+// travels with the bank) -- once the atlas carries the key's glyph, and not
+// before: the frame that first shows a sequence draws it as its parts, and the
+// first frame after the next ensure_fonts() folds the key draws it whole. A
+// key rewritten before its fold drew as '?' on the Vulkan path, which notes
+// and draws before it folds (tests/fonts_key_drawable.cpp). Without a table,
+// or for a key the bank refuses, the text is left exactly as it was and the
+// sequence draws as its coloured parts, which is what it did until 0.1.9.
+// `capacity` is the field's size; the result is never longer than the text.
+// No syscall beyond the noting's own, which is once per codepoint or key for
+// the life of the process (tests/fonts_frame_quiet.cpp).
 void fonts_prepare_text(char* text, size_t capacity);
 
 // The same, over everything a snapshot can put on screen: the channel name,

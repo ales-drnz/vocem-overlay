@@ -136,6 +136,13 @@ int main() {
         vocem::ensure_fonts(16.0f, 16.0f);
         const float raw_width = body_now()->CalcTextSizeA(16.0f, 1e9f, 0.0f, raw).x;
 
+        // Noted first and rewritten a frame later: the key is collapsed into
+        // the text only once the atlas has its glyph, or a frame that draws
+        // before the fold draws a '?' (tests/fonts_key_drawable.cpp).
+        vocem::fonts_prepare_text(name, sizeof(name));
+        check(strcmp(name, raw) == 0,
+              "noted and not yet rewritten: the atlas has no glyph for the key before the fold");
+        check(vocem::ensure_fonts(16.0f, 16.0f), "the key is folded into the atlas like any new emoji");
         vocem::fonts_prepare_text(name, sizeof(name));
         check(strlen(name) < strlen(raw), "the lime's three codepoints became one key in the name");
         uint32_t key = 0;
@@ -147,7 +154,6 @@ int main() {
             }
         });
         check(key != 0 && codepoints == 7, "Fazen, the lime's key and the lemon: seven codepoints");
-        check(vocem::ensure_fonts(16.0f, 16.0f), "the key is folded into the atlas like any new emoji");
         const ImFontGlyph* lime_body = body_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
         const ImFontGlyph* lime_strong = strong_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
         check(lime_body && lime_body->Colored, "the lime is a coloured glyph in the body weight");
@@ -176,12 +182,13 @@ int main() {
         // stays uncoloured, so "1" in "User 1" stays a digit.
         char keycap[8];
         snprintf(keycap, sizeof(keycap), "1\xEF\xB8\x8F\xE2\x83\xA3");
-        vocem::fonts_prepare_text(keycap, sizeof(keycap));
+        vocem::fonts_prepare_text(keycap, sizeof(keycap));  // noted
+        vocem::ensure_fonts(16.0f, 16.0f);                  // folded
+        vocem::fonts_prepare_text(keycap, sizeof(keycap));  // and collapsed
         uint32_t keycap_key = 0;
         vocem::utf8_each(keycap, [&](uint32_t cp) { keycap_key = cp; });
         check(keycap_key >= vocem::kEmojiSequenceKeyFirst && strlen(keycap) == 4,
               "1 + FE0F + the box collapses into the keycap's key");
-        vocem::ensure_fonts(16.0f, 16.0f);
         const ImFontGlyph* keycap_glyph =
             body_now()->FindGlyphNoFallback(static_cast<ImWchar>(keycap_key));
         check(keycap_glyph && keycap_glyph->Colored, "and the keycap draws as one coloured glyph");

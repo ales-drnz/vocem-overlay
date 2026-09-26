@@ -1310,3 +1310,11 @@ vocem_test_run(vk_present_second_presenter TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-presenter" SKIP TIMEOUT 120)
 vocem_m32_twin_run(vk_present_second_presenter TARGET vk_present_second_presenter
     ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-presenter")
+
+# A sequence is rewritten into its key only once the atlas has the key's glyph.
+# The Vulkan layer notes and draws in one draw() and folds after the present,
+# so a sequence nobody had shown yet drew its key as '?' for a frame: after
+# fonts_prepare_text and no ensure_fonts, every key left in the text must have
+# a glyph, and after the fold the text must collapse (the positive control).
+vocem_test(fonts_key_drawable IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
+vocem_m32_twin(fonts_key_drawable)

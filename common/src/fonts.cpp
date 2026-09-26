@@ -171,6 +171,11 @@ constexpr uint32_t kSeenInBank = 0x80000000u;
 // Whether this codepoint's pixels are already in the atlas. A codepoint is at
 // most U+10FFFF, so the two flags and the value share a word without arithmetic.
 constexpr uint32_t kSeenFolded = 0x40000000u;
+// Whether the fold actually PLACED its glyph -- in at least one weight, which
+// in practice is both. kSeenFolded is set before the work, so a bank read that
+// failed or a rect that did not pack is settled too; this one says a glyph
+// exists, which is what a text rewritten into the codepoint needs.
+constexpr uint32_t kSeenPlaced = 0x20000000u;
 constexpr uint32_t kCodepointMask = 0x00FFFFFFu;
 static_assert(kCodepointMask >= 0x10FFFFu, "every Unicode codepoint fits below the flags");
 uint32_t g_seen[kMaxSeenCodepoints];
@@ -482,6 +487,27 @@ bool bank_verdict(uint32_t codepoint) {
     return in_bank;
 }
 
+// The remembered entry's flags (kSeenInBank, kSeenFolded, kSeenPlaced), or 0
+// for a codepoint never seen: a search of the table, no lookup of anything
+// else. kSeenPlaced is "the atlas carries a glyph for it".
+uint32_t seen_flags(uint32_t codepoint) {
+    long low = 0;
+    long high = static_cast<long>(g_seen_count) - 1;
+    while (low <= high) {
+        const long middle = low + (high - low) / 2;
+        const uint32_t entry = g_seen[middle] & kCodepointMask;
+        if (entry == codepoint) {
+            return g_seen[middle] & ~kCodepointMask;
+        }
+        if (entry < codepoint) {
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 void fonts_note_emoji(const char* utf8_text) {
@@ -549,6 +575,10 @@ void fonts_prepare_text(char* text, size_t capacity) {
         copied_to = upto;
         return true;
     };
+    // Noted as it is walked, codepoint by codepoint and key by key: the text
+    // may come out of here with a sequence left as its parts (below), and
+    // those parts must not be noted -- each would take an atlas slot of the
+    // 96 for a glyph the next frame's collapse never shows.
     for (uint32_t i = 0; i < count;) {
         uint32_t used = 0;
         const uint32_t key = g_emoji_bank.sequence_key(&codepoints[i], count - i, &used);
@@ -557,15 +587,35 @@ void fonts_prepare_text(char* text, size_t capacity) {
         // is refused and the sequence stays its parts -- coloured parts, as
         // before -- rather than becoming a key no glyph answers to.
         if (key != 0 && used >= 2 && bank_verdict(key)) {
-            if (!copy_raw(begins[i]) || written + 4 >= sizeof(out)) {
-                fonts_note_emoji(text);
-                return;
+            // And rewritten only once the atlas HAS the key's glyph. It was
+            // rewritten as soon as the bank said yes, which is before the fold
+            // that puts the glyph in the atlas: the Vulkan layer notes and
+            // draws in one draw() and folds after the present, so a sequence
+            // nobody had shown yet drew as ImGui's fallback, a '?', for its
+            // first frame (measured: the lime's key absent from the atlas
+            // after the rewrite, FindGlyph answering U+003F). Noted now,
+            // collapsed on the first frame after the fold; until then the
+            // sequence draws as its parts, from the monochrome font.
+            const uint32_t flags = seen_flags(key);
+            if ((flags & kSeenPlaced) != 0) {
+                if (!copy_raw(begins[i]) || written + 4 >= sizeof(out)) {
+                    fonts_note_emoji(text);
+                    return;
+                }
+                written += utf8_put(key, out + written);
+                copied_to = ends[i + used - 1];
+                changed = true;
+            } else if ((flags & kSeenFolded) != 0) {
+                // Folded and not placed -- its picture would not load or its
+                // square did not pack -- so it never will be: the parts are
+                // what draws it for good, and they are noted like any text.
+                for (uint32_t part = i; part < i + used; ++part) {
+                    bank_verdict(codepoints[part]);
+                }
             }
-            written += utf8_put(key, out + written);
-            copied_to = ends[i + used - 1];
-            changed = true;
             i += used;
         } else {
+            bank_verdict(codepoints[i]);
             ++i;
         }
     }
@@ -573,7 +623,6 @@ void fonts_prepare_text(char* text, size_t capacity) {
         out[written] = '\0';
         std::memcpy(text, out, written + 1);
     }
-    fonts_note_emoji(text);
 }
 
 void fonts_note_emoji_in(Snapshot& snapshot) {
@@ -674,7 +723,7 @@ void fonts_release() {
         g_emoji_rects[i] = -1;
     }
     for (uint32_t i = 0; i < g_seen_count; ++i) {
-        g_seen[i] &= ~kSeenFolded;
+        g_seen[i] &= ~(kSeenFolded | kSeenPlaced);
     }
     g_asked_body[0] = '\0';
     g_asked_strong[0] = '\0';
@@ -822,6 +871,7 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
             placed = true;
         }
         if (placed) {
+            g_seen[i] |= kSeenPlaced;
             ++g_emoji_slots;
             folded_any = true;
         }
@@ -984,7 +1034,7 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     // one carried: the flags belong to the atlas, not to the session's memory of
     // what it has seen.
     for (uint32_t i = 0; i < g_seen_count; ++i) {
-        g_seen[i] &= ~kSeenFolded;
+        g_seen[i] &= ~(kSeenFolded | kSeenPlaced);
     }
     g_built_count = 0;
     g_folded_count = 0;
