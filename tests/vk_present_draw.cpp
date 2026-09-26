@@ -121,6 +121,12 @@
 //     Flatpak game with the master switch off kept receiving the channel from
 //     a daemon that believed it was drawing (DESIGN entry 138). Against the
 //     layer as shipped in 0.1.8 the file reads `drawing=1`.
+//   * VOCEM_VK_SCENARIO=deferred: the plain scene on a swapchain created with
+//     VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT, where an image has
+//     no memory until it is first acquired. The layer made a view and a
+//     framebuffer of every image at the first present; against that layer
+//     every overlay submit fails, the frame reads zero foreign pixels, and the
+//     validation layer below it (vk_present_validated) reports the device lost.
 
 #include <dlfcn.h>
 #include <malloc.h>
@@ -297,6 +303,7 @@ bool mapped_layers(char* vocem_out, size_t capacity) {
     X(vkGetPhysicalDeviceSurfaceSupportKHR)      \
     X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
     X(vkGetPhysicalDeviceSurfaceFormatsKHR)      \
+    X(vkEnumerateDeviceExtensionProperties)      \
     X(vkCreateDevice)                            \
     X(vkGetDeviceProcAddr)                       \
     X(vkDestroySurfaceKHR)                       \
@@ -675,6 +682,7 @@ int main() {
     const bool idle = strcmp(scenario, "idle") == 0;
     const bool arrivals = strcmp(scenario, "arrivals") == 0;
     const bool early_exit = strcmp(scenario, "early-exit") == 0;
+    const bool deferred = strcmp(scenario, "deferred") == 0;
     const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
                             strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
     const char* witness_manifest = getenv("VOCEM_VK_WITNESS_MANIFEST");
@@ -1009,8 +1017,38 @@ int main() {
     XMapWindow(display, window);
     XSync(display, False);
 
+    // The deferred scene asks for VK_EXT_swapchain_maintenance1, whose
+    // instance half is VK_EXT_surface_maintenance1 -- which needs
+    // VK_KHR_get_surface_capabilities2 -- and whose device half needs
+    // VK_KHR_get_physical_device_properties2 on the instance. Without the last
+    // one the validation layer reports the PROBE (VUID-vkCreateDevice-
+    // ppEnabledExtensionNames-01387), which is a message about this file and
+    // would read as one about the overlay.
     const char* instance_extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME,
-                                         VK_KHR_XLIB_SURFACE_EXTENSION_NAME};
+                                         VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+                                         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+                                         VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+                                         VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME};
+    const uint32_t instance_extension_count = deferred ? 5 : 2;
+    if (deferred) {
+        auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+            gipa(nullptr, "vkEnumerateInstanceExtensionProperties"));
+        VkExtensionProperties offered[256];
+        uint32_t offered_count = 256;
+        if (!enumerate || enumerate(nullptr, &offered_count, offered) < 0) {
+            skip("the loader cannot list its instance extensions");
+        }
+        for (uint32_t i = 2; i < instance_extension_count; ++i) {
+            bool found = false;
+            for (uint32_t k = 0; k < offered_count && !found; ++k) {
+                found = strcmp(offered[k].extensionName, instance_extensions[i]) == 0;
+            }
+            if (!found) {
+                printf("     missing instance extension: %s\n", instance_extensions[i]);
+                skip("the deferred scene needs VK_EXT_surface_maintenance1 and its dependencies");
+            }
+        }
+    }
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "vocem_vk_present_draw";
@@ -1018,7 +1056,7 @@ int main() {
     VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_info.pApplicationInfo = &app;
-    instance_info.enabledExtensionCount = 2;
+    instance_info.enabledExtensionCount = instance_extension_count;
     instance_info.ppEnabledExtensionNames = instance_extensions;
     VkInstance instance = VK_NULL_HANDLE;
     if (create_instance(&instance_info, nullptr, &instance) != VK_SUCCESS) {
@@ -1173,13 +1211,31 @@ int main() {
     queue_info.queueFamilyIndex = queue_family;
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &priority;
-    const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                       VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance1{};
+    maintenance1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+    maintenance1.swapchainMaintenance1 = VK_TRUE;
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
     device_info.enabledExtensionCount = 1;
     device_info.ppEnabledExtensionNames = device_extensions;
+    if (deferred) {
+        VkExtensionProperties offered[512];
+        uint32_t offered_count = 512;
+        vk.vkEnumerateDeviceExtensionProperties(gpu, nullptr, &offered_count, offered);
+        bool found = false;
+        for (uint32_t k = 0; k < offered_count && !found; ++k) {
+            found = strcmp(offered[k].extensionName, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) == 0;
+        }
+        if (!found) {
+            skip("the device offers no VK_EXT_swapchain_maintenance1, so no deferred swapchain");
+        }
+        device_info.enabledExtensionCount = 2;
+        device_info.pNext = &maintenance1;
+    }
     VkDevice device = VK_NULL_HANDLE;
     if (vk.vkCreateDevice(gpu, &device_info, nullptr, &device) != VK_SUCCESS) {
         skip("vkCreateDevice failed");
@@ -1235,6 +1291,16 @@ int main() {
     // swapchain is allowed to leave invisible pixels undefined -- which is every
     // pixel this test counts.
     swap_info.clipped = VK_FALSE;
+    // The deferred scene: an image of this swapchain has no memory until it is
+    // first acquired (VK_EXT_swapchain_maintenance1), so nothing may be made
+    // from an image before then -- a view of it included. The layer used to
+    // make a view and a framebuffer for every image at the first present,
+    // when only the image being presented had ever been acquired: measured,
+    // "overlay submit failed" on every frame, zero foreign pixels, and the
+    // validation layer below it reporting the device lost.
+    if (deferred) {
+        swap_info.flags |= VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT;
+    }
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     if (vk.vkCreateSwapchainKHR(device, &swap_info, nullptr, &swapchain) != VK_SUCCESS) {
@@ -1931,6 +1997,12 @@ int main() {
         check(foreign > 500, "the overlay drew into the RECREATED swapchain, in the other format");
     } else if (second_device) {
         check(foreign > 500, "the overlay still drew after a second device came and went");
+    } else if (deferred) {
+        check(foreign > 500,
+              "the overlay drew into a swapchain whose images get their memory at first acquire");
+        const long failed = lines_containing(layer_log, "overlay submit failed");
+        printf("     the layer said \"overlay submit failed\" %ld time(s)\n", failed);
+        check(failed == 0, "and none of its submits failed on the way");
     } else {
         check(foreign > 500, "the overlay drew into a presented swapchain image");
     }

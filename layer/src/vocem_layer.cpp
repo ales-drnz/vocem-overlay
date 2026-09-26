@@ -788,35 +788,11 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
             dev.set_device_loader_data(dev.device, sc.command_buffers[i]);
         }
 
-        VkImageViewCreateInfo view_info{};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = sc.images[i];
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format = sc.format;
-        view_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        view_info.subresourceRange.levelCount = 1;
-        view_info.subresourceRange.layerCount = 1;
-        if (d.CreateImageView(dev.device, &view_info, nullptr, &sc.views[i]) != VK_SUCCESS) {
-            VOCEM_LOG("image view creation failed");
-            return false;
-        }
-
-        VkFramebufferCreateInfo fb_info{};
-        fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fb_info.renderPass = sc.render_pass;
-        fb_info.attachmentCount = 1;
-        fb_info.pAttachments = &sc.views[i];
-        fb_info.width = sc.extent.width;
-        fb_info.height = sc.extent.height;
-        fb_info.layers = 1;
-        if (d.CreateFramebuffer(dev.device, &fb_info, nullptr, &sc.framebuffers[i]) != VK_SUCCESS) {
-            VOCEM_LOG("framebuffer creation failed");
-            return false;
-        }
+        // No view and no framebuffer here: those are made at each image's
+        // first draw (image_target below), because an image of a swapchain
+        // created with VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT
+        // has no memory until it is first acquired, and at this first present
+        // only the image being presented ever was.
 
         VkSemaphoreCreateInfo sem_info{};
         sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -864,6 +840,66 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
     sc.usable = true;
     VOCEM_LOG("swapchain resources ready: %u images, queue family %u", image_count, queue_family);
     return true;
+}
+
+// The view and the framebuffer of one image, made the first time the overlay
+// draws into it. They were made for every image of the swapchain at its first
+// present, and with VK_EXT_swapchain_maintenance1's deferred allocation an
+// image has no memory until the application first acquires it: every other
+// image's view was made of nothing, and every overlay submit after it failed --
+// measured, "overlay submit failed" on each of 18 frames, zero foreign pixels,
+// the validation layer below reporting the device lost. An image being
+// presented has been acquired, so its first draw is the first moment the view
+// is certainly legal; one view and one framebuffer, once per image, inside the
+// present -- what the first present always paid, spread over the first frames.
+// For every swapchain, deferred or not: one path, and every scene exercises
+// it. A failure passes this swapchain through for good, said once, rather
+// than asking the driver again every frame.
+// Caller must hold g_lock.
+VkFramebuffer image_target(DeviceData& dev, SwapchainData& sc, uint32_t image_index) {
+    if (sc.framebuffers[image_index] != VK_NULL_HANDLE) {
+        return sc.framebuffers[image_index];
+    }
+    const DeviceDispatch& d = dev.disp;
+    if (sc.views[image_index] == VK_NULL_HANDLE) {
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = sc.images[image_index];
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = sc.format;
+        view_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.layerCount = 1;
+        if (d.CreateImageView(dev.device, &view_info, nullptr, &sc.views[image_index]) !=
+            VK_SUCCESS) {
+            sc.views[image_index] = VK_NULL_HANDLE;
+            VOCEM_LOG("not drawing into this swapchain: image view creation failed for image %u",
+                      image_index);
+            sc.usable = false;
+            return VK_NULL_HANDLE;
+        }
+    }
+    VkFramebufferCreateInfo fb_info{};
+    fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fb_info.renderPass = sc.render_pass;
+    fb_info.attachmentCount = 1;
+    fb_info.pAttachments = &sc.views[image_index];
+    fb_info.width = sc.extent.width;
+    fb_info.height = sc.extent.height;
+    fb_info.layers = 1;
+    if (d.CreateFramebuffer(dev.device, &fb_info, nullptr, &sc.framebuffers[image_index]) !=
+        VK_SUCCESS) {
+        sc.framebuffers[image_index] = VK_NULL_HANDLE;
+        VOCEM_LOG("not drawing into this swapchain: framebuffer creation failed for image %u",
+                  image_index);
+        sc.usable = false;
+        return VK_NULL_HANDLE;
+    }
+    return sc.framebuffers[image_index];
 }
 
 // Record and submit the overlay for one image. Returns the semaphore the
@@ -974,6 +1010,13 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
         return VK_NULL_HANDLE;
     }
 
+    // Before the fence is touched: a target that cannot be made leaves this
+    // image's synchronisation exactly as it found it.
+    const VkFramebuffer framebuffer = image_target(dev, sc, image_index);
+    if (framebuffer == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
+    }
+
     VkCommandBuffer cmd = sc.command_buffers[image_index];
     VkFence fence = sc.fences[image_index];
 
@@ -998,7 +1041,7 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     VkRenderPassBeginInfo rp_begin{};
     rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rp_begin.renderPass = sc.render_pass;
-    rp_begin.framebuffer = sc.framebuffers[image_index];
+    rp_begin.framebuffer = framebuffer;
     rp_begin.renderArea.extent = sc.extent;
     d.CmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 

@@ -1287,3 +1287,16 @@ vocem_script_test(gl_beside_mangohud ARGS ${VOCEM_GL_PROBE_ARGS}
 # shape is built with bwrap rather than described; see the file's header.
 vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
+
+# ---- 0.1.11 vk lane ----
+
+# A swapchain whose images get their memory at first acquire
+# (VK_EXT_swapchain_maintenance1's DEFERRED_MEMORY_ALLOCATION): nothing may be
+# made from an image before then. The layer made a view and a framebuffer of
+# every image at the first present, and every one of its submits failed after
+# it -- zero foreign pixels, the device lost under the validation layer.
+# Witnessed, and validated in vk_present_validated.
+vocem_test_run(vk_present_deferred TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=deferred" SKIP)
+vocem_m32_twin_run(vk_present_deferred TARGET vk_present_deferred
+    ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=deferred")
