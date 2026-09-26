@@ -149,7 +149,7 @@ int main() {
         uint32_t codepoints = 0;
         vocem::utf8_each(name, [&](uint32_t cp) {
             ++codepoints;
-            if (cp >= vocem::kEmojiSequenceKeyFirst) {
+            if (cp >= vocem::kSequenceKeyFirst && cp <= vocem::kSequenceKeyLast) {
                 key = cp;
             }
         });
@@ -187,7 +187,8 @@ int main() {
         vocem::fonts_prepare_text(keycap, sizeof(keycap));  // and collapsed
         uint32_t keycap_key = 0;
         vocem::utf8_each(keycap, [&](uint32_t cp) { keycap_key = cp; });
-        check(keycap_key >= vocem::kEmojiSequenceKeyFirst && strlen(keycap) == 4,
+        check(keycap_key >= vocem::kSequenceKeyFirst && keycap_key <= vocem::kSequenceKeyLast &&
+                  strlen(keycap) == 3,
               "1 + FE0F + the box collapses into the keycap's key");
         const ImFontGlyph* keycap_glyph =
             body_now()->FindGlyphNoFallback(static_cast<ImWchar>(keycap_key));

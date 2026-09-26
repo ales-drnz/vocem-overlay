@@ -1318,3 +1318,10 @@ vocem_m32_twin_run(vk_present_second_presenter TARGET vk_present_second_presente
 # a glyph, and after the fold the text must collapse (the positive control).
 vocem_test(fonts_key_drawable IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
 vocem_m32_twin(fonts_key_drawable)
+
+# One emoji sequence must not grow ImGui's glyph index to its on-disk key's
+# number (U+F0000 up): 1,520 kB -> 11,530 kB for the two weights, +11.4 MB of
+# RSS, after one flag. The keys are numbered in the BMP's private use area at
+# run time, and a name spelling a key's codepoint is neutralised.
+vocem_test(fonts_key_index IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
+vocem_m32_twin(fonts_key_index)

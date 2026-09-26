@@ -240,6 +240,24 @@ const char* fonts_emoji_status();
 // the life of the process (tests/fonts_frame_quiet.cpp).
 void fonts_prepare_text(char* text, size_t capacity);
 
+// Where a sequence key lives in the TEXT and the ATLAS: the Basic Multilingual
+// Plane's private use area, numbered from its start in the order of the keys
+// on disk (a key U+F0000 + n is drawn as U+E000 + n). The files keep their own
+// numbering -- the bank and its table are a pair written by one run of
+// scripts/make-emoji-bank.py (entry 142) -- and only this module translates.
+// On disk the keys start at U+F0000, past everything else the atlas holds
+// (U+1FAFF), and ImGui's glyph index is sized by the highest codepoint a font
+// holds: the first sequence folded grew it to ~984,000 entries a weight,
+// 10 MB in every drawing process (tests/fonts_key_index.cpp). 6400 keys fit
+// here; the table has 2546 today, and a key past the room draws as its parts,
+// said by fonts_emoji_status(). A codepoint of this area arriving in a name is
+// replaced by U+FFFD before anything else -- none of the atlas's fonts has a
+// glyph there, so it drew as ImGui's '?' fallback before and still does --
+// unless it is the number of a key already folded, which a text prepared twice
+// has to keep (fonts.cpp says why, and what that leaves).
+constexpr uint32_t kSequenceKeyFirst = 0xE000;
+constexpr uint32_t kSequenceKeyLast = 0xF8FF;
+
 // The same, over everything a snapshot can put on screen: the channel name,
 // every participant's name, the notification's title and body. One spelling,
 // because both injected paths need exactly this walk and two copies of it
