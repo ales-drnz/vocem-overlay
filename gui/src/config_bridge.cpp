@@ -20,7 +20,9 @@
 #include <QVariantMap>
 #include <QWindow>
 
+#include <cstdio>
 #include <memory>
+#include <utility>
 
 // The window is the scanner's side of the session journal; the injected code
 // and the daemon are the writers'. Both halves live in the one header
@@ -170,8 +172,15 @@ void ConfigBridge::probePreload() {
 // systemctl keeps one owner of the process, so the daemon started from here is the
 // same one the session starts at login. Asked once, of `systemctl --user cat`,
 // and asynchronously: it used to be a synchronous spawn with a three-second cap
-// in the constructor, before the first frame. A start asked for before the
-// answer is in waits for it (startDaemon).
+// in the constructor, before the first frame. A start or a stop asked for before
+// the answer is in waits for it (startDaemon, stopDaemon).
+//
+// No answer inside the cap is NOT "no unit": it is a busy login or a manager
+// still coming up, which is exactly when the unit is about to start vocemd
+// itself -- and reading it as "no unit" made startDaemon exec a second one
+// beside it. The cap falls back on the unit files systemd would read
+// (daemon_unit_on_disk). A systemctl that cannot be run at all is a machine
+// without systemd, and there the answer is no.
 void ConfigBridge::probeUnit() {
     QPointer<QProcess> probe = new QProcess(this);  // a QPointer: see probePreload
     const auto settle = [this, probe](bool available) {
@@ -182,7 +191,13 @@ void ConfigBridge::probeUnit() {
         if (probe) {
             probe->deleteLater();
         }
-        if (daemon_start_wanted_) {
+        // A stop asked for while the question was open wins over a start asked
+        // for before it: the window opened and was closed again, and Quit means
+        // everything down.
+        if (daemon_stop_wanted_) {
+            daemon_start_wanted_ = false;
+            stopDaemon(std::exchange(daemon_stop_wanted_, nullptr));
+        } else if (daemon_start_wanted_) {
             daemon_start_wanted_ = false;
             startDaemon();
         }
@@ -190,12 +205,16 @@ void ConfigBridge::probeUnit() {
     connect(probe, &QProcess::finished, this, [settle](int code, QProcess::ExitStatus status) {
         settle(status == QProcess::NormalExit && code == 0);
     });
-    connect(probe, &QProcess::errorOccurred, this, [settle] { settle(false); });
+    connect(probe, &QProcess::errorOccurred, this, [settle](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            settle(false);
+        }
+    });
     QTimer::singleShot(3000, this, [probe, settle] {
         if (probe && probe->state() != QProcess::NotRunning) {
             probe->kill();
         }
-        settle(false);
+        settle(vocem::daemon_unit_on_disk());
     });
     probe->start(QStringLiteral("systemctl"),
                  {QStringLiteral("--user"), QStringLiteral("cat"), QStringLiteral("vocemd.service")});
@@ -218,14 +237,16 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     timer_.setInterval(500);
     connect(&timer_, &QTimer::timeout, this, &ConfigBridge::refreshState);
     timer_.start();
-    // The two spawns, started and not waited for. The harness runs do not
-    // spawn systemctl either: their answer would be about the build machine's
-    // session, which is not what they measure.
-    const bool harness = qEnvironmentVariableIsSet("VOCEM_CONFIG_GEOMETRY") ||
-                         qEnvironmentVariableIsSet("VOCEM_CONFIG_SCREENSHOT") ||
-                         qEnvironmentVariableIsSet("VOCEM_CONFIG_NO_DAEMON");
+    // The two spawns, started and not waited for. The harness runs ask only
+    // the preload question, which reads the manager's environment and changes
+    // nothing (tests/window_startup.cmake measures the first frame against a
+    // slow one); the unit question is theirs to skip, because nothing under
+    // the harness starts or stops the daemon -- see startDaemon/stopDaemon.
+    harness_ = qEnvironmentVariableIsSet("VOCEM_CONFIG_GEOMETRY") ||
+               qEnvironmentVariableIsSet("VOCEM_CONFIG_SCREENSHOT") ||
+               qEnvironmentVariableIsSet("VOCEM_CONFIG_NO_DAEMON");
     probePreload();
-    if (!harness) {
+    if (!harness_) {
         probeUnit();
     }
     refreshDisplays();
@@ -246,7 +267,7 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     // the session's services. VOCEM_CONFIG_NO_DAEMON says the same for a run
     // that is not a dump -- tests/single_instance.cmake, which needs the
     // window's own startup path and none of its services.
-    if (!attached_ && !harness) {
+    if (!attached_ && !harness_) {
         startDaemon();
     }
 }
@@ -1115,7 +1136,28 @@ QString ConfigBridge::daemonExecutable() const {
 }
 
 
+// The harness drives this window to measure it, and a measurement must not
+// reach the session's services: the Quit at the end of a run, a close with no
+// tray behind it (every offscreen run has none) and Re-authorise all used to
+// end in a stop, and with the unit question never asked the stop was
+// `pkill -TERM -x vocemd` -- the owner's live daemon included. Said once, so a
+// harness run that expected a daemon can find out why there was none.
+void ConfigBridge::skipDaemonUnderHarness(const char* what) {
+    if (!harness_said_) {
+        harness_said_ = true;
+        std::fprintf(stderr,
+                     "vocem-config: a harness run (VOCEM_CONFIG_GEOMETRY, _SCREENSHOT or "
+                     "_NO_DAEMON), so the daemon is neither started nor stopped (first "
+                     "skipped: %s)\n",
+                     what);
+    }
+}
+
 bool ConfigBridge::startDaemon() {
+    if (harness_) {
+        skipDaemonUnderHarness("start");
+        return true;
+    }
     if (unit_available_ < 0) {
         // The probe has not answered yet: the start happens when it does.
         daemon_start_wanted_ = true;
@@ -1134,6 +1176,20 @@ bool ConfigBridge::startDaemon() {
 }
 
 void ConfigBridge::stopDaemon(std::function<void()> done) {
+    if (harness_) {
+        skipDaemonUnderHarness("stop");
+        // Still asynchronous, as every other way this ends is.
+        QTimer::singleShot(0, this, std::move(done));
+        return;
+    }
+    if (unit_available_ < 0) {
+        // The unit question is still open, and `pkill` below is the answer for
+        // a machine with no unit -- not for a question in flight. The stop runs
+        // when probeUnit settles, which its own cap bounds at three seconds.
+        daemon_start_wanted_ = false;
+        daemon_stop_wanted_ = std::move(done);
+        return;
+    }
     // One `done`, however the stop ends: by the process finishing, by it never
     // starting, or by the cap.
     auto finished = std::make_shared<bool>(false);
@@ -1225,7 +1281,11 @@ void ConfigBridge::reauthorise() {
     announceState();
 
     stopDaemon([this] {
-        QFile::remove(QString::fromStdString(vocem::token_path()));
+        // Not under the harness: the token is the daemon's credential, and a
+        // harness run without a scratch XDG_STATE_HOME would remove the real one.
+        if (!harness_) {
+            QFile::remove(QString::fromStdString(vocem::token_path()));
+        }
         QTimer::singleShot(800, this, [this] {
             startDaemon();
             QTimer::singleShot(1500, this, [this] {

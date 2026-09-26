@@ -679,7 +679,13 @@ private:
     // twelve seconds -- the unit's TimeoutStopSec plus two -- when it has not).
     // As a synchronous QProcess::execute this blocked the window for as long as
     // the daemon took to leave, which is up to that TimeoutStopSec on Quit.
+    // Asked before the unit question is answered, the stop waits for the
+    // answer, as a start does: the fallback `pkill` is for a machine with no
+    // unit, not for a question still in flight.
     void stopDaemon(std::function<void()> done);
+    // Under the harness (VOCEM_CONFIG_GEOMETRY, _SCREENSHOT, _NO_DAEMON) the
+    // daemon is neither started nor stopped; this says so on stderr, once.
+    void skipDaemonUnderHarness(const char* what);
     QString daemonExecutable() const;
     // stateChanged, counted, and only when the announced state moved.
     void announceState();
@@ -748,6 +754,12 @@ private:
     // The environment probes (see probeUnit / probePreload). -1 unknown, 0 no, 1 yes.
     int unit_available_ = -1;
     bool daemon_start_wanted_ = false;
+    // A stop asked for while unit_available_ was still -1: run when it settles.
+    std::function<void()> daemon_stop_wanted_;
+    // A run of the offscreen harness, which touches none of the session's
+    // services (the constructor decides it once).
+    bool harness_ = false;
+    bool harness_said_ = false;
     bool opengl_preload_active_ = false;
     bool opengl_preload_known_ = false;
     bool quitting_ = false;

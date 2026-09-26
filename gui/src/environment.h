@@ -499,6 +499,41 @@ inline bool opengl_preload_in_manager_output(const QByteArray& show_environment)
     return show_environment.contains("vocem_gl_shim");
 }
 
+// Whether systemd would find a vocemd.service for the user manager, read from
+// the directories systemd.unit(5) lists for user units rather than asked of
+// systemctl. It is the answer ConfigBridge falls back on when
+// `systemctl --user cat` does not answer inside its cap -- a busy login, a
+// manager still starting -- because "no answer" read as "no unit" made the
+// window exec a vocemd of its own beside the one the unit was about to start.
+// The runtime directories (transient units, generators) are left out: nothing
+// puts this unit there.
+inline bool daemon_unit_on_disk() {
+    const auto env_or = [](const char* name, const QString& fallback) {
+        const QByteArray value = qgetenv(name);
+        return value.isEmpty() ? fallback : QString::fromLocal8Bit(value);
+    };
+    const QString home = QDir::homePath();
+    QStringList roots;
+    roots << env_or("XDG_CONFIG_HOME", home + QStringLiteral("/.config")) + QStringLiteral("/systemd/user");
+    for (const QString& dir : env_or("XDG_CONFIG_DIRS", QStringLiteral("/etc/xdg"))
+                                  .split(QLatin1Char(':'), Qt::SkipEmptyParts)) {
+        roots << dir + QStringLiteral("/systemd/user");
+    }
+    roots << QStringLiteral("/etc/systemd/user");
+    roots << env_or("XDG_DATA_HOME", home + QStringLiteral("/.local/share")) + QStringLiteral("/systemd/user");
+    for (const QString& dir : env_or("XDG_DATA_DIRS", QStringLiteral("/usr/local/share:/usr/share"))
+                                  .split(QLatin1Char(':'), Qt::SkipEmptyParts)) {
+        roots << dir + QStringLiteral("/systemd/user");
+    }
+    roots << QStringLiteral("/usr/local/lib/systemd/user") << QStringLiteral("/usr/lib/systemd/user");
+    for (const QString& root : roots) {
+        if (QFileInfo::exists(root + QStringLiteral("/vocemd.service"))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // The desktop entry that starts this window with the session.
 //
 // The freedesktop Autostart specification: an entry under

@@ -1287,3 +1287,28 @@ vocem_script_test(gl_beside_mangohud ARGS ${VOCEM_GL_PROBE_ARGS}
 # shape is built with bwrap rather than described; see the file's header.
 vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
+
+# ---- 0.1.11 gui lane ----
+if(TARGET vocem-config)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
+    find_package(Fontconfig QUIET)
+
+    # The window never signals the daemon it did not ask about. Under the
+    # harness the unit question was never asked, so every stop -- Quit, a
+    # close with no tray, Re-authorise -- fell to `pkill -TERM -x vocemd`, the
+    # owner's live daemon included; a real launch did the same for the
+    # question's first seconds, and a question past its cap exec'd a second
+    # vocemd. Stubs on PATH log what would have run.
+    vocem_test(window_daemon_lifecycle NO_TEST
+        SOURCES window_daemon_lifecycle.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_daemon_lifecycle PROPERTIES AUTOMOC ON)
+    vocem_test_run(window_daemon_harness TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=harness" SKIP)
+    vocem_test_run(window_daemon_early_quit TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=early-quit" SKIP)
+    vocem_test_run(window_daemon_slow_probe TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=slow-probe" SKIP)
+endif()
