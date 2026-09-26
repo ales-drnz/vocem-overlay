@@ -1327,6 +1327,15 @@ if(TARGET vocem-config)
         LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
         DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
     set_target_properties(vocem_window_autostart PROPERTIES AUTOMOC ON)
+    # "Active in this session" only when this session's environment has the
+    # preload: the user manager carrying it is a different fact, and programs
+    # started from the desktop do not get it until the next login.
+    vocem_test(window_preload_state SKIP
+        SOURCES window_preload_state.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_preload_state PROPERTIES AUTOMOC ON)
     vocem_test_run(window_daemon_slow_probe TARGET window_daemon_lifecycle
         ENV "VOCEM_WINDOW_DAEMON_SCENARIO=slow-probe" SKIP)
 endif()

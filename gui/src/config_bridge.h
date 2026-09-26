@@ -342,7 +342,11 @@ private:
     // page's construction, so the first frame waited on systemctl -- up to its
     // three-second cap (tests/window_startup.cmake). openglPreloadKnown says
     // whether the answer is in yet; until it is, the page says it is asking.
+    // Active means THIS session's environment has it; InManager means only the
+    // systemd user manager's does, which programs started from the desktop do
+    // not inherit until the next login.
     Q_PROPERTY(bool openglPreloadActive READ openglPreloadActive NOTIFY environmentChanged)
+    Q_PROPERTY(bool openglPreloadInManager READ openglPreloadInManager NOTIFY environmentChanged)
     Q_PROPERTY(bool openglPreloadKnown READ openglPreloadKnown NOTIFY environmentChanged)
     // The overlay's own typeface, and the correction that makes Qt draw it at the
     // size ImGui would. Both previews use these, so what they show is as wide as
@@ -594,6 +598,7 @@ public:
     QString version() const { return QStringLiteral(VOCEM_VERSION); }
     bool vulkanLayerInstalled() const;
     bool openglPreloadActive() const { return opengl_preload_active_; }
+    bool openglPreloadInManager() const { return opengl_preload_in_manager_; }
     bool openglPreloadKnown() const { return opengl_preload_known_; }
     // What this window has cost so far, in counts rather than seconds: how
     // often it announced a state change, asked the segment its ABI, read the
@@ -763,6 +768,7 @@ private:
     bool harness_ = false;
     bool harness_said_ = false;
     bool opengl_preload_active_ = false;
+    bool opengl_preload_in_manager_ = false;
     bool opengl_preload_known_ = false;
     bool quitting_ = false;
 

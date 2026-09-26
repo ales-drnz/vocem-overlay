@@ -125,13 +125,21 @@ QVariantMap ConfigBridge::counters() const {
     return map;
 }
 
-// Whether the user manager carries the preload, asked of systemctl without
-// waiting for it. The instant half -- this process's own environment -- is
-// answered in the constructor; a hit there is the whole answer and nothing is
-// spawned. Otherwise the spawn runs beside the window's first frame, and the
-// Debug page says it is asking until the answer is in. Capped at three seconds,
-// as the synchronous version was, and "no answer" reads as "not active", as it
-// did -- but off the first frame's path.
+// Whether the preload is in this session, and if not, whether the user
+// manager carries it -- asked of systemctl without waiting for it. The instant
+// half -- this process's own environment -- is answered in the constructor; a
+// hit there is the whole answer and nothing is spawned. Otherwise the spawn
+// runs beside the window's first frame, and the Debug page says it is asking
+// until the answer is in. Capped at three seconds, as the synchronous version
+// was, and "no answer" reads as "not in the manager" -- but off the first
+// frame's path.
+//
+// The manager's answer is its own fact and never "active": a program launched
+// from the desktop inherits the desktop's environment, fixed at login, not the
+// manager's -- so with the environment.d file installed after login the
+// manager has the preload and no game started from Plasma gets it until the
+// next login. This used to set openglPreloadActive from either half, and the
+// page said "Active in this session" and "Ready" for exactly that case.
 void ConfigBridge::probePreload() {
     opengl_preload_active_ = vocem::opengl_preload_in_own_environment();
     if (opengl_preload_active_) {
@@ -143,11 +151,11 @@ void ConfigBridge::probePreload() {
     // the first version dereferenced it from the timer and died there
     // (SIGSEGV in QProcess::state, measured on the second run of the window).
     QPointer<QProcess> probe = new QProcess(this);
-    const auto settle = [this, probe](bool active) {
+    const auto settle = [this, probe](bool in_manager) {
         if (opengl_preload_known_) {
             return;  // answered already: by the cap, or by the process
         }
-        opengl_preload_active_ = active;
+        opengl_preload_in_manager_ = in_manager;
         opengl_preload_known_ = true;
         if (probe) {
             probe->deleteLater();

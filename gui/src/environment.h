@@ -474,12 +474,16 @@ inline bool vulkan_layer_installed() {
 // was installed, did not:
 //
 //   * our own environment, which is what a game started from this window or from
-//     the same shell would inherit;
-//   * the systemd user manager's environment, which is what anything launched by
-//     the session from now on will get.
+//     the same shell would inherit -- and, for a window started from the
+//     desktop, what the desktop itself has;
+//   * the systemd user manager's environment, which is what the manager starts
+//     from now on -- and NOT what the desktop's launcher hands a game: plasmashell
+//     keeps the environment it had at login.
 //
-// Either one means OpenGL games are covered; neither means the session has not
-// picked up the file yet, and only logging out fixes that.
+// Only the first means OpenGL games started from this desktop are covered. The
+// second alone means the file is installed and the session has not picked it up
+// yet, which only logging out fixes; the Debug page says that in its own words
+// rather than "Active in this session", which it used to say for either.
 //
 // Two halves, asked differently. This process's own environment is a string
 // compare and is answered here at once. The user manager's is a `systemctl`

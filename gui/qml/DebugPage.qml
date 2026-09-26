@@ -196,12 +196,21 @@ SectionPage {
 
                         SettingRow {
                             label: qsTr("OpenGL preload")
+                            // Three answers, not two: the service manager
+                            // carrying the preload is not this session having
+                            // it -- a program started from the desktop inherits
+                            // the desktop's environment, fixed at login.
                             description: !root.config.openglPreloadKnown
                                          ? qsTr("Asking the session's service manager.")
                                          : root.config.openglPreloadActive
                                            ? qsTr("Active in this session.")
-                                           : qsTr("Not in this session's environment. It reaches "
-                                                  + "new sessions at the next login.")
+                                           : root.config.openglPreloadInManager
+                                             ? qsTr("The service manager has it, and the desktop "
+                                                    + "this window was started from does not. "
+                                                    + "Programs started after the next login "
+                                                    + "get it.")
+                                             : qsTr("Not in this session's environment. It "
+                                                    + "reaches new sessions at the next login.")
 
                             Label {
                                 text: !root.config.openglPreloadKnown ? qsTr("Checking")
