@@ -1294,6 +1294,12 @@ vocem_test(emoji_bank_arrives LINK rt
 # file it used to rename over config.ini lost every one of them.
 vocem_test(config_rewrite_in_place)
 
+# A name holding the lists' separator (or edge whitespace) is refused, where
+# it used to be stored as two other names. The overlay reads these lists
+# inside games at both widths, so both are run.
+vocem_test(apps_list_separator)
+vocem_m32_twin(apps_list_separator)
+
 if(TARGET vocem-config)
     find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
     find_package(Fontconfig QUIET)

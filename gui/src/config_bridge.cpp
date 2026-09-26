@@ -646,6 +646,16 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
     if (key.empty()) {
         return;
     }
+    // A name the lists cannot hold -- a comma, or a space at either end -- is
+    // refused and said, and the checkbox is put back by re-announcing the
+    // list it reads: stored, "Foo, Bar" hid the applications Foo and Bar.
+    if (!vocem::list_entry_fits(key)) {
+        reportFailure(tr("\"%1\" cannot be put in the list of applications: a name with a comma "
+                         "in it, or a space at either end, would be read back as another name.")
+                          .arg(name));
+        emit applicationsChanged();
+        return;
+    }
 
     // Both spellings a rule may use are taken out: the process name, and the
     // executable's own name, which config.h says a rule may be written
