@@ -1300,6 +1300,10 @@ vocem_test(config_rewrite_in_place)
 vocem_test(apps_list_separator)
 vocem_m32_twin(apps_list_separator)
 
+# Nothing installed carries a RUNPATH: Qt's deployment defaults gave the
+# packaged vocem-config $ORIGIN:$ORIGIN/../lib. Measured on a scratch install.
+vocem_script_test(installed_runpath ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}")
+
 if(TARGET vocem-config)
     find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
     find_package(Fontconfig QUIET)
