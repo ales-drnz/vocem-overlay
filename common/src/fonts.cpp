@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
@@ -170,6 +171,11 @@ constexpr uint32_t kSeenInBank = 0x80000000u;
 // Whether this codepoint's pixels are already in the atlas. A codepoint is at
 // most U+10FFFF, so the two flags and the value share a word without arithmetic.
 constexpr uint32_t kSeenFolded = 0x40000000u;
+// Whether the fold actually PLACED its glyph -- in at least one weight, which
+// in practice is both. kSeenFolded is set before the work, so a bank read that
+// failed or a rect that did not pack is settled too; this one says a glyph
+// exists, which is what a text rewritten into the codepoint needs.
+constexpr uint32_t kSeenPlaced = 0x20000000u;
 constexpr uint32_t kCodepointMask = 0x00FFFFFFu;
 static_assert(kCodepointMask >= 0x10FFFFu, "every Unicode codepoint fits below the flags");
 uint32_t g_seen[kMaxSeenCodepoints];
@@ -209,6 +215,8 @@ uint32_t g_folded_count = 0;
 // refused typeface forces: that IS a rasterisation, and a count that hid it
 // would be measuring what it wished for.
 uint32_t g_build_count = 0;
+// Set once fonts_atlas() has made the atlas object (fonts_atlas_made()).
+std::atomic<bool> g_atlas_made{false};
 EmojiBank g_emoji_bank;
 // Set when a codepoint arrived with the table already full: past the cap a new
 // colour emoji stays monochrome for the session, which is a decision worth
@@ -407,12 +415,52 @@ bool looks_like_a_font(const unsigned char* data, size_t size) {
     return directory_fits(0);
 }
 
+// Sequence keys, translated between the bank's numbering (U+F0000 up) and the
+// text's and the atlas's (kSequenceKeyFirst up, fonts.h says why). 0 for a
+// key past the room, which then draws as its parts.
+constexpr uint32_t kSequenceKeyRoom = kSequenceKeyLast - kSequenceKeyFirst + 1;
+static_assert(kSequenceKeyRoom == 6400, "the BMP's private use area");
+bool g_keys_past_room = false;
+
+// The codepoints the text showed this frame and nobody has looked up yet, for
+// fonts_look_up_noted(). More new codepoints than this in one frame are noted
+// again on the next -- the text arrives whole every frame -- so the bound
+// costs a frame, never a verdict.
+constexpr uint32_t kMaxLookups = 256;
+uint32_t g_lookups[kMaxLookups];
+uint32_t g_lookup_count = 0;
+
+uint32_t text_key(uint32_t bank_key) {
+    const uint32_t offset = bank_key - kEmojiSequenceKeyFirst;
+    if (bank_key < kEmojiSequenceKeyFirst || offset >= kSequenceKeyRoom) {
+        g_keys_past_room = true;
+        return 0;
+    }
+    return kSequenceKeyFirst + offset;
+}
+
+bool is_text_key(uint32_t codepoint) {
+    return codepoint >= kSequenceKeyFirst && codepoint <= kSequenceKeyLast;
+}
+
+// What the bank calls this codepoint: a text key's own number on disk, and
+// every other codepoint itself.
+uint32_t bank_codepoint(uint32_t codepoint) {
+    return is_text_key(codepoint) ? kEmojiSequenceKeyFirst + (codepoint - kSequenceKeyFirst)
+                                  : codepoint;
+}
+
 // Whether this codepoint draws from the bank: the remembered verdict, or the
 // one lookup that decides it. Every caller that only wants the noting ignores
 // the answer; the sequence collapse below rewrites a name on it, which is why
 // it is an answer and not only a side effect. False during a sandbox's wait
 // for the bank, and nothing remembered then.
-bool bank_verdict(uint32_t codepoint) {
+//
+// `key` says the codepoint is a text key the collapse below produced. Nothing
+// else may ask about one: a codepoint of that area anywhere else came from a
+// name, and answering it would put a sequence's picture where the name only
+// spelled its number.
+bool bank_verdict(uint32_t codepoint, bool key = false) {
     // Below the symbols there are no emoji, and Inter's own glyphs win anyway.
     //
     // The floor is deliberate and it is not going up: the bank *does* carry the
@@ -432,6 +480,9 @@ bool bank_verdict(uint32_t codepoint) {
     if (codepoint == 0x20E3) {
         return false;
     }
+    if (is_text_key(codepoint) && !key) {
+        return false;
+    }
     long low = 0;
     long high = static_cast<long>(g_seen_count) - 1;
     while (low <= high) {
@@ -446,21 +497,67 @@ bool bank_verdict(uint32_t codepoint) {
             high = middle - 1;
         }
     }
+    // Not seen yet. The verdict is a file read -- the bank's open and its
+    // table the first time, a binary search of preads after that -- and this
+    // runs inside the present on the Vulkan path, whose renderer said it took
+    // no file work there while it did (39-139 us the first time, 6-8 us each
+    // new codepoint after, measured by the 0.1.10 review; 82 bank calls on the
+    // present path of vk_present_draw's arrivals scene). So nothing is read
+    // here: the codepoint is queued, and fonts_look_up_noted() -- the first
+    // thing ensure_fonts() does, after the present -- reads. Until then it is
+    // "not from the bank", which draws it from the monochrome font for a frame.
+    //
+    // The bank itself is opened by the first ensure_fonts() (the first build,
+    // fonts_look_up_noted), which on the Vulkan path is on the atlas worker
+    // and before anything can be drawn -- so a noting there always finds it
+    // asked. What can find it not asked yet is the OpenGL path's first frame,
+    // which notes before its first build, inside the swap call where the
+    // build happens too: it opens the bank here, as it always did.
+    if (!g_emoji_bank.asked()) {
+        g_emoji_bank.open();
+    }
+    for (uint32_t i = 0; i < g_lookup_count; ++i) {
+        if (g_lookups[i] == codepoint) {
+            return false;
+        }
+    }
+    if (g_lookup_count < kMaxLookups) {
+        g_lookups[g_lookup_count++] = codepoint;
+    }
+    return false;
+}
+
+// The lookup a queued codepoint waits for, and the verdict remembered.
+void look_up(uint32_t codepoint) {
+    long low = 0;
+    long high = static_cast<long>(g_seen_count) - 1;
+    while (low <= high) {
+        const long middle = low + (high - low) / 2;
+        const uint32_t entry = g_seen[middle] & kCodepointMask;
+        if (entry == codepoint) {
+            return;  // queued twice in one frame, or answered already
+        }
+        if (entry < codepoint) {
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
     if (g_seen_count >= kMaxSeenCodepoints) {
         g_capped = true;
-        return false;
+        return;
     }
     // The one bank lookup this codepoint will ever cost.
-    bool in_bank = g_emoji_bank.contains(codepoint);
+    bool in_bank = g_emoji_bank.contains(bank_codepoint(codepoint));
     // Unless the bank has not arrived yet, which only happens inside a Flatpak:
     // the daemon copies it in on its own tick and the game's first frame beats
     // it. Writing "no colour glyph" down now would outlive the wait -- the
     // verdict here is remembered for the life of the process -- so nothing is
-    // written down at all until the bank has either opened or given up. Costs a
-    // walk of the seen table per codepoint per frame for at most thirty seconds
-    // in a sandbox, and the open behind it is rate-limited to two a second.
+    // written down at all until the bank has either opened or given up: the
+    // text notes it again next frame, and it is looked up again. The open
+    // behind it is rate-limited to two a second.
     if (!in_bank && g_emoji_bank.still_arriving()) {
-        return false;
+        return;
     }
     // The atlas budget, which is a different question from the one above: past
     // it a new colour emoji stays monochrome, and it is remembered as "not in
@@ -476,10 +573,45 @@ bool bank_verdict(uint32_t codepoint) {
     if (in_bank) {
         ++g_wanted_count;
     }
-    return in_bank;
+}
+
+// The remembered entry's flags (kSeenInBank, kSeenFolded, kSeenPlaced), or 0
+// for a codepoint never seen: a search of the table, no lookup of anything
+// else. kSeenPlaced is "the atlas carries a glyph for it".
+uint32_t seen_flags(uint32_t codepoint) {
+    long low = 0;
+    long high = static_cast<long>(g_seen_count) - 1;
+    while (low <= high) {
+        const long middle = low + (high - low) / 2;
+        const uint32_t entry = g_seen[middle] & kCodepointMask;
+        if (entry == codepoint) {
+            return g_seen[middle] & ~kCodepointMask;
+        }
+        if (entry < codepoint) {
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+    return 0;
 }
 
 }  // namespace
+
+void fonts_look_up_noted() {
+    // The bank itself, the first time this runs: its open and its sequence
+    // table's read, here -- in the first build, which on the Vulkan path is the
+    // atlas worker's -- rather than inside a present. Asked whether or not any
+    // text has shown an emoji yet: the table has to be there before the text
+    // is read, or a sequence's parts are noted as emoji of their own.
+    if (!g_emoji_bank.asked()) {
+        g_emoji_bank.open();
+    }
+    for (uint32_t i = 0; i < g_lookup_count; ++i) {
+        look_up(g_lookups[i]);
+    }
+    g_lookup_count = 0;
+}
 
 void fonts_note_emoji(const char* utf8_text) {
     if (!utf8_text || !utf8_text[0]) {
@@ -492,15 +624,38 @@ void fonts_prepare_text(char* text, size_t capacity) {
     if (!text || !text[0] || capacity == 0) {
         return;
     }
-    // The table comes with the bank, and the bank opens on the first codepoint
-    // that could be in it -- so the first walk is the plain noting, which is
-    // what opens it. With no table (none beside the bank, or no bank) that walk
-    // is the whole cost, exactly the pre-0.1.9 one, on every frame.
+    // A codepoint of the keys' area arriving in the text becomes U+FFFD, in
+    // place -- both are three bytes -- before anything reads the text. It drew
+    // as '?' before (no font in the atlas covers the area) and U+FFFD draws
+    // the same; left alone, it would be looked up in the bank as the key of
+    // that number and folded as that sequence's picture.
+    //
+    // Except a key whose glyph is placed, which passes: a text prepared twice
+    // must come out the same (the state poll hands back the snapshot it gave
+    // the previous frame when a publish outlasts its read, already collapsed),
+    // and a key this function wrote cannot be told from the same number
+    // spelled in a name. So a name that spells, exactly, the number of a key
+    // already folded draws that key's picture where it drew '?' -- the same
+    // class of collision the keys had at U+F0000, in an area names use more.
+    utf8_each_span(text, [text](uint32_t codepoint, size_t begin, size_t) {
+        if (is_text_key(codepoint) && (seen_flags(codepoint) & kSeenPlaced) == 0) {
+            text[begin] = static_cast<char>(0xEF);
+            text[begin + 1] = static_cast<char>(0xBF);
+            text[begin + 2] = static_cast<char>(0xBD);
+        }
+    });
+    // The table comes with the bank, which the first ensure_fonts() opened --
+    // or, on the OpenGL path's first frame, before its first build, this does:
+    // the table has to be there before the text is read, or a sequence's
+    // parts are noted as emoji of their own. With no table at all (none beside
+    // the bank, or no bank) the plain noting is the whole of it, exactly the
+    // pre-0.1.9 cost.
+    if (!g_emoji_bank.asked()) {
+        g_emoji_bank.open();
+    }
     if (g_emoji_bank.sequence_count() == 0) {
         fonts_note_emoji(text);
-        if (g_emoji_bank.sequence_count() == 0) {
-            return;
-        }
+        return;
     }
     // Decoded once into fixed arrays: the widest field a snapshot has is the
     // toast's body, and a codepoint per byte is the bound. A string wider than
@@ -529,9 +684,9 @@ void fonts_prepare_text(char* text, size_t capacity) {
     }
     // Every byte that is not part of a collapsed sequence is copied as it was,
     // malformed ones included: the walk skips them and the spans step around
-    // them. A key is four bytes and a sequence is never fewer (its shortest,
-    // a keycap without a selector, is exactly four), so the result is never
-    // longer than the text; the check below is belt to that brace.
+    // them. A key is three bytes and a sequence is never fewer than four (its
+    // shortest, a keycap without a selector), so the result is never longer
+    // than the text; the check below is belt to that brace.
     char out[kMaxCodepoints];
     size_t written = 0;
     size_t copied_to = 0;
@@ -546,23 +701,48 @@ void fonts_prepare_text(char* text, size_t capacity) {
         copied_to = upto;
         return true;
     };
+    // Noted as it is walked, codepoint by codepoint and key by key: the text
+    // may come out of here with a sequence left as its parts (below), and
+    // those parts must not be noted -- each would take an atlas slot of the
+    // 96 for a glyph the next frame's collapse never shows.
     for (uint32_t i = 0; i < count;) {
         uint32_t used = 0;
-        const uint32_t key = g_emoji_bank.sequence_key(&codepoints[i], count - i, &used);
+        const uint32_t bank_key = g_emoji_bank.sequence_key(&codepoints[i], count - i, &used);
+        const uint32_t key = bank_key != 0 ? text_key(bank_key) : 0;
         // The key is asked of the bank the way any codepoint is, and remembered
         // the same way: past the atlas cap, or with the bank still arriving, it
         // is refused and the sequence stays its parts -- coloured parts, as
         // before -- rather than becoming a key no glyph answers to.
-        if (key != 0 && used >= 2 && bank_verdict(key)) {
-            if (!copy_raw(begins[i]) || written + 4 >= sizeof(out)) {
-                fonts_note_emoji(text);
-                return;
+        if (key != 0 && used >= 2 && bank_verdict(key, true)) {
+            // And rewritten only once the atlas HAS the key's glyph. It was
+            // rewritten as soon as the bank said yes, which is before the fold
+            // that puts the glyph in the atlas: the Vulkan layer notes and
+            // draws in one draw() and folds after the present, so a sequence
+            // nobody had shown yet drew as ImGui's fallback, a '?', for its
+            // first frame (measured: the lime's key absent from the atlas
+            // after the rewrite, FindGlyph answering U+003F). Noted now,
+            // collapsed on the first frame after the fold; until then the
+            // sequence draws as its parts, from the monochrome font.
+            const uint32_t flags = seen_flags(key);
+            if ((flags & kSeenPlaced) != 0) {
+                if (!copy_raw(begins[i]) || written + 4 >= sizeof(out)) {
+                    fonts_note_emoji(text);
+                    return;
+                }
+                written += utf8_put(key, out + written);
+                copied_to = ends[i + used - 1];
+                changed = true;
+            } else if ((flags & kSeenFolded) != 0) {
+                // Folded and not placed -- its picture would not load or its
+                // square did not pack -- so it never will be: the parts are
+                // what draws it for good, and they are noted like any text.
+                for (uint32_t part = i; part < i + used; ++part) {
+                    bank_verdict(codepoints[part]);
+                }
             }
-            written += utf8_put(key, out + written);
-            copied_to = ends[i + used - 1];
-            changed = true;
             i += used;
         } else {
+            bank_verdict(codepoints[i]);
             ++i;
         }
     }
@@ -570,7 +750,6 @@ void fonts_prepare_text(char* text, size_t capacity) {
         out[written] = '\0';
         std::memcpy(text, out, written + 1);
     }
-    fonts_note_emoji(text);
 }
 
 void fonts_note_emoji_in(Snapshot& snapshot) {
@@ -608,6 +787,10 @@ const char* fonts_emoji_status() {
     if (const char* reason = g_emoji_bank.sequences_reason()) {
         return reason;
     }
+    if (g_keys_past_room) {
+        return "the emoji sequence table has more keys than the private use area holds: "
+               "those sequences draw as their parts";
+    }
     return nullptr;
 }
 
@@ -631,9 +814,19 @@ ImFontAtlas* fonts_atlas() {
     // here quietly took it back for the one object that matters most. A pointer
     // still costs a guard variable and nothing else: no destructor is registered
     // because there is none to run.
-    static ImFontAtlas* atlas = new ImFontAtlas;
+    //
+    // And said, before it is handed to anybody: fonts_atlas_made() is how a
+    // teardown on another thread learns that there is something to release
+    // without making it.
+    static ImFontAtlas* atlas = [] {
+        ImFontAtlas* made = new ImFontAtlas;
+        g_atlas_made.store(true, std::memory_order_release);
+        return made;
+    }();
     return atlas;
 }
+
+bool fonts_atlas_made() { return g_atlas_made.load(std::memory_order_acquire); }
 
 void fonts_release() {
     ImFontAtlas* atlas = fonts_atlas();
@@ -661,7 +854,7 @@ void fonts_release() {
         g_emoji_rects[i] = -1;
     }
     for (uint32_t i = 0; i < g_seen_count; ++i) {
-        g_seen[i] &= ~kSeenFolded;
+        g_seen[i] &= ~(kSeenFolded | kSeenPlaced);
     }
     g_asked_body[0] = '\0';
     g_asked_strong[0] = '\0';
@@ -699,11 +892,14 @@ namespace {
 // The one lookup entry a folded glyph needs, written in place: what
 // BuildLookupTable() would set for it, and nothing else. BuildLookupTable itself
 // clears and re-grows both index arrays to the highest codepoint in the font
-// and walks every glyph, twice per fold -- and once a sequence key (U+F0000 up,
-// entry 142) is in the font that is 984,119 entries a weight: measured at 1.6
-// to 4.2 ms a fold against 0.24 to 0.50 with none, three runs each, on the
-// path the fold runs on (entry 209). The index grows once, to the new highest
-// codepoint, with the fallback advance BuildLookupTable gives an empty entry.
+// and walks every glyph, twice per fold -- and with a sequence key at its
+// on-disk number (U+F0000 up, entry 142) in the font that was 984,119 entries
+// a weight: measured at 1.6 to 4.2 ms a fold against 0.24 to 0.50 with none,
+// three runs each, on the path the fold runs on (entry 209). The keys are
+// numbered inside the index the atlas already has now (kSequenceKeyFirst,
+// fonts.h), so this grows nothing for them; the growth below is for a
+// codepoint above the index, with the fallback advance BuildLookupTable gives
+// an empty entry.
 void index_folded_glyph(ImFont* font, uint32_t codepoint) {
     const int index = font->Glyphs.Size - 1;
     const int at = static_cast<int>(codepoint);
@@ -771,7 +967,7 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
         g_seen[i] |= kSeenFolded;
         ++g_built_count;
 
-        if (!g_emoji_bank.load(codepoint, record)) {
+        if (!g_emoji_bank.load(bank_codepoint(codepoint), record)) {
             continue;
         }
         const uint32_t slot = g_emoji_slots;
@@ -809,6 +1005,7 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
             placed = true;
         }
         if (placed) {
+            g_seen[i] |= kSeenPlaced;
             ++g_emoji_slots;
             folded_any = true;
         }
@@ -971,7 +1168,7 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     // one carried: the flags belong to the atlas, not to the session's memory of
     // what it has seen.
     for (uint32_t i = 0; i < g_seen_count; ++i) {
-        g_seen[i] &= ~kSeenFolded;
+        g_seen[i] &= ~(kSeenFolded | kSeenPlaced);
     }
     g_built_count = 0;
     g_folded_count = 0;
@@ -1013,6 +1210,10 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
 
 bool ensure_fonts(float pixel_size, float reference, const char* body_path,
                   const char* strong_path) {
+    // What the frames' text noted and nobody has looked up: this is the
+    // post-present phase, and the lookups are file reads.
+    fonts_look_up_noted();
+
     // The reference is not a size the atlas is built at -- it is what the layout
     // divides by -- so it costs nothing to follow immediately.
     g_fonts.reference = reference > 0.0f ? reference : kReferenceSize;

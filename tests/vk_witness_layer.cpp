@@ -54,6 +54,14 @@
 // through the manifest tests/CMakeLists.txt generates. VOCEM_WITNESS_TRACE=1
 // adds every vkGetDeviceProcAddr query and every pipeline bind to the report,
 // for reading by hand.
+//
+// It can also refuse one call, which is how a failure the overlay has to
+// survive is made to happen on a machine where it does not:
+// VOCEM_WITNESS_FAIL_SAMPLER=N answers the process's Nth vkCreateSampler with
+// VK_ERROR_OUT_OF_DEVICE_MEMORY and reports `sampler-refused`. The overlay's
+// backend creates the first (ImGui's own) and its texture cache the second,
+// so 2 is "the texture cache did not come up" (vk_present_draw's
+// no-texture-cache scene).
 
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
@@ -101,6 +109,7 @@ struct DeviceData {
     PFN_vkCmdBeginRenderPass CmdBeginRenderPass = nullptr;
     PFN_vkCmdEndRenderPass CmdEndRenderPass = nullptr;
     PFN_vkCmdBindPipeline CmdBindPipeline = nullptr;
+    PFN_vkCreateSampler CreateSampler = nullptr;
     // What was created, by handle. A destroyed handle the driver reuses is
     // simply overwritten by the next creation, which is the right answer for
     // `passes` -- and the reason a pipeline remembers the SHAPE of the pass it
@@ -270,6 +279,7 @@ VKAPI_ATTR VkResult VKAPI_CALL witness_CreateDevice(VkPhysicalDevice physicalDev
     WITNESS_LOAD(CmdBeginRenderPass);
     WITNESS_LOAD(CmdEndRenderPass);
     WITNESS_LOAD(CmdBindPipeline);
+    WITNESS_LOAD(CreateSampler);
 #undef WITNESS_LOAD
     std::lock_guard<std::mutex> guard(g_lock);
     g_devices[dispatch_key(*pDevice)] = std::move(data);
@@ -447,6 +457,31 @@ VKAPI_ATTR VkResult VKAPI_CALL witness_CreateRenderPass(VkDevice device,
     return result;
 }
 
+VKAPI_ATTR VkResult VKAPI_CALL witness_CreateSampler(VkDevice device,
+                                                     const VkSamplerCreateInfo* pCreateInfo,
+                                                     const VkAllocationCallbacks* pAllocator,
+                                                     VkSampler* pSampler) {
+    static int created = 0;
+    PFN_vkCreateSampler next = nullptr;
+    int nth = 0;
+    {
+        std::lock_guard<std::mutex> guard(g_lock);
+        if (DeviceData* dev = find_device(device)) {
+            next = dev->CreateSampler;
+        }
+        nth = ++created;
+    }
+    if (!next) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const char* refuse = std::getenv("VOCEM_WITNESS_FAIL_SAMPLER");
+    if (refuse && std::atoi(refuse) == nth) {
+        report("sampler-refused");
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+    return next(device, pCreateInfo, pAllocator, pSampler);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL witness_CreateGraphicsPipelines(
     VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount,
     const VkGraphicsPipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator,
@@ -566,6 +601,7 @@ const NameAndFunction kIntercepted[] = {
     WITNESS_ENTRY(WaitForFences),      WITNESS_ENTRY(CreateRenderPass),
     WITNESS_ENTRY(CreateGraphicsPipelines), WITNESS_ENTRY(CmdBeginRenderPass),
     WITNESS_ENTRY(CmdEndRenderPass),   WITNESS_ENTRY(CmdBindPipeline),
+    WITNESS_ENTRY(CreateSampler),
 };
 
 #undef WITNESS_ENTRY

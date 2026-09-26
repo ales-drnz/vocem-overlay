@@ -136,18 +136,24 @@ int main() {
         vocem::ensure_fonts(16.0f, 16.0f);
         const float raw_width = body_now()->CalcTextSizeA(16.0f, 1e9f, 0.0f, raw).x;
 
+        // Noted first and rewritten a frame later: the key is collapsed into
+        // the text only once the atlas has its glyph, or a frame that draws
+        // before the fold draws a '?' (tests/fonts_key_drawable.cpp).
+        vocem::fonts_prepare_text(name, sizeof(name));
+        check(strcmp(name, raw) == 0,
+              "noted and not yet rewritten: the atlas has no glyph for the key before the fold");
+        check(vocem::ensure_fonts(16.0f, 16.0f), "the key is folded into the atlas like any new emoji");
         vocem::fonts_prepare_text(name, sizeof(name));
         check(strlen(name) < strlen(raw), "the lime's three codepoints became one key in the name");
         uint32_t key = 0;
         uint32_t codepoints = 0;
         vocem::utf8_each(name, [&](uint32_t cp) {
             ++codepoints;
-            if (cp >= vocem::kEmojiSequenceKeyFirst) {
+            if (cp >= vocem::kSequenceKeyFirst && cp <= vocem::kSequenceKeyLast) {
                 key = cp;
             }
         });
         check(key != 0 && codepoints == 7, "Fazen, the lime's key and the lemon: seven codepoints");
-        check(vocem::ensure_fonts(16.0f, 16.0f), "the key is folded into the atlas like any new emoji");
         const ImFontGlyph* lime_body = body_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
         const ImFontGlyph* lime_strong = strong_now()->FindGlyphNoFallback(static_cast<ImWchar>(key));
         check(lime_body && lime_body->Colored, "the lime is a coloured glyph in the body weight");
@@ -176,12 +182,14 @@ int main() {
         // stays uncoloured, so "1" in "User 1" stays a digit.
         char keycap[8];
         snprintf(keycap, sizeof(keycap), "1\xEF\xB8\x8F\xE2\x83\xA3");
-        vocem::fonts_prepare_text(keycap, sizeof(keycap));
+        vocem::fonts_prepare_text(keycap, sizeof(keycap));  // noted
+        vocem::ensure_fonts(16.0f, 16.0f);                  // folded
+        vocem::fonts_prepare_text(keycap, sizeof(keycap));  // and collapsed
         uint32_t keycap_key = 0;
         vocem::utf8_each(keycap, [&](uint32_t cp) { keycap_key = cp; });
-        check(keycap_key >= vocem::kEmojiSequenceKeyFirst && strlen(keycap) == 4,
+        check(keycap_key >= vocem::kSequenceKeyFirst && keycap_key <= vocem::kSequenceKeyLast &&
+                  strlen(keycap) == 3,
               "1 + FE0F + the box collapses into the keycap's key");
-        vocem::ensure_fonts(16.0f, 16.0f);
         const ImFontGlyph* keycap_glyph =
             body_now()->FindGlyphNoFallback(static_cast<ImWchar>(keycap_key));
         check(keycap_glyph && keycap_glyph->Colored, "and the keycap draws as one coloured glyph");
@@ -223,6 +231,9 @@ int main() {
             utf8[1] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
             utf8[2] = static_cast<char>(0x80 | (codepoint & 0x3F));
             vocem::fonts_note_emoji(utf8);
+            // The noting only queues (a frame's worth); the lookup is the
+            // post-present phase's, and a frame's text is noted every frame.
+            vocem::fonts_look_up_noted();
         }
     }
     vocem::ensure_fonts(16.0f, 16.0f);
@@ -248,6 +259,7 @@ int main() {
             utf8[2] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
             utf8[3] = static_cast<char>(0x80 | (codepoint & 0x3F));
             vocem::fonts_note_emoji(utf8);
+            vocem::fonts_look_up_noted();
         }
     }
     check(vocem::fonts_emoji_status() != nullptr,

@@ -121,6 +121,26 @@
 //     Flatpak game with the master switch off kept receiving the channel from
 //     a daemon that believed it was drawing (DESIGN entry 138). Against the
 //     layer as shipped in 0.1.8 the file reads `drawing=1`.
+//   * VOCEM_VK_SCENARIO=second-presenter: a second device on the same adapter
+//     with a window and a swapchain of its own PRESENTS beside the first. The
+//     renderer belongs to the first device; the second is passed through while
+//     both present, takes the overlay over once the first has been silent for
+//     the hand-over interval (entry 210's rule, on this side), and gives it
+//     back when it is destroyed. Against the layer before this scene existed
+//     the second device's frames were drawn with the first device's buffers:
+//     VUID-vkCmdBindVertexBuffers-commonparent, then SIGSEGV.
+//   * VOCEM_VK_SCENARIO=no-texture-cache: the witness refuses the texture
+//     cache's sampler, so the cache does not come up. The renderer used to
+//     fall back to ImGui's stock font upload, whose command buffer is
+//     allocated through the chain and never registered with the loader (rule
+//     5, entry 42); it declines to draw now, says so once, and the frame is
+//     the game's own.
+//   * VOCEM_VK_SCENARIO=deferred: the plain scene on a swapchain created with
+//     VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT, where an image has
+//     no memory until it is first acquired. The layer made a view and a
+//     framebuffer of every image at the first present; against that layer
+//     every overlay submit fails, the frame reads zero foreign pixels, and the
+//     validation layer below it (vk_present_validated) reports the device lost.
 
 #include <dlfcn.h>
 #include <malloc.h>
@@ -143,6 +163,9 @@
 #include "probe_name.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/shm.h"
+
+// The layer's file calls on the emoji bank, stamped (tests/vk_file_witness.cpp).
+extern "C" int vocem_file_witness_stamps(const long long** stamps);
 
 namespace {
 
@@ -297,6 +320,7 @@ bool mapped_layers(char* vocem_out, size_t capacity) {
     X(vkGetPhysicalDeviceSurfaceSupportKHR)      \
     X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
     X(vkGetPhysicalDeviceSurfaceFormatsKHR)      \
+    X(vkEnumerateDeviceExtensionProperties)      \
     X(vkCreateDevice)                            \
     X(vkGetDeviceProcAddr)                       \
     X(vkDestroySurfaceKHR)                       \
@@ -405,6 +429,13 @@ int g_present_count = 0;
 // reads only what came after: the warm-up presents with no semaphores of the
 // probe's, and the rule for a chained frame is not the rule for those.
 long long g_scene_began = 0;
+// The intervals of this probe's own vkDestroySwapchainKHR calls, read against
+// the witness's `wait` stamps: the layer tears its per-swapchain resources
+// down inside that call, and a vkDeviceWaitIdle there needs every queue of the
+// device externally synchronised, where the application synchronises only the
+// swapchain.
+Interval g_destroys[16];
+int g_destroy_count = 0;
 
 long long now_ns() {
     timespec now{};
@@ -486,6 +517,34 @@ long count_events(const char* path, const char* event, long* inside, long* on_pa
         }
         if (on_path && on_present_path(stamp)) {
             ++*on_path;
+        }
+    }
+    fclose(file);
+    return count;
+}
+
+// How many report lines carry `event` and `detail` (a word of the line, e.g.
+// the function a `wait` names) inside one of the probe's vkDestroySwapchainKHR
+// calls. -1 when the report does not exist.
+long events_inside_destroys(const char* path, const char* event, const char* detail) {
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return -1;
+    }
+    long count = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        long long stamp = 0;
+        char word[128] = {0};
+        if (sscanf(line, "%lld %127s", &stamp, word) != 2 || strcmp(word, event) != 0 ||
+            !strstr(line, detail)) {
+            continue;
+        }
+        for (int i = 0; i < g_destroy_count; ++i) {
+            if (stamp >= g_destroys[i].from && stamp <= g_destroys[i].to) {
+                ++count;
+                break;
+            }
         }
     }
     fclose(file);
@@ -675,6 +734,10 @@ int main() {
     const bool idle = strcmp(scenario, "idle") == 0;
     const bool arrivals = strcmp(scenario, "arrivals") == 0;
     const bool early_exit = strcmp(scenario, "early-exit") == 0;
+    const bool deferred = strcmp(scenario, "deferred") == 0;
+    const bool second_presenter = strcmp(scenario, "second-presenter") == 0;
+    const bool second_queue = strcmp(scenario, "second-queue") == 0;
+    const bool no_cache = strcmp(scenario, "no-texture-cache") == 0;
     const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
                             strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
     const char* witness_manifest = getenv("VOCEM_VK_WITNESS_MANIFEST");
@@ -866,6 +929,14 @@ int main() {
             printf("     below the overlay: %s\n", below);
         }
     }
+    if (no_cache) {
+        if (!have_witness) {
+            skip("the no-texture-cache scene needs the witness layer, which refuses the sampler");
+        }
+        // The overlay's backend makes the process's first sampler (ImGui's
+        // own) and its texture cache the second; the witness refuses that one.
+        setenv("VOCEM_WITNESS_FAIL_SAMPLER", "2", 1);
+    }
     if (have_witness) {
         snprintf(witness_report, sizeof(witness_report), "%s/witness.txt", root);
         setenv("VOCEM_WITNESS", "1", 1);
@@ -1009,8 +1080,38 @@ int main() {
     XMapWindow(display, window);
     XSync(display, False);
 
+    // The deferred scene asks for VK_EXT_swapchain_maintenance1, whose
+    // instance half is VK_EXT_surface_maintenance1 -- which needs
+    // VK_KHR_get_surface_capabilities2 -- and whose device half needs
+    // VK_KHR_get_physical_device_properties2 on the instance. Without the last
+    // one the validation layer reports the PROBE (VUID-vkCreateDevice-
+    // ppEnabledExtensionNames-01387), which is a message about this file and
+    // would read as one about the overlay.
     const char* instance_extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME,
-                                         VK_KHR_XLIB_SURFACE_EXTENSION_NAME};
+                                         VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+                                         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+                                         VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+                                         VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME};
+    const uint32_t instance_extension_count = deferred ? 5 : 2;
+    if (deferred) {
+        auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+            gipa(nullptr, "vkEnumerateInstanceExtensionProperties"));
+        VkExtensionProperties offered[256];
+        uint32_t offered_count = 256;
+        if (!enumerate || enumerate(nullptr, &offered_count, offered) < 0) {
+            skip("the loader cannot list its instance extensions");
+        }
+        for (uint32_t i = 2; i < instance_extension_count; ++i) {
+            bool found = false;
+            for (uint32_t k = 0; k < offered_count && !found; ++k) {
+                found = strcmp(offered[k].extensionName, instance_extensions[i]) == 0;
+            }
+            if (!found) {
+                printf("     missing instance extension: %s\n", instance_extensions[i]);
+                skip("the deferred scene needs VK_EXT_surface_maintenance1 and its dependencies");
+            }
+        }
+    }
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "vocem_vk_present_draw";
@@ -1018,7 +1119,7 @@ int main() {
     VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_info.pApplicationInfo = &app;
-    instance_info.enabledExtensionCount = 2;
+    instance_info.enabledExtensionCount = instance_extension_count;
     instance_info.ppEnabledExtensionNames = instance_extensions;
     VkInstance instance = VK_NULL_HANDLE;
     if (create_instance(&instance_info, nullptr, &instance) != VK_SUCCESS) {
@@ -1075,6 +1176,7 @@ int main() {
 
     VkPhysicalDevice gpu = VK_NULL_HANDLE;
     uint32_t queue_family = 0;
+    uint32_t family_queues = 0;
     for (uint32_t i = 0; i < gpu_count && gpu == VK_NULL_HANDLE; ++i) {
         uint32_t family_count = 0;
         vk.vkGetPhysicalDeviceQueueFamilyProperties(gpus[i], &family_count, nullptr);
@@ -1089,6 +1191,7 @@ int main() {
             if ((families[f].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentable) {
                 gpu = gpus[i];
                 queue_family = f;
+                family_queues = families[f].queueCount;
                 break;
             }
         }
@@ -1167,19 +1270,42 @@ int main() {
         skip("the surface offers only one 8-bit format, so there is nothing to recreate into");
     }
 
-    const float priority = 1.0f;
+    // The second-queue scene presents a second window from a second queue of
+    // the same family, on the same device.
+    if (second_queue && family_queues < 2) {
+        skip("the presenting family has one queue, so there is no second queue to present from");
+    }
+    const float priorities[2] = {1.0f, 1.0f};
     VkDeviceQueueCreateInfo queue_info{};
     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queue_info.queueFamilyIndex = queue_family;
-    queue_info.queueCount = 1;
-    queue_info.pQueuePriorities = &priority;
-    const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    queue_info.queueCount = second_queue ? 2 : 1;
+    queue_info.pQueuePriorities = priorities;
+    const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                       VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance1{};
+    maintenance1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+    maintenance1.swapchainMaintenance1 = VK_TRUE;
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
     device_info.enabledExtensionCount = 1;
     device_info.ppEnabledExtensionNames = device_extensions;
+    if (deferred) {
+        VkExtensionProperties offered[512];
+        uint32_t offered_count = 512;
+        vk.vkEnumerateDeviceExtensionProperties(gpu, nullptr, &offered_count, offered);
+        bool found = false;
+        for (uint32_t k = 0; k < offered_count && !found; ++k) {
+            found = strcmp(offered[k].extensionName, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) == 0;
+        }
+        if (!found) {
+            skip("the device offers no VK_EXT_swapchain_maintenance1, so no deferred swapchain");
+        }
+        device_info.enabledExtensionCount = 2;
+        device_info.pNext = &maintenance1;
+    }
     VkDevice device = VK_NULL_HANDLE;
     if (vk.vkCreateDevice(gpu, &device_info, nullptr, &device) != VK_SUCCESS) {
         skip("vkCreateDevice failed");
@@ -1235,6 +1361,16 @@ int main() {
     // swapchain is allowed to leave invisible pixels undefined -- which is every
     // pixel this test counts.
     swap_info.clipped = VK_FALSE;
+    // The deferred scene: an image of this swapchain has no memory until it is
+    // first acquired (VK_EXT_swapchain_maintenance1), so nothing may be made
+    // from an image before then -- a view of it included. The layer used to
+    // make a view and a framebuffer for every image at the first present,
+    // when only the image being presented had ever been acquired: measured,
+    // "overlay submit failed" on every frame, zero foreign pixels, and the
+    // validation layer below it reporting the device lost.
+    if (deferred) {
+        swap_info.flags |= VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT;
+    }
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     if (vk.vkCreateSwapchainKHR(device, &swap_info, nullptr, &swapchain) != VK_SUCCESS) {
@@ -1467,6 +1603,128 @@ int main() {
         }
         return ok;
     };
+    // ---- The frame, read back ----------------------------------------------
+    // A lambda because the second-presenter scene reads a frame of its second
+    // device's swapchain as well, through the same device variables the frame
+    // loops use (which that scene points at the second device while it runs).
+    // Writes the modal byte and the count of pixels more than 40 away from it;
+    // false when no frame could be read.
+    // `give_back` presents the image read again afterwards, for a swapchain
+    // whose frames go on: an image acquired and never presented is one fewer
+    // the loop can acquire.
+    const auto read_back = [&](VkSwapchainKHR chain, VkImage* chain_images, int& background,
+                               long& foreign, bool give_back) -> bool {
+        background = 0;
+        foreign = 0;
+        // Acquired rather than grabbed: once acquire hands an image back it is ours
+        // again and the presentation engine is done with it, so the read is not a
+        // race. Every image in the swapchain has carried the overlay by now -- 45
+        // frames over a handful of images -- so whichever comes back is a presented,
+        // overlaid frame.
+        uint32_t index = 0;
+        if (vk.vkAcquireNextImageKHR(device, chain, UINT64_MAX, VK_NULL_HANDLE, fence, &index) !=
+            VK_SUCCESS) {
+            printf("FAIL could not acquire an image to read back\n");
+            return false;
+        }
+        vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vk.vkResetFences(device, 1, &fence);
+
+        const VkDeviceSize bytes = (VkDeviceSize)extent.width * extent.height * 4;
+        VkBufferCreateInfo buffer_info{};
+        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_info.size = bytes;
+        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer readback = VK_NULL_HANDLE;
+        vk.vkCreateBuffer(device, &buffer_info, nullptr, &readback);
+        VkMemoryRequirements requirements{};
+        vk.vkGetBufferMemoryRequirements(device, readback, &requirements);
+        VkPhysicalDeviceMemoryProperties mem_props{};
+        vk.vkGetPhysicalDeviceMemoryProperties(gpu, &mem_props);
+        const uint32_t type = find_memory_type(
+            mem_props, requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (type == UINT32_MAX) {
+            printf("FAIL no host-visible memory type for the read-back buffer\n");
+            vk.vkDestroyBuffer(device, readback, nullptr);
+            return false;
+        }
+        VkMemoryAllocateInfo allocate{};
+        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = type;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        vk.vkAllocateMemory(device, &allocate, nullptr, &memory);
+        vk.vkBindBufferMemory(device, readback, memory, 0);
+
+        vk.vkResetCommandBuffer(cmd, 0);
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vk.vkBeginCommandBuffer(cmd, &begin);
+        image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, VK_ACCESS_TRANSFER_READ_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = extent.width;
+        region.imageExtent.height = extent.height;
+        region.imageExtent.depth = 1;
+        vk.vkCmdCopyImageToBuffer(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1,
+                                  &region);
+        image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_READ_BIT, 0);
+        vk.vkEndCommandBuffer(cmd);
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+        vk.vkQueueWaitIdle(queue);
+
+        void* mapped_memory = nullptr;
+        vk.vkMapMemory(device, memory, 0, bytes, 0, &mapped_memory);
+        const unsigned char* pixels = static_cast<const unsigned char*>(mapped_memory);
+
+        // The background, measured rather than derived: the modal byte of the first
+        // channel is the grey this test cleared to, whatever the format's encoding
+        // did to it.
+        long histogram[256] = {0};
+        const long total = (long)extent.width * extent.height;
+        for (long i = 0; i < total; ++i) {
+            ++histogram[pixels[i * 4]];
+        }
+        for (int value = 1; value < 256; ++value) {
+            if (histogram[value] > histogram[background]) {
+                background = value;
+            }
+        }
+        for (long i = 0; i < total; ++i) {
+            const int r = pixels[i * 4 + 0];
+            const int g = pixels[i * 4 + 1];
+            const int b = pixels[i * 4 + 2];
+            const int dr = r > background ? r - background : background - r;
+            const int dg = g > background ? g - background : background - g;
+            const int db = b > background ? b - background : background - b;
+            if (dr > 40 || dg > 40 || db > 40) {
+                ++foreign;
+            }
+        }
+        vk.vkUnmapMemory(device, memory);
+        vk.vkFreeMemory(device, memory, nullptr);
+        vk.vkDestroyBuffer(device, readback, nullptr);
+        if (give_back) {
+            VkPresentInfoKHR present{};
+            present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            present.swapchainCount = 1;
+            present.pSwapchains = &chain;
+            present.pImageIndices = &index;
+            vk.vkQueuePresentKHR(queue, &present);
+            vk.vkQueueWaitIdle(queue);
+        }
+        return true;
+    };
     if (early_exit) {
         // One frame with a channel on it, which starts the atlas worker (entry
         // 192). Then the game
@@ -1490,7 +1748,13 @@ int main() {
         vk.vkDeviceWaitIdle(device);
         vk.vkDestroyFence(device, fence, nullptr);
         vk.vkDestroyCommandPool(device, pool, nullptr);
-        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        {
+            const long long destroy_from = now_ns();
+            vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+            if (g_destroy_count < 16) {
+                g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+            }
+        }
         vk.vkDestroyDevice(device, nullptr);
         vk.vkDestroySurfaceKHR(instance, surface, nullptr);
         vk.vkDestroyInstance(instance, nullptr);
@@ -1502,6 +1766,18 @@ int main() {
                "time(s)\n", started, ready);
         check(started == 1, "the atlas worker was running when the game went away");
         check(ready == 0, "and the renderer was never finished, so the teardown met it mid-build");
+        // And what it left behind: entry 211's measurement, in the one window
+        // entry 211 did not cover. The last vkDestroyInstance handed the atlas
+        // back only where fonts_build_count() was above zero, and the count
+        // moves when Build() RETURNS -- so an instance destroyed inside the
+        // first build's ~113 ms skipped the teardown, the worker finished the
+        // build for nobody, and the atlas and the ImGui context stayed mapped
+        // after the loader had unloaded the only library that knew of them.
+        const size_t mapped_kb = mallinfo2().hblkhd / 1024;
+        printf("     heap blocks still mapped after the last instance: %zu kB\n", mapped_kb);
+        check(mapped_kb < 1024,
+              "an instance destroyed while the first atlas was being rasterised hands it back "
+              "all the same");
         char cleanup[800];
         snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
         if (system(cleanup) != 0) {
@@ -1583,6 +1859,185 @@ int main() {
             return 1;
         }
     }
+    // Filled by the second-presenter scene, checked with the others below.
+    long second_idle_foreign = -1;
+    long second_drawn_foreign = -1;
+    if (second_presenter || second_queue) {
+        // second-queue is the same scene on ONE device: the second window's
+        // swapchain belongs to the first device and is presented from the
+        // family's second queue. The texture cache uploads to, and orders the
+        // font image's copies on, the queue the renderer was built for, and a
+        // present holds no synchronisation for any other queue: a present on
+        // queue 1 passed the family check and was drawn with queue 0's
+        // uploads behind it.
+        //
+        // A second device that PRESENTS, beside the first, which stays alive:
+        // a launcher window, a game's second adapter, a tool. The overlay's
+        // renderer -- its vertex ring, its pipeline, its font image and every
+        // face -- belongs to the first device, and nothing compared the two:
+        // the second device's command buffers were recorded with the first
+        // device's buffers (VUID-vkCmdBindVertexBuffers-commonparent under the
+        // validation layer) and the process died of SIGSEGV. Three phases:
+        // both present and the second is left alone; the first falls silent
+        // and after kHandOverSeconds the overlay moves to the second (entry
+        // 210's hand-over, on this side); the second goes away and the first
+        // takes the overlay back.
+        Window window_b =
+            XCreateWindow(display, RootWindow(display, screen), -4000, 400, kWidth, kHeight, 0,
+                          CopyFromParent, InputOutput, CopyFromParent,
+                          CWOverrideRedirect | CWBackPixel, &attributes);
+        XMapWindow(display, window_b);
+        XSync(display, False);
+        VkXlibSurfaceCreateInfoKHR surface_b_info = surface_info;
+        surface_b_info.window = window_b;
+        VkSurfaceKHR surface_b = VK_NULL_HANDLE;
+        if (vk.vkCreateXlibSurfaceKHR(instance, &surface_b_info, nullptr, &surface_b) !=
+            VK_SUCCESS) {
+            printf("FAIL the second window's surface\n");
+            return 1;
+        }
+        VkBool32 presentable_b = VK_FALSE;
+        vk.vkGetPhysicalDeviceSurfaceSupportKHR(gpu, queue_family, surface_b, &presentable_b);
+        VkSurfaceCapabilitiesKHR caps_b{};
+        vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface_b, &caps_b);
+        VkDevice device_b = second_queue ? device : VK_NULL_HANDLE;
+        if (!presentable_b ||
+            (!second_queue &&
+             vk.vkCreateDevice(gpu, &device_info, nullptr, &device_b) != VK_SUCCESS)) {
+            printf("FAIL the second presenting device could not be made\n");
+            return 1;
+        }
+        const Vk table_a = vk;
+        const VkDevice device_a = device;
+        const VkQueue queue_a = queue;
+        const VkCommandBuffer cmd_a = cmd;
+        const VkFence fence_a = fence;
+        Vk table_b = vk;
+#define VOCEM_LOAD_DEVICE_B(name) \
+        table_b.name = reinterpret_cast<PFN_##name>(table_a.vkGetDeviceProcAddr(device_b, #name));
+        VOCEM_VK_DEVICE_FUNCS(VOCEM_LOAD_DEVICE_B)
+#undef VOCEM_LOAD_DEVICE_B
+        VkQueue queue_b = VK_NULL_HANDLE;
+        table_b.vkGetDeviceQueue(device_b, queue_family, second_queue ? 1 : 0, &queue_b);
+        VkSwapchainCreateInfoKHR swap_b = swap_info;
+        swap_b.surface = surface_b;
+        VkSwapchainKHR swapchain_b = VK_NULL_HANDLE;
+        if (table_b.vkCreateSwapchainKHR(device_b, &swap_b, nullptr, &swapchain_b) != VK_SUCCESS) {
+            printf("FAIL the second device's swapchain\n");
+            return 1;
+        }
+        uint32_t count_b = 0;
+        table_b.vkGetSwapchainImagesKHR(device_b, swapchain_b, &count_b, nullptr);
+        VkImage images_b[kMaxSwapchainImages];
+        if (count_b > kMaxSwapchainImages) {
+            count_b = kMaxSwapchainImages;
+        }
+        table_b.vkGetSwapchainImagesKHR(device_b, swapchain_b, &count_b, images_b);
+        VkCommandPoolCreateInfo pool_b_info = pool_info;
+        VkCommandPool pool_b = VK_NULL_HANDLE;
+        table_b.vkCreateCommandPool(device_b, &pool_b_info, nullptr, &pool_b);
+        VkCommandBufferAllocateInfo cmd_b_info = cmd_info;
+        cmd_b_info.commandPool = pool_b;
+        VkCommandBuffer cmd_b = VK_NULL_HANDLE;
+        table_b.vkAllocateCommandBuffers(device_b, &cmd_b_info, &cmd_b);
+        VkFence fence_b = VK_NULL_HANDLE;
+        table_b.vkCreateFence(device_b, &fence_info, nullptr, &fence_b);
+        // The frame loops and the read-back reach the device through these
+        // variables, by reference: pointing them at B is how B's frames go.
+        const auto use = [&](bool b) {
+            vk = b ? table_b : table_a;
+            device = b ? device_b : device_a;
+            queue = b ? queue_b : queue_a;
+            cmd = b ? cmd_b : cmd_a;
+            fence = b ? fence_b : fence_a;
+        };
+        printf("     a second device presents: %u images, beside the first\n", count_b);
+
+        // Both present, alternately: the overlay stays where its renderer is.
+        for (int frame = 0; frame < 30; ++frame) {
+            use(false);
+            if (!run_frames(swapchain, images, 1)) {
+                return 1;
+            }
+            use(true);
+            if (!run_frames(swapchain_b, images_b, 1)) {
+                return 1;
+            }
+        }
+        int background_b = 0;
+        if (!read_back(swapchain_b, images_b, background_b, second_idle_foreign, true)) {
+            return 1;
+        }
+        printf("     while both present: the second window's frame has %ld foreign pixels\n",
+               second_idle_foreign);
+
+        // The first falls silent and stays alive; the second goes on alone.
+        // Until the layer says it moved and has built again on the second
+        // device, and ten frames more; twelve seconds at most, a deadline and
+        // not a measurement. It is 2.0 s on this machine, alone and under the
+        // validation layer alike; the first version's five was missed once,
+        // under the validation layer beside a parallel run of the Vulkan
+        // tests, and the build then landed on the read-back's own present.
+        const long ready_before = lines_containing(layer_log, "backend ready");
+        const long long alone_from = now_ns();
+        const long long alone_until = alone_from + 12000000000LL;
+        long long moved_after = -1;
+        while (now_ns() < alone_until) {
+            if (!run_frames(swapchain_b, images_b, 5)) {
+                return 1;
+            }
+            if (lines_containing(layer_log, "backend ready") > ready_before) {
+                moved_after = now_ns() - alone_from;
+                if (!run_frames(swapchain_b, images_b, 10)) {
+                    return 1;
+                }
+                break;
+            }
+        }
+        printf("     the second window alone: built for it %.1f s after the first fell silent\n",
+               moved_after < 0 ? -1.0 : static_cast<double>(moved_after) / 1e9);
+        if (!read_back(swapchain_b, images_b, background_b, second_drawn_foreign, true)) {
+            return 1;
+        }
+        printf("     the first silent: the second window's frame has %ld foreign pixels\n",
+               second_drawn_foreign);
+
+        // The second goes away, and the first presents again.
+        vk.vkDeviceWaitIdle(device_b);
+        {
+            const long long destroy_from = now_ns();
+            vk.vkDestroySwapchainKHR(device_b, swapchain_b, nullptr);
+            if (g_destroy_count < 16) {
+                g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+            }
+        }
+        vk.vkDestroyFence(device_b, fence_b, nullptr);
+        vk.vkDestroyCommandPool(device_b, pool_b, nullptr);
+        if (!second_queue) {
+            vk.vkDestroyDevice(device_b, nullptr);
+        }
+        use(false);
+        vk.vkDestroySurfaceKHR(instance, surface_b, nullptr);
+        XDestroyWindow(display, window_b);
+        printf("     the second device is gone; the first presents again\n");
+        // On one device nothing is destroyed with the second swapchain: the
+        // renderer stays on queue 1 until queue 0 has presented alone for the
+        // hand-over interval and moves it back. Eight seconds at most, a
+        // deadline and not a measurement.
+        const long ready_again = lines_containing(layer_log, "backend ready");
+        const long long back_until = now_ns() + 8000000000LL;
+        while (now_ns() < back_until) {
+            if (!run_frames(swapchain, images, 5)) {
+                return 1;
+            }
+            if (lines_containing(layer_log, "backend ready") > ready_again) {
+                if (!run_frames(swapchain, images, 10)) {
+                    return 1;
+                }
+                break;
+            }
+        }
+    }
     if (recreate) {
         VkSwapchainCreateInfoKHR again = swap_info;
         again.imageFormat = other.format;
@@ -1595,7 +2050,13 @@ int main() {
             return 1;
         }
         vk.vkDeviceWaitIdle(device);
-        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        {
+            const long long destroy_from = now_ns();
+            vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+            if (g_destroy_count < 16) {
+                g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+            }
+        }
         swapchain = replacement;
         image_count = 0;
         vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, nullptr);
@@ -1777,104 +2238,11 @@ int main() {
         }
     }
 
-    // ---- The frame, read back ----------------------------------------------
-    // Acquired rather than grabbed: once acquire hands an image back it is ours
-    // again and the presentation engine is done with it, so the read is not a
-    // race. Every image in the swapchain has carried the overlay by now -- 45
-    // frames over a handful of images -- so whichever comes back is a presented,
-    // overlaid frame.
-    uint32_t index = 0;
-    if (vk.vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, VK_NULL_HANDLE, fence, &index) !=
-        VK_SUCCESS) {
-        printf("FAIL could not acquire an image to read back\n");
-        return 1;
-    }
-    vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-    vk.vkResetFences(device, 1, &fence);
-
-    const VkDeviceSize bytes = (VkDeviceSize)extent.width * extent.height * 4;
-    VkBufferCreateInfo buffer_info{};
-    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = bytes;
-    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VkBuffer readback = VK_NULL_HANDLE;
-    vk.vkCreateBuffer(device, &buffer_info, nullptr, &readback);
-    VkMemoryRequirements requirements{};
-    vk.vkGetBufferMemoryRequirements(device, readback, &requirements);
-    VkPhysicalDeviceMemoryProperties mem_props{};
-    vk.vkGetPhysicalDeviceMemoryProperties(gpu, &mem_props);
-    const uint32_t type = find_memory_type(
-        mem_props, requirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (type == UINT32_MAX) {
-        printf("FAIL no host-visible memory type for the read-back buffer\n");
-        return 1;
-    }
-    VkMemoryAllocateInfo allocate{};
-    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocate.allocationSize = requirements.size;
-    allocate.memoryTypeIndex = type;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    vk.vkAllocateMemory(device, &allocate, nullptr, &memory);
-    vk.vkBindBufferMemory(device, readback, memory, 0);
-
-    vk.vkResetCommandBuffer(cmd, 0);
-    VkCommandBufferBeginInfo begin{};
-    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vk.vkBeginCommandBuffer(cmd, &begin);
-    image_barrier(cmd, images[index], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, VK_ACCESS_TRANSFER_READ_BIT);
-    VkBufferImageCopy region{};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.layerCount = 1;
-    region.imageExtent.width = extent.width;
-    region.imageExtent.height = extent.height;
-    region.imageExtent.depth = 1;
-    vk.vkCmdCopyImageToBuffer(cmd, images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1,
-                              &region);
-    image_barrier(cmd, images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_READ_BIT, 0);
-    vk.vkEndCommandBuffer(cmd);
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &cmd;
-    vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
-    vk.vkQueueWaitIdle(queue);
-
-    void* mapped_memory = nullptr;
-    vk.vkMapMemory(device, memory, 0, bytes, 0, &mapped_memory);
-    const unsigned char* pixels = static_cast<const unsigned char*>(mapped_memory);
-
-    // The background, measured rather than derived: the modal byte of the first
-    // channel is the grey this test cleared to, whatever the format's encoding
-    // did to it.
-    long histogram[256] = {0};
-    const long total = (long)extent.width * extent.height;
-    for (long i = 0; i < total; ++i) {
-        ++histogram[pixels[i * 4]];
-    }
     int background = 0;
-    for (int value = 1; value < 256; ++value) {
-        if (histogram[value] > histogram[background]) {
-            background = value;
-        }
-    }
     long foreign = 0;
-    for (long i = 0; i < total; ++i) {
-        const int r = pixels[i * 4 + 0];
-        const int g = pixels[i * 4 + 1];
-        const int b = pixels[i * 4 + 2];
-        const int dr = r > background ? r - background : background - r;
-        const int dg = g > background ? g - background : background - g;
-        const int db = b > background ? b - background : background - b;
-        if (dr > 40 || dg > 40 || db > 40) {
-            ++foreign;
-        }
+    if (!read_back(swapchain, images, background, foreign, false)) {
+        return 1;
     }
-    vk.vkUnmapMemory(device, memory);
 
     // The count, against what this project has written down about it. The
     // checks below are a FLOOR -- 500 -- and a floor is the right shape, since
@@ -1931,16 +2299,70 @@ int main() {
         check(foreign > 500, "the overlay drew into the RECREATED swapchain, in the other format");
     } else if (second_device) {
         check(foreign > 500, "the overlay still drew after a second device came and went");
+    } else if (second_queue) {
+        check(second_idle_foreign == 0,
+              "while both queues present, the second queue's frame is its own: the renderer "
+              "uploads on the first");
+        check(second_drawn_foreign > 500,
+              "once the first queue fell silent, the overlay moved to the second and drew there");
+        check(foreign > 500, "and moved back to the first once it presented alone again");
+        const long foreign_said = lines_containing(layer_log, "not drawing on device");
+        const long moved = lines_containing(layer_log, "moving the overlay");
+        const long ready = lines_containing(layer_log, "backend ready");
+        printf("     the layer said \"not drawing on device\" %ld time(s), \"moving the overlay\" "
+               "%ld time(s), \"backend ready\" %ld time(s)\n", foreign_said, moved, ready);
+        check(foreign_said == 2,
+              "each queue was passed through, said once, while the other owned the renderer");
+        check(moved == 2, "the overlay moved to the second queue and back");
+        check(ready == 3, "built on the first queue, on the second, and on the first again");
+    } else if (second_presenter) {
+        check(second_idle_foreign == 0,
+              "while both devices present, the second's frame is its own: the renderer lives on "
+              "the first");
+        check(second_drawn_foreign > 500,
+              "once the first fell silent, the overlay moved to the second device and drew there");
+        check(foreign > 500, "and came back to the first once the second was gone");
+        const long foreign_said = lines_containing(layer_log, "not drawing on device");
+        const long moved = lines_containing(layer_log, "moving the overlay");
+        const long ready = lines_containing(layer_log, "backend ready");
+        printf("     the layer said \"not drawing on device\" %ld time(s), \"moving the overlay\" "
+               "%ld time(s), \"backend ready\" %ld time(s)\n", foreign_said, moved, ready);
+        check(foreign_said == 1, "the second device was passed through, said once");
+        check(moved == 1, "the overlay was moved once, after the first device fell silent");
+        check(ready == 3,
+              "built on the first device, on the second, and on the first again after the second "
+              "was destroyed");
+    } else if (no_cache) {
+        const long refused = count_events(witness_report, "sampler-refused", nullptr, nullptr);
+        const long declined = lines_containing(layer_log, "texture cache did not come up");
+        const long ready = lines_containing(layer_log, "backend ready");
+        printf("     the witness refused %ld sampler(s); the layer said it declined %ld time(s) and "
+               "\"backend ready\" %ld time(s)\n", refused, declined, ready);
+        check(refused == 1, "the texture cache's sampler was refused (the scene's precondition)");
+        check(declined == 1, "the layer said once that it will not draw without its texture cache");
+        check(ready == 0 && foreign == 0,
+              "and drew nothing: no backend whose stock font upload allocates a command buffer "
+              "the loader never registered");
+    } else if (deferred) {
+        check(foreign > 500,
+              "the overlay drew into a swapchain whose images get their memory at first acquire");
+        const long failed = lines_containing(layer_log, "overlay submit failed");
+        printf("     the layer said \"overlay submit failed\" %ld time(s)\n", failed);
+        check(failed == 0, "and none of its submits failed on the way");
     } else {
         check(foreign > 500, "the overlay drew into a presented swapchain image");
     }
 
     vk.vkDeviceWaitIdle(device);
-    vk.vkFreeMemory(device, memory, nullptr);
-    vk.vkDestroyBuffer(device, readback, nullptr);
     vk.vkDestroyFence(device, fence, nullptr);
     vk.vkDestroyCommandPool(device, pool, nullptr);
-    vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+    {
+        const long long destroy_from = now_ns();
+        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        if (g_destroy_count < 16) {
+            g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+        }
+    }
     vk.vkDestroyDevice(device, nullptr);
     vk.vkDestroySurfaceKHR(instance, surface, nullptr);
     vk.vkDestroyInstance(instance, nullptr);
@@ -1968,8 +2390,23 @@ int main() {
     // but after the hand-down, the post-present phase. -1 without a witness
     // (the 32-bit twin runs the plain chain).
     long waits_inside_arrivals = -1;
+    // And the bank's file calls, read against the same hand-downs: on the
+    // present path, or after the hand-down. -1 without a witness.
+    long bank_calls_on_path = -1;
+    long bank_calls_after = -1;
     if (witness_report[0]) {
         place_hand_downs(witness_report);
+        const long long* file_stamps = nullptr;
+        const int file_calls = vocem_file_witness_stamps(&file_stamps);
+        bank_calls_on_path = 0;
+        bank_calls_after = 0;
+        for (int i = 0; i < file_calls; ++i) {
+            if (on_present_path(file_stamps[i])) {
+                ++bank_calls_on_path;
+            } else if (inside_a_present(file_stamps[i])) {
+                ++bank_calls_after;
+            }
+        }
         long submits_inside = 0;
         long submits_on_path = 0;
         long waits_inside = 0;
@@ -1995,7 +2432,7 @@ int main() {
         // nothing and submits nothing, so these two positive controls are the
         // assertion turned around: there they say the overlay really did stay
         // out, and anywhere else they say the witness really was underneath it.
-        if (idle) {
+        if (idle || no_cache) {
             // The pipeline the witness counts is the SWAPCHAIN's, built by
             // build_swapchain_resources whether or not there is anything on the
             // screen -- deliberately, so that the first frame with something on
@@ -2036,6 +2473,18 @@ int main() {
                   "no queue, device or fence wait ran on the present path (rules 8 and 10): what "
                   "waits, waits after the present was handed down");
         }
+        // And no device-wide wait inside the application's own
+        // vkDestroySwapchainKHR: the layer tears down its per-swapchain
+        // resources there, and a present or a destroy synchronises the one
+        // swapchain, not every queue of the device (the waits it may make are
+        // on its own fences).
+        const long idle_in_destroy =
+            events_inside_destroys(witness_report, "wait", "vkDeviceWaitIdle");
+        printf("     %d swapchain destroy call(s); vkDeviceWaitIdle inside them: %ld\n",
+               g_destroy_count, idle_in_destroy);
+        check(g_destroy_count > 0 && idle_in_destroy == 0,
+              "no vkDeviceWaitIdle inside vkDestroySwapchainKHR: the swapchain's teardown waits "
+              "on its own fences");
         check(signalled == 0, "no fence was handed to vkQueueSubmit already signalled");
         check(mismatches == 0,
               "no pipeline was bound in a render pass it was not built against");
@@ -2144,6 +2593,20 @@ int main() {
                   "and nothing the overlay uploads makes the game's thread wait for the GPU");
         } else {
             printf("     (no witness in this chain, so the waits are not counted here)\n");
+        }
+        // The bank's file work: none on the present path. Every arrival is a
+        // codepoint nobody had shown, and noting one opened the bank, read its
+        // sequence table and binary-searched it with preads inside the present
+        // -- where overlay_renderer.cpp said the layer took no file work. The
+        // positive control is the post-present count: the bank WAS read, after
+        // the hand-down, which is where the verdicts and the folds belong.
+        if (bank_calls_on_path >= 0) {
+            printf("     the emoji bank's file calls: %ld on the present path, %ld after the "
+                   "hand-down\n", bank_calls_on_path, bank_calls_after);
+            check(bank_calls_after > 0,
+                  "the bank was read after the hand-down (the file witness sees the layer's calls)");
+            check(bank_calls_on_path == 0,
+                  "and not once on the present path: a new emoji costs the present no file work");
         }
         const long off_thread = lines_containing(stderr_log, "off the game's thread");
         const long no_thread = lines_containing(stderr_log, "no thread for the font atlas");

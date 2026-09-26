@@ -828,7 +828,13 @@ vocem_test(hdr_srgb_pixels
 # surface format.
 set(VOCEM_VK_MANIFEST_ENV "VOCEM_VK_MANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json")
 set(VOCEM_VK_PROBE_ENV ${VOCEM_VK_MANIFEST_ENV} "VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>")
-vocem_test(vk_present_draw LINK ${CMAKE_DL_LIBS} X11 rt ENV ${VOCEM_VK_PROBE_ENV} SKIP)
+vocem_test(vk_present_draw SOURCES vk_present_draw.cpp vk_file_witness.cpp
+    LINK ${CMAKE_DL_LIBS} X11 rt
+    LINK_OPTIONS "-Wl,--export-dynamic-symbol=open,--export-dynamic-symbol=open64"
+                 "-Wl,--export-dynamic-symbol=openat,--export-dynamic-symbol=openat64"
+                 "-Wl,--export-dynamic-symbol=pread,--export-dynamic-symbol=pread64"
+                 "-Wl,--export-dynamic-symbol=close"
+    ENV ${VOCEM_VK_PROBE_ENV} SKIP)
 
 # The same binary as its own control: VOCEM_DISABLE=1 and the loader refuses the
 # layer on its disable_environment, so the presented frame must be exactly what
@@ -995,6 +1001,7 @@ vocem_script_test(vk_present_validated ARGS
     "-DPROBE=$<TARGET_FILE:vocem_vk_present_draw>"
     "-DMANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json"
     "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
+    "-DWITNESS=${CMAKE_CURRENT_BINARY_DIR}/vk_witness.json"
     "-DEMOJI_BANK=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
 
 # The Vulkan half inside gamescope, with gamescope's own WSI layer in the chain --
@@ -1623,3 +1630,56 @@ if(TARGET vocemd)
     vocem_test(daemon_log_lines INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
         ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
 endif()
+
+# ---- 0.1.11 vk lane ----
+
+# A swapchain whose images get their memory at first acquire
+# (VK_EXT_swapchain_maintenance1's DEFERRED_MEMORY_ALLOCATION): nothing may be
+# made from an image before then. The layer made a view and a framebuffer of
+# every image at the first present, and every one of its submits failed after
+# it -- zero foreign pixels, the device lost under the validation layer.
+# Witnessed, and validated in vk_present_validated.
+vocem_test_run(vk_present_deferred TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=deferred" SKIP)
+vocem_m32_twin_run(vk_present_deferred TARGET vk_present_deferred
+    ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=deferred")
+
+# A second device PRESENTING beside the first, which stays alive. The renderer
+# belongs to one device; the other was drawn with its buffers (commonparent
+# under the validation layer, then SIGSEGV). Passed through while both present,
+# moved once the owner has been silent for the hand-over interval (entry 210's
+# rule on this side), and moved back when the second device is destroyed.
+vocem_test_run(vk_present_second_presenter TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-presenter" SKIP TIMEOUT 120)
+vocem_m32_twin_run(vk_present_second_presenter TARGET vk_present_second_presenter
+    ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-presenter")
+
+# A sequence is rewritten into its key only once the atlas has the key's glyph.
+# The Vulkan layer notes and draws in one draw() and folds after the present,
+# so a sequence nobody had shown yet drew its key as '?' for a frame: after
+# fonts_prepare_text and no ensure_fonts, every key left in the text must have
+# a glyph, and after the fold the text must collapse (the positive control).
+vocem_test(fonts_key_drawable IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
+vocem_m32_twin(fonts_key_drawable)
+
+# One emoji sequence must not grow ImGui's glyph index to its on-disk key's
+# number (U+F0000 up): 1,520 kB -> 11,530 kB for the two weights, +11.4 MB of
+# RSS, after one flag. The keys are numbered in the BMP's private use area at
+# run time, and a name spelling a key's codepoint is neutralised.
+vocem_test(fonts_key_index IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
+vocem_m32_twin(fonts_key_index)
+
+# The texture cache refused (the witness fails its sampler): the renderer fell
+# back to ImGui's stock font upload, whose command buffer the loader never
+# registered (rule 5). It declines to draw now, said once. Also a scene of
+# vk_present_validated, with the validation layer between overlay and witness.
+vocem_test_run(vk_present_no_texture_cache TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=no-texture-cache" SKIP)
+
+# The same on one device: a second window presented from the family's second
+# queue passed the family check and was drawn with the first queue's uploads
+# behind it. Passed through, moved after the hand-over interval, moved back.
+vocem_test_run(vk_present_second_queue TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-queue" SKIP TIMEOUT 120)
+vocem_m32_twin_run(vk_present_second_queue TARGET vk_present_second_queue
+    ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-queue")

@@ -9,10 +9,12 @@
 // and it is *inside* the present: on Vulkan it is called from
 // `draw()` while the layer holds its own lock, before the real
 // `vkQueuePresentKHR`. The first sighting of a codepoint that could be a colour
-// emoji costs an `open` of the bank and a binary search of `pread`s -- so the
-// property that makes this legal is not "no I/O ever" but "every codepoint costs
-// its lookup once, and a steady frame costs nothing". The layer's own comment
-// claimed the absolute version; this test measures the true one.
+// emoji costs a binary search of the bank's `pread`s -- which is queued by the
+// noting and made by fonts_look_up_noted(), after the present (the 0.1.10
+// review found it made inside, 81 bank calls on the present path of the
+// Vulkan arrivals scene, where the layer said it took no file work). So the
+// property this holds is "the noting reads nothing, and every codepoint costs
+// its lookup once, outside it".
 //
 // Both halves matter, and the second is the one that is easy to lose:
 //
@@ -120,8 +122,13 @@ int main() {
     }
 
     // The warm-up is the part that is allowed to read: every codepoint above is
-    // seen once here, verdict remembered either way.
+    // seen once here and looked up after it, verdict remembered either way --
+    // twice, because a sequence's key is noted only once the table is in, and
+    // the table comes with the bank's first open.
     note_every_string();
+    vocem::fonts_look_up_noted();
+    note_every_string();
+    vocem::fonts_look_up_noted();
     printf("warm-up done: %s\n",
            vocem::fonts_emoji_status() ? vocem::fonts_emoji_status() : "colour emoji available");
 
@@ -186,6 +193,9 @@ int main() {
         char fresh[32];
         snprintf(fresh, sizeof(fresh), "%s", "Uni \xF0\x9F\xA6\x84");  // U+1F984, not above
         vocem::fonts_prepare_text(fresh, sizeof(fresh));
+        // The noting queued it and read nothing; the lookup that follows the
+        // present is the file work, and the filter has to kill it there.
+        vocem::fonts_look_up_noted();
         _exit(0);
     }
     int control_status = 0;
@@ -198,5 +208,35 @@ int main() {
     }
     printf("ok   and the same filter kills a first lookup (signal %d), so it would have caught one "
            "in the loop\n", WTERMSIG(control_status));
+
+    // And the noting of that never-seen codepoint, alone, under the same
+    // filter: it is what runs inside the present, and it must queue the lookup
+    // rather than make it. Against the module before the lookups moved, this
+    // child died of the first pread.
+    fflush(stdout);
+    const pid_t noting = fork();
+    if (noting == 0) {
+        prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+        if (!forbid_file_syscalls()) {
+            _exit(77);
+        }
+        char fresh[32];
+        snprintf(fresh, sizeof(fresh), "%s", "Uni \xF0\x9F\xA6\x84");
+        vocem::fonts_prepare_text(fresh, sizeof(fresh));
+        _exit(0);
+    }
+    int noting_status = 0;
+    waitpid(noting, &noting_status, 0);
+    if (WIFSIGNALED(noting_status)) {
+        printf("FAIL noting a codepoint never seen before made a file syscall (signal %d): the "
+               "lookup happened inside the present\n", WTERMSIG(noting_status));
+        return 1;
+    }
+    if (!WIFEXITED(noting_status) || WEXITSTATUS(noting_status) != 0) {
+        printf("FAIL the noting child did not exit cleanly\n");
+        return 1;
+    }
+    printf("ok   noting that codepoint alone makes no file syscall: the lookup waits for "
+           "fonts_look_up_noted(), after the present\n");
     return 0;
 }

@@ -81,7 +81,6 @@ struct InstanceDispatch {
 struct DeviceDispatch {
     PFN_vkGetDeviceProcAddr GetDeviceProcAddr = nullptr;
     PFN_vkDestroyDevice DestroyDevice = nullptr;
-    PFN_vkDeviceWaitIdle DeviceWaitIdle = nullptr;
     PFN_vkGetDeviceQueue GetDeviceQueue = nullptr;
     PFN_vkGetDeviceQueue2 GetDeviceQueue2 = nullptr;
     PFN_vkCreateSwapchainKHR CreateSwapchainKHR = nullptr;
@@ -162,18 +161,10 @@ struct SwapchainData {
     // frame, for each of the pass-through reasons draw_overlay() can find.
     bool said_pass_through = false;
 
-    // Whether anything of ours was ever submitted on this swapchain. What
-    // decides if tearing it down needs to wait for the device: a swapchain
-    // whose build failed before its first submit has nothing in flight, and a
-    // vkDeviceWaitIdle for it is a stall inside the present for nothing.
-    bool ever_submitted() const {
-        for (uint8_t flag : submitted) {
-            if (flag) {
-                return true;
-            }
-        }
-        return false;
-    }
+    // Whether any of our submits on this swapchain ever signalled one of the
+    // semaphores above, which a present then waited on. What decides whether
+    // the teardown may destroy them at once (destroy_swapchain_resources).
+    bool signalled_any = false;
 };
 
 struct DeviceData {
@@ -190,6 +181,10 @@ struct DeviceData {
     // take one, and nothing used to ask. Empty when the query was unavailable,
     // in which case the family is taken on trust as it always was.
     std::vector<VkQueueFlags> family_flags;
+    // Semaphores of swapchains already destroyed, which a present may still
+    // be waiting on: destroyed with the device, or once more than
+    // kMaxRetiredSemaphores are kept (destroy_swapchain_resources says why).
+    std::vector<VkSemaphore> retired_semaphores;
 };
 
 // The loader hands us dispatchable handles; keying on the raw pointer is the
@@ -231,6 +226,96 @@ vocem::StatePoll g_state{&layer_poll_log};
 DeviceData* find_device(void* dispatchable) {
     auto it = g_devices.find(dispatch_key(dispatchable));
     return it == g_devices.end() ? nullptr : &it->second;
+}
+
+// ---------------------------------------------------------------------------
+// Whose present this is. The renderer lives on one device and uploads on one
+// queue (OverlayRenderer::owns); nothing used to ask, and a second device that
+// presented beside the first had its frames recorded with the first device's
+// vertex ring, pipeline and font image -- VUID-vkCmdBindVertexBuffers-
+// commonparent under the validation layer, then SIGSEGV -- and its post-present
+// phase submitting to, and waiting on, the first device's queue, which that
+// present holds no synchronisation for. A present that is not the owner's is
+// passed through, said once; once the owner has not presented for
+// kHandOverSeconds the backend moves to the one that does. That second half is
+// entry 210's lesson on the OpenGL side, where the first version of the same
+// fix refused every other context for good and a game that shows a loading
+// screen from one and plays from another had no overlay for the session.
+// Everything here is guarded by g_lock.
+// ---------------------------------------------------------------------------
+
+constexpr double kHandOverSeconds = 2.0;
+// When the owner last presented; 0 while nobody owns the renderer, or while its
+// owner has not presented since it was built -- then nothing is Abandoned.
+double g_owner_seen = 0.0;
+// The last non-owner that was told about, so it is said once and not per frame.
+VkDevice g_foreign_said_device = VK_NULL_HANDLE;
+VkQueue g_foreign_said_queue = VK_NULL_HANDLE;
+
+enum class Presenter { Owner, Foreign, Abandoned };
+
+Presenter whose_present(VkDevice device, VkQueue queue) {
+    // Nobody owns a renderer that is not up: whoever presents next builds it.
+    if (!vocem::renderer().ready()) {
+        return Presenter::Owner;
+    }
+    const double now = vocem::monotonic_seconds();
+    if (vocem::renderer().owns(device, queue)) {
+        g_owner_seen = now;
+        return Presenter::Owner;
+    }
+    if (g_owner_seen > 0.0 && now - g_owner_seen >= kHandOverSeconds) {
+        return Presenter::Abandoned;
+    }
+    if (device != g_foreign_said_device || queue != g_foreign_said_queue) {
+        g_foreign_said_device = device;
+        g_foreign_said_queue = queue;
+        VOCEM_LOG("not drawing on device %p queue %p: the overlay's renderer lives on device %p "
+                  "and its queue, which presented %.1f s ago", static_cast<void*>(device),
+                  static_cast<void*>(queue), static_cast<void*>(vocem::renderer().device()),
+                  g_owner_seen > 0.0 ? now - g_owner_seen : 0.0);
+    }
+    return Presenter::Foreign;
+}
+
+// Waits for every overlay submission still in flight on `device`, by the
+// per-image fences the layer submitted them with. Those command buffers read
+// the renderer's vertex ring, pipeline, font image and faces; the texture
+// cache's own uploads are the only other GPU work that does, and its
+// shutdown() waits for them itself. vkWaitForFences needs no queue's external
+// synchronisation; the vkDeviceWaitIdle that stood in the renderer's shutdown
+// needed every queue's.
+void wait_for_overlay_work(VkDevice device) {
+    DeviceData* dev = find_device(device);
+    if (!dev || !dev->disp.WaitForFences) {
+        return;
+    }
+    for (auto& entry : g_swapchains) {
+        SwapchainData& sc = entry.second;
+        if (sc.device != device) {
+            continue;
+        }
+        for (size_t i = 0; i < sc.submitted.size() && i < sc.fences.size(); ++i) {
+            if (sc.submitted[i] && sc.fences[i] != VK_NULL_HANDLE) {
+                dev->disp.WaitForFences(device, 1, &sc.fences[i], VK_TRUE, UINT64_MAX);
+            }
+        }
+    }
+}
+
+// The one way the renderer is torn down: every overlay submission that reads
+// it waited for first (OverlayRenderer::shutdown says why that is the
+// caller's), then the backend, the context and the texture cache. The atlas is
+// not the renderer's and stays (entry 144); callers that mean to hand it back
+// call fonts_release() after this.
+void release_renderer_locked() {
+    if (VkDevice owner = vocem::renderer().device()) {
+        wait_for_overlay_work(owner);
+    }
+    vocem::renderer().shutdown();
+    g_owner_seen = 0.0;
+    g_foreign_said_device = VK_NULL_HANDLE;
+    g_foreign_said_queue = VK_NULL_HANDLE;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,11 +422,20 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
     // so this is the moment to give it back; shutdown() also joins a build
     // still running and destroys a context whose device died before its
     // backend was ready (entry 211).
-    // Only where an atlas was ever built: a process that never drew -- most of
+    // Only where the atlas was ever made: a process that never drew -- most of
     // the Vulkan processes of a session -- has nothing here, and asking would
-    // construct the renderer and the atlas object just to clear them.
-    if (last && vocem::fonts_build_count() > 0) {
-        vocem::renderer().shutdown();
+    // construct the renderer and the atlas object just to clear them. Made,
+    // not built: this asked fonts_build_count() > 0, which moves when the
+    // first build RETURNS, so an instance destroyed inside that build's ~113 ms
+    // skipped all of this and left the context and the whole atlas mapped --
+    // 65,541 kB after the last instance on the early-exit scene. The atlas is
+    // made before the renderer creates its context and starts the build, and
+    // shutdown() joins a build still running.
+    if (last && vocem::fonts_atlas_made()) {
+        {
+            std::lock_guard<std::mutex> guard(g_lock);
+            release_renderer_locked();
+        }
         vocem::fonts_release();
         VOCEM_LOG("the last instance is gone: the font atlas handed back");
     }
@@ -352,7 +446,7 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
 // ---------------------------------------------------------------------------
 
 // Defined with the swapchain code below; vocem_DestroyDevice needs it first.
-void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, SwapchainData& sc);
+void destroy_swapchain_resources(DeviceData& dev, SwapchainData& sc, bool device_going);
 
 VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateDevice(VkPhysicalDevice physicalDevice,
                                                   const VkDeviceCreateInfo* pCreateInfo,
@@ -422,7 +516,6 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateDevice(VkPhysicalDevice physicalDevic
     d.name = reinterpret_cast<PFN_vk##name>(next_gdpa(*pDevice, "vk" #name))
 
     VOCEM_LOAD(DestroyDevice);
-    VOCEM_LOAD(DeviceWaitIdle);
     VOCEM_LOAD(GetDeviceQueue);
     VOCEM_LOAD(GetDeviceQueue2);
     VOCEM_LOAD(CreateSwapchainKHR);
@@ -486,11 +579,16 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
             // longer exists.
             for (auto sc = g_swapchains.begin(); sc != g_swapchains.end();) {
                 if (sc->second.device == device) {
-                    destroy_swapchain_resources(it->second.disp, device, sc->second);
+                    destroy_swapchain_resources(it->second, sc->second, true);
                     sc = g_swapchains.erase(sc);
                 } else {
                     ++sc;
                 }
+            }
+            // The semaphores kept past their swapchains: the application has
+            // finished everything on the device before destroying it.
+            for (VkSemaphore semaphore : it->second.retired_semaphores) {
+                it->second.disp.DestroySemaphore(device, semaphore, nullptr);
             }
             g_devices.erase(it);
         }
@@ -502,7 +600,7 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
         // presenting, with no wait for the command buffers reading them.
         if (vocem::renderer().device() == device) {
             vocem::journal_note("device destroyed; renderer shutting down");
-            vocem::renderer().shutdown();
+            release_renderer_locked();
         }
     }
     if (destroy) {
@@ -626,20 +724,63 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateSwapchainKHR(VkDevice device,
     return VK_SUCCESS;
 }
 
+// How many semaphores of destroyed swapchains a device keeps before the oldest
+// go: three a swapchain, so about twenty recreations.
+constexpr size_t kMaxRetiredSemaphores = 64;
+
 // Caller must hold g_lock.
-void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, SwapchainData& sc) {
-    // Only when something of ours may still be executing. The failed-build
-    // path reaches here from inside the present, before anything was ever
-    // submitted, and a device-wide wait there is a stall in somebody's frame
-    // for nothing (rule 8).
-    if (d.DeviceWaitIdle && sc.ever_submitted()) {
-        d.DeviceWaitIdle(device);
+//
+// No vkDeviceWaitIdle in here. There was one, for any swapchain that had ever
+// had a submit of ours, and it runs inside the application's
+// vkDestroySwapchainKHR, which synchronises that swapchain and nothing else --
+// while vkDeviceWaitIdle needs every queue of the device externally
+// synchronised: a game submitting to another queue from another thread at that
+// moment was a violation of the specification's threading rules. Measured
+// with the witness layer counting waits inside the probe's own
+// vkDestroySwapchainKHR calls: one vkDeviceWaitIdle in each, in every scene
+// that drew (vk_present_draw). What of ours can still be executing is our own
+// submissions, one per image, each with its fence: they are waited for,
+// which needs no queue's synchronisation.
+//
+// The semaphores those submissions signalled are another matter: a present
+// waited on each, and a fence says nothing about when the presentation engine
+// consumed it -- which is what VK_EXT_swapchain_maintenance1's present fences
+// exist to say, and an application is not obliged to use them. So they are
+// kept on the device, and destroyed with it (`device_going`, where the
+// application has already finished everything), or once more than
+// kMaxRetiredSemaphores have piled up, oldest first: a semaphore twenty
+// swapchains old whose present has not consumed it is a bound reasoned, not
+// measured. The failed-build path reaches here from inside the present with
+// nothing ever submitted, and destroys them at once.
+void destroy_swapchain_resources(DeviceData& dev, SwapchainData& sc, bool device_going) {
+    const DeviceDispatch& d = dev.disp;
+    const VkDevice device = dev.device;
+    for (size_t i = 0; i < sc.fences.size() && i < sc.submitted.size(); ++i) {
+        if (sc.submitted[i] && sc.fences[i] != VK_NULL_HANDLE && d.WaitForFences) {
+            d.WaitForFences(device, 1, &sc.fences[i], VK_TRUE, UINT64_MAX);
+        }
     }
     for (VkFence fence : sc.fences) {
         if (fence != VK_NULL_HANDLE) d.DestroyFence(device, fence, nullptr);
     }
     for (VkSemaphore semaphore : sc.semaphores) {
-        if (semaphore != VK_NULL_HANDLE) d.DestroySemaphore(device, semaphore, nullptr);
+        if (semaphore == VK_NULL_HANDLE) {
+            continue;
+        }
+        if (sc.signalled_any && !device_going) {
+            dev.retired_semaphores.push_back(semaphore);
+        } else {
+            d.DestroySemaphore(device, semaphore, nullptr);
+        }
+    }
+    if (dev.retired_semaphores.size() > kMaxRetiredSemaphores) {
+        const size_t excess = dev.retired_semaphores.size() - kMaxRetiredSemaphores;
+        for (size_t i = 0; i < excess; ++i) {
+            d.DestroySemaphore(device, dev.retired_semaphores[i], nullptr);
+        }
+        dev.retired_semaphores.erase(dev.retired_semaphores.begin(),
+                                     dev.retired_semaphores.begin() +
+                                         static_cast<std::ptrdiff_t>(excess));
     }
     for (VkFramebuffer fb : sc.framebuffers) {
         if (fb != VK_NULL_HANDLE) d.DestroyFramebuffer(device, fb, nullptr);
@@ -660,6 +801,8 @@ void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, Swapc
     sc.pool = VK_NULL_HANDLE;
     sc.render_pass = VK_NULL_HANDLE;
     sc.usable = false;
+    sc.submitted.clear();
+    sc.signalled_any = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL vocem_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
@@ -675,7 +818,7 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroySwapchainKHR(VkDevice device, VkSwapchai
 
         auto it = g_swapchains.find(swapchain);
         if (it != g_swapchains.end()) {
-            destroy_swapchain_resources(dev->disp, device, it->second);
+            destroy_swapchain_resources(*dev, it->second, false);
             g_swapchains.erase(it);
         }
     }
@@ -788,35 +931,11 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
             dev.set_device_loader_data(dev.device, sc.command_buffers[i]);
         }
 
-        VkImageViewCreateInfo view_info{};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = sc.images[i];
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format = sc.format;
-        view_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        view_info.subresourceRange.levelCount = 1;
-        view_info.subresourceRange.layerCount = 1;
-        if (d.CreateImageView(dev.device, &view_info, nullptr, &sc.views[i]) != VK_SUCCESS) {
-            VOCEM_LOG("image view creation failed");
-            return false;
-        }
-
-        VkFramebufferCreateInfo fb_info{};
-        fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fb_info.renderPass = sc.render_pass;
-        fb_info.attachmentCount = 1;
-        fb_info.pAttachments = &sc.views[i];
-        fb_info.width = sc.extent.width;
-        fb_info.height = sc.extent.height;
-        fb_info.layers = 1;
-        if (d.CreateFramebuffer(dev.device, &fb_info, nullptr, &sc.framebuffers[i]) != VK_SUCCESS) {
-            VOCEM_LOG("framebuffer creation failed");
-            return false;
-        }
+        // No view and no framebuffer here: those are made at each image's
+        // first draw (image_target below), because an image of a swapchain
+        // created with VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT
+        // has no memory until it is first acquired, and at this first present
+        // only the image being presented ever was.
 
         VkSemaphoreCreateInfo sem_info{};
         sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -864,6 +983,66 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
     sc.usable = true;
     VOCEM_LOG("swapchain resources ready: %u images, queue family %u", image_count, queue_family);
     return true;
+}
+
+// The view and the framebuffer of one image, made the first time the overlay
+// draws into it. They were made for every image of the swapchain at its first
+// present, and with VK_EXT_swapchain_maintenance1's deferred allocation an
+// image has no memory until the application first acquires it: every other
+// image's view was made of nothing, and every overlay submit after it failed --
+// measured, "overlay submit failed" on each of 18 frames, zero foreign pixels,
+// the validation layer below reporting the device lost. An image being
+// presented has been acquired, so its first draw is the first moment the view
+// is certainly legal; one view and one framebuffer, once per image, inside the
+// present -- what the first present always paid, spread over the first frames.
+// For every swapchain, deferred or not: one path, and every scene exercises
+// it. A failure passes this swapchain through for good, said once, rather
+// than asking the driver again every frame.
+// Caller must hold g_lock.
+VkFramebuffer image_target(DeviceData& dev, SwapchainData& sc, uint32_t image_index) {
+    if (sc.framebuffers[image_index] != VK_NULL_HANDLE) {
+        return sc.framebuffers[image_index];
+    }
+    const DeviceDispatch& d = dev.disp;
+    if (sc.views[image_index] == VK_NULL_HANDLE) {
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = sc.images[image_index];
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = sc.format;
+        view_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.layerCount = 1;
+        if (d.CreateImageView(dev.device, &view_info, nullptr, &sc.views[image_index]) !=
+            VK_SUCCESS) {
+            sc.views[image_index] = VK_NULL_HANDLE;
+            VOCEM_LOG("not drawing into this swapchain: image view creation failed for image %u",
+                      image_index);
+            sc.usable = false;
+            return VK_NULL_HANDLE;
+        }
+    }
+    VkFramebufferCreateInfo fb_info{};
+    fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fb_info.renderPass = sc.render_pass;
+    fb_info.attachmentCount = 1;
+    fb_info.pAttachments = &sc.views[image_index];
+    fb_info.width = sc.extent.width;
+    fb_info.height = sc.extent.height;
+    fb_info.layers = 1;
+    if (d.CreateFramebuffer(dev.device, &fb_info, nullptr, &sc.framebuffers[image_index]) !=
+        VK_SUCCESS) {
+        sc.framebuffers[image_index] = VK_NULL_HANDLE;
+        VOCEM_LOG("not drawing into this swapchain: framebuffer creation failed for image %u",
+                  image_index);
+        sc.usable = false;
+        return VK_NULL_HANDLE;
+    }
+    return sc.framebuffers[image_index];
 }
 
 // Record and submit the overlay for one image. Returns the semaphore the
@@ -928,13 +1107,12 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     // scene as one "rebuilt" before anybody arrived (entry 192).
     sizing = vocem::sizing_height(snapshot->display_height, sc.extent.height);
 
-    // Initialisation happens after the present returns, never here: ImGui's
-    // Vulkan backend uploads its font atlas with vkQueueWaitIdle, and blocking on
-    // the queue from inside a queue operation is a stall at best. That upload
-    // is made in prepare() explicitly, because the backend's NewFrame -- which
-    // draw() below calls inside this present when the texture cache did not
-    // come up and the stock upload is the one left -- would otherwise make it
-    // here the first time (overlay_renderer.cpp says how that was found).
+    // Initialisation happens after the present returns, never here: the font
+    // atlas's upload waits on the queue, and blocking on the queue from inside
+    // a queue operation is a stall at best. That upload is made in prepare(),
+    // by the texture cache, and the backend's own NewFrame -- which would make
+    // ImGui's stock upload here the first time -- is never called
+    // (overlay_renderer.cpp says how that was found).
     if (!vocem::renderer().ready()) {
         return VK_NULL_HANDLE;
     }
@@ -974,6 +1152,13 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
         return VK_NULL_HANDLE;
     }
 
+    // Before the fence is touched: a target that cannot be made leaves this
+    // image's synchronisation exactly as it found it.
+    const VkFramebuffer framebuffer = image_target(dev, sc, image_index);
+    if (framebuffer == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
+    }
+
     VkCommandBuffer cmd = sc.command_buffers[image_index];
     VkFence fence = sc.fences[image_index];
 
@@ -998,11 +1183,12 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     VkRenderPassBeginInfo rp_begin{};
     rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rp_begin.renderPass = sc.render_pass;
-    rp_begin.framebuffer = sc.framebuffers[image_index];
+    rp_begin.framebuffer = framebuffer;
     rp_begin.renderArea.extent = sc.extent;
     d.CmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
-    vocem::renderer().draw(cmd, *snapshot, sc.extent.width, sc.extent.height, pipeline);
+    vocem::renderer().draw(cmd, *snapshot, sc.extent.width, sc.extent.height, pipeline,
+                           dev.device, queue);
 
     d.CmdEndRenderPass(cmd);
     if (d.EndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -1038,6 +1224,7 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
         return VK_NULL_HANDLE;
     }
     sc.submitted[image_index] = 1;
+    sc.signalled_any = true;
     return sc.semaphores[image_index];
 }
 
@@ -1135,6 +1322,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // Set under the lock when the verdict or the master switch turned off on
     // this present; acted on after it returns, where blocking is allowed.
     bool switched_off = false;
+    // Set when this present is not the renderer's and its owner has been
+    // silent for kHandOverSeconds: the backend is moved after the present.
+    bool hand_over = false;
+    VkDevice present_device = VK_NULL_HANDLE;
     vocem::RendererTarget pending_target;
 
     {
@@ -1144,6 +1335,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
             return VK_ERROR_INITIALIZATION_FAILED;
         }
         next = dev->disp.QueuePresentKHR;
+        present_device = dev->device;
 
         // A process the overlay could draw in, which is what the window's list is
         // a list of -- recorded below whether or not it is allowed to, since an
@@ -1183,7 +1375,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                     switched_off = !want;
                 }
                 g_drawing = want ? 1 : 0;
-                if (want) {
+                // Not the renderer's device, or not its queue: left alone,
+                // said once, and nothing of ours is built for it -- until the
+                // owner has been silent long enough to move to this one.
+                const Presenter presenter = want ? whose_present(dev->device, queue)
+                                                 : Presenter::Owner;
+                hand_over = presenter == Presenter::Abandoned;
+                if (want && presenter == Presenter::Owner) {
                     SwapchainData& sc = it->second;
 
                     auto family_it = dev->queue_families.find(queue);
@@ -1213,7 +1411,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                     if (!sc.attempted && family != UINT32_MAX) {
                         if (!build_swapchain_resources(*dev, sc, pPresentInfo->pSwapchains[0],
                                                        family)) {
-                            destroy_swapchain_resources(dev->disp, dev->device, sc);
+                            destroy_swapchain_resources(*dev, sc, false);
                         }
                     }
 
@@ -1289,8 +1487,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
             it->second.colour_note_pending = false;
             vocem::journal_note("colour pipeline ready");
         }
-        // Read under the lock the poll itself runs under, acted on below with
-        // the lock let go: shutdown() takes the renderer's own.
+        // Read under the lock the poll itself runs under, and acted on below
+        // in a scope of its own: the release waits for the overlay's fences
+        // and takes the renderer's lock after this one, never the reverse.
         daemon_left = g_state.daemon_left();
     }
 
@@ -1311,8 +1510,25 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         VOCEM_LOG("%s: releasing the backend and the font atlas",
                   daemon_left ? "the daemon stopped" : "switched off");
         vocem::journal_note(daemon_left ? "daemon stopped: released" : "switched off: released");
-        vocem::renderer().shutdown();
+        {
+            std::lock_guard<std::mutex> guard(g_lock);
+            release_renderer_locked();
+        }
         vocem::fonts_release();
+    } else if (hand_over) {
+        // The owner has been silent for kHandOverSeconds: the backend is let
+        // go -- its device's own objects, waited for by fence and destroyed
+        // there -- and the next present here finds it not ready and builds it
+        // on this device and queue. The atlas stays (entry 144): what is built
+        // again is the context, the backend and the one upload. Asked again
+        // under the lock, because another thread may have moved it already.
+        std::lock_guard<std::mutex> guard(g_lock);
+        if (vocem::renderer().ready() && !vocem::renderer().owns(present_device, queue)) {
+            VOCEM_LOG("the renderer's device has not presented for %.0f s: moving the overlay "
+                      "to device %p", kHandOverSeconds, static_cast<void*>(present_device));
+            vocem::journal_note("renderer's device silent: moving the overlay");
+            release_renderer_locked();
+        }
     }
 
     // Safe here: the present has returned, so the queue is ours to block on.
@@ -1336,12 +1552,20 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         // chain, and the loader can route those back into this layer. Its
         // answer is remembered inside: a failure is said once and not retried
         // on every present.
-        vocem::renderer().prepare(pending_target);
+        if (vocem::renderer().prepare(pending_target)) {
+            // The owner's clock starts when it becomes the owner, not at its
+            // next present: a second device presenting in between must not
+            // find it silent since the process began.
+            std::lock_guard<std::mutex> guard(g_lock);
+            g_owner_seen = vocem::monotonic_seconds();
+        }
     } else if (vocem::renderer().ready()) {
         // Uploads and rebuilds submit and free what their fences say is done;
         // a rebuild waits the queue idle before it replaces the image, which is
-        // why they belong here and not in the present.
-        vocem::renderer().process_uploads();
+        // why they belong here and not in the present. Only on the owner's
+        // queue, which process_uploads() asks itself: this present's external
+        // synchronisation covers its own queue and no other.
+        vocem::renderer().process_uploads(present_device, queue);
     }
 
     return result;

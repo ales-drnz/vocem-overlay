@@ -99,6 +99,19 @@ float ui_scale();
 // band below holds for its own atlas alone.
 ImFontAtlas* fonts_atlas();
 
+// Whether fonts_atlas() has ever made the atlas in this process: true from the
+// moment the object exists, which is before any context is created with it and
+// before any build of it starts. Asking does not make it. Atomic, because the
+// Vulkan layer's last-instance teardown asks from whichever thread destroys the
+// instance while the first build may be running on the atlas worker.
+//
+// It replaced fonts_build_count() > 0 as that teardown's question: the count
+// moves when Build() RETURNS, and was read without any ordering, so an instance
+// destroyed inside the first build's ~113 ms skipped the teardown and left the
+// atlas and the ImGui context behind a library the loader then unloaded
+// (vocem_layer.cpp's vocem_DestroyInstance has the measurement).
+bool fonts_atlas_made();
+
 // Hand the pixels back: the atlas above is cleared and the cached pointers
 // forgotten, so the next ensure_fonts() builds from nothing.
 //
@@ -193,14 +206,28 @@ const char* fonts_font_status();
 // Tells the atlas which colour emoji the frame's text needs. Walks the string,
 // remembers the codepoints the bank carries (vocem/emoji_bank.h), and the next
 // ensure_fonts() folds any new ones into the atlas as coloured glyphs.
-// Allocation-free, and free of syscalls for a codepoint it has seen before -- so
-// the steady state a game spends its life in costs a UTF-8 decode and nothing
-// else. A codepoint it has NOT seen is asked of the bank, which is an open and a
-// binary search of preads: bounded by the session cap on distinct emoji, but not
-// free, and not what this comment claimed before it was measured. Without a bank
-// on disk it remembers nothing, and the monochrome emoji keep drawing exactly as
-// they always have.
+// Allocation-free, and free of syscalls once the bank has been asked for --
+// which the first ensure_fonts() does, and on the Vulkan path that is the
+// atlas worker's first build, before anything is drawn: the steady state a
+// game spends its life in costs a UTF-8 decode and nothing else, and a
+// codepoint it has NOT seen is queued for fonts_look_up_noted() below, which
+// asks the bank -- a binary search of preads -- after the present. It asked
+// the bank itself, here, inside the present, until the 0.1.10 review measured
+// it. The one open left here is the OpenGL path's first frame, which notes
+// before its first build (inside the swap call, where the build is too).
+// Without a bank on disk it remembers nothing, and the monochrome emoji keep
+// drawing exactly as they always have.
 void fonts_note_emoji(const char* utf8_text);
+
+// The lookups the noting queued: a codepoint the text showed for the first
+// time is asked of the bank HERE, and so is the bank's own open and its
+// sequence table's read, the first time this runs. The noting above and
+// fonts_prepare_text() read no file once the bank has been asked for -- they
+// run inside the present on the Vulkan path -- and a new codepoint draws from
+// the monochrome font until this has run and ensure_fonts() folded it.
+// ensure_fonts() calls this first, so a caller that folds need not; it is
+// public for a caller that notes without folding.
+void fonts_look_up_noted();
 
 // Why the overlay is drawing no colour emoji, or nullptr while there is nothing
 // to say -- either they are working or no text has needed one yet. Both injected
@@ -211,16 +238,39 @@ void fonts_note_emoji(const char* utf8_text);
 // past which a new emoji stays monochrome for the rest of the session.
 const char* fonts_emoji_status();
 
-// The noting, and before it the rewriting: an emoji SEQUENCE the bank's table
-// knows -- 🍋‍🟩, a flag, a keycap, a family -- is collapsed in place into the
-// bank key that draws it as one coloured glyph (vocem/emoji_bank.h says what a
-// key is and why the table travels with the bank), and the result is noted.
-// Without a table, or for a key the bank refuses, the text is left exactly as
-// it was and the sequence draws as its coloured parts, which is what it did
-// until 0.1.9. `capacity` is the field's size; the result is never longer
-// than the text. No syscall beyond the noting's own, which is once per
-// codepoint or key for the life of the process (tests/fonts_frame_quiet.cpp).
+// The noting, and with it the rewriting: an emoji SEQUENCE the bank's table
+// knows -- 🍋‍🟩, a flag, a keycap, a family -- is noted as its key, and
+// collapsed in place into that key -- the bank glyph that draws it as one
+// coloured picture (vocem/emoji_bank.h says what a key is and why the table
+// travels with the bank) -- once the atlas carries the key's glyph, and not
+// before: the frame that first shows a sequence draws it as its parts, and the
+// first frame after the next ensure_fonts() folds the key draws it whole. A
+// key rewritten before its fold drew as '?' on the Vulkan path, which notes
+// and draws before it folds (tests/fonts_key_drawable.cpp). Without a table,
+// or for a key the bank refuses, the text is left exactly as it was and the
+// sequence draws as its coloured parts, which is what it did until 0.1.9.
+// `capacity` is the field's size; the result is never longer than the text.
+// No syscall once the bank has been asked for: the noting queues, and
+// fonts_look_up_noted() reads (tests/fonts_frame_quiet.cpp).
 void fonts_prepare_text(char* text, size_t capacity);
+
+// Where a sequence key lives in the TEXT and the ATLAS: the Basic Multilingual
+// Plane's private use area, numbered from its start in the order of the keys
+// on disk (a key U+F0000 + n is drawn as U+E000 + n). The files keep their own
+// numbering -- the bank and its table are a pair written by one run of
+// scripts/make-emoji-bank.py (entry 142) -- and only this module translates.
+// On disk the keys start at U+F0000, past everything else the atlas holds
+// (U+1FAFF), and ImGui's glyph index is sized by the highest codepoint a font
+// holds: the first sequence folded grew it to ~984,000 entries a weight,
+// 10 MB in every drawing process (tests/fonts_key_index.cpp). 6400 keys fit
+// here; the table has 2546 today, and a key past the room draws as its parts,
+// said by fonts_emoji_status(). A codepoint of this area arriving in a name is
+// replaced by U+FFFD before anything else -- none of the atlas's fonts has a
+// glyph there, so it drew as ImGui's '?' fallback before and still does --
+// unless it is the number of a key already folded, which a text prepared twice
+// has to keep (fonts.cpp says why, and what that leaves).
+constexpr uint32_t kSequenceKeyFirst = 0xE000;
+constexpr uint32_t kSequenceKeyLast = 0xF8FF;
 
 // The same, over everything a snapshot can put on screen: the channel name,
 // every participant's name, the notification's title and body. One spelling,
