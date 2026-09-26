@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
@@ -209,6 +210,8 @@ uint32_t g_folded_count = 0;
 // refused typeface forces: that IS a rasterisation, and a count that hid it
 // would be measuring what it wished for.
 uint32_t g_build_count = 0;
+// Set once fonts_atlas() has made the atlas object (fonts_atlas_made()).
+std::atomic<bool> g_atlas_made{false};
 EmojiBank g_emoji_bank;
 // Set when a codepoint arrived with the table already full: past the cap a new
 // colour emoji stays monochrome for the session, which is a decision worth
@@ -631,9 +634,19 @@ ImFontAtlas* fonts_atlas() {
     // here quietly took it back for the one object that matters most. A pointer
     // still costs a guard variable and nothing else: no destructor is registered
     // because there is none to run.
-    static ImFontAtlas* atlas = new ImFontAtlas;
+    //
+    // And said, before it is handed to anybody: fonts_atlas_made() is how a
+    // teardown on another thread learns that there is something to release
+    // without making it.
+    static ImFontAtlas* atlas = [] {
+        ImFontAtlas* made = new ImFontAtlas;
+        g_atlas_made.store(true, std::memory_order_release);
+        return made;
+    }();
     return atlas;
 }
+
+bool fonts_atlas_made() { return g_atlas_made.load(std::memory_order_acquire); }
 
 void fonts_release() {
     ImFontAtlas* atlas = fonts_atlas();

@@ -99,6 +99,19 @@ float ui_scale();
 // band below holds for its own atlas alone.
 ImFontAtlas* fonts_atlas();
 
+// Whether fonts_atlas() has ever made the atlas in this process: true from the
+// moment the object exists, which is before any context is created with it and
+// before any build of it starts. Asking does not make it. Atomic, because the
+// Vulkan layer's last-instance teardown asks from whichever thread destroys the
+// instance while the first build may be running on the atlas worker.
+//
+// It replaced fonts_build_count() > 0 as that teardown's question: the count
+// moves when Build() RETURNS, and was read without any ordering, so an instance
+// destroyed inside the first build's ~113 ms skipped the teardown and left the
+// atlas and the ImGui context behind a library the loader then unloaded
+// (vocem_layer.cpp's vocem_DestroyInstance has the measurement).
+bool fonts_atlas_made();
+
 // Hand the pixels back: the atlas above is cleared and the cached pointers
 // forgotten, so the next ensure_fonts() builds from nothing.
 //

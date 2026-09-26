@@ -427,10 +427,16 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
     // so this is the moment to give it back; shutdown() also joins a build
     // still running and destroys a context whose device died before its
     // backend was ready (entry 211).
-    // Only where an atlas was ever built: a process that never drew -- most of
+    // Only where the atlas was ever made: a process that never drew -- most of
     // the Vulkan processes of a session -- has nothing here, and asking would
-    // construct the renderer and the atlas object just to clear them.
-    if (last && vocem::fonts_build_count() > 0) {
+    // construct the renderer and the atlas object just to clear them. Made,
+    // not built: this asked fonts_build_count() > 0, which moves when the
+    // first build RETURNS, so an instance destroyed inside that build's ~113 ms
+    // skipped all of this and left the context and the whole atlas mapped --
+    // 65,541 kB after the last instance on the early-exit scene. The atlas is
+    // made before the renderer creates its context and starts the build, and
+    // shutdown() joins a build still running.
+    if (last && vocem::fonts_atlas_made()) {
         {
             std::lock_guard<std::mutex> guard(g_lock);
             release_renderer_locked();

@@ -1699,6 +1699,18 @@ int main() {
                "time(s)\n", started, ready);
         check(started == 1, "the atlas worker was running when the game went away");
         check(ready == 0, "and the renderer was never finished, so the teardown met it mid-build");
+        // And what it left behind: entry 211's measurement, in the one window
+        // entry 211 did not cover. The last vkDestroyInstance handed the atlas
+        // back only where fonts_build_count() was above zero, and the count
+        // moves when Build() RETURNS -- so an instance destroyed inside the
+        // first build's ~113 ms skipped the teardown, the worker finished the
+        // build for nobody, and the atlas and the ImGui context stayed mapped
+        // after the loader had unloaded the only library that knew of them.
+        const size_t mapped_kb = mallinfo2().hblkhd / 1024;
+        printf("     heap blocks still mapped after the last instance: %zu kB\n", mapped_kb);
+        check(mapped_kb < 1024,
+              "an instance destroyed while the first atlas was being rasterised hands it back "
+              "all the same");
         char cleanup[800];
         snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
         if (system(cleanup) != 0) {
