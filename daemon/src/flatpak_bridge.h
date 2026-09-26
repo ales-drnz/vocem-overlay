@@ -110,7 +110,11 @@ private:
         // The seqlock's counter, kept here and not read back out of the file.
         // What is in the file is whatever the sandbox last left there.
         uint32_t sequence = 0;
+        // The config.ini version (its mtime) that has arrived in the sandbox,
+        // and the one whose failure to arrive has been said: two memories,
+        // so that a failed copy is retried and not only said once.
         long long config_mtime = 0;
+        long long config_failure_said = 0;
         // The avatars directory's refusal, said once per sandbox rather than
         // once per tick (mirror_avatars).
         bool avatars_refused = false;

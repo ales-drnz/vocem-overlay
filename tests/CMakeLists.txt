@@ -1326,3 +1326,8 @@ endif()
 vocem_test(flatpak_records
     SOURCES flatpak_records.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# A settings copy into a sandbox that failed is tried again on the next sweep,
+# rather than only after the host's config.ini next changes.
+vocem_test(flatpak_config_retry
+    SOURCES flatpak_config_retry.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)

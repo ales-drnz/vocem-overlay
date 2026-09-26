@@ -891,6 +891,11 @@ void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
     }
 }
 
+// config.ini when it moved, and again on every sweep until a copy of that
+// version has arrived. What was copied and what was said are two memories:
+// they used to be one, set on failure too so that the failure was said once
+// per change -- which also meant it was never tried again until the user next
+// changed a setting, and the overlay in that game drew with whatever it had.
 void FlatpakBridge::mirror_config(Mirror& mirror) {
     const long long mtime = Config::mtime();
     if (mtime == mirror.config_mtime) {
@@ -899,11 +904,12 @@ void FlatpakBridge::mirror_config(Mirror& mirror) {
     const std::string source = Config::path();
     if (copy_into(mirror.directory, source.c_str(), kBridgeConfigName, Source::Settings)) {
         mirror.config_mtime = mtime;
+        mirror.config_failure_said = 0;
         DBG("copied %s into the Flatpak sandbox of %s", kBridgeConfigName, mirror.id.c_str());
-    } else if (mtime != 0) {
-        LOG("could not copy %s into the Flatpak sandbox of %s (%s)", kBridgeConfigName,
-            mirror.id.c_str(), std::strerror(errno));
-        mirror.config_mtime = mtime;  // say it once per change, not once per tick
+    } else if (mtime != 0 && mirror.config_failure_said != mtime) {
+        LOG("could not copy %s into the Flatpak sandbox of %s (%s); trying again every sweep",
+            kBridgeConfigName, mirror.id.c_str(), std::strerror(errno));
+        mirror.config_failure_said = mtime;  // said once per version, tried every sweep
     }
 }
 
