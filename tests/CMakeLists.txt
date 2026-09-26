@@ -1315,3 +1315,9 @@ vocem_m32_twin(segment_trust)
 # widths: the logger is compiled into both injected libraries.
 vocem_test(overlay_log_lines LINK vocem_common pthread)
 vocem_m32_twin(overlay_log_lines)
+
+# A journal that cannot be created is not asked for on every frame: 100
+# frames of OverlaySession::journal_begin_once() against a read-only journal
+# directory, opendir() counted by interposition -- at most one attempt's two
+# walks, and the refusal said once.
+vocem_test(journal_retry_cadence IMGUI LINK vocem_common ${CMAKE_DL_LIBS} SKIP)

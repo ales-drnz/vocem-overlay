@@ -234,10 +234,13 @@ inline void journal_prune(const std::string& dir) {
 // Opens this process's journal. Called once, at the first frame the overlay
 // actually draws (a process it declines needs no journal) or at the daemon's
 // startup. `component` is "vulkan", "opengl" or "daemon"; `process` is the
-// process's own name.
-inline void journal_begin(const char* component, const char* process) {
+// process's own name. True when the journal is open, false (errno from the
+// failed open) when it could not be created -- which costs the directory
+// walks below every time, so a caller asking per frame asks on a cadence
+// (OverlaySession::journal_begin_once).
+inline bool journal_begin(const char* component, const char* process) {
     if (detail::journal_file()) {
-        return;
+        return true;
     }
     const std::string dir = journal_dir();
     make_directories(dir);
@@ -271,12 +274,16 @@ inline void journal_begin(const char* component, const char* process) {
     }
     if (descriptor < 0) {
         detail::journal_path_buffer()[0] = '\0';
-        return;
+        return false;
     }
     FILE* file = ::fdopen(descriptor, "w");
     if (!file) {
+        const int error = errno;
         ::close(descriptor);
-        return;
+        ::unlink(detail::journal_path_buffer());
+        detail::journal_path_buffer()[0] = '\0';
+        errno = error;
+        return false;
     }
     ::setvbuf(file, nullptr, _IOLBF, 0);
     const time_t now = ::time(nullptr);
@@ -288,6 +295,7 @@ inline void journal_begin(const char* component, const char* process) {
                  static_cast<int>(::getpid()), component, stamp);
     detail::journal_file() = file;
     detail::journal_owner_pid() = static_cast<int>(::getpid());
+    return true;
 }
 
 // One line in the journal, timestamped. Only for events that happen a handful

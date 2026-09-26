@@ -10,7 +10,10 @@
 
 #include "vocem/overlay_session.h"
 
+#include <errno.h>
+
 #include <cstdio>
+#include <cstring>
 
 #include "vocem/apps.h"
 #include "vocem/clock.h"
@@ -20,6 +23,23 @@
 #include "vocem/overlay_log.h"
 
 namespace vocem {
+
+namespace {
+
+// When a journal that could not be created may be asked for again. The GL hook
+// calls journal_begin_once() on every drawn frame until the journal opens, and
+// each attempt walks the journal directory twice before its open -- measured
+// at 166 us and two opendir() per frame, forever, with a cache the game could
+// not write (the review's journal_retry probe; tests/journal_retry_cadence.cpp
+// counted 200 opendir in 100 frames). A cache that refuses once is almost
+// always refusing for good; one look every half minute still finds one that
+// was only late. Process-wide, as the journal is: plain globals, constant
+// initialisation, nothing the C++ runtime has to guard.
+constexpr double kJournalRetrySeconds = 30.0;
+double g_journal_retry_at = 0.0;
+bool g_journal_refusal_said = false;
+
+}  // namespace
 
 void OverlaySession::enter_flatpak_bridge_once() {
     if (bridge_asked_) {
@@ -91,9 +111,23 @@ void OverlaySession::journal_begin_once() {
     if (journal_open_) {
         return;
     }
-    journal_begin(api_, process_name().c_str());
-    if (!detail::journal_file()) {
-        return;  // could not be opened this time; the next drawn frame asks again
+    const double now = monotonic_seconds();
+    if (now < g_journal_retry_at) {
+        return;
+    }
+    if (!journal_begin(api_, process_name().c_str())) {
+        // Could not be created: asked again on the slow cadence above, and
+        // said once -- a Debug section with no journal for a game that is
+        // plainly drawing needs its reason somewhere.
+        const int error = errno;
+        g_journal_retry_at = now + kJournalRetrySeconds;
+        if (!g_journal_refusal_said) {
+            g_journal_refusal_said = true;
+            VOCEM_OVERLAY_LOG(tag_, "no journal for this process: %s cannot take one (%s); "
+                              "asking again every %.0f s", journal_dir().c_str(),
+                              std::strerror(error), kJournalRetrySeconds);
+        }
+        return;
     }
     journal_open_ = true;
     char note[300];
