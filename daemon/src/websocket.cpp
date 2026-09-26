@@ -339,13 +339,19 @@ bool WebSocket::connect(const char* host, uint16_t port, const std::string& path
         close();
         return false;
     }
-    // Sec-WebSocket-Accept is deliberately not checked. It proves that the
-    // peer read our key, which against a loopback peer whose owner the daemon
-    // has already identified by uid (peer_identity.h) establishes nothing
-    // more; checking it would cost a SHA-1 in a daemon that has no other use
-    // for one. The nonce is still random because the RFC requires a key and
-    // some servers refuse a fixed one. Written down so the omission reads as
-    // a decision and not an oversight.
+    // Sec-WebSocket-Accept is deliberately not checked. It proves only that
+    // the peer read the key this request carried, which any listener on the
+    // port can do, so it says nothing about who the peer is. That is asked
+    // right after connect() returns and before anything but this request has
+    // been sent -- the owner's uid and, for a sandboxed process, its Flatpak
+    // application id (peer_owner(), socket_process() in peer_identity.h,
+    // main.cpp) -- and the token is withheld on the answer. This comment said
+    // the owner had "already" been identified by uid when the check came after
+    // this handshake, as it still does; what this request gives away is the
+    // public client_id and the origin. Checking the accept would cost a SHA-1
+    // in a daemon that has no other use for one. The nonce is still random
+    // because the RFC requires a key and some servers refuse a fixed one.
+    // Written down so the omission reads as a decision and not an oversight.
     return true;
 }
 

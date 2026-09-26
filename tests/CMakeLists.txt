@@ -1467,3 +1467,9 @@ vocem_test(flatpak_config_retry
 vocem_test(flatpak_emoji_once
     SOURCES flatpak_emoji_once.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# What the peer names reaches the daemon's log as one line of text: a refused
+# RPC command is logged through sanitise_text, like every other string from it.
+if(TARGET vocemd)
+    vocem_test(daemon_log_lines INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
+endif()
