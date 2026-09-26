@@ -1391,3 +1391,12 @@ vocem_m32_twin(gl_handover
     ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
         "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
     BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# eglTerminate with another, unshared context current: the backend's names are
+# that context's own objects there, and the teardown deleted them
+# (gl_egl_terminate.cpp).
+vocem_test(gl_egl_terminate LINK EGL GLESv2 rt ENV ${VOCEM_GL_PROBE_ENV} SKIP)
+vocem_m32_twin(gl_egl_terminate
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")

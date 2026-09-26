@@ -1834,8 +1834,19 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
         return;
     }
     void* previous = current_context();
-    if (!context || previous == context) {
-        overlay().release(previous != nullptr);
+    if (!context) {
+        // eglTerminate: GL calls reach the backend's objects only when the
+        // context current here is the one it lives in. It used to be "any
+        // context at all", and in another, unshared context the backend's
+        // names are that context's own textures, buffers and programs --
+        // measured, one eglTerminate took 1 of 16, 2 of 16 and 1 of 4 of them
+        // (tests/gl_egl_terminate.cpp).
+        overlay().release(previous != nullptr &&
+                          previous == __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE));
+        return;
+    }
+    if (previous == context) {
+        overlay().release(true);
         return;
     }
     void* draw = current_surface(kEglDraw);
