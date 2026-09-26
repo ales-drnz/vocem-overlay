@@ -151,6 +151,11 @@ void dump_item(QQuickItem* item, const QString& path, QHash<QString, int>& seen,
                                  // which is what a live binding on
                                  // config.displays did (DisplayPicker.qml).
                                  "pickerIndex", "pickerCount",
+                                 // The same for the font box: the row it is
+                                 // on, and the row of the family the settings
+                                 // name. They parted when an assignment
+                                 // removed the binding between them.
+                                 "fontIndex", "fontSetIndex",
                                  // How many of a preview's own pictures actually
                                  // came up. An Image that failed to load keeps the
                                  // size its layout gave it and paints nothing, so

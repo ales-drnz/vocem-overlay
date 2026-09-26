@@ -1314,6 +1314,10 @@ if(TARGET vocem-config)
         ENV "VOCEM_WINDOW_DAEMON_SCENARIO=harness" SKIP)
     vocem_test_run(window_daemon_early_quit TARGET window_daemon_lifecycle
         ENV "VOCEM_WINDOW_DAEMON_SCENARIO=early-quit" SKIP)
+    # The font box follows the setting after its list has been opened: the
+    # assignment that grew the list removed the binding, and a family written
+    # outside the window changed the box's text and not its row or its face.
+    vocem_script_test(font_picker_follows ARGS "-DCONFIG_BINARY=$<TARGET_FILE:vocem-config>")
     vocem_test_run(window_daemon_slow_probe TARGET window_daemon_lifecycle
         ENV "VOCEM_WINDOW_DAEMON_SCENARIO=slow-probe" SKIP)
 endif()
