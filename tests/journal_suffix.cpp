@@ -16,7 +16,8 @@
 // Held here: the path mapping for the probe's cases, and a whole journal
 // life -- begin, stat, end -- under an XDG_CACHE_HOME named with both words,
 // after which the history is `<pid>.done` inside the journal directory and
-// nothing was written above it.
+// nothing was written above it. And a suffixed name, `<pid>-<n>.done`, is
+// listed under its pid, which is what journal_begin's comment says.
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -96,6 +97,19 @@ int main() {
     const std::vector<vocem::JournalEntry> history = vocem::journal_history();
     check(history.size() == 1 && history[0].pid == static_cast<int>(getpid()),
           "the history lists this session");
+
+    // A suffixed journal -- the name journal_begin takes when `<pid>.running`
+    // is there already -- is listed under its process's pid: what the comment
+    // in journal_begin says the scanner does, held rather than said.
+    if (std::FILE* suffixed = std::fopen((dir + "/4242-3.done").c_str(), "w")) {
+        std::fprintf(suffixed, "process = other\npid = 4242\napi = vulkan\nstarted = ?\n--\n");
+        std::fclose(suffixed);
+    }
+    bool listed = false;
+    for (const vocem::JournalEntry& entry : vocem::journal_history()) {
+        listed = listed || (entry.pid == 4242 && entry.process == "other");
+    }
+    check(listed, "a suffixed journal is listed under its process's pid");
 
     std::string cleanup = std::string("rm -rf '") + scratch + "'";
     if (std::system(cleanup.c_str()) != 0) {

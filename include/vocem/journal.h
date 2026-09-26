@@ -273,8 +273,10 @@ inline bool journal_begin(const char* component, const char* process) {
     // while its cache directory is the host's, so a container pid of 812
     // truncated and rewrote the header of the host's live journal 812 and left
     // the Debug section reporting a crash for a game that was still running
-    // (entry 135). Where the name is taken, the journal takes a suffixed one;
-    // the scanner keys on the header's pid and not on the name. O_NOFOLLOW
+    // (entry 135). Where the name is taken, the journal takes a suffixed one,
+    // `<pid>-<n>.running`; the scanner reads the pid from the name's leading
+    // digits (journal_entry_from's atoi), which the suffix leaves alone, and
+    // the header's `pid =` line carries the same number. O_NOFOLLOW
     // and O_CLOEXEC for the reasons the record writer has them (entry 98): a
     // link at that name must not steer the write, and the descriptor must not
     // ride into everything the game execs.
@@ -457,6 +459,7 @@ inline bool journal_is_regular_file(const std::string& path) {
 
 inline JournalEntry journal_entry_from(const std::string& dir, const char* name) {
     JournalEntry entry;
+    // The name's leading digits: `<pid>.running` and `<pid>-<n>.running` alike.
     entry.pid = ::atoi(name);
     entry.path = dir + "/" + name;
     struct stat info {};
