@@ -69,7 +69,7 @@ endif()
 # claim a validation layer's synchronisation checks exist for. It needs the
 # repository's emoji bank, or there is nothing to fold.
 set(scenarios "" "recreate" "second-device" "in-flight" "daemon-gone" "idle" "arrivals"
-    "deferred" "second-presenter" "no-texture-cache")
+    "deferred" "second-presenter" "second-queue" "no-texture-cache")
 set(measured 0)
 
 # The positive control on the ORDER, every run: the loader prints the device

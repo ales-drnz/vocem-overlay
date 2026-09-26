@@ -736,6 +736,7 @@ int main() {
     const bool early_exit = strcmp(scenario, "early-exit") == 0;
     const bool deferred = strcmp(scenario, "deferred") == 0;
     const bool second_presenter = strcmp(scenario, "second-presenter") == 0;
+    const bool second_queue = strcmp(scenario, "second-queue") == 0;
     const bool no_cache = strcmp(scenario, "no-texture-cache") == 0;
     const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
                             strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
@@ -1175,6 +1176,7 @@ int main() {
 
     VkPhysicalDevice gpu = VK_NULL_HANDLE;
     uint32_t queue_family = 0;
+    uint32_t family_queues = 0;
     for (uint32_t i = 0; i < gpu_count && gpu == VK_NULL_HANDLE; ++i) {
         uint32_t family_count = 0;
         vk.vkGetPhysicalDeviceQueueFamilyProperties(gpus[i], &family_count, nullptr);
@@ -1189,6 +1191,7 @@ int main() {
             if ((families[f].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentable) {
                 gpu = gpus[i];
                 queue_family = f;
+                family_queues = families[f].queueCount;
                 break;
             }
         }
@@ -1267,12 +1270,17 @@ int main() {
         skip("the surface offers only one 8-bit format, so there is nothing to recreate into");
     }
 
-    const float priority = 1.0f;
+    // The second-queue scene presents a second window from a second queue of
+    // the same family, on the same device.
+    if (second_queue && family_queues < 2) {
+        skip("the presenting family has one queue, so there is no second queue to present from");
+    }
+    const float priorities[2] = {1.0f, 1.0f};
     VkDeviceQueueCreateInfo queue_info{};
     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queue_info.queueFamilyIndex = queue_family;
-    queue_info.queueCount = 1;
-    queue_info.pQueuePriorities = &priority;
+    queue_info.queueCount = second_queue ? 2 : 1;
+    queue_info.pQueuePriorities = priorities;
     const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                        VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
     VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance1{};
@@ -1854,7 +1862,15 @@ int main() {
     // Filled by the second-presenter scene, checked with the others below.
     long second_idle_foreign = -1;
     long second_drawn_foreign = -1;
-    if (second_presenter) {
+    if (second_presenter || second_queue) {
+        // second-queue is the same scene on ONE device: the second window's
+        // swapchain belongs to the first device and is presented from the
+        // family's second queue. The texture cache uploads to, and orders the
+        // font image's copies on, the queue the renderer was built for, and a
+        // present holds no synchronisation for any other queue: a present on
+        // queue 1 passed the family check and was drawn with queue 0's
+        // uploads behind it.
+        //
         // A second device that PRESENTS, beside the first, which stays alive:
         // a launcher window, a game's second adapter, a tool. The overlay's
         // renderer -- its vertex ring, its pipeline, its font image and every
@@ -1884,8 +1900,10 @@ int main() {
         vk.vkGetPhysicalDeviceSurfaceSupportKHR(gpu, queue_family, surface_b, &presentable_b);
         VkSurfaceCapabilitiesKHR caps_b{};
         vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface_b, &caps_b);
-        VkDevice device_b = VK_NULL_HANDLE;
-        if (!presentable_b || vk.vkCreateDevice(gpu, &device_info, nullptr, &device_b) != VK_SUCCESS) {
+        VkDevice device_b = second_queue ? device : VK_NULL_HANDLE;
+        if (!presentable_b ||
+            (!second_queue &&
+             vk.vkCreateDevice(gpu, &device_info, nullptr, &device_b) != VK_SUCCESS)) {
             printf("FAIL the second presenting device could not be made\n");
             return 1;
         }
@@ -1900,7 +1918,7 @@ int main() {
         VOCEM_VK_DEVICE_FUNCS(VOCEM_LOAD_DEVICE_B)
 #undef VOCEM_LOAD_DEVICE_B
         VkQueue queue_b = VK_NULL_HANDLE;
-        table_b.vkGetDeviceQueue(device_b, queue_family, 0, &queue_b);
+        table_b.vkGetDeviceQueue(device_b, queue_family, second_queue ? 1 : 0, &queue_b);
         VkSwapchainCreateInfoKHR swap_b = swap_info;
         swap_b.surface = surface_b;
         VkSwapchainKHR swapchain_b = VK_NULL_HANDLE;
@@ -1950,7 +1968,7 @@ int main() {
         if (!read_back(swapchain_b, images_b, background_b, second_idle_foreign, true)) {
             return 1;
         }
-        printf("     while both present: the second device's frame has %ld foreign pixels\n",
+        printf("     while both present: the second window's frame has %ld foreign pixels\n",
                second_idle_foreign);
 
         // The first falls silent and stays alive; the second goes on alone.
@@ -1976,12 +1994,12 @@ int main() {
                 break;
             }
         }
-        printf("     the second device alone: built on it %.1f s after the first fell silent\n",
+        printf("     the second window alone: built for it %.1f s after the first fell silent\n",
                moved_after < 0 ? -1.0 : static_cast<double>(moved_after) / 1e9);
         if (!read_back(swapchain_b, images_b, background_b, second_drawn_foreign, true)) {
             return 1;
         }
-        printf("     the first device silent: the second device's frame has %ld foreign pixels\n",
+        printf("     the first silent: the second window's frame has %ld foreign pixels\n",
                second_drawn_foreign);
 
         // The second goes away, and the first presents again.
@@ -1995,13 +2013,19 @@ int main() {
         }
         vk.vkDestroyFence(device_b, fence_b, nullptr);
         vk.vkDestroyCommandPool(device_b, pool_b, nullptr);
-        vk.vkDestroyDevice(device_b, nullptr);
+        if (!second_queue) {
+            vk.vkDestroyDevice(device_b, nullptr);
+        }
         use(false);
         vk.vkDestroySurfaceKHR(instance, surface_b, nullptr);
         XDestroyWindow(display, window_b);
         printf("     the second device is gone; the first presents again\n");
+        // On one device nothing is destroyed with the second swapchain: the
+        // renderer stays on queue 1 until queue 0 has presented alone for the
+        // hand-over interval and moves it back. Eight seconds at most, a
+        // deadline and not a measurement.
         const long ready_again = lines_containing(layer_log, "backend ready");
-        const long long back_until = now_ns() + 3000000000LL;
+        const long long back_until = now_ns() + 8000000000LL;
         while (now_ns() < back_until) {
             if (!run_frames(swapchain, images, 5)) {
                 return 1;
@@ -2275,6 +2299,22 @@ int main() {
         check(foreign > 500, "the overlay drew into the RECREATED swapchain, in the other format");
     } else if (second_device) {
         check(foreign > 500, "the overlay still drew after a second device came and went");
+    } else if (second_queue) {
+        check(second_idle_foreign == 0,
+              "while both queues present, the second queue's frame is its own: the renderer "
+              "uploads on the first");
+        check(second_drawn_foreign > 500,
+              "once the first queue fell silent, the overlay moved to the second and drew there");
+        check(foreign > 500, "and moved back to the first once it presented alone again");
+        const long foreign_said = lines_containing(layer_log, "not drawing on device");
+        const long moved = lines_containing(layer_log, "moving the overlay");
+        const long ready = lines_containing(layer_log, "backend ready");
+        printf("     the layer said \"not drawing on device\" %ld time(s), \"moving the overlay\" "
+               "%ld time(s), \"backend ready\" %ld time(s)\n", foreign_said, moved, ready);
+        check(foreign_said == 2,
+              "each queue was passed through, said once, while the other owned the renderer");
+        check(moved == 2, "the overlay moved to the second queue and back");
+        check(ready == 3, "built on the first queue, on the second, and on the first again");
     } else if (second_presenter) {
         check(second_idle_foreign == 0,
               "while both devices present, the second's frame is its own: the renderer lives on "

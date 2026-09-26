@@ -1339,3 +1339,11 @@ vocem_m32_twin(fonts_key_index)
 # vk_present_validated, with the validation layer between overlay and witness.
 vocem_test_run(vk_present_no_texture_cache TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=no-texture-cache" SKIP)
+
+# The same on one device: a second window presented from the family's second
+# queue passed the family check and was drawn with the first queue's uploads
+# behind it. Passed through, moved after the hand-over interval, moved back.
+vocem_test_run(vk_present_second_queue TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-queue" SKIP TIMEOUT 120)
+vocem_m32_twin_run(vk_present_second_queue TARGET vk_present_second_queue
+    ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-queue")
