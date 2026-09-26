@@ -265,25 +265,36 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         // being uploaded inside it; tests/vk_witness_layer.cpp is what sees a
         // queue wait inside a present now.
         //
-        // By the texture cache when it comes up (entry 192): it owns the font
-        // texture so that a new colour emoji can be copied into it as a 32x32
-        // square instead of replacing 64 MB between two vkQueueWaitIdle. The
-        // cache is initialised here, before the atlas, for that reason; it
-        // used to come after, as the avatars' alone.
+        // By the texture cache (entry 192): it owns the font texture so that a
+        // new colour emoji can be copied into it as a 32x32 square instead of
+        // replacing 64 MB between two vkQueueWaitIdle. The cache is initialised
+        // here, before the atlas, for that reason; it used to come after, as
+        // the avatars' alone.
+        //
+        // And without it there is no backend. The fallback that stood here --
+        // plain circles for the faces, and the font texture left to ImGui's
+        // stock ImGui_ImplVulkan_CreateFontsTexture -- allocated that upload's
+        // command buffer through the chain and never registered it with the
+        // loader (rule 5, entry 42): measured with the witness refusing the
+        // cache's sampler and the validation layer below the overlay, "The
+        // VkDevice dispatch handle was not found and Validation will crash",
+        // and the process ended on SIGABRT. The cache fails only where the
+        // device refuses a sampler, a command pool or a memory type -- a
+        // device the overlay has no business drawing on -- so this declines,
+        // says so once, and remembers it until another device arrives.
         if (!avatar_adapter_) {
             static Adapter adapter(textures_);
             avatar_adapter_ = &adapter;
         }
-        own_font_texture_ = false;
         if (!textures_.init(target.device, target.physical_device, target.queue,
                             target.queue_family, resolve_function, &g_loader_context,
                             target.set_loader_data)) {
-            // Avatars are optional: without them the panel still shows names and
-            // speaking state, so this is not a reason to disable the overlay.
-            // The font texture then stays the backend's own, stock upload.
-            VOCEM_RLOG("avatar textures unavailable, falling back to plain circles");
-        } else {
-            own_font_texture_ = true;
+            VOCEM_RLOG("not drawing: the texture cache did not come up on this device, and "
+                       "without it the font texture would need ImGui's own upload, whose "
+                       "command buffer the loader never registers");
+            ImGui_ImplVulkan_Shutdown();
+            failed_ = true;
+            return false;
         }
         if (!upload_font_texture(true) || g_backend_failed) {
             VOCEM_RLOG("font atlas upload failed");
@@ -309,9 +320,6 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
 }
 
 bool OverlayRenderer::upload_font_texture(bool whole) {
-    if (!own_font_texture_) {
-        return ImGui_ImplVulkan_CreateFontsTexture();
-    }
     ImGuiIO& io = ImGui::GetIO();
     unsigned char* pixels = nullptr;
     int width = 0;
@@ -411,13 +419,11 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     // fold on this path: a sequence rewritten earlier drew as '?'.
     fonts_note_emoji_in(const_cast<Snapshot&>(snapshot));
 
-    // The backend's NewFrame does one thing: create its own font texture if it
-    // has none. With the cache owning that texture (entry 192) it has none by
-    // design, and calling it would build a second, stock one here -- inside the
-    // present, 64 MB and a queue wait, which is rule 10's whole subject.
-    if (!own_font_texture_) {
-        ImGui_ImplVulkan_NewFrame();
-    }
+    // The backend's NewFrame is never called: it does one thing, create its
+    // own font texture if it has none, and with the cache owning that texture
+    // (entry 192) it has none by design -- calling it would build a second,
+    // stock one here, inside the present, 64 MB and a queue wait, which is
+    // rule 10's whole subject.
     ImGui::NewFrame();
     AvatarProvider* avatars = textures_.ready() ? avatar_adapter_ : nullptr;
     // A frame can be for the toast alone -- a message arriving outside a voice
@@ -446,8 +452,8 @@ void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
     // Resolution changed, or the user moved the size slider: rasterise the atlas
     // again at the new size instead of stretching the old one. Safe here and only
     // here -- replacing the font texture waits on the queue first (the cache's
-    // upload_font_atlas, or the stock ImGui_ImplVulkan_CreateFontsTexture),
-    // which is legal after the present has returned and would deadlock inside it.
+    // upload_font_atlas), which is legal after the present has returned and
+    // would deadlock inside it.
     // A new colour emoji answers true too, FOLDED into space the build
     // reserved rather than rasterised (entry 191), and only its squares go up,
     // with no wait (entry 192). The line says which of the two it was, because

@@ -31,7 +31,8 @@
 # to stdout, which is where the probe's own lines go, so the whole output is
 # read.
 #
-# Expects PROBE, MANIFEST, LIBRARY; resolves the validation manifest when it
+# Expects PROBE, MANIFEST, LIBRARY, and WITNESS (the witness layer's manifest,
+# for the one scene that needs it); resolves the validation manifest when it
 # runs (a package installed after configure is found, one removed is a skip).
 
 foreach(candidate
@@ -68,7 +69,7 @@ endif()
 # claim a validation layer's synchronisation checks exist for. It needs the
 # repository's emoji bank, or there is nothing to fold.
 set(scenarios "" "recreate" "second-device" "in-flight" "daemon-gone" "idle" "arrivals"
-    "deferred" "second-presenter")
+    "deferred" "second-presenter" "no-texture-cache")
 set(measured 0)
 
 # The positive control on the ORDER, every run: the loader prints the device
@@ -112,6 +113,13 @@ foreach(scenario IN LISTS scenarios)
     else()
         set(label "${scenario}")
     endif()
+    # The one scene that needs the witness too: it is what refuses the texture
+    # cache's sampler. Under the validation layer, which sits between them.
+    if(scenario STREQUAL "no-texture-cache")
+        set(witness "VOCEM_VK_WITNESS_MANIFEST=set:${WITNESS}")
+    else()
+        set(witness "VOCEM_VK_WITNESS_MANIFEST=unset:")
+    endif()
     execute_process(
         COMMAND "${PROBE}"
         RESULT_VARIABLE status
@@ -123,6 +131,7 @@ foreach(scenario IN LISTS scenarios)
             "VOCEM_VK_LIBRARY=set:${LIBRARY}"
             "VOCEM_VK_EXTRA_MANIFESTS=set:${VALIDATION}"
             "VOCEM_VK_BELOW=set:VK_LAYER_KHRONOS_validation"
+            "${witness}"
             "VOCEM_VK_SCENARIO=set:${scenario}"
             "VOCEM_EMOJI_BANK=set:${EMOJI_BANK}"
             # The synchronisation checks too: the arrivals leg's copy into a

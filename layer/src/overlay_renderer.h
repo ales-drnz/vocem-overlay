@@ -214,11 +214,9 @@ private:
     // pointers into the live config, which reparses on its own tick.
     std::string wanted_font_path_;
     std::string wanted_font_path_strong_;
+    // Owns the font atlas's texture (entry 192) as well as the faces, and the
+    // backend is not built without it: prepare() says why.
     TextureCache textures_;
-    // Whether the font atlas's texture is the cache's own (entry 192) rather
-    // than imgui_impl_vulkan's. True whenever the cache came up; without it
-    // the stock upload and its lazy NewFrame stay, exactly as before.
-    bool own_font_texture_ = false;
     // A font texture that did not go up after a rebuild: the atlas on the CPU
     // no longer matches the image the GPU holds, so nothing is drawn with it
     // until it does, and the whole upload is tried again once a second

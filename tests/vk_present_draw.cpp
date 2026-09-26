@@ -129,6 +129,12 @@
 //     back when it is destroyed. Against the layer before this scene existed
 //     the second device's frames were drawn with the first device's buffers:
 //     VUID-vkCmdBindVertexBuffers-commonparent, then SIGSEGV.
+//   * VOCEM_VK_SCENARIO=no-texture-cache: the witness refuses the texture
+//     cache's sampler, so the cache does not come up. The renderer used to
+//     fall back to ImGui's stock font upload, whose command buffer is
+//     allocated through the chain and never registered with the loader (rule
+//     5, entry 42); it declines to draw now, says so once, and the frame is
+//     the game's own.
 //   * VOCEM_VK_SCENARIO=deferred: the plain scene on a swapchain created with
 //     VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT, where an image has
 //     no memory until it is first acquired. The layer made a view and a
@@ -695,6 +701,7 @@ int main() {
     const bool early_exit = strcmp(scenario, "early-exit") == 0;
     const bool deferred = strcmp(scenario, "deferred") == 0;
     const bool second_presenter = strcmp(scenario, "second-presenter") == 0;
+    const bool no_cache = strcmp(scenario, "no-texture-cache") == 0;
     const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
                             strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
     const char* witness_manifest = getenv("VOCEM_VK_WITNESS_MANIFEST");
@@ -885,6 +892,14 @@ int main() {
         if (below && below[0]) {
             printf("     below the overlay: %s\n", below);
         }
+    }
+    if (no_cache) {
+        if (!have_witness) {
+            skip("the no-texture-cache scene needs the witness layer, which refuses the sampler");
+        }
+        // The overlay's backend makes the process's first sampler (ImGui's
+        // own) and its texture cache the second; the witness refuses that one.
+        setenv("VOCEM_WITNESS_FAIL_SAMPLER", "2", 1);
     }
     if (have_witness) {
         snprintf(witness_report, sizeof(witness_report), "%s/witness.txt", root);
@@ -2224,6 +2239,17 @@ int main() {
         check(ready == 3,
               "built on the first device, on the second, and on the first again after the second "
               "was destroyed");
+    } else if (no_cache) {
+        const long refused = count_events(witness_report, "sampler-refused", nullptr, nullptr);
+        const long declined = lines_containing(layer_log, "texture cache did not come up");
+        const long ready = lines_containing(layer_log, "backend ready");
+        printf("     the witness refused %ld sampler(s); the layer said it declined %ld time(s) and "
+               "\"backend ready\" %ld time(s)\n", refused, declined, ready);
+        check(refused == 1, "the texture cache's sampler was refused (the scene's precondition)");
+        check(declined == 1, "the layer said once that it will not draw without its texture cache");
+        check(ready == 0 && foreign == 0,
+              "and drew nothing: no backend whose stock font upload allocates a command buffer "
+              "the loader never registered");
     } else if (deferred) {
         check(foreign > 500,
               "the overlay drew into a swapchain whose images get their memory at first acquire");
@@ -2307,7 +2333,7 @@ int main() {
         // nothing and submits nothing, so these two positive controls are the
         // assertion turned around: there they say the overlay really did stay
         // out, and anywhere else they say the witness really was underneath it.
-        if (idle) {
+        if (idle || no_cache) {
             // The pipeline the witness counts is the SWAPCHAIN's, built by
             // build_swapchain_resources whether or not there is anything on the
             // screen -- deliberately, so that the first frame with something on

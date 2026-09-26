@@ -1063,13 +1063,12 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     // scene as one "rebuilt" before anybody arrived (entry 192).
     sizing = vocem::sizing_height(snapshot->display_height, sc.extent.height);
 
-    // Initialisation happens after the present returns, never here: ImGui's
-    // Vulkan backend uploads its font atlas with vkQueueWaitIdle, and blocking on
-    // the queue from inside a queue operation is a stall at best. That upload
-    // is made in prepare() explicitly, because the backend's NewFrame -- which
-    // draw() below calls inside this present when the texture cache did not
-    // come up and the stock upload is the one left -- would otherwise make it
-    // here the first time (overlay_renderer.cpp says how that was found).
+    // Initialisation happens after the present returns, never here: the font
+    // atlas's upload waits on the queue, and blocking on the queue from inside
+    // a queue operation is a stall at best. That upload is made in prepare(),
+    // by the texture cache, and the backend's own NewFrame -- which would make
+    // ImGui's stock upload here the first time -- is never called
+    // (overlay_renderer.cpp says how that was found).
     if (!vocem::renderer().ready()) {
         return VK_NULL_HANDLE;
     }

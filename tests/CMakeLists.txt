@@ -1001,6 +1001,7 @@ vocem_script_test(vk_present_validated ARGS
     "-DPROBE=$<TARGET_FILE:vocem_vk_present_draw>"
     "-DMANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json"
     "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
+    "-DWITNESS=${CMAKE_CURRENT_BINARY_DIR}/vk_witness.json"
     "-DEMOJI_BANK=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
 
 # The Vulkan half inside gamescope, with gamescope's own WSI layer in the chain --
@@ -1331,3 +1332,10 @@ vocem_m32_twin(fonts_key_drawable)
 # run time, and a name spelling a key's codepoint is neutralised.
 vocem_test(fonts_key_index IMGUI LINK vocem_common ENV ${VOCEM_EMOJI_BANK_ENV} SKIP)
 vocem_m32_twin(fonts_key_index)
+
+# The texture cache refused (the witness fails its sampler): the renderer fell
+# back to ImGui's stock font upload, whose command buffer the loader never
+# registered (rule 5). It declines to draw now, said once. Also a scene of
+# vk_present_validated, with the validation layer between overlay and witness.
+vocem_test_run(vk_present_no_texture_cache TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=no-texture-cache" SKIP)
