@@ -1335,3 +1335,10 @@ vocem_test(journal_suffix)
 # half-cleared snapshot. Private /dev/shm, both widths.
 vocem_test(shm_reopen_clear INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread SKIP)
 vocem_m32_twin(shm_reopen_clear)
+
+# With no HOME the settings and the token are nowhere, never in the working
+# directory: a config.ini there that switches the overlay off is not
+# honoured, a token there is not read, and a save puts nothing there. Both
+# widths: Config::path() runs inside games.
+vocem_test(no_home)
+vocem_m32_twin(no_home)

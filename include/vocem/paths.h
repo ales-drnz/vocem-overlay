@@ -46,12 +46,24 @@ inline void make_directories(const std::string& path) {
     }
 }
 
+// Where the user's own settings and credentials live when there is no HOME
+// and no XDG variable to say: nowhere. A directory under /dev/null, which no
+// file can ever exist beneath (ENOTDIR, for root as well), so a read finds
+// nothing and a write fails instead of landing somewhere. The fallback used
+// to be ".", the working directory of whatever process asked -- for the
+// settings that is a game, started without HOME by a service or `env -i`,
+// in a directory somebody else may write, reading a config.ini that names a
+// font file for stb_truetype (entry 135 removed the same fallback from the
+// record and journal directories, which write to /tmp instead; files READ
+// from a shared directory are the ones that must not be anywhere at all).
+inline constexpr const char* kNoHomeDirectory = "/dev/null";
+
 inline std::string state_home() {
     if (const char* xdg = std::getenv("XDG_STATE_HOME"); xdg && *xdg) {
         return xdg;
     }
     const char* home = std::getenv("HOME");
-    return std::string(home ? home : ".") + "/.local/state";
+    return home && *home ? std::string(home) + "/.local/state" : std::string(kNoHomeDirectory);
 }
 
 // The Discord access token. A credential: created with mode 0600.
