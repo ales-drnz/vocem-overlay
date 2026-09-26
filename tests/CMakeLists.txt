@@ -1295,3 +1295,11 @@ vocem_test(emoji_bank_arrives LINK rt
 vocem_test(flatpak_consent
     SOURCES flatpak_consent.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# A listener in a Flatpak sandbox that is not Discord's is not sent the token:
+# the peer socket is mapped to its process and that process's /.flatpak-info
+# read. The listener really is sandboxed -- a nested bwrap with its own user
+# and pid namespace, the network shared -- inside daemon_notification's sandbox.
+if(TARGET vocemd)
+    vocem_test(daemon_peer_sandbox INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 120 SKIP)
+endif()

@@ -213,9 +213,11 @@ int main() {
             }
             // Who is on the other end, before a token with messages.read scope is
             // handed to it. Anything that binds the port before Discord does gets
-            // this connection; a peer owned by another user, or by a sandbox that
-            // can bind loopback but cannot read our state directory, is not
-            // Discord and is told so out loud rather than trusted quietly.
+            // this connection; a peer owned by another user, or by a Flatpak
+            // sandbox that is not Discord's own (same uid, network shared,
+            // $XDG_STATE_HOME out of reach), is not Discord and is told so out
+            // loud rather than trusted quietly. peer_identity.h says how each is
+            // told apart and what the uid alone could not.
             const vocem::PeerIdentity owner = socket.peer_owner();
             if (owner.outcome == vocem::PeerOwner::Found &&
                 static_cast<uid_t>(owner.uid) != getuid()) {
@@ -232,6 +234,28 @@ int main() {
                 // a check that quietly does not happen is worth nothing.
                 LOG("could not establish who owns the listener on port %u; continuing without "
                     "that check", port);
+            } else {
+                const vocem::PeerProcess process = vocem::socket_process(owner.inode);
+                if (process.place == vocem::PeerPlace::Flatpak &&
+                    !vocem::is_discord_flatpak(process.app_id)) {
+                    LOG("refusing port %u: the process listening there (pid %ld) is in the "
+                        "Flatpak sandbox of %s, not Discord's -- not sending it the Discord token",
+                        port, process.pid, vocem::sanitise_text(process.app_id).c_str());
+                    socket.close();
+                    continue;
+                }
+                if (process.place == vocem::PeerPlace::Unknown) {
+                    // The same rule as above, one question further: no process
+                    // holding the socket could be found, or its root could not
+                    // be read, which is a /proc this daemon cannot see into and
+                    // not evidence of anything. Said, every time.
+                    LOG("could not establish which process listens on port %u%s; continuing "
+                        "without the sandbox check",
+                        port, process.pid > 0 ? " (its root cannot be read)" : "");
+                } else if (process.place == vocem::PeerPlace::Flatpak) {
+                    DBG("port %u is answered from Discord's own Flatpak (%s)", port,
+                        process.app_id.c_str());
+                }
             }
             reached_on = port;
             break;
