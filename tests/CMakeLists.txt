@@ -1308,3 +1308,10 @@ vocem_m32_twin(state_poll_contention)
 # and the same objects at 0600, which they read.
 vocem_test(segment_trust INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt SKIP)
 vocem_m32_twin(segment_trust)
+
+# The injected code's log: two threads, 100000 lines each, into stderr and
+# VOCEM_LOG_FILE at once -- every line whole in both; the file's descriptor
+# carries FD_CLOEXEC; a VOCEM_LOG_FILE that cannot be opened is said. Both
+# widths: the logger is compiled into both injected libraries.
+vocem_test(overlay_log_lines LINK vocem_common pthread)
+vocem_m32_twin(overlay_log_lines)
