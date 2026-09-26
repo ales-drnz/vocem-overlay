@@ -44,15 +44,16 @@ depends=(
     'fontconfig'
     # The 32-bit half is not optional: a Windows game under Proton is often a
     # 32-bit binary, and this package installs libraries under /usr/lib32 that the
-    # session preloads into every one of them. The 32-bit libvocem_gl.so and
-    # libvocem_vk.so NEED libstdc++.so.6 and libgcc_s.so.1, and without this
-    # they fail to load -- and a preloaded object that fails to load makes ld.so
-    # print "cannot be preloaded: ignored" to the stderr of every process that
-    # starts. It was in makedepends only once, which builds the files and then
-    # ships them with nothing declaring what they need to run.
-    'lib32-gcc-libs'
+    # session preloads into every one of them -- and a preloaded object that fails
+    # to load makes ld.so print "cannot be preloaded: ignored" to the stderr of
+    # every process that starts. Since 0.1.11 the injected libraries carry their
+    # C++ runtime inside (-static-libstdc++ -static-libgcc), so at 32 bits they
+    # NEED libc.so.6, libm.so.6 and ld-linux.so.2 and nothing else (readelf -d on
+    # build32): lib32-glibc, where this line said lib32-gcc-libs while they
+    # NEEDed libstdc++.so.6 and libgcc_s.so.1.
+    'lib32-glibc'
 )
-    # lib32-gcc-libs is NOT repeated here. PKGBUILD(5) defines makedepends as
+    # lib32-glibc is NOT repeated here. PKGBUILD(5) defines makedepends as
     # what a package needs "to build but are not needed at runtime", and it is
     # needed at runtime -- which is why it is in depends. makepkg installs
     # depends and makedepends alike before building (Arch package guidelines,
