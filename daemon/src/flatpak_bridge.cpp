@@ -189,9 +189,57 @@ bool FlatpakBridge::read_request(int directory, Request& request) {
 
 namespace {
 
-bool copy_into(int directory, const char* source_path, const char* name) {
-    std::FILE* source = std::fopen(source_path, "rb");
-    if (!source) {
+// What a copy's source is allowed to be. The copy goes into a sandbox, so its
+// source is opened with the same care as anything under the sandbox's
+// directory: never waiting on a FIFO, a regular file or nothing, and no
+// bigger than the thing it claims to be.
+enum class Source {
+    // The user's config.ini. A link is followed: a dotfile manager makes
+    // exactly that, and whoever can plant one at ~/.config/vocem can write
+    // the settings (and read the token) directly.
+    Settings,
+    // A face from the avatar cache. Every file there is one the daemon wrote
+    // itself, so a link is never legitimate and is refused, and anything but
+    // the format's one size is not a face.
+    Avatar,
+    // The emoji bank and its table, from the installed path or
+    // $VOCEM_EMOJI_BANK: the daemon's own configuration, links followed.
+    Bank,
+};
+
+// A source opened O_NONBLOCK and checked with fstat before one byte is read.
+// Through 0.1.10 this was `fopen(source, "rb")`: measured, a link planted at
+// a cache name copied the file it named (a stand-in token) into the sandbox,
+// and a FIFO there held rescan() in open() -- through SIGTERM, which restarts
+// the call -- until the unit's SIGKILL, leaving the segment behind.
+int open_source(const char* path, Source kind) {
+    const int follow = kind == Source::Avatar ? O_NOFOLLOW : 0;
+    const int fd = ::open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | follow);
+    if (fd < 0) {
+        return -1;
+    }
+    struct stat info {};
+    const off_t ceiling = kind == Source::Settings ? off_t{1} << 20   // a settings file is KB
+                          : kind == Source::Bank   ? off_t{64} << 20  // 16.3 MB today
+                                                   : static_cast<off_t>(kAvatarRgbaBytes);
+    const bool shaped = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
+                        (kind == Source::Avatar ? info.st_size == ceiling
+                                                : info.st_size <= ceiling);
+    if (!shaped) {
+        ::close(fd);
+        errno = EINVAL;
+        return -1;
+    }
+    const int current = ::fcntl(fd, F_GETFL);
+    if (current >= 0) {
+        ::fcntl(fd, F_SETFL, current & ~O_NONBLOCK);
+    }
+    return fd;
+}
+
+bool copy_into(int directory, const char* source_path, const char* name, Source kind) {
+    const int source = open_source(source_path, kind);
+    if (source < 0) {
         return false;
     }
     // Temporary-and-rename, like every other file this project publishes: a game
@@ -199,21 +247,34 @@ bool copy_into(int directory, const char* source_path, const char* name) {
     std::string temporary = std::string(name) + ".part";
     const int fd = open_regular(directory, temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
     if (fd < 0) {
-        std::fclose(source);
+        const int error = errno;
+        ::close(source);
+        errno = error;
         return false;
     }
     char buffer[8192];
     bool complete = true;
-    size_t got = 0;
-    while ((got = std::fread(buffer, 1, sizeof(buffer), source)) > 0) {
-        if (::write(fd, buffer, got) != static_cast<ssize_t>(got)) {
+    off_t offset = 0;
+    for (;;) {
+        const ssize_t got = ::read(source, buffer, sizeof(buffer));
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        if (got < 0) {
             complete = false;
             break;
         }
+        if (got == 0) {
+            break;
+        }
+        if (!write_at(fd, buffer, static_cast<size_t>(got), offset)) {
+            complete = false;
+            break;
+        }
+        offset += got;
     }
-    complete = complete && std::ferror(source) == 0;
     ::close(fd);
-    std::fclose(source);
+    ::close(source);
     if (!complete || ::renameat(directory, temporary.c_str(), directory, name) != 0) {
         ::unlinkat(directory, temporary.c_str(), 0);
         return false;
@@ -603,8 +664,13 @@ void FlatpakBridge::refresh_consent() {
         return;
     }
     consent_config_mtime_ = mtime;
+    // Read only when it is a regular file: Config::load() is a plain fopen,
+    // and a FIFO at the name would hold the sweep until a writer came.
+    struct stat info {};
     Config config;
-    config.load();
+    if (::stat(Config::path().c_str(), &info) == 0 && S_ISREG(info.st_mode)) {
+        config.load();
+    }
     flatpak_apps_ = config.flatpak_apps;
     for (Mirror& mirror : mirrors_) {
         decide(mirror, true);
@@ -801,7 +867,7 @@ void FlatpakBridge::mirror_config(Mirror& mirror) {
         return;
     }
     const std::string source = Config::path();
-    if (copy_into(mirror.directory, source.c_str(), kBridgeConfigName)) {
+    if (copy_into(mirror.directory, source.c_str(), kBridgeConfigName, Source::Settings)) {
         mirror.config_mtime = mtime;
         DBG("copied %s into the Flatpak sandbox of %s", kBridgeConfigName, mirror.id.c_str());
     } else if (mtime != 0) {
@@ -857,7 +923,7 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
                 return;
             }
         }
-        copy_into(avatars, source, name);
+        copy_into(avatars, source, name, Source::Avatar);
     };
 
     const uint32_t count = state.user_count < kMaxUsers ? state.user_count : kMaxUsers;
@@ -908,12 +974,13 @@ void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
     const size_t slash = table_path.rfind('/');
     table_path = (slash == std::string::npos ? std::string() : table_path.substr(0, slash + 1)) +
                  kBridgeEmojiSequencesName;
-    if (!copy_into(mirror.directory, table_path.c_str(), kBridgeEmojiSequencesName)) {
+    if (!copy_into(mirror.directory, table_path.c_str(), kBridgeEmojiSequencesName,
+                   Source::Bank)) {
         LOG("no emoji sequence table at %s to give the Flatpak sandbox of %s: its emoji "
             "sequences draw as their parts (%s)", table_path.c_str(), mirror.id.c_str(),
             std::strerror(errno));
     }
-    if (copy_into(mirror.directory, bank_path, kBridgeEmojiBankName)) {
+    if (copy_into(mirror.directory, bank_path, kBridgeEmojiBankName, Source::Bank)) {
         mirror.emoji_bank_copied = true;
         DBG("copied %s into the Flatpak sandbox of %s", kBridgeEmojiBankName, mirror.id.c_str());
         return;

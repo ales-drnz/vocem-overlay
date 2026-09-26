@@ -68,8 +68,23 @@ void handle_signal(int) { g_stop = 1; }
 }  // namespace
 
 int main() {
-    std::signal(SIGINT, handle_signal);
-    std::signal(SIGTERM, handle_signal);
+    // sigaction and not std::signal, for one flag: SA_RESTART, which glibc's
+    // signal() sets. With it, a handler that only raises g_stop changes
+    // nothing for a call that is blocked -- the kernel restarts the call and
+    // the flag is never read. Measured: a FIFO planted at an avatar cache name
+    // held rescan() in open() through SIGTERM until the unit's SIGKILL left
+    // the segment published (entry 81), and a FIFO at config.ini holds the
+    // settings reload the same way -- still alive 6 s after SIGTERM with it,
+    // exited in 0.10 s without (tests/daemon_stop_blocked.cpp). Without it a
+    // blocked call returns EINTR, and every loop here reads g_stop. The avatar
+    // worker blocks both signals (avatars.cpp) so that they land on this
+    // thread, the one that has to notice.
+    struct sigaction stop_action {};
+    stop_action.sa_handler = handle_signal;
+    sigemptyset(&stop_action.sa_mask);
+    stop_action.sa_flags = 0;
+    sigaction(SIGINT, &stop_action, nullptr);
+    sigaction(SIGTERM, &stop_action, nullptr);
     std::signal(SIGPIPE, SIG_IGN);
 
     vocem::StateWriter writer;

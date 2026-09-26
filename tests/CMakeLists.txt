@@ -1303,3 +1303,15 @@ if(TARGET vocemd)
     vocem_test(daemon_peer_sandbox INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
         ENV ${VOCEM_DAEMON_ENV} TIMEOUT 120 SKIP)
 endif()
+# Links and FIFOs at the avatar cache's names: the writer's `.part` and the
+# bridge's copy source. Nothing is written through a link, nothing waits on a
+# FIFO, and only a regular file of the format's one size is a face.
+vocem_test(avatar_cache_hostile
+    SOURCES avatar_cache_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# A SIGTERM ends a daemon blocked inside a system call: the handler is installed
+# without SA_RESTART, so a blocked open() returns EINTR and the flag is read.
+if(TARGET vocemd)
+    vocem_test(daemon_stop_blocked INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV ${VOCEM_DAEMON_ENV} TIMEOUT 90 SKIP)
+endif()
