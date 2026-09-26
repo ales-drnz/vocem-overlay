@@ -79,6 +79,15 @@ public:
             }
             next_ask_ = now + kCadenceSeconds;
             if (!reader_.open()) {
+                // Something at the name that is not the daemon's: said once,
+                // not every second, and said again only after an attachment.
+                if (const char* refusal = reader_.refusal(); refusal && !said_refusal_) {
+                    said_refusal_ = true;
+                    char line[192];
+                    std::snprintf(line, sizeof(line), "refusing the object at the state "
+                                  "segment's name: %s", refusal);
+                    say(line);
+                }
                 // Still nothing at the name. Hand back what this process holds
                 // once a daemon has been gone long enough to mean it.
                 if (gone_since_ > 0.0 && now - gone_since_ >= kReleaseAfterSeconds) {
@@ -88,6 +97,7 @@ public:
                 return nullptr;
             }
             gone_since_ = 0.0;
+            said_refusal_ = false;
             attached_afresh();
             say("attached to the vocemd state segment");
         } else if (now >= next_ask_) {
@@ -224,6 +234,7 @@ private:
     bool left_ = false;
     bool said_abi_ = false;
     bool said_busy_ = false;
+    bool said_refusal_ = false;
     LogFn log_;
 };
 

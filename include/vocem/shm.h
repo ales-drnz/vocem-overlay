@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 
 #include "vocem/clock.h"
@@ -34,6 +35,46 @@ inline void cpu_relax() {
 #endif
 }
 
+// Whether a segment -- or its copy across the Flatpak bridge -- may be trusted,
+// from its fstat: nullptr when it is this user's own and nobody else can open
+// it, otherwise the reason, for the log.
+//
+// /dev/shm is a directory every local user can create names in, and the names
+// are predictable (`/vocem-<uid>`, `/vocem-note-<uid>`). Another user who made
+// the name first would have had every game of ours read a channel of their
+// choosing, and a daemon that opened it with O_CREAT would have published the
+// user's voice channel and messages into an object that user can read. The
+// kernel's fs.protected_regular=1 (this machine's setting) refuses the
+// daemon's O_CREAT open of such an object but not a reader's plain one, and
+// it is a sysctl, not a promise. So every opener asks: the owner must be this
+// uid, and the mode must give group and others nothing. Nothing is lost by
+// the second half: the daemon creates the segment at 0600 and the bridge its
+// copies at 0600 (measured: `-rw------- 1000 1000 /dev/shm/vocem-1000`), so a
+// wider mode is an object this project did not make.
+inline const char* segment_trust_problem(const struct stat& info, uid_t uid) {
+    if (info.st_uid != uid) {
+        return "it belongs to another user";
+    }
+    if (!S_ISREG(info.st_mode)) {
+        return "it is not a regular file";
+    }
+    if ((info.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        return "its mode lets other users open it (the daemon creates it 0600)";
+    }
+    return nullptr;
+}
+
+// The same question of an open descriptor, as this process's own uid asks it.
+// Callers keep the answer and say it: a refusal nobody hears looks exactly
+// like "no daemon" (entry 55).
+inline const char* descriptor_trust_problem(int fd) {
+    struct stat info {};
+    if (fstat(fd, &info) != 0) {
+        return "it cannot be examined";
+    }
+    return segment_trust_problem(info, getuid());
+}
+
 // ---------------------------------------------------------------------------
 // Writer -- vocemd only.
 // ---------------------------------------------------------------------------
@@ -45,6 +86,14 @@ public:
         shm_name(name, sizeof(name), getuid());
         fd_ = shm_open(name, O_CREAT | O_RDWR, 0600);
         if (fd_ < 0) {
+            return false;
+        }
+        // Somebody else's object at our name is not ours to publish into, and
+        // not ours to unlink either: refuse, say why, and leave it.
+        if (const char* problem = descriptor_trust_problem(fd_)) {
+            std::fprintf(stderr, "vocemd: refusing the state segment %s: %s\n", name, problem);
+            refusal_ = problem;
+            close();
             return false;
         }
         // A creation that fails takes the name with it. shm_open creates the
@@ -103,6 +152,9 @@ public:
 
     bool valid() const { return state_ != nullptr; }
 
+    // Why the last open() refused an object that was at the name, or nullptr.
+    const char* refusal() const { return refusal_; }
+
     // The canonical segment, for the mirrors to be copied from. Read-only to
     // everything but publish().
     const SharedState* state() const { return state_; }
@@ -150,6 +202,7 @@ public:
 private:
     int fd_ = -1;
     SharedState* state_ = nullptr;
+    const char* refusal_ = nullptr;
 };
 
 // The segment's version field, read raw and without attaching. A reader that
@@ -162,6 +215,10 @@ inline uint32_t peek_abi_version() {
     const int fd = shm_open(name, O_RDONLY, 0);
     if (fd < 0) {
         return 0;
+    }
+    if (descriptor_trust_problem(fd)) {
+        ::close(fd);
+        return 0;  // not the daemon's, so it has no version worth reporting
     }
     uint32_t version = 0;
     const ssize_t got = pread(fd, &version, sizeof(version),
@@ -179,8 +236,17 @@ public:
     // Returns false when the daemon is not running, which is a normal condition:
     // the caller must then behave as if there were nothing to draw.
     bool open() {
+        refusal_ = nullptr;
         fd_ = open_segment();
         if (fd_ < 0) {
+            return false;
+        }
+        // Another user's object at the name, or one others can write: every
+        // field below would be theirs to choose (segment_trust_problem).
+        if (const char* problem = descriptor_trust_problem(fd_)) {
+            refusal_ = problem;
+            ::close(fd_);
+            fd_ = -1;
             return false;
         }
         // How long the object actually is, before mapping a page that may not be
@@ -219,6 +285,11 @@ public:
     }
 
     bool valid() const { return state_ != nullptr; }
+
+    // Why the last open() refused an object that WAS at the name, or nullptr
+    // when it found none (or attached). The caller says it; this header has
+    // no log of its own.
+    const char* refusal() const { return refusal_; }
 
     // What the name says about the object this mapping came from.
     //
@@ -401,6 +472,7 @@ private:
 
     int fd_ = -1;
     const SharedState* state_ = nullptr;
+    const char* refusal_ = nullptr;
 };
 
 }  // namespace vocem

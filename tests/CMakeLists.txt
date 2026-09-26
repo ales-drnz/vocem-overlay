@@ -1299,3 +1299,12 @@ vocem_test(emoji_bank_arrives LINK rt
 vocem_test(state_poll_contention INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread
     TIMEOUT 150 SKIP)
 vocem_m32_twin(state_poll_contention)
+
+# Another local user can make /dev/shm/vocem-<uid> first. The trust rule
+# (owner is this uid, a regular file, nothing for group or others) as a
+# function over struct stat, every case; then planted objects at 0666 and
+# 0640 in a private /dev/shm, which the state reader, the poll, the version
+# peek, the daemon's writer, the note reader and the note writer all refuse,
+# and the same objects at 0600, which they read.
+vocem_test(segment_trust INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt SKIP)
+vocem_m32_twin(segment_trust)

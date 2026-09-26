@@ -131,10 +131,15 @@ const char* OverlaySession::note_words(uint64_t serial) {
     const char* words = note_.body_for(serial);
     if (serial != 0 && words[0] == '\0' && said_empty_note_ != serial) {
         said_empty_note_ = serial;
-        VOCEM_OVERLAY_LOG(tag_,
-                          "message %llu has no words here: the note segment is empty or "
-                          "unreachable from this process",
-                          static_cast<unsigned long long>(serial));
+        if (const char* refusal = note_.refusal()) {
+            VOCEM_OVERLAY_LOG(tag_, "message %llu has no words here: the note segment was "
+                              "refused, %s", static_cast<unsigned long long>(serial), refusal);
+        } else {
+            VOCEM_OVERLAY_LOG(tag_,
+                              "message %llu has no words here: the note segment is empty or "
+                              "unreachable from this process",
+                              static_cast<unsigned long long>(serial));
+        }
     }
     return words;
 }
