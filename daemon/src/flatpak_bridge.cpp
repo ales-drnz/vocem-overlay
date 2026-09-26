@@ -212,13 +212,12 @@ enum class Source {
 // a cache name copied the file it named (a stand-in token) into the sandbox,
 // and a FIFO there held rescan() in open() -- through SIGTERM, which restarts
 // the call -- until the unit's SIGKILL, leaving the segment behind.
-int open_source(const char* path, Source kind) {
+int open_source(const char* path, Source kind, struct stat& info) {
     const int follow = kind == Source::Avatar ? O_NOFOLLOW : 0;
     const int fd = ::open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | follow);
     if (fd < 0) {
         return -1;
     }
-    struct stat info {};
     const off_t ceiling = kind == Source::Settings ? off_t{1} << 20   // a settings file is KB
                           : kind == Source::Bank   ? off_t{64} << 20  // 16.3 MB today
                                                    : static_cast<off_t>(kAvatarRgbaBytes);
@@ -238,7 +237,8 @@ int open_source(const char* path, Source kind) {
 }
 
 bool copy_into(int directory, const char* source_path, const char* name, Source kind) {
-    const int source = open_source(source_path, kind);
+    struct stat source_info {};
+    const int source = open_source(source_path, kind, source_info);
     if (source < 0) {
         return false;
     }
@@ -273,6 +273,12 @@ bool copy_into(int directory, const char* source_path, const char* name, Source 
         }
         offset += got;
     }
+    if (complete && kind == Source::Bank) {
+        // The bank's copy carries the source's modification time, which is how
+        // the next adoption knows it is already there (same_copy()).
+        const struct timespec times[2] = {source_info.st_atim, source_info.st_mtim};
+        complete = ::futimens(fd, times) == 0;
+    }
     ::close(fd);
     ::close(source);
     if (!complete || ::renameat(directory, temporary.c_str(), directory, name) != 0) {
@@ -280,6 +286,20 @@ bool copy_into(int directory, const char* source_path, const char* name, Source 
         return false;
     }
     return true;
+}
+
+// Whether the sandbox already holds a copy of this source: a regular file of
+// the same size carrying the same modification time, which copy_into() gives
+// every bank copy it makes. A copy of another version, or one the sandbox
+// removed or replaced, is not the same copy.
+bool same_copy(int directory, const char* name, const char* source_path) {
+    struct stat source {};
+    struct stat copy {};
+    return ::stat(source_path, &source) == 0 && S_ISREG(source.st_mode) &&
+           ::fstatat(directory, name, &copy, AT_SYMLINK_NOFOLLOW) == 0 &&
+           S_ISREG(copy.st_mode) && copy.st_size == source.st_size &&
+           copy.st_mtim.tv_sec == source.st_mtim.tv_sec &&
+           copy.st_mtim.tv_nsec == source.st_mtim.tv_nsec;
 }
 
 }  // namespace
@@ -980,8 +1000,16 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
 // before entry 88 -- a fourth thing to carry that nothing carried -- and the
 // same answer.
 //
-// Unlike the settings and the faces this is copied exactly once: sixteen
-// megabytes that never change while the daemon runs. Only into a sandbox that
+// Unlike the settings and the faces this is copied once per sandbox: sixteen
+// megabytes that never change while the daemon runs. Once per SANDBOX and not
+// once per mirror: a mirror is dropped when the sandbox stops asking and made
+// anew when it asks again, and the flag below used to be the whole memory, so
+// a sandbox toggling its request had the bank copied again every time, on
+// this thread (measured: five re-adoptions, five more copies). What is asked
+// now is the sandbox's own directory -- same_copy(): the pair is already
+// there, at the source's size and modification time -- which also holds
+// across a daemon restart, and still copies a bank that changed on the host
+// or that the sandbox took away. Only into a sandbox that
 // is given the voice channel (Mirror::voice()), so a Flatpak the user has
 // excluded or never consented to costs nothing, and sixteen megabytes of the
 // runtime directory is a real cost to name rather than spend quietly.
@@ -1010,6 +1038,14 @@ void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
     const size_t slash = table_path.rfind('/');
     table_path = (slash == std::string::npos ? std::string() : table_path.substr(0, slash + 1)) +
                  kBridgeEmojiSequencesName;
+    if (same_copy(mirror.directory, kBridgeEmojiSequencesName, table_path.c_str()) &&
+        same_copy(mirror.directory, kBridgeEmojiBankName, bank_path)) {
+        mirror.emoji_bank_copied = true;
+        DBG("%s is already in the Flatpak sandbox of %s", kBridgeEmojiBankName,
+            mirror.id.c_str());
+        return;
+    }
+    // Either one differing is a new pair: both go, the table first.
     if (!copy_into(mirror.directory, table_path.c_str(), kBridgeEmojiSequencesName,
                    Source::Bank)) {
         LOG("no emoji sequence table at %s to give the Flatpak sandbox of %s: its emoji "

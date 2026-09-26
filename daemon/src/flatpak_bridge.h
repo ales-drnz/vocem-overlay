@@ -118,9 +118,10 @@ private:
         // The avatars directory's refusal, said once per sandbox rather than
         // once per tick (mirror_avatars).
         bool avatars_refused = false;
-        // Whether the colour emoji bank has been put in this sandbox. Six
-        // megabytes that never change, so it is copied once and only into a
-        // sandbox the overlay is actually drawing in.
+        // Whether this mirror has settled the colour emoji bank: copied, found
+        // already there (mirror_emoji_bank), or found missing on the host.
+        // Sixteen megabytes that never change, and only for a sandbox that is
+        // given the voice channel.
         bool emoji_bank_copied = false;
         // The name of the record already written on the host for this sandbox, so
         // that a tick which learns nothing new writes nothing. The record is one

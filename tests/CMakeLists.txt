@@ -1331,3 +1331,8 @@ vocem_test(flatpak_records
 vocem_test(flatpak_config_retry
     SOURCES flatpak_config_retry.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+# The emoji bank crosses into a sandbox once: a sandbox that stops asking and
+# asks again is not given sixteen megabytes again, on the daemon's main thread.
+vocem_test(flatpak_emoji_once
+    SOURCES flatpak_emoji_once.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)

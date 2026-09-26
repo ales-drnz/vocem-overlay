@@ -71,7 +71,8 @@ inline constexpr const char* kBridgeRequestName = "request";
 // the compiled-in path names the runtime's own /usr and finds nothing -- the
 // same shape as the note being the fourth thing to carry and nothing carrying
 // it. Sixteen megabytes and it never changes, so it is copied once per sandbox
-// and only into one that is actually drawing.
+// (and again only when the host's copy changed) and only into one that is
+// given the voice channel.
 inline constexpr const char* kBridgeEmojiBankName = "emoji_bank.rgba";
 // The sequence table that belongs to that bank (vocem/emoji_bank.h): which
 // codepoint sequences its keys from U+F0000 up stand for. The reader looks
