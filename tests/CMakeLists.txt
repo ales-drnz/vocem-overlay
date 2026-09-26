@@ -150,7 +150,7 @@ if(VOCEM_HAVE_M32)
         -m32 -fno-exceptions -fno-rtti -fno-threadsafe-statics)
     target_compile_definitions(vocem_gl_shim32 PRIVATE
         VOCEM_LIBDIR="${CMAKE_INSTALL_PREFIX}/lib32")
-    target_link_options(vocem_gl_shim32 PRIVATE -m32 -nostdlib++ -static-libgcc)
+    target_link_options(vocem_gl_shim32 PRIVATE -m32 -nostdlib++ -static-libgcc -Wl,--no-undefined)
     target_link_libraries(vocem_gl_shim32 PRIVATE ${CMAKE_DL_LIBS})
     set(VOCEM_SHIM32_ENV "LD_PRELOAD=$<TARGET_FILE:vocem_gl_shim32>" "VOCEM_SHIM_PRELOADED=1")
 endif()
@@ -1362,3 +1362,21 @@ vocem_script_test(injected_runtime ARGS
     "-DGL=$<TARGET_FILE:vocem_gl>" "-DVK=$<TARGET_FILE:vocem_vk>"
     "-DGL32=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
     "-DVK32=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+
+# The shim as built -- libc alone, its twelve hooks, no guard, nothing
+# undefined outside libc -- on this tree's, the -m32 twin's and build32's; and
+# its link, which has to refuse an undefined C++ runtime symbol rather than
+# leave it for ld.so to fail on in every process (shim_artifact.cmake).
+set(VOCEM_SHIM_ARTIFACT_ARGS
+    "-DCXX=${CMAKE_CXX_COMPILER}"
+    "-DSHIM=$<TARGET_FILE:vocem_gl_shim>"
+    "-DSHIM_BUILD32=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so"
+    "-DFLAGS=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim,COMPILE_OPTIONS>,|>"
+    "-DLINK_FLAGS=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim,LINK_OPTIONS>,|>")
+if(TARGET vocem_gl_shim32)
+    list(APPEND VOCEM_SHIM_ARTIFACT_ARGS
+        "-DSHIM_TWIN32=$<TARGET_FILE:vocem_gl_shim32>"
+        "-DFLAGS32=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim32,COMPILE_OPTIONS>,|>"
+        "-DLINK_FLAGS32=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim32,LINK_OPTIONS>,|>")
+endif()
+vocem_script_test(shim_artifact ARGS ${VOCEM_SHIM_ARTIFACT_ARGS})

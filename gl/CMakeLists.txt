@@ -100,7 +100,13 @@ target_compile_definitions(vocem_gl_shim PRIVATE
 # every process that starts. Depending on libgcc_s meant the 32-bit half needed
 # lib32-gcc-libs present or the whole session started talking. Now it needs the C
 # library, which is there by definition.
-target_link_options(vocem_gl_shim PRIVATE -nostdlib++ -static-libgcc)
+#
+# And --no-undefined, because -nostdlib++ alone does not refuse anything: a
+# `new` added to this file linked, left `U _Znam` in the library with libc as
+# its only NEEDED, and under LD_BIND_NOW=1 every program in the session would
+# have failed to start. The link says so now, at the line that caused it
+# (tests/shim_artifact.cmake compiles such a toy with these very flags).
+target_link_options(vocem_gl_shim PRIVATE -nostdlib++ -static-libgcc -Wl,--no-undefined)
 target_link_libraries(vocem_gl_shim PRIVATE ${CMAKE_DL_LIBS})
 
 install(TARGETS vocem_gl vocem_gl_shim LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
