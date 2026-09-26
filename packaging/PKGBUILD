@@ -35,7 +35,6 @@ url="https://github.com/ales-drnz/vocem-overlay"
 # the two PKGBUILDs cost.
 license=('BSD-3-Clause' 'MIT' 'OFL-1.1-no-RFN' 'OFL-1.1-RFN')
 depends=(
-    'vulkan-icd-loader'
     'qt6-base'
     'qt6-declarative'
     # The window's own icons are SVG, loaded through QIcon, which needs Qt's
@@ -51,28 +50,36 @@ depends=(
     'fontconfig'
     # The 32-bit half is not optional: a Windows game under Proton is often a
     # 32-bit binary, and this package installs libraries under /usr/lib32 that the
-    # session preloads into every one of them. Without these they fail to load --
-    # and a preloaded object that fails to load makes ld.so print
-    # "cannot be preloaded: ignored" to the stderr of every process that starts.
-    # They were in makedepends only, which builds the files and then ships them
-    # with nothing declaring what they need to run.
+    # session preloads into every one of them. The 32-bit libvocem_gl.so and
+    # libvocem_vk.so NEED libstdc++.so.6 and libgcc_s.so.1, and without this
+    # they fail to load -- and a preloaded object that fails to load makes ld.so
+    # print "cannot be preloaded: ignored" to the stderr of every process that
+    # starts. It was in makedepends only once, which builds the files and then
+    # ships them with nothing declaring what they need to run.
     'lib32-gcc-libs'
-    'lib32-vulkan-icd-loader'
 )
-    # The two lib32 packages are NOT repeated here. PKGBUILD(5) defines
-    # makedepends as what a package needs "to build but are not needed at
-    # runtime", and these are needed at runtime -- which is why they are in
-    # depends. makepkg installs depends and makedepends alike before building
-    # (Arch package guidelines, "Makepkg duties"), so depends alone already puts
-    # them there. namcap called the pair redundant and it was right.
+    # lib32-gcc-libs is NOT repeated here. PKGBUILD(5) defines makedepends as
+    # what a package needs "to build but are not needed at runtime", and it is
+    # needed at runtime -- which is why it is in depends. makepkg installs
+    # depends and makedepends alike before building (Arch package guidelines,
+    # "Makepkg duties"), so depends alone already puts it there. namcap called
+    # the repetition redundant and it was right.
 makedepends=(
     'cmake'
     'ninja'
     'git'
     'vulkan-headers'
 )
+# The Vulkan loaders are not dependencies: nothing this package ships NEEDs or
+# dlopens libvulkan.so.1 (readelf on 0.1.10-7, both widths). The layer is
+# loaded BY the loader, which every Vulkan game already brings, so they are
+# listed for what they do for it rather than as something it links. They sat
+# in depends=() until 0.1.11, under a comment that was true of lib32-gcc-libs
+# alone, and namcap reported both (tests/package_depends_needed.cmake).
 optdepends=(
     'qqc2-desktop-style: native appearance on KDE Plasma'
+    'vulkan-icd-loader: the loader that puts the overlay layer into 64-bit Vulkan games'
+    'lib32-vulkan-icd-loader: the same for 32-bit Vulkan games, DXVK under Proton among them'
 )
 # No debug package: with CMAKE_BUILD_TYPE=None nothing is compiled with -g,
 # so what makepkg would split out is empty. PKGBUILD.local has always said

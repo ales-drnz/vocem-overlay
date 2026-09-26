@@ -1350,3 +1350,71 @@ vocem_m32_twin(no_home)
 # heights agree (3840x2160 at 143.99 Hz against 60); display.h's header says
 # why the difference in height cannot be shown here.
 vocem_test(display_running_mode SKIP)
+
+# ---- 0.1.11 gui lane ----
+# The window's save rewrites the file in place: comments, unknown keys, a
+# symlink and the file's mode all survive a click on a switch. The fresh
+# file it used to rename over config.ini lost every one of them.
+vocem_test(config_rewrite_in_place)
+
+# A name holding the lists' separator (or edge whitespace) is refused, where
+# it used to be stored as two other names. The overlay reads these lists
+# inside games at both widths, so both are run.
+vocem_test(apps_list_separator)
+vocem_m32_twin(apps_list_separator)
+
+# Nothing installed carries a RUNPATH: Qt's deployment defaults gave the
+# packaged vocem-config $ORIGIN:$ORIGIN/../lib. Measured on a scratch install.
+vocem_script_test(installed_runpath ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}")
+
+# A Vulkan loader in depends=() only if something shipped NEEDs libvulkan --
+# nothing does -- and the two PKGBUILDs and .SRCINFO list the same depends and
+# optdepends.
+vocem_script_test(package_depends_needed
+    ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DBUILD32_DIR=${VOCEM_BUILD32_DIR}")
+
+if(TARGET vocem-config)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
+    find_package(Fontconfig QUIET)
+
+    # The window never signals the daemon it did not ask about. Under the
+    # harness the unit question was never asked, so every stop -- Quit, a
+    # close with no tray, Re-authorise -- fell to `pkill -TERM -x vocemd`, the
+    # owner's live daemon included; a real launch did the same for the
+    # question's first seconds, and a question past its cap exec'd a second
+    # vocemd. Stubs on PATH log what would have run.
+    vocem_test(window_daemon_lifecycle NO_TEST
+        SOURCES window_daemon_lifecycle.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_daemon_lifecycle PROPERTIES AUTOMOC ON)
+    vocem_test_run(window_daemon_harness TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=harness" SKIP)
+    vocem_test_run(window_daemon_early_quit TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=early-quit" SKIP)
+    # The font box follows the setting after its list has been opened: the
+    # assignment that grew the list removed the binding, and a family written
+    # outside the window changed the box's text and not its row or its face.
+    vocem_script_test(font_picker_follows ARGS "-DCONFIG_BINARY=$<TARGET_FILE:vocem-config>")
+    # "Start at login" reads the desktop's own "off" (Hidden=true,
+    # X-GNOME-Autostart-enabled=false), Apply of another setting leaves the
+    # entry alone, and a write that fails is said.
+    vocem_test(window_autostart SKIP
+        SOURCES window_autostart.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_autostart PROPERTIES AUTOMOC ON)
+    # "Active in this session" only when this session's environment has the
+    # preload: the user manager carrying it is a different fact, and programs
+    # started from the desktop do not get it until the next login.
+    vocem_test(window_preload_state SKIP
+        SOURCES window_preload_state.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_preload_state PROPERTIES AUTOMOC ON)
+    vocem_test_run(window_daemon_slow_probe TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=slow-probe" SKIP)
+endif()
