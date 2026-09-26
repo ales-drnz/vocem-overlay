@@ -1380,3 +1380,14 @@ if(TARGET vocem_gl_shim32)
         "-DLINK_FLAGS32=$<JOIN:$<TARGET_PROPERTY:vocem_gl_shim32,LINK_OPTIONS>,|>")
 endif()
 vocem_script_test(shim_artifact ARGS ${VOCEM_SHIM_ARTIFACT_ARGS})
+
+# The backend moving between two unshared contexts (entry 210's hand-over) and
+# coming back: what it built in a context it left is deleted when that context
+# is current again, so each holds one atlas however often the overlay returns
+# (gl_handover.cpp). About eleven seconds: two round trips past the library's
+# own two-second hand-over.
+vocem_test(gl_handover LINK EGL GLESv2 rt ENV ${VOCEM_GL_PROBE_ENV} SKIP TIMEOUT 120)
+vocem_m32_twin(gl_handover
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")

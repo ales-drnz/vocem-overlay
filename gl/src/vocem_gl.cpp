@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -96,6 +97,7 @@ using PFN_glIsEnabled = unsigned char (*)(GLenum);
 using PFN_glEnable = void (*)(GLenum);
 using PFN_glDisable = void (*)(GLenum);
 using PFN_glGetString = const unsigned char* (*)(GLenum);
+using PFN_glDeleteTextures = void (*)(GLsizei, const GLuint*);
 
 // One logger for both injected paths (vocem/overlay_log.h): VOCEM_DEBUG on
 // stderr, VOCEM_LOG_FILE appended with the pid, both read once. The tag is
@@ -638,6 +640,19 @@ public:
 
     PFN_glGetIntegerv get_integer() const { return get_integer_; }
 
+    // The texture names held, handed over to whoever will delete them -- the
+    // backend moving away from this context (GlOverlay::move_away) -- and
+    // forgotten here. The names alone: the context they live in is the
+    // caller's to know.
+    void take_texture_names(std::vector<GLuint>& names) {
+        for (const auto& entry : textures_) {
+            if (entry.second != 0) {
+                names.push_back(static_cast<GLuint>(entry.second));
+            }
+        }
+        textures_.clear();
+    }
+
     // Every texture name we hold belongs to a GL context. Forget them.
     //
     // No `glDeleteTextures` even when the context is still alive: the two callers
@@ -700,6 +715,11 @@ private:
 void* g_owner_context = nullptr;
 void* g_owner_display = nullptr;
 int g_owner_egl = 0;
+// How many backends the overlay has moved away from and not yet deleted
+// (GlOverlay::move_away). Read by the teardown hooks before they lock, for the
+// same reason as the three above: a destroyed context that is neither the
+// owner nor one of these costs one atomic load.
+int g_left_backends = 0;
 
 class GlOverlay {
 public:
@@ -718,6 +738,15 @@ public:
     void draw(SizeQuery query_size, void* display, void* handle, bool egl) {
         if (overlay_disabled()) {
             return;
+        }
+
+        // What a backend left in a context it moved away from, deleted in the
+        // first present where that context is current again -- the only moment
+        // its objects can be reached (move_away() says why they were left).
+        // First, before anything below can return: a switched-off overlay and
+        // a stopped daemon hand everything back as well.
+        if (!left_.empty()) {
+            reclaim_left(egl);
         }
 
         // Before the first thing that derives a path. Inside a Flatpak game the
@@ -862,7 +891,8 @@ public:
         // itself from another, keeping the first alive for its loader, would
         // otherwise have no overlay for the whole session (the review of this
         // very change found it). The old context's GL objects cannot be deleted
-        // from here -- it is not current -- and go with that context.
+        // from here -- it is not current -- so they are remembered with it and
+        // deleted the next time it presents (move_away(), reclaim_left()).
         if (backend_ready_) {
             switch (whose_present(egl, now)) {
                 case Present::Owner:
@@ -872,7 +902,7 @@ public:
                 case Present::Abandoned:
                     VOCEM_GLOG("the backend's context has not presented for %.0f s: moving the "
                                "overlay to the one that does", kHandOverSeconds);
-                    release(false);
+                    move_away();
                     break;
             }
         }
@@ -1104,6 +1134,55 @@ public:
             ImGui::DestroyContext();
         }
     }
+
+    // The backend moves to another context and leaves this one's objects where
+    // they are, because they can only be deleted with this context current and
+    // it is not. release(false) used to be the whole of it, so the old context
+    // kept a program, two buffers, the font texture -- 16 to 64 MB -- and a
+    // texture per face for the rest of its life, and coming back built a new
+    // set beside them: 1, 2, 3, 4 textures over four visits, measured by the
+    // 0.1.10 review (tests/gl_handover.cpp). Now the ImGui context that owns
+    // the backend is kept whole, with the context it lives in and the face
+    // textures' names, and reclaim_left() shuts it down properly the first
+    // time that context is current again. A context that dies first is
+    // handed to forget_left() by the teardown hooks.
+    void move_away() {
+        atlas_worker().join();
+        void* context = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
+        ImGuiContext* imgui = ImGui::GetCurrentContext();
+        if (backend_ready_ && context && imgui) {
+            LeftBackend left;
+            left.context = context;
+            left.display = __atomic_load_n(&g_owner_display, __ATOMIC_ACQUIRE);
+            left.egl = __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == 1;
+            left.imgui = imgui;
+            avatars_.take_texture_names(left.textures);
+            left_.push_back(std::move(left));
+            __atomic_store_n(&g_left_backends, static_cast<int>(left_.size()), __ATOMIC_RELEASE);
+            // Not current any more, so release() below neither shuts it down
+            // (no context to delete in) nor destroys it (it is kept).
+            ImGui::SetCurrentContext(nullptr);
+        }
+        release(false);
+    }
+
+    // The teardown hooks' half: `context` is dying (or, null, every context on
+    // `display` with eglTerminate). A backend left in it is shut down properly
+    // when that context is current on the calling thread, and dropped without
+    // GL otherwise -- its objects go with the context, as release(false)'s do.
+    void forget_left(void* display, void* context, bool egl) {
+        for (size_t i = left_.size(); i-- > 0;) {
+            LeftBackend& left = left_[i];
+            if (left.egl != egl || (context ? left.context != context : left.display != display)) {
+                continue;
+            }
+            tear_down_left(left, context && current_context_of(egl) == context);
+            left_.erase(left_.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+        __atomic_store_n(&g_left_backends, static_cast<int>(left_.size()), __ATOMIC_RELEASE);
+    }
+
+    static bool left_anywhere() { return __atomic_load_n(&g_left_backends, __ATOMIC_ACQUIRE) > 0; }
 
     // Whether the context presenting now is the one the backend lives in,
     // asked with the API it arrived through: one getter call per frame, only
@@ -1368,6 +1447,73 @@ private:
         __atomic_store_n(&g_owner_display, static_cast<void*>(nullptr), __ATOMIC_RELEASE);
     }
 
+    // A backend the overlay moved away from (move_away()): the ImGui context
+    // that owns it, the GL context its objects live in, and its faces.
+    struct LeftBackend {
+        void* context = nullptr;
+        void* display = nullptr;
+        bool egl = false;
+        ImGuiContext* imgui = nullptr;
+        std::vector<GLuint> textures;
+    };
+    std::vector<LeftBackend> left_;
+    void* (*egl_current_)() = nullptr;
+    void* (*glx_current_)() = nullptr;
+
+    void* current_context_of(bool egl) {
+        auto& getter = egl ? egl_current_ : glx_current_;
+        if (!getter) {
+            getter = gl_symbol<void* (*)()>(egl ? "eglGetCurrentContext" : "glXGetCurrentContext");
+        }
+        return getter ? getter() : nullptr;
+    }
+
+    // In a present: a backend left in the context current now goes, properly.
+    void reclaim_left(bool egl) {
+        void* current = current_context_of(egl);
+        if (!current) {
+            return;
+        }
+        for (size_t i = 0; i < left_.size(); ++i) {
+            if (left_[i].egl == egl && left_[i].context == current) {
+                tear_down_left(left_[i], true);
+                left_.erase(left_.begin() + static_cast<std::ptrdiff_t>(i));
+                __atomic_store_n(&g_left_backends, static_cast<int>(left_.size()),
+                                 __ATOMIC_RELEASE);
+                return;  // one entry per context: moving away from it twice reclaims first
+            }
+        }
+    }
+
+    // With `gl_current`, the left context is current here: the backend's own
+    // Shutdown deletes its program, buffers and font texture, and the faces
+    // go with glDeleteTextures. Without, only ImGui's side is freed. Either way
+    // the live backend is untouched -- its ImGui context is put back, and so is
+    // the shared atlas's texture name, which the old backend's Shutdown zeroes
+    // (the atlas is one object across every ImGui context, vocem/fonts.h).
+    void tear_down_left(LeftBackend& left, bool gl_current) {
+        ImGuiContext* live = ImGui::GetCurrentContext();
+        const ImTextureID atlas_texture = vocem::fonts_atlas()->TexID;
+        ImGui::SetCurrentContext(left.imgui);
+        if (gl_current) {
+            ImGui_ImplOpenGL3_Shutdown();
+        }
+        ImGui::DestroyContext(left.imgui);
+        ImGui::SetCurrentContext(live);
+        vocem::fonts_atlas()->SetTexID(atlas_texture);
+        size_t faces = 0;
+        if (gl_current && !left.textures.empty()) {
+            if (auto delete_textures = gl_symbol<PFN_glDeleteTextures>("glDeleteTextures")) {
+                delete_textures(static_cast<GLsizei>(left.textures.size()), left.textures.data());
+                faces = left.textures.size();
+            }
+        }
+        VOCEM_GLOG("%s the backend left in context %p when the overlay moved (%zu face "
+                   "texture(s) deleted)",
+                   gl_current ? "deleted" : "dropped, with its context,", left.context, faces);
+        left.imgui = nullptr;
+    }
+
     vocem::StatePoll state_poll_{&gl_poll_log};
     GlAvatarProvider avatars_;
     vocem::LiveConfig config_;
@@ -1622,10 +1768,14 @@ VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
     // before the overlay is so much as constructed: "not mine" costs one
     // atomic load. tests/gl_draw_local.cpp destroys a second context and
     // counts the rebuilds.
-    if (!GlOverlay::owns(display, context, false)) {
+    if (!GlOverlay::owns(display, context, false) && !GlOverlay::left_anywhere()) {
         return;
     }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
+    // A backend the overlay moved away from, left in this context (move_away).
+    if (GlOverlay::left_anywhere()) {
+        overlay().forget_left(display, context, false);
+    }
     // Asked again under the lock: a present on another thread may have moved
     // the backend (the hand-over) between the look above and the lock.
     if (!GlOverlay::owns(display, context, false)) {
@@ -1648,10 +1798,14 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
     // eglTerminate -- the backend's own display. Anything else is somebody
     // else's business, including every EGL context Chromium's ANGLE creates
     // and destroys in a browser that will never draw a frame of ours.
-    if (!GlOverlay::owns(display, context, true)) {
+    if (!GlOverlay::owns(display, context, true) && !GlOverlay::left_anywhere()) {
         return;
     }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
+    // A backend left in this context -- or, eglTerminate, on this display.
+    if (GlOverlay::left_anywhere()) {
+        overlay().forget_left(display, context, true);
+    }
     // Asked again under the lock, as on GLX: the backend may have moved.
     if (!GlOverlay::owns(display, context, true)) {
         return;
