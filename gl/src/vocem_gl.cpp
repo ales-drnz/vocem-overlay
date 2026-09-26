@@ -1584,28 +1584,39 @@ VOCEM_EXPORT void vocem_gl_present_egl(void* display, void* surface) {
 
 // A GL context is going away, and everything we built lives in one.
 //
-// Called from the shim before the real destroy runs, so the context still exists
-// and can be made current -- which is the only way to delete what is in it. That is
-// the dance MangoHud does in its own `glXDestroyContext`: remember what is current,
-// make the dying context current, tear down, put the previous one back.
+// Called from the shim before the real destroy runs. When the dying context is
+// the one current on the calling thread, the backend is shut down properly --
+// its program, buffers and font texture deleted -- because that is the one
+// state in which GL calls reach it. In every other case the state is dropped
+// without calling GL: the objects die with the context, and what is lost is
+// ImGui's own small heap block, once -- unless another living context shares
+// the dying one's objects, in which case the backend's program, buffers and
+// font texture stay in that share group until it ends (DESIGN, Open risks).
 //
-// If any part of that is unavailable the state is dropped without calling GL. The
-// objects die with the context either way; what is lost is ImGui's own small heap
-// block, once, which is a better trade than issuing GL calls into a context that
-// may not be current.
+// There used to be a third way, MangoHud's dance: remember what is current,
+// make the dying context current with the current drawable, tear down, put the
+// previous one back. On GLX that is an X request that can fail, and a failed
+// one is an X error -- which, in a game with no error handler of its own, is
+// Xlib's default handler calling exit(1). Measured twice
+// (tests/gl_destroy_owner.cpp): a game that recreated its window and context
+// with MSAA and destroyed the old context after making the new one current
+// died of BadMatch on NVIDIA, the dying context being made current on a
+// drawable of another configuration; and an owner destroyed from a second
+// thread while still current on the render thread died of BadAccess under
+// Mesa. The overlay was killing the game inside its own glXDestroyContext, to
+// save a hundred bytes. No context is made current here any more, so there is
+// nothing to put back either.
 //
-// Without this the overlay held texture names and a shader program belonging to a
-// context that no longer existed, and used them on the next frame. Nothing said so:
-// the driver is entitled to do anything at all with a stale name, and mostly it
-// draws nothing.
+// Without this hook the overlay held texture names and a shader program
+// belonging to a context that no longer existed, and used them on the next
+// frame. Nothing said so: the driver is entitled to do anything at all with a
+// stale name, and mostly it draws nothing.
 VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
     // Only the context the backend lives in. Every context a game destroys
     // used to reach the release below -- a loader thread's helper context, a
-    // splash screen's, SDL's probe context -- and the dance underneath made
-    // the dying one current with the drawing one's drawable, deleted the
-    // backend's names in a context that never held them, and left the next
-    // frame to rebuild the whole backend (an atlas rasterised again, every
-    // face uploaded again) for a context that had never been touched. And it
+    // splash screen's, SDL's probe context -- and left the next frame to
+    // rebuild the whole backend (an atlas rasterised again, every face
+    // uploaded again) for a context that had never been touched. And it
     // reached here in every process that ever presented, browsers included,
     // whether or not a backend existed at all. Asked before the lock and
     // before the overlay is so much as constructed: "not mine" costs one
@@ -1615,42 +1626,18 @@ VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
         return;
     }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
+    // Asked again under the lock: a present on another thread may have moved
+    // the backend (the hand-over) between the look above and the lock.
+    if (!GlOverlay::owns(display, context, false)) {
+        return;
+    }
     vocem::journal_note("GLX context destroyed");
     using PFN_glXGetCurrentContext = void* (*)();
-    using PFN_glXGetCurrentDrawable = unsigned long (*)();
-    using PFN_glXMakeCurrent = int (*)(void*, unsigned long, void*);
     static PFN_glXGetCurrentContext current_context = nullptr;
-    static PFN_glXGetCurrentDrawable current_drawable = nullptr;
-    static PFN_glXMakeCurrent make_current = nullptr;
     if (!current_context) {
         current_context = gl_symbol<PFN_glXGetCurrentContext>("glXGetCurrentContext");
     }
-    if (!current_drawable) {
-        current_drawable = gl_symbol<PFN_glXGetCurrentDrawable>("glXGetCurrentDrawable");
-    }
-    if (!make_current) {
-        make_current = gl_symbol<PFN_glXMakeCurrent>("glXMakeCurrent");
-    }
-
-    if (!display || !context || !current_context || !current_drawable || !make_current) {
-        overlay().release(false);
-        return;
-    }
-
-    void* previous = current_context();
-    const unsigned long drawable = current_drawable();
-    if (previous == context) {
-        // Already current: nothing to swap, and nothing to put back afterwards
-        // either, since the context is about to stop existing.
-        overlay().release(true);
-        return;
-    }
-    if (make_current(display, drawable, context)) {
-        overlay().release(true);
-        make_current(display, drawable, previous);
-    } else {
-        overlay().release(false);
-    }
+    overlay().release(context && current_context && current_context() == context);
 }
 
 // The EGL side of the same thing. `eglDestroyContext` and `eglTerminate` both end
@@ -1665,6 +1652,10 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
         return;
     }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
+    // Asked again under the lock, as on GLX: the backend may have moved.
+    if (!GlOverlay::owns(display, context, true)) {
+        return;
+    }
     using PFN_eglGetCurrentContext = void* (*)();
     using PFN_eglGetCurrentSurface = void* (*)(int);
     using PFN_eglMakeCurrent = unsigned int (*)(void*, void*, void*, void*);

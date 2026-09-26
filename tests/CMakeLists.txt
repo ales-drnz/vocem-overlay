@@ -1296,3 +1296,21 @@ vocem_test(emoji_bank_arrives LINK rt
 # not exist (shim_lookup_race.cpp). Both widths, against the shim of each.
 vocem_test(shim_lookup_race LINK EGL Threads::Threads ENV ${VOCEM_SHIM_ENV} SKIP TIMEOUT 150)
 vocem_m32_twin(shim_lookup_race ENV ${VOCEM_SHIM32_ENV})
+
+# The owner context destroyed while not current on the destroying thread: the
+# teardown's glXMakeCurrent dance was an X error, and Xlib's default handler
+# exits the game (gl_destroy_owner.cpp). `visual` on the machine's own GLX;
+# `thread` under Mesa's software GLX, where the measured BadAccess is.
+vocem_test(gl_destroy_owner LINK ${CMAKE_DL_LIBS} X11 rt Threads::Threads LINK_OPTIONS -rdynamic
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=visual" SKIP)
+vocem_test_run(gl_destroy_owner_thread TARGET gl_destroy_owner
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=thread"
+        "__GLX_VENDOR_LIBRARY_NAME=mesa" "LIBGL_ALWAYS_SOFTWARE=1" SKIP)
+vocem_m32_twin(gl_destroy_owner
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=visual"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_m32_twin_run(gl_destroy_owner_thread TARGET gl_destroy_owner_thread
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=thread"
+        "__GLX_VENDOR_LIBRARY_NAME=mesa" "LIBGL_ALWAYS_SOFTWARE=1")
