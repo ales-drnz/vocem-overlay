@@ -1431,3 +1431,9 @@ vocem_m32_twin(gl_capture_state
     BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
 vocem_m32_twin_run(gl_capture_pack_buffer TARGET gl_capture_pack_buffer
     ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=pack-buffer")
+
+# scripts/dev-run-gl.sh under the session's own LD_PRELOAD: the installed shim
+# was first and took every hook, and the build tree's shim was never called
+# (dev_run_gl.cmake).
+vocem_test(which_shim LINK ${CMAKE_DL_LIBS} NO_TEST)
+vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>")
