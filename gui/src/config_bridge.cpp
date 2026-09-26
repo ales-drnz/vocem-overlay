@@ -317,8 +317,9 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
         //
         // With an edit waiting for Apply the window keeps its own copy, exactly
         // as reloadIfMoved decides it: Apply means "what the window shows".
-        // start_at_login is not in the file at all -- it is the autostart entry
-        // -- so it is carried across rather than taken from the read.
+        // start_at_login is read from the autostart entry, not from the file
+        // (which carries the key and is not believed) -- so it is carried
+        // across rather than taken from the read.
         if (!pending_) {
             const bool login = config_.start_at_login;
             config_ = written;
@@ -350,26 +351,41 @@ void ConfigBridge::apply() {
     disk_mtime_ = vocem::Config::mtime();
     // The autostart entry is a file rather than a line in the settings, so it is
     // made to match here: the setting is the intent, the entry is the effect.
-    vocem::set_autostart(config_.start_at_login);
+    // Only when the two differ -- see set_autostart -- and a write that fails
+    // is said, and leaves the edit waiting, as a settings file that could not
+    // be written does.
+    if (config_.start_at_login != vocem::autostart_enabled() &&
+        !vocem::set_autostart(config_.start_at_login)) {
+        reportFailure(tr("The login entry could not be written to %1. Check that the directory "
+                         "exists and is writable.")
+                          .arg(vocem::autostart_entry_path()));
+        return;
+    }
     pending_ = false;
     emit pendingChanged();
     emit configChanged();
 }
 
 bool ConfigBridge::reportSave(bool saved) {
-    const QString error =
-        saved ? QString()
-              : tr("The settings could not be written to %1. Check that the directory exists "
-                   "and is writable.")
-                    .arg(QString::fromStdString(vocem::Config::path()));
+    if (!saved) {
+        reportFailure(tr("The settings could not be written to %1. Check that the directory "
+                         "exists and is writable.")
+                          .arg(QString::fromStdString(vocem::Config::path())));
+        return false;
+    }
+    if (!save_error_.isEmpty()) {
+        save_error_.clear();
+        emit saveErrorChanged();
+    }
+    return true;
+}
+
+void ConfigBridge::reportFailure(const QString& error) {
     if (error != save_error_) {
         save_error_ = error;
         emit saveErrorChanged();
     }
-    if (!saved) {
-        qWarning("vocem-config: could not write %s", vocem::Config::path().c_str());
-    }
-    return saved;
+    qWarning("vocem-config: %s", qPrintable(error));
 }
 
 void ConfigBridge::reloadIfMoved() {

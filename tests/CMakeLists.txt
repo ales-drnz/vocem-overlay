@@ -1318,6 +1318,15 @@ if(TARGET vocem-config)
     # assignment that grew the list removed the binding, and a family written
     # outside the window changed the box's text and not its row or its face.
     vocem_script_test(font_picker_follows ARGS "-DCONFIG_BINARY=$<TARGET_FILE:vocem-config>")
+    # "Start at login" reads the desktop's own "off" (Hidden=true,
+    # X-GNOME-Autostart-enabled=false), Apply of another setting leaves the
+    # entry alone, and a write that fails is said.
+    vocem_test(window_autostart SKIP
+        SOURCES window_autostart.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_autostart PROPERTIES AUTOMOC ON)
     vocem_test_run(window_daemon_slow_probe TARGET window_daemon_lifecycle
         ENV "VOCEM_WINDOW_DAEMON_SCENARIO=slow-probe" SKIP)
 endif()

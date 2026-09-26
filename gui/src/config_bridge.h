@@ -660,6 +660,8 @@ private:
     void setNumber(const char* key, float vocem::Config::*member, qreal value);
     // What save() answered, into saveError. True when it was written.
     bool reportSave(bool saved);
+    // A write that failed, into saveError and the log.
+    void reportFailure(const QString& error);
     // The file as it stands, when it moved under this window: an edit made by
     // hand or by a script is picked up rather than written over.
     void reloadIfMoved();

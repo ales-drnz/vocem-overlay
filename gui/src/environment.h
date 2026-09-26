@@ -551,19 +551,54 @@ inline QString autostart_entry_path() {
     return root + QStringLiteral("/autostart/io.github.ales_drnz.vocem_overlay.desktop");
 }
 
-inline bool autostart_enabled() { return QFile::exists(autostart_entry_path()); }
+// Whether the desktop will start this window at login: the entry is there AND
+// nothing in it switches it off. The desktops switch an entry off without
+// deleting it -- the Autostart specification's Hidden=true, which XFCE's
+// settings write, and GNOME's X-GNOME-Autostart-enabled=false -- and this used
+// to be a bare existence test, so the switch said "on" for a window that would
+// not start. Only the [Desktop Entry] group counts: an action group may carry
+// a key of the same name.
+inline bool autostart_enabled() {
+    QFile file(autostart_entry_path());
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
+    }
+    bool in_entry = false;
+    while (!file.atEnd()) {
+        const QByteArray line = file.readLine().trimmed();
+        if (line.startsWith('[')) {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        const int equals = line.indexOf('=');
+        if (!in_entry || equals <= 0) {
+            continue;
+        }
+        const QByteArray key = line.left(equals).trimmed();
+        const QByteArray value = line.mid(equals + 1).trimmed();
+        if ((key == "Hidden" && value == "true") ||
+            (key == "X-GNOME-Autostart-enabled" && value == "false")) {
+            return false;
+        }
+    }
+    return true;
+}
 
-inline void set_autostart(bool enabled) {
+// Makes the entry say `enabled`, and answers whether it does now. Off removes
+// the entry (see above for why it is not emptied); on writes this program's.
+// The caller writes only when the switch and autostart_enabled() differ: an
+// Apply of any setting used to rewrite the entry, which turned a desktop's own
+// "off" back on and threw away whatever the user had added to it.
+inline bool set_autostart(bool enabled) {
     const QString path = autostart_entry_path();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        return !QFile::exists(path) || QFile::remove(path);
     }
 
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        return;
+        return false;
     }
     // The executable by absolute path: a session's PATH is not this shell's, and
     // an entry that names a program the desktop cannot find fails silently.
@@ -581,6 +616,8 @@ inline void set_autostart(bool enabled) {
         << "Icon=io.github.ales_drnz.vocem_overlay\n"
         << "Terminal=false\n"
         << "X-GNOME-Autostart-enabled=true\n";
+    out.flush();
+    return out.status() == QTextStream::Ok && file.error() == QFileDevice::NoError;
 }
 
 }  // namespace vocem
