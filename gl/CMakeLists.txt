@@ -69,6 +69,8 @@ target_link_libraries(vocem_gl PRIVATE vocem_common ${CMAKE_DL_LIBS} Threads::Th
 # templates this library instantiates (vocem_gl.map says which escaped).
 target_link_options(vocem_gl PRIVATE
     "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/vocem_gl.map")
+# The C++ runtime inside, not NEEDED (the top-level CMakeLists.txt says why).
+target_link_options(vocem_gl PRIVATE ${VOCEM_INJECTED_RUNTIME_LINK_OPTIONS})
 set_target_properties(vocem_gl PROPERTIES
     LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/vocem_gl.map")
 

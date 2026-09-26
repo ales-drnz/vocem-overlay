@@ -1314,3 +1314,51 @@ vocem_m32_twin_run(gl_destroy_owner_thread TARGET gl_destroy_owner_thread
     ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
         "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=thread"
         "__GLX_VENDOR_LIBRARY_NAME=mesa" "LIBGL_ALWAYS_SOFTWARE=1")
+
+# A game whose runtime ships an older libstdc++ first on its search path: the
+# heavy libraries carry their C++ runtime inside them now, so the overlay loads
+# (gl_old_libstdcxx.cpp, old-runtime), and a load that fails is said by the
+# shim under VOCEM_DEBUG, with no other library loaded in its place
+# (unloadable). The stub is libstdc++ 6.0.21's version nodes and nothing else,
+# in a directory of its own so no other test's RUNPATH can reach it. The probe
+# carries its own runtime, or it would not start under the stub.
+function(vocem_old_libstdcxx_stub target)
+    add_library(${target} SHARED stub_old_libstdcxx.cpp)
+    set_target_properties(${target} PROPERTIES
+        OUTPUT_NAME "stdc++" SOVERSION 6
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${target}"
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/stub_old_libstdcxx.map")
+    target_compile_options(${target} PRIVATE ${ARGN})
+    target_link_options(${target} PRIVATE ${ARGN} -nostdlib++
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/stub_old_libstdcxx.map")
+endfunction()
+vocem_old_libstdcxx_stub(vocem_stub_old_libstdcxx)
+vocem_test(gl_old_libstdcxx LINK GL X11 LINK_OPTIONS -static-libstdc++ -static-libgcc
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=old-runtime"
+        "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/vocem_stub_old_libstdcxx" SKIP)
+add_dependencies(vocem_gl_old_libstdcxx vocem_stub_old_libstdcxx)
+vocem_test_run(gl_unloadable_library TARGET gl_old_libstdcxx
+    ENV ${VOCEM_SHIM_ENV} "VOCEM_GL_SCENARIO=unloadable"
+        "VOCEM_GL_LIBRARY=${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/libvocem_gl.so" SKIP)
+if(VOCEM_HAVE_M32)
+    vocem_old_libstdcxx_stub(vocem_stub_old_libstdcxx32 -m32)
+endif()
+vocem_m32_twin(gl_old_libstdcxx
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=old-runtime"
+        "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/vocem_stub_old_libstdcxx32"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+if(TARGET vocem_gl_old_libstdcxx32)
+    add_dependencies(vocem_gl_old_libstdcxx32 vocem_stub_old_libstdcxx32)
+endif()
+vocem_m32_twin_run(gl_unloadable_library TARGET gl_unloadable_library
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_SCENARIO=unloadable"
+        "VOCEM_GL_LIBRARY=${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/libvocem_gl.so")
+
+# The artefact half of the same: neither injected heavy library NEEDS the C++
+# runtime or binds a symbol of its versions, both widths (injected_runtime.cmake).
+vocem_script_test(injected_runtime ARGS
+    "-DGL=$<TARGET_FILE:vocem_gl>" "-DVK=$<TARGET_FILE:vocem_vk>"
+    "-DGL32=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+    "-DVK32=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")

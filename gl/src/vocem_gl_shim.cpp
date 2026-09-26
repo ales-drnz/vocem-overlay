@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "real_dlsym.h"
 
@@ -95,22 +96,61 @@ bool disabled() {
     return value == 1;
 }
 
+// A line on stderr without stdio: write(2) of the pieces, no buffer, no
+// allocation. Used once per process at most, on the present path, for the one
+// failure this file can have that looks exactly like success.
+void say(const char* a, const char* b = "", const char* c = "", const char* d = "") {
+    const char* parts[] = {"[vocem/gl-shim] ", a, b, c, d, "\n"};
+    for (const char* part : parts) {
+        size_t length = strlen(part);
+        while (length > 0) {
+            const ssize_t written = write(2, part, length);
+            if (written <= 0) {
+                return;
+            }
+            part += written;
+            length -= static_cast<size_t>(written);
+        }
+    }
+}
+
+// One attempt at the overlay library. Under VOCEM_DEBUG a refusal is said with
+// ld.so's own words: a game whose runtime puts an older libstdc++ first on its
+// search path used to lose the overlay with nothing said anywhere -- no line,
+// no application record, because the record is written by the library that
+// did not load (tests/gl_old_libstdcxx.cpp).
+void* try_load(const char* path, bool debug) {
+    void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle && debug) {
+        const char* why = dlerror();
+        say("could not load ", path, ": ", why ? why : "no reason given");
+    }
+    return handle;
+}
+
 void load_overlay() {
     if (__atomic_load_n(&g_load_attempted, __ATOMIC_ACQUIRE)) {
         return;
     }
     __atomic_store_n(&g_load_attempted, 1, __ATOMIC_RELEASE);
+    const char* debug_env = getenv("VOCEM_DEBUG");
+    const bool debug = debug_env && debug_env[0] == '1';
 
     // An absolute path can be given explicitly, which is what running from a build
     // tree needs: without it the overlay would have to be on the library search
     // path, and putting a build directory there for every process in the session is
     // a worse trade than one extra variable.
+    //
+    // When it is given it is the only path tried. The fallbacks below used to run
+    // after it as well, so a build-tree path that failed to load was answered by
+    // the INSTALLED library -- a mixed stack, this tree's shim drawing with the
+    // package's overlay, and nothing said so.
     const char* override_path = getenv("VOCEM_GL_LIBRARY");
+    const bool overridden = override_path && override_path[0];
 
     // RTLD_LOCAL: the overlay's symbols must not leak into the application's global
     // namespace, where they could shadow something it defines itself.
-    void* handle = dlopen(override_path && override_path[0] ? override_path : "libvocem_gl.so",
-                          RTLD_NOW | RTLD_LOCAL);
+    void* handle = try_load(overridden ? override_path : "libvocem_gl.so", debug);
 
     // Inside a container, by its path on the host.
     //
@@ -137,8 +177,8 @@ void load_overlay() {
     // load-bearing: dlopen walks the filesystem, and a resolution path runs inside
     // sandboxed processes where a file syscall is SIGSYS. See the comment block
     // above the dispatch table.
-    if (!handle) {
-        handle = dlopen("/run/host" VOCEM_LIBDIR "/libvocem_gl.so", RTLD_NOW | RTLD_LOCAL);
+    if (!handle && !overridden) {
+        handle = try_load("/run/host" VOCEM_LIBDIR "/libvocem_gl.so", debug);
     }
     // And by its own path, unprefixed. Inside a Flatpak the overlay is mounted
     // from the VulkanLayer extension at a directory the loader does not search:
@@ -146,11 +186,17 @@ void load_overlay() {
     // nothing and there is no /run/host either. The build that goes into the
     // extension compiles VOCEM_LIBDIR to where it will be mounted, which is the
     // one place left to look.
-    if (!handle) {
-        handle = dlopen(VOCEM_LIBDIR "/libvocem_gl.so", RTLD_NOW | RTLD_LOCAL);
+    if (!handle && !overridden) {
+        handle = try_load(VOCEM_LIBDIR "/libvocem_gl.so", debug);
     }
     if (!handle) {
-        return;  // not installed, or the wrong architecture: stay out of the way
+        // Not installed, or the wrong architecture, or refused: stay out of the
+        // way -- and, when asked, say that this process has no overlay, so the
+        // lines above are read as the verdict and not as noise.
+        if (debug) {
+            say("no overlay in this process: the overlay library did not load");
+        }
+        return;
     }
     // Stored with the atomic builtins, like every other slot in this file: a
     // second thread presenting at the same moment reads these after seeing
