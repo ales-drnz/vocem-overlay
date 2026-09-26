@@ -1287,3 +1287,66 @@ vocem_script_test(gl_beside_mangohud ARGS ${VOCEM_GL_PROBE_ARGS}
 # shape is built with bwrap rather than described; see the file's header.
 vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
+
+# ---- 0.1.11 common lane ----
+
+# A publish must not blank a game's frame: a writer thread publishes about ten
+# thousand self-checking states a second while StatePoll::poll runs a million
+# times beside it, in a private /dev/shm. No nullptr after the first read, no
+# torn snapshot, and a foreign ABI said with its version even after contention
+# -- and said again after a reattachment. Both widths: the segment is read by
+# both.
+vocem_test(state_poll_contention INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread
+    TIMEOUT 150 SKIP)
+vocem_m32_twin(state_poll_contention)
+
+# Another local user can make /dev/shm/vocem-<uid> first. The trust rule
+# (owner is this uid, a regular file, nothing for group or others) as a
+# function over struct stat, every case; then planted objects at 0666 and
+# 0640 in a private /dev/shm, which the state reader, the poll, the version
+# peek, the daemon's writer, the note reader and the note writer all refuse,
+# and the same objects at 0600, which they read.
+vocem_test(segment_trust INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt SKIP)
+vocem_m32_twin(segment_trust)
+
+# The injected code's log: two threads, 100000 lines each, into stderr and
+# VOCEM_LOG_FILE at once -- every line whole in both; the file's descriptor
+# carries FD_CLOEXEC; a VOCEM_LOG_FILE that cannot be opened is said. Both
+# widths: the logger is compiled into both injected libraries.
+vocem_test(overlay_log_lines LINK vocem_common pthread)
+vocem_m32_twin(overlay_log_lines)
+
+# A journal that cannot be created is not asked for on every frame: 100
+# frames of OverlaySession::journal_begin_once() against a read-only journal
+# directory, opendir() counted by interposition -- at most one attempt's two
+# walks, and the refusal said once.
+vocem_test(journal_retry_cadence IMGUI LINK vocem_common ${CMAKE_DL_LIBS} SKIP)
+
+# A journal's suffix is the end of its name: a cache path carrying
+# ".running" or ".done" in a directory name (a Flatpak id, a backup) must not
+# be cut there. The mapping for the review's cases, then a whole journal life
+# under such a path.
+vocem_test(journal_suffix)
+
+# A daemon that reopens a segment it did not unlink clears it under the
+# seqlock: a reader's sequence before and after the reopening differ (the
+# deterministic half, on a segment left at sequence 0), and a reader thread
+# beside a writer that reopens the same object in a loop never accepts a
+# half-cleared snapshot. Private /dev/shm, both widths.
+vocem_test(shm_reopen_clear INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread SKIP)
+vocem_m32_twin(shm_reopen_clear)
+
+# With no HOME the settings and the token are nowhere, never in the working
+# directory: a config.ini there that switches the overlay off is not
+# honoured, a token there is not read, and a save puts nothing there. Both
+# widths: Config::path() runs inside games.
+vocem_test(no_home)
+vocem_m32_twin(no_home)
+
+# The display's mode is the one being scanned out: every connector the
+# machine's tree reports carries the mode and rate an independent walk of the
+# kernel's CRTCs finds for its id, and says it is current; a fabricated tree
+# says it is not. A witness on this machine, where the running and preferred
+# heights agree (3840x2160 at 143.99 Hz against 60); display.h's header says
+# why the difference in height cannot be shown here.
+vocem_test(display_running_mode SKIP)

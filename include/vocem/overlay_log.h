@@ -12,8 +12,10 @@
 // never writes anywhere readable). A Vulkan game under the same launcher had
 // no way to be read at all. One logger now: the tag is the caller's, the two
 // variables are read once, and the file half is the same for both paths --
-// appended, line-buffered, pid on every line because every process in the
-// session that draws shares the one file.
+// appended (O_APPEND, O_CLOEXEC), one write(2) per whole line to each sink so
+// threads and processes sharing it never tear a line, pid on every line
+// because every process in the session that draws shares the one file. A
+// VOCEM_LOG_FILE that cannot be opened is said once on stderr.
 //
 // Off unless VOCEM_DEBUG=1 or VOCEM_LOG_FILE is set; the macro asks before
 // evaluating its arguments, so a line that is not wanted costs a load and a
@@ -30,7 +32,9 @@ namespace vocem {
 bool overlay_log_wanted();
 
 // One line: "[<tag>] <message>" on stderr when VOCEM_DEBUG=1, and
-// "[<tag> <pid>] <message>" appended to VOCEM_LOG_FILE when that is set.
+// "[<tag> <pid>] <message>" appended to VOCEM_LOG_FILE when that is set. Each
+// is formatted on the stack and written whole; a message is cut at about a
+// kilobyte. No allocation, no lock.
 void overlay_log(const char* tag, const char* format, ...)
     __attribute__((format(printf, 2, 3)));
 

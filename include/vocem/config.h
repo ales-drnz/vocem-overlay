@@ -376,7 +376,11 @@ struct Config {
             return std::string(xdg) + "/vocem/config.ini";
         }
         const char* home = std::getenv("HOME");
-        return std::string(home ? home : ".") + "/.config/vocem/config.ini";
+        if (!home || !*home) {
+            // Nowhere, never the game's working directory (paths.h says why).
+            return std::string(kNoHomeDirectory) + "/vocem/config.ini";
+        }
+        return std::string(home) + "/.config/vocem/config.ini";
     }
 
     // Returns the file's modification time in nanoseconds, or 0 when it does not

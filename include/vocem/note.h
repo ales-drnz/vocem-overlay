@@ -56,6 +56,7 @@
 
 #include "vocem/flatpak.h"
 #include "vocem/shared_state.h"
+#include "vocem/shm.h"
 
 namespace vocem {
 
@@ -164,6 +165,19 @@ private:
         if (fd_ < 0) {
             return false;
         }
+        // The words of a message are the last thing to write into an object
+        // another user made at our name (segment_trust_problem, shm.h).
+        // Refused and said, once per object met, and left where it is.
+        if (const char* problem = descriptor_trust_problem(fd_)) {
+            if (refusal_ != problem) {
+                std::fprintf(stderr, "vocemd: refusing the note segment %s: %s\n", name,
+                             problem);
+            }
+            refusal_ = problem;
+            close();
+            return false;
+        }
+        refusal_ = nullptr;
         // As in shm.h: a name created and not sized is a name every reader maps
         // and dies touching, so a failed creation unlinks it.
         if (ftruncate(fd_, sizeof(NoteShared)) != 0) {
@@ -184,6 +198,7 @@ private:
 
     int fd_ = -1;
     NoteShared* note_ = nullptr;
+    const char* refusal_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -207,11 +222,20 @@ public:
             return body_;
         }
         have_ = serial;
+        refusal_ = nullptr;
         std::memset(body_, 0, sizeof(body_));
 
         const int fd = open_note();
         if (fd < 0) {
             return body_;  // nothing published: the toast is a name alone
+        }
+        // Words from an object another user could have written are not the
+        // message (segment_trust_problem, shm.h): the toast is a name alone,
+        // and the caller can say why.
+        if (const char* problem = descriptor_trust_problem(fd)) {
+            refusal_ = problem;
+            ::close(fd);
+            return body_;
         }
         // The same guard the state reader has: an object shorter than the struct
         // maps fine and raises SIGBUS on the first touch, and this name is
@@ -260,6 +284,10 @@ public:
         }
     }
 
+    // Why the words of the current message were refused, or nullptr when
+    // they were not (an empty body then means nothing was published).
+    const char* refusal() const { return refusal_; }
+
     ~NoteReader() { forget(); }
 
 private:
@@ -280,6 +308,7 @@ private:
     }
 
     uint64_t have_ = 0;
+    const char* refusal_ = nullptr;
     char body_[kNotificationBodyCapacity] = {0};
 };
 
