@@ -422,10 +422,11 @@ private:
 // Outside GlOverlay -- a heap object behind atlas_worker(), leaked at exit the
 // way overlay() is -- so the ELF destructor below can wait for it without
 // constructing the overlay in a process that never drew. A pthread and
-// not a std::thread: this library is built without exceptions and std::thread
-// reports a refused clone by throwing, which would end the game; a refusal
-// here is a return code, and the build then happens on the game's thread as it
-// always did. Started and joined under g_gl_lock or by the destructor; its own
+// not a std::thread: std::thread reports a refused clone by throwing, and
+// nothing on this path catches -- the exception would end the game (this
+// library is compiled with exceptions; the Vulkan layer is not, where the same
+// throw is a terminate()). A refusal here is a return code, and the build then
+// happens on the game's thread as it always did. Started and joined under g_gl_lock or by the destructor; its own
 // mutex makes the two exclusive.
 struct AtlasWorker {
     std::mutex lock;
@@ -505,8 +506,15 @@ public:
         tex_parameter_ = gl_symbol<PFN_glTexParameteri>("glTexParameteri");
         get_integer_ = gl_symbol<PFN_glGetIntegerv>("glGetIntegerv");
         // The two that make an upload safe in somebody else's renderer. Core
-        // since GL 1.0 and 1.5; a context without them gets no avatars rather
-        // than an upload that reads wherever the game's state points.
+        // since GL 1.0 and 1.5. A null here means no GL could be reached at
+        // all -- no symbol in scope and no dispatcher known yet -- and then
+        // there are no avatars rather than an upload that reads wherever the
+        // game's state points. It does NOT mean the context lacks them: once
+        // a dispatcher is known, gl_symbol() never answers null for a gl*
+        // name, because glvnd's dispatchers hand out a stub for any name at
+        // all (measured: glXGetProcAddressARB and eglGetProcAddress both
+        // answer "glNoSuchFunctionVocem"), and a stub for a function the
+        // context does not have does nothing.
         pixel_store_ = gl_symbol<PFN_glPixelStorei>("glPixelStorei");
         bind_buffer_ = gl_symbol<PFN_glBindBuffer>("glBindBuffer");
         // Core since GL 1.0, and not part of `resolved_`: without them the
@@ -1493,8 +1501,11 @@ private:
             failed_ = true;
             return false;
         }
-        // Resolved once, beside the rest: a context without it is older than
-        // framebuffer objects, in which case there is nothing to retarget.
+        // Resolved once, beside the rest. Null only when no GL can be reached
+        // at all (see GlAvatarProvider::resolve): under glvnd a context older
+        // than framebuffer objects still gets a pointer -- a stub that does
+        // nothing -- and it is GL_FRAMEBUFFER_BINDING reading 0 there, not
+        // this pointer, that leaves nothing to retarget.
         bind_framebuffer_ = gl_symbol<PFN_glBindFramebuffer>("glBindFramebuffer");
         // For uploading a folded emoji into the font texture in place. Core
         // since GL 1.1; without it a fold replaces the texture whole, as a

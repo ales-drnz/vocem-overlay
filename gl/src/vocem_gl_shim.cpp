@@ -24,7 +24,9 @@
 // dynamic initialiser would emit __cxa_guard calls, which pull in libstdc++ -- and
 // this object is mapped into every process in the session, including ones that
 // never load libstdc++ themselves. Plain globals plus atomic builtins keep the
-// dependency list at libc and libdl.
+// dependency list at libc alone (glibc 2.34 folded libdl into it; NEEDED is
+// libc.so.6 and nothing else at both widths, which tests/shim_artifact.cmake
+// holds, and the link refuses anything undefined outside it).
 
 #include <dlfcn.h>
 #include <stdio.h>
