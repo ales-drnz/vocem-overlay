@@ -429,6 +429,13 @@ int g_present_count = 0;
 // reads only what came after: the warm-up presents with no semaphores of the
 // probe's, and the rule for a chained frame is not the rule for those.
 long long g_scene_began = 0;
+// The intervals of this probe's own vkDestroySwapchainKHR calls, read against
+// the witness's `wait` stamps: the layer tears its per-swapchain resources
+// down inside that call, and a vkDeviceWaitIdle there needs every queue of the
+// device externally synchronised, where the application synchronises only the
+// swapchain.
+Interval g_destroys[16];
+int g_destroy_count = 0;
 
 long long now_ns() {
     timespec now{};
@@ -510,6 +517,34 @@ long count_events(const char* path, const char* event, long* inside, long* on_pa
         }
         if (on_path && on_present_path(stamp)) {
             ++*on_path;
+        }
+    }
+    fclose(file);
+    return count;
+}
+
+// How many report lines carry `event` and `detail` (a word of the line, e.g.
+// the function a `wait` names) inside one of the probe's vkDestroySwapchainKHR
+// calls. -1 when the report does not exist.
+long events_inside_destroys(const char* path, const char* event, const char* detail) {
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        return -1;
+    }
+    long count = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        long long stamp = 0;
+        char word[128] = {0};
+        if (sscanf(line, "%lld %127s", &stamp, word) != 2 || strcmp(word, event) != 0 ||
+            !strstr(line, detail)) {
+            continue;
+        }
+        for (int i = 0; i < g_destroy_count; ++i) {
+            if (stamp >= g_destroys[i].from && stamp <= g_destroys[i].to) {
+                ++count;
+                break;
+            }
         }
     }
     fclose(file);
@@ -1705,7 +1740,13 @@ int main() {
         vk.vkDeviceWaitIdle(device);
         vk.vkDestroyFence(device, fence, nullptr);
         vk.vkDestroyCommandPool(device, pool, nullptr);
-        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        {
+            const long long destroy_from = now_ns();
+            vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+            if (g_destroy_count < 16) {
+                g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+            }
+        }
         vk.vkDestroyDevice(device, nullptr);
         vk.vkDestroySurfaceKHR(instance, surface, nullptr);
         vk.vkDestroyInstance(instance, nullptr);
@@ -1945,7 +1986,13 @@ int main() {
 
         // The second goes away, and the first presents again.
         vk.vkDeviceWaitIdle(device_b);
-        vk.vkDestroySwapchainKHR(device_b, swapchain_b, nullptr);
+        {
+            const long long destroy_from = now_ns();
+            vk.vkDestroySwapchainKHR(device_b, swapchain_b, nullptr);
+            if (g_destroy_count < 16) {
+                g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+            }
+        }
         vk.vkDestroyFence(device_b, fence_b, nullptr);
         vk.vkDestroyCommandPool(device_b, pool_b, nullptr);
         vk.vkDestroyDevice(device_b, nullptr);
@@ -1979,7 +2026,13 @@ int main() {
             return 1;
         }
         vk.vkDeviceWaitIdle(device);
-        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        {
+            const long long destroy_from = now_ns();
+            vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+            if (g_destroy_count < 16) {
+                g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+            }
+        }
         swapchain = replacement;
         image_count = 0;
         vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, nullptr);
@@ -2263,7 +2316,13 @@ int main() {
     vk.vkDeviceWaitIdle(device);
     vk.vkDestroyFence(device, fence, nullptr);
     vk.vkDestroyCommandPool(device, pool, nullptr);
-    vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+    {
+        const long long destroy_from = now_ns();
+        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        if (g_destroy_count < 16) {
+            g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
+        }
+    }
     vk.vkDestroyDevice(device, nullptr);
     vk.vkDestroySurfaceKHR(instance, surface, nullptr);
     vk.vkDestroyInstance(instance, nullptr);
@@ -2374,6 +2433,18 @@ int main() {
                   "no queue, device or fence wait ran on the present path (rules 8 and 10): what "
                   "waits, waits after the present was handed down");
         }
+        // And no device-wide wait inside the application's own
+        // vkDestroySwapchainKHR: the layer tears down its per-swapchain
+        // resources there, and a present or a destroy synchronises the one
+        // swapchain, not every queue of the device (the waits it may make are
+        // on its own fences).
+        const long idle_in_destroy =
+            events_inside_destroys(witness_report, "wait", "vkDeviceWaitIdle");
+        printf("     %d swapchain destroy call(s); vkDeviceWaitIdle inside them: %ld\n",
+               g_destroy_count, idle_in_destroy);
+        check(g_destroy_count > 0 && idle_in_destroy == 0,
+              "no vkDeviceWaitIdle inside vkDestroySwapchainKHR: the swapchain's teardown waits "
+              "on its own fences");
         check(signalled == 0, "no fence was handed to vkQueueSubmit already signalled");
         check(mismatches == 0,
               "no pipeline was bound in a render pass it was not built against");

@@ -81,7 +81,6 @@ struct InstanceDispatch {
 struct DeviceDispatch {
     PFN_vkGetDeviceProcAddr GetDeviceProcAddr = nullptr;
     PFN_vkDestroyDevice DestroyDevice = nullptr;
-    PFN_vkDeviceWaitIdle DeviceWaitIdle = nullptr;
     PFN_vkGetDeviceQueue GetDeviceQueue = nullptr;
     PFN_vkGetDeviceQueue2 GetDeviceQueue2 = nullptr;
     PFN_vkCreateSwapchainKHR CreateSwapchainKHR = nullptr;
@@ -162,18 +161,10 @@ struct SwapchainData {
     // frame, for each of the pass-through reasons draw_overlay() can find.
     bool said_pass_through = false;
 
-    // Whether anything of ours was ever submitted on this swapchain. What
-    // decides if tearing it down needs to wait for the device: a swapchain
-    // whose build failed before its first submit has nothing in flight, and a
-    // vkDeviceWaitIdle for it is a stall inside the present for nothing.
-    bool ever_submitted() const {
-        for (uint8_t flag : submitted) {
-            if (flag) {
-                return true;
-            }
-        }
-        return false;
-    }
+    // Whether any of our submits on this swapchain ever signalled one of the
+    // semaphores above, which a present then waited on. What decides whether
+    // the teardown may destroy them at once (destroy_swapchain_resources).
+    bool signalled_any = false;
 };
 
 struct DeviceData {
@@ -190,6 +181,10 @@ struct DeviceData {
     // take one, and nothing used to ask. Empty when the query was unavailable,
     // in which case the family is taken on trust as it always was.
     std::vector<VkQueueFlags> family_flags;
+    // Semaphores of swapchains already destroyed, which a present may still
+    // be waiting on: destroyed with the device, or once more than
+    // kMaxRetiredSemaphores are kept (destroy_swapchain_resources says why).
+    std::vector<VkSemaphore> retired_semaphores;
 };
 
 // The loader hands us dispatchable handles; keying on the raw pointer is the
@@ -451,7 +446,7 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
 // ---------------------------------------------------------------------------
 
 // Defined with the swapchain code below; vocem_DestroyDevice needs it first.
-void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, SwapchainData& sc);
+void destroy_swapchain_resources(DeviceData& dev, SwapchainData& sc, bool device_going);
 
 VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateDevice(VkPhysicalDevice physicalDevice,
                                                   const VkDeviceCreateInfo* pCreateInfo,
@@ -521,7 +516,6 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateDevice(VkPhysicalDevice physicalDevic
     d.name = reinterpret_cast<PFN_vk##name>(next_gdpa(*pDevice, "vk" #name))
 
     VOCEM_LOAD(DestroyDevice);
-    VOCEM_LOAD(DeviceWaitIdle);
     VOCEM_LOAD(GetDeviceQueue);
     VOCEM_LOAD(GetDeviceQueue2);
     VOCEM_LOAD(CreateSwapchainKHR);
@@ -585,11 +579,16 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
             // longer exists.
             for (auto sc = g_swapchains.begin(); sc != g_swapchains.end();) {
                 if (sc->second.device == device) {
-                    destroy_swapchain_resources(it->second.disp, device, sc->second);
+                    destroy_swapchain_resources(it->second, sc->second, true);
                     sc = g_swapchains.erase(sc);
                 } else {
                     ++sc;
                 }
+            }
+            // The semaphores kept past their swapchains: the application has
+            // finished everything on the device before destroying it.
+            for (VkSemaphore semaphore : it->second.retired_semaphores) {
+                it->second.disp.DestroySemaphore(device, semaphore, nullptr);
             }
             g_devices.erase(it);
         }
@@ -725,20 +724,63 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateSwapchainKHR(VkDevice device,
     return VK_SUCCESS;
 }
 
+// How many semaphores of destroyed swapchains a device keeps before the oldest
+// go: three a swapchain, so about twenty recreations.
+constexpr size_t kMaxRetiredSemaphores = 64;
+
 // Caller must hold g_lock.
-void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, SwapchainData& sc) {
-    // Only when something of ours may still be executing. The failed-build
-    // path reaches here from inside the present, before anything was ever
-    // submitted, and a device-wide wait there is a stall in somebody's frame
-    // for nothing (rule 8).
-    if (d.DeviceWaitIdle && sc.ever_submitted()) {
-        d.DeviceWaitIdle(device);
+//
+// No vkDeviceWaitIdle in here. There was one, for any swapchain that had ever
+// had a submit of ours, and it runs inside the application's
+// vkDestroySwapchainKHR, which synchronises that swapchain and nothing else --
+// while vkDeviceWaitIdle needs every queue of the device externally
+// synchronised: a game submitting to another queue from another thread at that
+// moment was a violation of the specification's threading rules. Measured
+// with the witness layer counting waits inside the probe's own
+// vkDestroySwapchainKHR calls: one vkDeviceWaitIdle in each, in every scene
+// that drew (vk_present_draw). What of ours can still be executing is our own
+// submissions, one per image, each with its fence: they are waited for,
+// which needs no queue's synchronisation.
+//
+// The semaphores those submissions signalled are another matter: a present
+// waited on each, and a fence says nothing about when the presentation engine
+// consumed it -- which is what VK_EXT_swapchain_maintenance1's present fences
+// exist to say, and an application is not obliged to use them. So they are
+// kept on the device, and destroyed with it (`device_going`, where the
+// application has already finished everything), or once more than
+// kMaxRetiredSemaphores have piled up, oldest first: a semaphore twenty
+// swapchains old whose present has not consumed it is a bound reasoned, not
+// measured. The failed-build path reaches here from inside the present with
+// nothing ever submitted, and destroys them at once.
+void destroy_swapchain_resources(DeviceData& dev, SwapchainData& sc, bool device_going) {
+    const DeviceDispatch& d = dev.disp;
+    const VkDevice device = dev.device;
+    for (size_t i = 0; i < sc.fences.size() && i < sc.submitted.size(); ++i) {
+        if (sc.submitted[i] && sc.fences[i] != VK_NULL_HANDLE && d.WaitForFences) {
+            d.WaitForFences(device, 1, &sc.fences[i], VK_TRUE, UINT64_MAX);
+        }
     }
     for (VkFence fence : sc.fences) {
         if (fence != VK_NULL_HANDLE) d.DestroyFence(device, fence, nullptr);
     }
     for (VkSemaphore semaphore : sc.semaphores) {
-        if (semaphore != VK_NULL_HANDLE) d.DestroySemaphore(device, semaphore, nullptr);
+        if (semaphore == VK_NULL_HANDLE) {
+            continue;
+        }
+        if (sc.signalled_any && !device_going) {
+            dev.retired_semaphores.push_back(semaphore);
+        } else {
+            d.DestroySemaphore(device, semaphore, nullptr);
+        }
+    }
+    if (dev.retired_semaphores.size() > kMaxRetiredSemaphores) {
+        const size_t excess = dev.retired_semaphores.size() - kMaxRetiredSemaphores;
+        for (size_t i = 0; i < excess; ++i) {
+            d.DestroySemaphore(device, dev.retired_semaphores[i], nullptr);
+        }
+        dev.retired_semaphores.erase(dev.retired_semaphores.begin(),
+                                     dev.retired_semaphores.begin() +
+                                         static_cast<std::ptrdiff_t>(excess));
     }
     for (VkFramebuffer fb : sc.framebuffers) {
         if (fb != VK_NULL_HANDLE) d.DestroyFramebuffer(device, fb, nullptr);
@@ -759,6 +801,8 @@ void destroy_swapchain_resources(const DeviceDispatch& d, VkDevice device, Swapc
     sc.pool = VK_NULL_HANDLE;
     sc.render_pass = VK_NULL_HANDLE;
     sc.usable = false;
+    sc.submitted.clear();
+    sc.signalled_any = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL vocem_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
@@ -774,7 +818,7 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroySwapchainKHR(VkDevice device, VkSwapchai
 
         auto it = g_swapchains.find(swapchain);
         if (it != g_swapchains.end()) {
-            destroy_swapchain_resources(dev->disp, device, it->second);
+            destroy_swapchain_resources(*dev, it->second, false);
             g_swapchains.erase(it);
         }
     }
@@ -1180,6 +1224,7 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
         return VK_NULL_HANDLE;
     }
     sc.submitted[image_index] = 1;
+    sc.signalled_any = true;
     return sc.semaphores[image_index];
 }
 
@@ -1366,7 +1411,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                     if (!sc.attempted && family != UINT32_MAX) {
                         if (!build_swapchain_resources(*dev, sc, pPresentInfo->pSwapchains[0],
                                                        family)) {
-                            destroy_swapchain_resources(dev->disp, dev->device, sc);
+                            destroy_swapchain_resources(*dev, sc, false);
                         }
                     }
 
