@@ -461,12 +461,21 @@ ScrollablePage {
                     familiesReady = true;
                     // A ComboBox puts its current index back to 0 whenever its
                     // model is replaced, so the index is set again here, after
-                    // the list has grown. A binding cannot do it: it runs on the
-                    // count change and the reset comes after it, and then
-                    // nothing re-evaluates. Measured before this line: with
-                    // "DejaVu Sans" set, the menu opened at the top of the list
-                    // with "Built-in (Inter)" highlighted.
-                    currentIndex = Math.max(0, families.indexOf(root.config.fontFamily));
+                    // the list has grown. The binding alone cannot do it: it
+                    // runs on the count change and the reset comes after it,
+                    // and then nothing re-evaluates. Measured before this line:
+                    // with "DejaVu Sans" set, the menu opened at the top of the
+                    // list with "Built-in (Inter)" highlighted.
+                    //
+                    // Set AS a binding, not as a value. A plain assignment in
+                    // QML removes the binding it lands on, and that is what
+                    // this line used to do: from the first opening on, a
+                    // family written outside the window changed the box's
+                    // text (displayText reads the setting) and not its row or
+                    // the face it is drawn in, and setFontFamily's refusal --
+                    // which puts the box back by re-running this binding --
+                    // put nothing back (tests/font_picker_follows.cmake).
+                    currentIndex = Qt.binding(function() { return fontSetIndex; });
                 }
 
                 readonly property var families:
@@ -544,7 +553,13 @@ ScrollablePage {
                 // The name shown is the name in the settings, always.
                 displayText: root.config.fontFamily === "" ? qsTr("Built-in (Inter)")
                                                            : root.config.fontFamily
-                currentIndex: Math.max(0, families.indexOf(root.config.fontFamily))
+                // Where the setting's family sits in the list, and where the
+                // box is: published for the geometry dump, so a test can see
+                // the two part (tests/font_picker_follows.cmake).
+                readonly property int fontSetIndex:
+                    Math.max(0, families.indexOf(root.config.fontFamily))
+                readonly property int fontIndex: currentIndex
+                currentIndex: fontSetIndex
                 onActivated: root.config.fontFamily = families[currentIndex]
                 Accessible.name: qsTr("Overlay font")
                 font.family: familyFor(currentIndex)

@@ -33,7 +33,8 @@
 # real one does for a stopped unit. That makes the test hermetic, keeps it away
 # from the owner's live daemon -- which may be serving a voice channel while this
 # runs -- and means it measures the same thing on a machine with no systemd at
-# all. `XDG_CACHE_HOME` is a scratch directory, so no real registry is read.
+# all. `XDG_CACHE_HOME` and `XDG_CONFIG_HOME` are scratch directories, so no
+# real registry and no real settings are read.
 
 # WORK_DIR and not CMAKE_CURRENT_BINARY_DIR, which the other .cmake tests here
 # are passed and which this one deliberately does not use: under `cmake -P` that
@@ -76,6 +77,7 @@ execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env
             "PATH=${work}/bin:$ENV{PATH}"
             "XDG_CACHE_HOME=${work}/cache"
+            "XDG_CONFIG_HOME=${work}/config"
             sh "${SOURCE_DIR}/scripts/vocem-why.sh"
     OUTPUT_VARIABLE output
     ERROR_VARIABLE errors
@@ -170,6 +172,7 @@ function(run_why target out_output out_errors)
         COMMAND "${CMAKE_COMMAND}" -E env
                 "PATH=${work}/bin:$ENV{PATH}"
                 "XDG_CACHE_HOME=${work}/cache"
+                "XDG_CONFIG_HOME=${work}/config"
                 sh "${SOURCE_DIR}/scripts/vocem-why.sh" "${target}"
         OUTPUT_VARIABLE captured
         ERROR_VARIABLE complaints
@@ -202,6 +205,56 @@ if(NOT own_errors STREQUAL "")
     message(FATAL_ERROR "the script wrote to stderr while reporting on a live process")
 endif()
 message("ok   the per-process report runs for an ordinary process, in silence")
+
+# Leg 1b: what the USER decided, which the overlay obeys before anything the
+# report above measures. The script never looked: not at VOCEM_DISABLE in the
+# process's environment, not at the master switch `enabled`, not at whether
+# hidden_apps or shown_apps names the process -- 0 references to any of them
+# (measured on 0.1.10) -- so a game the user had hidden came out as "shim
+# loaded: yes, GL overlay: yes" with nothing to say why it drew nothing. The
+# target is a copy of `sleep` named whyprobe, started in the same shell as the
+# script with VOCEM_DISABLE=1, and a scratch config.ini that switches the
+# overlay off and both hides and shows it (hidden wins, as in draw_here).
+find_program(SLEEP_BINARY sleep)
+if(NOT SLEEP_BINARY)
+    message(FATAL_ERROR "no sleep binary to make a target of")
+endif()
+file(MAKE_DIRECTORY "${work}/config/vocem" "${work}/target")
+file(WRITE "${work}/config/vocem/config.ini"
+     "# the user's own\nenabled = false\nhidden_apps = other, whyprobe\nshown_apps = whyprobe\n")
+execute_process(COMMAND cp "${SLEEP_BINARY}" "${work}/target/whyprobe")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "PATH=${work}/bin:$ENV{PATH}"
+            "XDG_CACHE_HOME=${work}/cache"
+            "XDG_CONFIG_HOME=${work}/config"
+            sh -c "VOCEM_DISABLE=1 '${work}/target/whyprobe' 30 & target=$!; sleep 0.3; sh '${SOURCE_DIR}/scripts/vocem-why.sh' whyprobe; kill $target"
+    OUTPUT_VARIABLE switches_output
+    ERROR_VARIABLE switches_errors
+    RESULT_VARIABLE ignored
+    TIMEOUT 60)
+message("---- the user's switches ----")
+message("${switches_output}")
+if(NOT switches_output MATCHES "== whyprobe")
+    message(FATAL_ERROR "the script did not report on the target it was given")
+endif()
+if(NOT switches_output MATCHES "VOCEM_DISABLE:[ \t]*1")
+    message(FATAL_ERROR "the report does not say the process runs with VOCEM_DISABLE=1")
+endif()
+if(NOT switches_output MATCHES "enabled = false")
+    message(FATAL_ERROR "the report does not say the master switch is off")
+endif()
+if(NOT switches_output MATCHES "hidden_apps:[^\n]*whyprobe")
+    message(FATAL_ERROR "the report does not say hidden_apps names the process")
+endif()
+if(NOT switches_output MATCHES "shown_apps:[^\n]*whyprobe")
+    message(FATAL_ERROR "the report does not say shown_apps names the process too")
+endif()
+if(NOT switches_errors STREQUAL "")
+    message("${switches_errors}")
+    message(FATAL_ERROR "the script wrote to stderr while reading the user's switches")
+endif()
+message("ok   and says what the user decided: VOCEM_DISABLE, the master switch, the two lists")
 
 # Leg 2: a kernel thread -- no map, another uid.
 run_why("kthreadd" kernel_output kernel_errors)

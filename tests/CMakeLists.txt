@@ -1288,6 +1288,137 @@ vocem_script_test(gl_beside_mangohud ARGS ${VOCEM_GL_PROBE_ARGS}
 vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
 
+# ---- 0.1.11 common lane ----
+
+# A publish must not blank a game's frame: a writer thread publishes about ten
+# thousand self-checking states a second while StatePoll::poll runs a million
+# times beside it, in a private /dev/shm. No nullptr after the first read, no
+# torn snapshot, and a foreign ABI said with its version even after contention
+# -- and said again after a reattachment. Both widths: the segment is read by
+# both.
+vocem_test(state_poll_contention INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread
+    TIMEOUT 150 SKIP)
+vocem_m32_twin(state_poll_contention)
+
+# Another local user can make /dev/shm/vocem-<uid> first. The trust rule
+# (owner is this uid, a regular file, nothing for group or others) as a
+# function over struct stat, every case; then planted objects at 0666 and
+# 0640 in a private /dev/shm, which the state reader, the poll, the version
+# peek, the daemon's writer, the note reader and the note writer all refuse,
+# and the same objects at 0600, which they read.
+vocem_test(segment_trust INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt SKIP)
+vocem_m32_twin(segment_trust)
+
+# The injected code's log: two threads, 100000 lines each, into stderr and
+# VOCEM_LOG_FILE at once -- every line whole in both; the file's descriptor
+# carries FD_CLOEXEC; a VOCEM_LOG_FILE that cannot be opened is said. Both
+# widths: the logger is compiled into both injected libraries.
+vocem_test(overlay_log_lines LINK vocem_common pthread)
+vocem_m32_twin(overlay_log_lines)
+
+# A journal that cannot be created is not asked for on every frame: 100
+# frames of OverlaySession::journal_begin_once() against a read-only journal
+# directory, opendir() counted by interposition -- at most one attempt's two
+# walks, and the refusal said once.
+vocem_test(journal_retry_cadence IMGUI LINK vocem_common ${CMAKE_DL_LIBS} SKIP)
+
+# A journal's suffix is the end of its name: a cache path carrying
+# ".running" or ".done" in a directory name (a Flatpak id, a backup) must not
+# be cut there. The mapping for the review's cases, then a whole journal life
+# under such a path.
+vocem_test(journal_suffix)
+
+# A daemon that reopens a segment it did not unlink clears it under the
+# seqlock: a reader's sequence before and after the reopening differ (the
+# deterministic half, on a segment left at sequence 0), and a reader thread
+# beside a writer that reopens the same object in a loop never accepts a
+# half-cleared snapshot. Private /dev/shm, both widths.
+vocem_test(shm_reopen_clear INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt pthread SKIP)
+vocem_m32_twin(shm_reopen_clear)
+
+# With no HOME the settings and the token are nowhere, never in the working
+# directory: a config.ini there that switches the overlay off is not
+# honoured, a token there is not read, and a save puts nothing there. Both
+# widths: Config::path() runs inside games.
+vocem_test(no_home)
+vocem_m32_twin(no_home)
+
+# The display's mode is the one being scanned out: every connector the
+# machine's tree reports carries the mode and rate an independent walk of the
+# kernel's CRTCs finds for its id, and says it is current; a fabricated tree
+# says it is not. A witness on this machine, where the running and preferred
+# heights agree (3840x2160 at 143.99 Hz against 60); display.h's header says
+# why the difference in height cannot be shown here.
+vocem_test(display_running_mode SKIP)
+
+# ---- 0.1.11 gui lane ----
+# The window's save rewrites the file in place: comments, unknown keys, a
+# symlink and the file's mode all survive a click on a switch. The fresh
+# file it used to rename over config.ini lost every one of them.
+vocem_test(config_rewrite_in_place)
+
+# A name holding the lists' separator (or edge whitespace) is refused, where
+# it used to be stored as two other names. The overlay reads these lists
+# inside games at both widths, so both are run.
+vocem_test(apps_list_separator)
+vocem_m32_twin(apps_list_separator)
+
+# Nothing installed carries a RUNPATH: Qt's deployment defaults gave the
+# packaged vocem-config $ORIGIN:$ORIGIN/../lib. Measured on a scratch install.
+vocem_script_test(installed_runpath ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}")
+
+# A Vulkan loader in depends=() only if something shipped NEEDs libvulkan --
+# nothing does -- and the two PKGBUILDs and .SRCINFO list the same depends and
+# optdepends.
+vocem_script_test(package_depends_needed
+    ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DBUILD32_DIR=${VOCEM_BUILD32_DIR}")
+
+if(TARGET vocem-config)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
+    find_package(Fontconfig QUIET)
+
+    # The window never signals the daemon it did not ask about. Under the
+    # harness the unit question was never asked, so every stop -- Quit, a
+    # close with no tray, Re-authorise -- fell to `pkill -TERM -x vocemd`, the
+    # owner's live daemon included; a real launch did the same for the
+    # question's first seconds, and a question past its cap exec'd a second
+    # vocemd. Stubs on PATH log what would have run.
+    vocem_test(window_daemon_lifecycle NO_TEST
+        SOURCES window_daemon_lifecycle.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_daemon_lifecycle PROPERTIES AUTOMOC ON)
+    vocem_test_run(window_daemon_harness TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=harness" SKIP)
+    vocem_test_run(window_daemon_early_quit TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=early-quit" SKIP)
+    # The font box follows the setting after its list has been opened: the
+    # assignment that grew the list removed the binding, and a family written
+    # outside the window changed the box's text and not its row or its face.
+    vocem_script_test(font_picker_follows ARGS "-DCONFIG_BINARY=$<TARGET_FILE:vocem-config>")
+    # "Start at login" reads the desktop's own "off" (Hidden=true,
+    # X-GNOME-Autostart-enabled=false), Apply of another setting leaves the
+    # entry alone, and a write that fails is said.
+    vocem_test(window_autostart SKIP
+        SOURCES window_autostart.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_autostart PROPERTIES AUTOMOC ON)
+    # "Active in this session" only when this session's environment has the
+    # preload: the user manager carrying it is a different fact, and programs
+    # started from the desktop do not get it until the next login.
+    vocem_test(window_preload_state SKIP
+        SOURCES window_preload_state.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_window_preload_state PROPERTIES AUTOMOC ON)
+    vocem_test_run(window_daemon_slow_probe TARGET window_daemon_lifecycle
+        ENV "VOCEM_WINDOW_DAEMON_SCENARIO=slow-probe" SKIP)
+endif()
+
 # ---- 0.1.11 daemon lane ----
 # Who the Flatpak bridge serves the voice channel to: a sandbox's own
 # `drawing=1` is its word, and the host decides by application id -- an

@@ -24,13 +24,18 @@
 #ifndef VOCEM_CONFIG_H
 #define VOCEM_CONFIG_H
 
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "vocem/flatpak.h"
 #include "vocem/paths.h"
@@ -383,7 +388,11 @@ struct Config {
             return std::string(xdg) + "/vocem/config.ini";
         }
         const char* home = std::getenv("HOME");
-        return std::string(home ? home : ".") + "/.config/vocem/config.ini";
+        if (!home || !*home) {
+            // Nowhere, never the game's working directory (paths.h says why).
+            return std::string(kNoHomeDirectory) + "/vocem/config.ini";
+        }
+        return std::string(home) + "/.config/vocem/config.ini";
     }
 
     // Returns the file's modification time in nanoseconds, or 0 when it does not
@@ -584,88 +593,252 @@ struct Config {
         std::fclose(file);
     }
 
+    // One line of the file: the section it is written under when the file
+    // does not already carry it, the key, and the value as text.
+    struct Entry {
+        const char* section;
+        const char* key;
+        std::string value;
+    };
+
+    // Everything the window writes, in the order and under the sections a new
+    // file gets them.
+    std::vector<Entry> entries() const {
+        const auto flag = [](bool value) { return std::string(value ? "true" : "false"); };
+        return {
+            {"position", "position_x", decimal(position_x, 4)},
+            {"position", "position_y", decimal(position_y, 4)},
+            {"appearance", "scale", decimal(scale, 2)},
+            {"appearance", "panel_layout", layout_text(panel_layout)},
+            {"appearance", "panel_box", box_text(panel_box)},
+            {"appearance", "panel_colour", colour_text(panel_colour)},
+            {"appearance", "speaking_colour", colour_text(speaking_colour)},
+            {"appearance", "text_idle_colour", colour_or_auto_text(text_idle_colour)},
+            {"appearance", "text_speaking_colour", colour_or_auto_text(text_speaking_colour)},
+            {"appearance", "opacity", decimal(opacity, 2)},
+            {"appearance", "avatar_size", decimal(avatar_size, 2)},
+            {"appearance", "avatar_idle_opacity", decimal(avatar_idle_opacity, 2)},
+            {"appearance", "text_shadow", flag(text_shadow)},
+            {"appearance", "show_channel_name", flag(show_channel_name)},
+            {"notifications", "notifications_enabled", flag(notifications_enabled)},
+            {"notifications", "notification_corner", std::to_string(notification_corner)},
+            {"notifications", "notification_seconds", decimal(notification_seconds, 1)},
+            {"notifications", "notification_opacity", decimal(notification_opacity, 2)},
+            {"notifications", "notification_colour", colour_text(notification_colour)},
+            {"notifications", "notification_text_colour",
+             colour_or_auto_text(notification_text_colour)},
+            {"notifications", "notification_scale", decimal(notification_scale, 2)},
+            {"spacing", "screen_margin", decimal(screen_margin, 1)},
+            {"spacing", "notification_margin", decimal(notification_margin, 1)},
+            {"spacing", "font_size", decimal(font_size, 1)},
+            {"spacing", "font_family", font_family},
+            {"spacing", "font_path", font_path},
+            {"spacing", "font_path_strong", font_path_strong},
+            {"spacing", "box_padding_x", decimal(box_padding_x, 1)},
+            {"spacing", "box_padding_y", decimal(box_padding_y, 1)},
+            {"spacing", "avatar_gap", decimal(avatar_gap, 1)},
+            {"spacing", "row_spacing", decimal(row_spacing, 1)},
+            {"voice", "only_speaking", flag(only_speaking)},
+            {"voice", "hide_self", flag(hide_self)},
+            {"voice", "show_muted_state", flag(show_muted_state)},
+            {"behaviour", "panel_enabled", flag(panel_enabled)},
+            {"behaviour", "enabled", flag(enabled)},
+            {"behaviour", "keep_running", flag(keep_running)},
+            {"behaviour", "start_at_login", flag(start_at_login)},
+            {"behaviour", "tray_voice_icon", flag(tray_voice_icon)},
+            {"behaviour", "hidden_apps", hidden_apps},
+            {"behaviour", "shown_apps", shown_apps},
+            {"behaviour", "flatpak_apps", flatpak_apps},
+            {"behaviour", "preview_display_panel", preview_display_panel},
+            {"behaviour", "preview_display_notification", preview_display_notification},
+        };
+    }
+
     // Only the GUI writes; the injected code never touches the file.
+    //
+    // The file is the user's, and the window rewrites it IN PLACE: each line
+    // carrying a key the window knows gets that key's value, every other line
+    // -- comments, blank lines, sections, keys from a newer version -- stays
+    // where it was, and the known keys the file lacked are added at the end of
+    // their section. It used to print a fresh file of its own and rename it over
+    // config.ini, which, measured on 0.1.10 with one click on a switch, turned a
+    // symlinked config.ini into a regular file (the target kept the old values
+    // and stopped reaching the overlay), deleted every comment and an unknown
+    // `future_key = 42` -- a newer version's setting, which DESIGN "Settings"
+    // promises survives an older reader -- and put a 0600 file back at 0644.
+    //
+    // Written to a temporary file beside the TARGET and renamed over it: a game
+    // reloads on the file's modification time, and truncating the real file
+    // would let it read a half-written one -- which is worse than it sounds,
+    // because the mtime would already be its final value and the bad read
+    // would stick until the next save. A symlink is resolved first, so the
+    // rename replaces the file it points at and the link stays a link; the
+    // temporary takes the target's mode before it is renamed, and it is
+    // fsync'd, so a crash leaves the old file or the new one.
     bool save() const {
         const std::string file_path = path();
         const size_t slash = file_path.rfind('/');
         if (slash != std::string::npos) {
             make_directories(file_path.substr(0, slash));
         }
+        std::string target = file_path;
+        if (char* resolved = ::realpath(file_path.c_str(), nullptr)) {
+            target = resolved;
+            std::free(resolved);
+        }
+        struct stat existing{};
+        const bool exists = ::stat(target.c_str(), &existing) == 0;
+        const std::string text = rewritten(exists ? read_whole(target) : std::string());
 
-        // Written to a temporary file and renamed into place. A game reloads on the
-        // file's modification time, and truncating the real file would let it read a
-        // half-written one -- which is worse than it sounds, because the mtime would
-        // already be its final value and the bad read would stick until the next save.
-        const std::string temporary_path = file_path + ".tmp";
-        std::FILE* file = std::fopen(temporary_path.c_str(), "w");
-        if (!file) {
+        const std::string temporary_path = target + ".tmp";
+        int fd = ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+        if (fd < 0 && errno == EEXIST) {
+            // Left by a write that died before its rename.
+            ::unlink(temporary_path.c_str());
+            fd = ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+        }
+        if (fd < 0) {
             return false;
         }
-        std::fprintf(file, "# Written by vocem-config. Edits are picked up live.\n");
-        std::fprintf(file, "[position]\n");
-        std::fprintf(file, "position_x = %s\n", decimal(position_x, 4).c_str());
-        std::fprintf(file, "position_y = %s\n", decimal(position_y, 4).c_str());
-        std::fprintf(file, "\n[appearance]\n");
-        std::fprintf(file, "scale = %s\n", decimal(scale, 2).c_str());
-        std::fprintf(file, "panel_layout = %s\n", layout_text(panel_layout));
-        std::fprintf(file, "panel_box = %s\n", box_text(panel_box));
-        std::fprintf(file, "panel_colour = %s\n", colour_text(panel_colour).c_str());
-        std::fprintf(file, "speaking_colour = %s\n", colour_text(speaking_colour).c_str());
-        std::fprintf(file, "text_idle_colour = %s\n",
-                     colour_or_auto_text(text_idle_colour).c_str());
-        std::fprintf(file, "text_speaking_colour = %s\n",
-                     colour_or_auto_text(text_speaking_colour).c_str());
-        std::fprintf(file, "opacity = %s\n", decimal(opacity, 2).c_str());
-        std::fprintf(file, "avatar_size = %s\n", decimal(avatar_size, 2).c_str());
-        std::fprintf(file, "avatar_idle_opacity = %s\n", decimal(avatar_idle_opacity, 2).c_str());
-        std::fprintf(file, "text_shadow = %s\n", text_shadow ? "true" : "false");
-        std::fprintf(file, "show_channel_name = %s\n", show_channel_name ? "true" : "false");
-        std::fprintf(file, "\n[notifications]\n");
-        std::fprintf(file, "notifications_enabled = %s\n",
-                     notifications_enabled ? "true" : "false");
-        std::fprintf(file, "notification_corner = %d\n", notification_corner);
-        std::fprintf(file, "notification_seconds = %s\n", decimal(notification_seconds, 1).c_str());
-        std::fprintf(file, "notification_opacity = %s\n", decimal(notification_opacity, 2).c_str());
-        std::fprintf(file, "notification_colour = %s\n", colour_text(notification_colour).c_str());
-        std::fprintf(file, "notification_text_colour = %s\n",
-                     colour_or_auto_text(notification_text_colour).c_str());
-        std::fprintf(file, "notification_scale = %s\n", decimal(notification_scale, 2).c_str());
-        std::fprintf(file, "\n[spacing]\n");
-        std::fprintf(file, "screen_margin = %s\n", decimal(screen_margin, 1).c_str());
-        std::fprintf(file, "notification_margin = %s\n",
-                     decimal(notification_margin, 1).c_str());
-        std::fprintf(file, "font_size = %s\n", decimal(font_size, 1).c_str());
-        std::fprintf(file, "font_family = %s\n", font_family.c_str());
-        std::fprintf(file, "font_path = %s\n", font_path.c_str());
-        std::fprintf(file, "font_path_strong = %s\n", font_path_strong.c_str());
-        std::fprintf(file, "box_padding_x = %s\n", decimal(box_padding_x, 1).c_str());
-        std::fprintf(file, "box_padding_y = %s\n", decimal(box_padding_y, 1).c_str());
-        std::fprintf(file, "avatar_gap = %s\n", decimal(avatar_gap, 1).c_str());
-        std::fprintf(file, "row_spacing = %s\n", decimal(row_spacing, 1).c_str());
-        std::fprintf(file, "\n[voice]\n");
-        std::fprintf(file, "only_speaking = %s\n", only_speaking ? "true" : "false");
-        std::fprintf(file, "hide_self = %s\n", hide_self ? "true" : "false");
-        std::fprintf(file, "show_muted_state = %s\n", show_muted_state ? "true" : "false");
-        std::fprintf(file, "\n[behaviour]\n");
-        std::fprintf(file, "panel_enabled = %s\n", panel_enabled ? "true" : "false");
-        std::fprintf(file, "enabled = %s\n", enabled ? "true" : "false");
-        std::fprintf(file, "keep_running = %s\n", keep_running ? "true" : "false");
-        std::fprintf(file, "start_at_login = %s\n", start_at_login ? "true" : "false");
-        std::fprintf(file, "tray_voice_icon = %s\n", tray_voice_icon ? "true" : "false");
-        std::fprintf(file, "hidden_apps = %s\n", hidden_apps.c_str());
-        std::fprintf(file, "shown_apps = %s\n", shown_apps.c_str());
-        std::fprintf(file, "flatpak_apps = %s\n", flatpak_apps.c_str());
-        std::fprintf(file, "preview_display_panel = %s\n", preview_display_panel.c_str());
-        std::fprintf(file, "preview_display_notification = %s\n",
-                     preview_display_notification.c_str());
-
-        const bool written = std::fflush(file) == 0;
-        std::fclose(file);
-        if (!written || std::rename(temporary_path.c_str(), file_path.c_str()) != 0) {
-            std::remove(temporary_path.c_str());
+        bool written = !exists || ::fchmod(fd, existing.st_mode & 07777) == 0;
+        for (size_t done = 0; written && done < text.size();) {
+            const ssize_t wrote = ::write(fd, text.data() + done, text.size() - done);
+            if (wrote < 0 && errno == EINTR) {
+                continue;
+            }
+            written = wrote > 0;
+            done += written ? static_cast<size_t>(wrote) : 0;
+        }
+        written = written && ::fsync(fd) == 0;
+        written = ::close(fd) == 0 && written;
+        if (!written || std::rename(temporary_path.c_str(), target.c_str()) != 0) {
+            ::unlink(temporary_path.c_str());
             return false;
+        }
+        const size_t target_slash = target.rfind('/');
+        const std::string directory = target_slash == std::string::npos
+                                          ? std::string(".")
+                                          : target.substr(0, target_slash ? target_slash : 1);
+        const int dir_fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dir_fd >= 0) {
+            ::fsync(dir_fd);
+            ::close(dir_fd);
         }
         return true;
+    }
+
+    // `current` -- the file as it stands, possibly empty -- with this
+    // configuration written into it: see save(). Public so a test can hold
+    // the merge to its promise without a file.
+    std::string rewritten(const std::string& current) const {
+        static const char* const kHeader = "# Written by vocem-config. Edits are picked up live.";
+        const std::vector<Entry> wanted = entries();
+        std::vector<bool> placed(wanted.size(), false);
+        const auto index_of = [&wanted](const std::string& key) -> int {
+            // The name this setting had before 0.1.0 is the same setting.
+            const std::string name = key == "gl_blacklist" ? std::string("hidden_apps") : key;
+            for (size_t i = 0; i < wanted.size(); ++i) {
+                if (name == wanted[i].key) {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        };
+        const auto line_for = [](const Entry& entry) {
+            return std::string(entry.key) + " = " + entry.value;
+        };
+
+        // The lines, with the section each belongs to.
+        std::vector<std::string> lines;
+        std::vector<std::string> sections;
+        std::string section;
+        for (size_t at = 0; at < current.size();) {
+            size_t end = current.find('\n', at);
+            if (end == std::string::npos) {
+                end = current.size();
+            }
+            std::string line = current.substr(at, end - at);
+            at = end + 1;
+            // The same reading load() gives the line: a key is text before an
+            // '=' on a line that does not open with '#', '[' or ';'.
+            std::string trimmed = trim_copy(line);
+            if (!trimmed.empty() && trimmed.front() == '[' && trimmed.back() == ']') {
+                section = trim_copy(trimmed.substr(1, trimmed.size() - 2));
+            } else if (!line.empty() && line[0] != '#' && line[0] != '[' && line[0] != ';') {
+                const size_t equals = line.find('=');
+                if (equals != std::string::npos) {
+                    const int known = index_of(trim_copy(line.substr(0, equals)));
+                    if (known >= 0) {
+                        if (placed[static_cast<size_t>(known)]) {
+                            // load() takes the LAST of two, so a second copy
+                            // left behind would overrule the value written.
+                            continue;
+                        }
+                        placed[static_cast<size_t>(known)] = true;
+                        line = line_for(wanted[static_cast<size_t>(known)]);
+                    }
+                }
+            }
+            lines.push_back(line);
+            sections.push_back(section);
+        }
+
+        // The keys the file lacked: after the last line of their section that
+        // is not blank, or in a section of their own at the end.
+        std::vector<std::vector<std::string>> after(lines.size() + 1);
+        std::vector<std::string> tail;
+        for (size_t i = 0; i < wanted.size(); ++i) {
+            if (placed[i]) {
+                continue;
+            }
+            size_t anchor = lines.size();
+            bool found = false;
+            for (size_t j = lines.size(); j-- > 0;) {
+                if (sections[j] == wanted[i].section) {
+                    if (!found) {
+                        anchor = j;
+                        found = true;
+                    }
+                    if (!trim_copy(lines[j]).empty()) {
+                        anchor = j;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                after[anchor + 1].push_back(line_for(wanted[i]));
+                continue;
+            }
+            const std::string header = std::string("[") + wanted[i].section + "]";
+            if (std::find(tail.begin(), tail.end(), header) == tail.end()) {
+                if (lines.empty() && tail.empty()) {
+                    tail.push_back(kHeader);
+                } else {
+                    tail.push_back(std::string());
+                }
+                tail.push_back(header);
+            }
+            // Keys of one section arrive together (entries() is grouped), so
+            // the end of the tail is this section.
+            tail.push_back(line_for(wanted[i]));
+        }
+
+        std::string text;
+        for (size_t j = 0; j <= lines.size(); ++j) {
+            for (const std::string& extra : after[j]) {
+                text += extra;
+                text += '\n';
+            }
+            if (j < lines.size()) {
+                text += lines[j];
+                text += '\n';
+            }
+        }
+        for (const std::string& line : tail) {
+            text += line;
+            text += '\n';
+        }
+        return text;
     }
 
     // True when the background has been turned down far enough to disappear. The
@@ -733,6 +906,30 @@ private:
             }
         }
         return any;
+    }
+
+    // The whole file, however long its lines: the rewrite keeps every line
+    // it does not own, and read_line's cap is for the reader inside a game.
+    static std::string read_whole(const std::string& file_path) {
+        std::string text;
+        if (std::FILE* file = std::fopen(file_path.c_str(), "r")) {
+            char chunk[4096];
+            size_t got = 0;
+            while ((got = std::fread(chunk, 1, sizeof(chunk), file)) > 0) {
+                text.append(chunk, got);
+            }
+            std::fclose(file);
+        }
+        return text;
+    }
+
+    static std::string trim_copy(const std::string& text) {
+        size_t from = 0;
+        size_t to = text.size();
+        while (from < to && (text[from] == ' ' || text[from] == '\t')) ++from;
+        while (to > from && (text[to - 1] == ' ' || text[to - 1] == '\t' || text[to - 1] == '\r'))
+            --to;
+        return text.substr(from, to - from);
     }
 
     static const char* trim(char* text) {

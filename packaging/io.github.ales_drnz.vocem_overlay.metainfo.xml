@@ -105,15 +105,12 @@
           <li>A Vulkan game no longer waits for the GPU when a face or an emoji arrives.</li>
           <li>People without an avatar share one upload of their default picture.</li>
           <li>The Vulkan layer waits for the game's frame before drawing over it, as the specification requires.</li>
-          <li>A Vulkan game short of memory no longer draws with a font texture that has been freed.</li>
-          <li>A Vulkan game that recreates its instance no longer keeps the previous font atlas, up to 64 MB each time.</li>
           <li>An OpenGL game with a second window keeps that window's textures, and the overlay follows the game to its second context.</li>
           <li>A game that recreates its OpenGL context keeps its overlay and no longer rebuilds the font atlas for it.</li>
           <li>The font atlas takes 16 MB less memory in every game that draws the overlay.</li>
           <li>Stopping the overlay or switching it off hands back what every game was holding for it.</li>
           <li>The Vulkan layer builds its renderer only when there is something to draw.</li>
           <li>A game notices the overlay stopping within a second, whatever its frame rate.</li>
-          <li>Restarting the daemon no longer costs every running game its font atlas.</li>
           <li>A Flatpak game with the overlay switched off is no longer sent the channel and its faces.</li>
           <li>Hiding a running game on the Applications page is written to the log, with the reason.</li>
           <li>Emoji sequences draw as one glyph in Flatpak games too.</li>

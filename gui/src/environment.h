@@ -474,12 +474,16 @@ inline bool vulkan_layer_installed() {
 // was installed, did not:
 //
 //   * our own environment, which is what a game started from this window or from
-//     the same shell would inherit;
-//   * the systemd user manager's environment, which is what anything launched by
-//     the session from now on will get.
+//     the same shell would inherit -- and, for a window started from the
+//     desktop, what the desktop itself has;
+//   * the systemd user manager's environment, which is what the manager starts
+//     from now on -- and NOT what the desktop's launcher hands a game: plasmashell
+//     keeps the environment it had at login.
 //
-// Either one means OpenGL games are covered; neither means the session has not
-// picked up the file yet, and only logging out fixes that.
+// Only the first means OpenGL games started from this desktop are covered. The
+// second alone means the file is installed and the session has not picked it up
+// yet, which only logging out fixes; the Debug page says that in its own words
+// rather than "Active in this session", which it used to say for either.
 //
 // Two halves, asked differently. This process's own environment is a string
 // compare and is answered here at once. The user manager's is a `systemctl`
@@ -499,6 +503,41 @@ inline bool opengl_preload_in_manager_output(const QByteArray& show_environment)
     return show_environment.contains("vocem_gl_shim");
 }
 
+// Whether systemd would find a vocemd.service for the user manager, read from
+// the directories systemd.unit(5) lists for user units rather than asked of
+// systemctl. It is the answer ConfigBridge falls back on when
+// `systemctl --user cat` does not answer inside its cap -- a busy login, a
+// manager still starting -- because "no answer" read as "no unit" made the
+// window exec a vocemd of its own beside the one the unit was about to start.
+// The runtime directories (transient units, generators) are left out: nothing
+// puts this unit there.
+inline bool daemon_unit_on_disk() {
+    const auto env_or = [](const char* name, const QString& fallback) {
+        const QByteArray value = qgetenv(name);
+        return value.isEmpty() ? fallback : QString::fromLocal8Bit(value);
+    };
+    const QString home = QDir::homePath();
+    QStringList roots;
+    roots << env_or("XDG_CONFIG_HOME", home + QStringLiteral("/.config")) + QStringLiteral("/systemd/user");
+    for (const QString& dir : env_or("XDG_CONFIG_DIRS", QStringLiteral("/etc/xdg"))
+                                  .split(QLatin1Char(':'), Qt::SkipEmptyParts)) {
+        roots << dir + QStringLiteral("/systemd/user");
+    }
+    roots << QStringLiteral("/etc/systemd/user");
+    roots << env_or("XDG_DATA_HOME", home + QStringLiteral("/.local/share")) + QStringLiteral("/systemd/user");
+    for (const QString& dir : env_or("XDG_DATA_DIRS", QStringLiteral("/usr/local/share:/usr/share"))
+                                  .split(QLatin1Char(':'), Qt::SkipEmptyParts)) {
+        roots << dir + QStringLiteral("/systemd/user");
+    }
+    roots << QStringLiteral("/usr/local/lib/systemd/user") << QStringLiteral("/usr/lib/systemd/user");
+    for (const QString& root : roots) {
+        if (QFileInfo::exists(root + QStringLiteral("/vocemd.service"))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // The desktop entry that starts this window with the session.
 //
 // The freedesktop Autostart specification: an entry under
@@ -516,19 +555,54 @@ inline QString autostart_entry_path() {
     return root + QStringLiteral("/autostart/io.github.ales_drnz.vocem_overlay.desktop");
 }
 
-inline bool autostart_enabled() { return QFile::exists(autostart_entry_path()); }
+// Whether the desktop will start this window at login: the entry is there AND
+// nothing in it switches it off. The desktops switch an entry off without
+// deleting it -- the Autostart specification's Hidden=true, which XFCE's
+// settings write, and GNOME's X-GNOME-Autostart-enabled=false -- and this used
+// to be a bare existence test, so the switch said "on" for a window that would
+// not start. Only the [Desktop Entry] group counts: an action group may carry
+// a key of the same name.
+inline bool autostart_enabled() {
+    QFile file(autostart_entry_path());
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
+    }
+    bool in_entry = false;
+    while (!file.atEnd()) {
+        const QByteArray line = file.readLine().trimmed();
+        if (line.startsWith('[')) {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        const int equals = line.indexOf('=');
+        if (!in_entry || equals <= 0) {
+            continue;
+        }
+        const QByteArray key = line.left(equals).trimmed();
+        const QByteArray value = line.mid(equals + 1).trimmed();
+        if ((key == "Hidden" && value == "true") ||
+            (key == "X-GNOME-Autostart-enabled" && value == "false")) {
+            return false;
+        }
+    }
+    return true;
+}
 
-inline void set_autostart(bool enabled) {
+// Makes the entry say `enabled`, and answers whether it does now. Off removes
+// the entry (see above for why it is not emptied); on writes this program's.
+// The caller writes only when the switch and autostart_enabled() differ: an
+// Apply of any setting used to rewrite the entry, which turned a desktop's own
+// "off" back on and threw away whatever the user had added to it.
+inline bool set_autostart(bool enabled) {
     const QString path = autostart_entry_path();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        return !QFile::exists(path) || QFile::remove(path);
     }
 
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        return;
+        return false;
     }
     // The executable by absolute path: a session's PATH is not this shell's, and
     // an entry that names a program the desktop cannot find fails silently.
@@ -546,6 +620,8 @@ inline void set_autostart(bool enabled) {
         << "Icon=io.github.ales_drnz.vocem_overlay\n"
         << "Terminal=false\n"
         << "X-GNOME-Autostart-enabled=true\n";
+    out.flush();
+    return out.status() == QTextStream::Ok && file.error() == QFileDevice::NoError;
 }
 
 }  // namespace vocem

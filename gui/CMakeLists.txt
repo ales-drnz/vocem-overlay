@@ -18,6 +18,14 @@ qt_add_executable(vocem-config
     src/config_bridge.cpp
 )
 
+# qt_standard_project_setup() above also sets an install RPATH of
+# $ORIGIN:$ORIGIN/../lib for this directory -- an application-bundle
+# convention that put the packaged /usr/bin/vocem-config's own directory and
+# /usr/lib ahead of the loader's search path, the one shipped binary with a
+# RUNPATH at all (readelf on 0.1.10-7; tests/installed_runpath.cmake). The
+# build tree keeps its own RUNPATH; the installed file carries none.
+set_target_properties(vocem-config PROPERTIES INSTALL_RPATH "")
+
 # Theme is a singleton: one set of spacings and colours, reachable from every
 # component without threading it through as a property.
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)

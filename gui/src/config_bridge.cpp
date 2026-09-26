@@ -20,7 +20,9 @@
 #include <QVariantMap>
 #include <QWindow>
 
+#include <cstdio>
 #include <memory>
+#include <utility>
 
 // The window is the scanner's side of the session journal; the injected code
 // and the daemon are the writers'. Both halves live in the one header
@@ -123,13 +125,21 @@ QVariantMap ConfigBridge::counters() const {
     return map;
 }
 
-// Whether the user manager carries the preload, asked of systemctl without
-// waiting for it. The instant half -- this process's own environment -- is
-// answered in the constructor; a hit there is the whole answer and nothing is
-// spawned. Otherwise the spawn runs beside the window's first frame, and the
-// Debug page says it is asking until the answer is in. Capped at three seconds,
-// as the synchronous version was, and "no answer" reads as "not active", as it
-// did -- but off the first frame's path.
+// Whether the preload is in this session, and if not, whether the user
+// manager carries it -- asked of systemctl without waiting for it. The instant
+// half -- this process's own environment -- is answered in the constructor; a
+// hit there is the whole answer and nothing is spawned. Otherwise the spawn
+// runs beside the window's first frame, and the Debug page says it is asking
+// until the answer is in. Capped at three seconds, as the synchronous version
+// was, and "no answer" reads as "not in the manager" -- but off the first
+// frame's path.
+//
+// The manager's answer is its own fact and never "active": a program launched
+// from the desktop inherits the desktop's environment, fixed at login, not the
+// manager's -- so with the environment.d file installed after login the
+// manager has the preload and no game started from Plasma gets it until the
+// next login. This used to set openglPreloadActive from either half, and the
+// page said "Active in this session" and "Ready" for exactly that case.
 void ConfigBridge::probePreload() {
     opengl_preload_active_ = vocem::opengl_preload_in_own_environment();
     if (opengl_preload_active_) {
@@ -141,11 +151,11 @@ void ConfigBridge::probePreload() {
     // the first version dereferenced it from the timer and died there
     // (SIGSEGV in QProcess::state, measured on the second run of the window).
     QPointer<QProcess> probe = new QProcess(this);
-    const auto settle = [this, probe](bool active) {
+    const auto settle = [this, probe](bool in_manager) {
         if (opengl_preload_known_) {
             return;  // answered already: by the cap, or by the process
         }
-        opengl_preload_active_ = active;
+        opengl_preload_in_manager_ = in_manager;
         opengl_preload_known_ = true;
         if (probe) {
             probe->deleteLater();
@@ -170,8 +180,15 @@ void ConfigBridge::probePreload() {
 // systemctl keeps one owner of the process, so the daemon started from here is the
 // same one the session starts at login. Asked once, of `systemctl --user cat`,
 // and asynchronously: it used to be a synchronous spawn with a three-second cap
-// in the constructor, before the first frame. A start asked for before the
-// answer is in waits for it (startDaemon).
+// in the constructor, before the first frame. A start or a stop asked for before
+// the answer is in waits for it (startDaemon, stopDaemon).
+//
+// No answer inside the cap is NOT "no unit": it is a busy login or a manager
+// still coming up, which is exactly when the unit is about to start vocemd
+// itself -- and reading it as "no unit" made startDaemon exec a second one
+// beside it. The cap falls back on the unit files systemd would read
+// (daemon_unit_on_disk). A systemctl that cannot be run at all is a machine
+// without systemd, and there the answer is no.
 void ConfigBridge::probeUnit() {
     QPointer<QProcess> probe = new QProcess(this);  // a QPointer: see probePreload
     const auto settle = [this, probe](bool available) {
@@ -182,7 +199,13 @@ void ConfigBridge::probeUnit() {
         if (probe) {
             probe->deleteLater();
         }
-        if (daemon_start_wanted_) {
+        // A stop asked for while the question was open wins over a start asked
+        // for before it: the window opened and was closed again, and Quit means
+        // everything down.
+        if (daemon_stop_wanted_) {
+            daemon_start_wanted_ = false;
+            stopDaemon(std::exchange(daemon_stop_wanted_, nullptr));
+        } else if (daemon_start_wanted_) {
             daemon_start_wanted_ = false;
             startDaemon();
         }
@@ -190,12 +213,16 @@ void ConfigBridge::probeUnit() {
     connect(probe, &QProcess::finished, this, [settle](int code, QProcess::ExitStatus status) {
         settle(status == QProcess::NormalExit && code == 0);
     });
-    connect(probe, &QProcess::errorOccurred, this, [settle] { settle(false); });
+    connect(probe, &QProcess::errorOccurred, this, [settle](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            settle(false);
+        }
+    });
     QTimer::singleShot(3000, this, [probe, settle] {
         if (probe && probe->state() != QProcess::NotRunning) {
             probe->kill();
         }
-        settle(false);
+        settle(vocem::daemon_unit_on_disk());
     });
     probe->start(QStringLiteral("systemctl"),
                  {QStringLiteral("--user"), QStringLiteral("cat"), QStringLiteral("vocemd.service")});
@@ -218,14 +245,16 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     timer_.setInterval(500);
     connect(&timer_, &QTimer::timeout, this, &ConfigBridge::refreshState);
     timer_.start();
-    // The two spawns, started and not waited for. The harness runs do not
-    // spawn systemctl either: their answer would be about the build machine's
-    // session, which is not what they measure.
-    const bool harness = qEnvironmentVariableIsSet("VOCEM_CONFIG_GEOMETRY") ||
-                         qEnvironmentVariableIsSet("VOCEM_CONFIG_SCREENSHOT") ||
-                         qEnvironmentVariableIsSet("VOCEM_CONFIG_NO_DAEMON");
+    // The two spawns, started and not waited for. The harness runs ask only
+    // the preload question, which reads the manager's environment and changes
+    // nothing (tests/window_startup.cmake measures the first frame against a
+    // slow one); the unit question is theirs to skip, because nothing under
+    // the harness starts or stops the daemon -- see startDaemon/stopDaemon.
+    harness_ = qEnvironmentVariableIsSet("VOCEM_CONFIG_GEOMETRY") ||
+               qEnvironmentVariableIsSet("VOCEM_CONFIG_SCREENSHOT") ||
+               qEnvironmentVariableIsSet("VOCEM_CONFIG_NO_DAEMON");
     probePreload();
-    if (!harness) {
+    if (!harness_) {
         probeUnit();
     }
     refreshDisplays();
@@ -246,7 +275,7 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     // the session's services. VOCEM_CONFIG_NO_DAEMON says the same for a run
     // that is not a dump -- tests/single_instance.cmake, which needs the
     // window's own startup path and none of its services.
-    if (!attached_ && !harness) {
+    if (!attached_ && !harness_) {
         startDaemon();
     }
 }
@@ -296,8 +325,9 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
         //
         // With an edit waiting for Apply the window keeps its own copy, exactly
         // as reloadIfMoved decides it: Apply means "what the window shows".
-        // start_at_login is not in the file at all -- it is the autostart entry
-        // -- so it is carried across rather than taken from the read.
+        // start_at_login is read from the autostart entry, not from the file
+        // (which carries the key and is not believed) -- so it is carried
+        // across rather than taken from the read.
         if (!pending_) {
             const bool login = config_.start_at_login;
             config_ = written;
@@ -329,26 +359,41 @@ void ConfigBridge::apply() {
     disk_mtime_ = vocem::Config::mtime();
     // The autostart entry is a file rather than a line in the settings, so it is
     // made to match here: the setting is the intent, the entry is the effect.
-    vocem::set_autostart(config_.start_at_login);
+    // Only when the two differ -- see set_autostart -- and a write that fails
+    // is said, and leaves the edit waiting, as a settings file that could not
+    // be written does.
+    if (config_.start_at_login != vocem::autostart_enabled() &&
+        !vocem::set_autostart(config_.start_at_login)) {
+        reportFailure(tr("The login entry could not be written to %1. Check that the directory "
+                         "exists and is writable.")
+                          .arg(vocem::autostart_entry_path()));
+        return;
+    }
     pending_ = false;
     emit pendingChanged();
     emit configChanged();
 }
 
 bool ConfigBridge::reportSave(bool saved) {
-    const QString error =
-        saved ? QString()
-              : tr("The settings could not be written to %1. Check that the directory exists "
-                   "and is writable.")
-                    .arg(QString::fromStdString(vocem::Config::path()));
+    if (!saved) {
+        reportFailure(tr("The settings could not be written to %1. Check that the directory "
+                         "exists and is writable.")
+                          .arg(QString::fromStdString(vocem::Config::path())));
+        return false;
+    }
+    if (!save_error_.isEmpty()) {
+        save_error_.clear();
+        emit saveErrorChanged();
+    }
+    return true;
+}
+
+void ConfigBridge::reportFailure(const QString& error) {
     if (error != save_error_) {
         save_error_ = error;
         emit saveErrorChanged();
     }
-    if (!saved) {
-        qWarning("vocem-config: could not write %s", vocem::Config::path().c_str());
-    }
-    return saved;
+    qWarning("vocem-config: %s", qPrintable(error));
 }
 
 void ConfigBridge::reloadIfMoved() {
@@ -599,6 +644,16 @@ void ConfigBridge::setShownApps(const QString& value) {
 void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool game) {
     const std::string key = name.toStdString();
     if (key.empty()) {
+        return;
+    }
+    // A name the lists cannot hold -- a comma, or a space at either end -- is
+    // refused and said, and the checkbox is put back by re-announcing the
+    // list it reads: stored, "Foo, Bar" hid the applications Foo and Bar.
+    if (!vocem::list_entry_fits(key)) {
+        reportFailure(tr("\"%1\" cannot be put in the list of applications: a name with a comma "
+                         "in it, or a space at either end, would be read back as another name.")
+                          .arg(name));
+        emit applicationsChanged();
         return;
     }
 
@@ -1115,7 +1170,28 @@ QString ConfigBridge::daemonExecutable() const {
 }
 
 
+// The harness drives this window to measure it, and a measurement must not
+// reach the session's services: the Quit at the end of a run, a close with no
+// tray behind it (every offscreen run has none) and Re-authorise all used to
+// end in a stop, and with the unit question never asked the stop was
+// `pkill -TERM -x vocemd` -- the owner's live daemon included. Said once, so a
+// harness run that expected a daemon can find out why there was none.
+void ConfigBridge::skipDaemonUnderHarness(const char* what) {
+    if (!harness_said_) {
+        harness_said_ = true;
+        std::fprintf(stderr,
+                     "vocem-config: a harness run (VOCEM_CONFIG_GEOMETRY, _SCREENSHOT or "
+                     "_NO_DAEMON), so the daemon is neither started nor stopped (first "
+                     "skipped: %s)\n",
+                     what);
+    }
+}
+
 bool ConfigBridge::startDaemon() {
+    if (harness_) {
+        skipDaemonUnderHarness("start");
+        return true;
+    }
     if (unit_available_ < 0) {
         // The probe has not answered yet: the start happens when it does.
         daemon_start_wanted_ = true;
@@ -1134,6 +1210,20 @@ bool ConfigBridge::startDaemon() {
 }
 
 void ConfigBridge::stopDaemon(std::function<void()> done) {
+    if (harness_) {
+        skipDaemonUnderHarness("stop");
+        // Still asynchronous, as every other way this ends is.
+        QTimer::singleShot(0, this, std::move(done));
+        return;
+    }
+    if (unit_available_ < 0) {
+        // The unit question is still open, and `pkill` below is the answer for
+        // a machine with no unit -- not for a question in flight. The stop runs
+        // when probeUnit settles, which its own cap bounds at three seconds.
+        daemon_start_wanted_ = false;
+        daemon_stop_wanted_ = std::move(done);
+        return;
+    }
     // One `done`, however the stop ends: by the process finishing, by it never
     // starting, or by the cap.
     auto finished = std::make_shared<bool>(false);
@@ -1225,7 +1315,11 @@ void ConfigBridge::reauthorise() {
     announceState();
 
     stopDaemon([this] {
-        QFile::remove(QString::fromStdString(vocem::token_path()));
+        // Not under the harness: the token is the daemon's credential, and a
+        // harness run without a scratch XDG_STATE_HOME would remove the real one.
+        if (!harness_) {
+            QFile::remove(QString::fromStdString(vocem::token_path()));
+        }
         QTimer::singleShot(800, this, [this] {
             startDaemon();
             QTimer::singleShot(1500, this, [this] {

@@ -306,9 +306,27 @@ inline std::string list_without(const std::string& list, const std::string& name
     return rebuilt;
 }
 
-// The list with one entry added, once.
+// Whether `name` can be an entry of these lists and read back as itself:
+// not empty, no comma (the separator every reader splits on), and no space or
+// tab at either end (every reader trims them away). A process name or an
+// executable's may carry any byte but '/' and NUL, so this is not a question
+// only a hand-edited file raises.
+inline bool list_entry_fits(const std::string& name) {
+    if (name.empty() || name.find(',') != std::string::npos) {
+        return false;
+    }
+    const auto blank = [](char c) { return c == ' ' || c == '\t'; };
+    return !blank(name.front()) && !blank(name.back());
+}
+
+// The list with one entry added, once -- or the list as it was, for a name it
+// cannot hold (list_entry_fits). It used to store any name, so "Foo, Bar" went
+// in whole, read back as the two entries Foo and Bar, and hid two other
+// applications while the one asked about stayed as it was. Refused rather than
+// escaped: an escape would have to be read the same way by the overlay already
+// inside every running game, at both widths, and by every older one installed.
 inline std::string list_with(const std::string& list, const std::string& name) {
-    if (listed(list, name)) {
+    if (!list_entry_fits(name) || listed(list, name)) {
         return list;
     }
     return list.empty() ? name : list + "," + name;
