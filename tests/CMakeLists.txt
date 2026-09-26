@@ -1342,3 +1342,11 @@ vocem_m32_twin(shm_reopen_clear)
 # widths: Config::path() runs inside games.
 vocem_test(no_home)
 vocem_m32_twin(no_home)
+
+# The display's mode is the one being scanned out: every connector the
+# machine's tree reports carries the mode and rate an independent walk of the
+# kernel's CRTCs finds for its id, and says it is current; a fabricated tree
+# says it is not. A witness on this machine, where the running and preferred
+# heights agree (3840x2160 at 143.99 Hz against 60); display.h's header says
+# why the difference in height cannot be shown here.
+vocem_test(display_running_mode SKIP)
