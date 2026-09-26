@@ -28,10 +28,15 @@
 //
 // It is a bridge and not a broadcast. The daemon does not write into every
 // sandbox on the machine: the overlay inside a game creates `vocem/request` in
-// its own directory first, and the daemon serves the directories that asked.
-// That keeps the user's voice state out of applications that never load the
-// overlay, and it is what stops a Flatpak *settings window* -- which has an
-// application id like any other -- from reading a mirror meant for a game.
+// its own directory first, and the daemon adopts the directories that asked.
+// Asking is not what hands over the voice channel, though. `request` is a file
+// inside the sandbox, and anything running there can write `drawing=1` into it
+// -- through 0.1.10 that alone was enough, for any Flatpak at all. The daemon
+// decides on the host, by application id (the directory's name, which the
+// sandbox cannot choose): the channel, the faces and the words go only to an
+// id whose exported desktop entry says Game or that the user listed in
+// `flatpak_apps`, and only while its overlay says it is drawing. Everyone else
+// that asks is given config.ini and a cleared state (flatpak_bridge.cpp).
 //
 // What crosses is therefore under the sandbox's control, and the daemon is not:
 // it runs as the user with the user's whole home reachable. Everything it opens
@@ -249,7 +254,8 @@ inline const char* enter_flatpak_bridge() {
 // the settings the decision reads only arrive across it -- so a sandbox is
 // adopted first and asked afterwards. This is the afterwards. A daemon that is
 // told 0 serves that sandbox its settings and nothing else: no channel, no
-// names, no faces. It matters because the user's per-application switch is what
+// names, no faces. Told 1, it serves the channel only if the host consents to
+// this application id as well (the paragraph above). It matters because the user's per-application switch is what
 // says whether the overlay belongs in a given game, and a switch that stops the
 // drawing but not the sending would not be the switch it looks like.
 //

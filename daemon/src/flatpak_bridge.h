@@ -12,6 +12,16 @@
 // MAP_SHARED mirror of the segment in each, and copies config.ini and the
 // avatar files those sandboxes need.
 //
+// Asking is not being given. `vocem/request` is written by whatever runs in the
+// sandbox, and any Flatpak can write `drawing=1` into it: through 0.1.10 that
+// line alone handed the voice channel, the faces and the words of every message
+// to whichever application wrote it. What decides now is the host, by
+// application id -- the directory's name, which a sandbox cannot choose: the
+// id's exported desktop entry says Game, or the user listed the id in
+// `flatpak_apps`. A sandbox that is neither is adopted all the same (it gets
+// config.ini, so its overlay can decide what to say about itself) and is
+// published a cleared state and nothing else.
+//
 // Everything it touches is on the other side of a trust boundary. The directory
 // under $XDG_RUNTIME_DIR/app/<id> is writable by the sandboxed application, and
 // this process is not sandboxed: it runs as the user, with the user's home
@@ -81,11 +91,22 @@ private:
         std::string id;
         int directory = -1;   // the sandbox's vocem/ directory
         int state_file = -1;
-        // What the overlay in that sandbox last said it was doing. The voice
-        // state and the faces only go to a sandbox that is actually drawing
-        // them; config.ini goes either way, because it is what the overlay
-        // reads to decide.
+        // What the overlay in that sandbox last said it was doing -- the
+        // sandbox's own word, which an honest overlay tells straight and
+        // anything else in there can write too. config.ini goes either way,
+        // because it is what the overlay reads to decide.
         bool drawing = false;
+        // The host's half: whether this application id may be given the voice
+        // channel at all (consent_for() in the implementation), and the reason
+        // either way, for the log.
+        bool consented = false;
+        std::string consent_why;
+        // The refusal of a sandbox that asks to draw and has no consent, said
+        // once per adoption and again only after consent came and went.
+        bool refusal_said = false;
+        // The voice state, the note, the faces and the emoji bank go where both
+        // halves say yes, and nowhere else.
+        bool voice() const { return drawing && consented; }
         // The seqlock's counter, kept here and not read back out of the file.
         // What is in the file is whatever the sandbox last left there.
         uint32_t sequence = 0;
@@ -111,6 +132,12 @@ private:
     void close(Mirror& mirror);
     bool state_is_ours(const Mirror& mirror) const;
     bool adopt(const char* id);
+    // The host's decision for one mirror, and what changes when it moves.
+    void decide(Mirror& mirror, bool announce);
+    void say_refusal(Mirror& mirror);
+    // flatpak_apps, reread when config.ini moves, and every mirror decided
+    // again with it.
+    void refresh_consent();
     void mirror_config(Mirror& mirror);
     void mirror_avatars(Mirror& mirror, const SharedState& state);
     void mirror_emoji_bank(Mirror& mirror);
@@ -143,6 +170,10 @@ private:
     bool ceiling_said_ = false;          // the mirror ceiling's refusal, said once
     bool refusals_full_said_ = false;    // the refusal memory's own ceiling, said once
     std::set<std::string> refusals_said_;
+    // The user's list of application ids (Config::flatpak_apps) and the
+    // config.ini modification time it was read at; -1 until the first read.
+    std::string flatpak_apps_;
+    long long consent_config_mtime_ = -1;
     std::vector<Mirror> mirrors_;
 };
 

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "log.h"
 #include "vocem/apps.h"
@@ -383,7 +384,10 @@ bool FlatpakBridge::adopt(const char* id) {
     // the words. The host half of that inheritance is declined in main(); this
     // is the sandbox's copy of the same words.
     ::unlinkat(directory, kBridgeNoteName, 0);
-    LOG("serving the overlay inside the Flatpak sandbox of %s", id);
+    decide(mirror, false);
+    LOG("serving the overlay inside the Flatpak sandbox of %s (voice channel: %s, %s)", id,
+        mirror.consented ? "yes" : "no", mirror.consent_why.c_str());
+    say_refusal(mirror);
     write_record_for(mirror, request);
     mirrors_.push_back(std::move(mirror));
     return true;
@@ -457,12 +461,161 @@ std::string printable_id(const char* id) {
     return out;
 }
 
+// The Flatpak exports directories this daemon asks about an application id:
+// the user's installation under $XDG_DATA_HOME/flatpak, and every
+// $XDG_DATA_DIRS root that is one (Flatpak's own profile and its systemd user
+// environment generator put both there -- measured on this machine:
+// `~/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:...`).
+// The system installation is added by name only when the list does not carry
+// any exports directory at all, which is a session Flatpak's profile never
+// reached; a list that names one is taken at its word, which is also what
+// lets a test point both at scratch trees.
+std::vector<std::string> flatpak_export_roots() {
+    static const std::string kExports = "/flatpak/exports/share";
+    const auto is_exports = [](std::string root) {
+        while (root.size() > 1 && root.back() == '/') {
+            root.pop_back();
+        }
+        return root.size() >= kExports.size() &&
+               root.compare(root.size() - kExports.size(), kExports.size(), kExports) == 0;
+    };
+    const std::vector<std::string> data = detail::desktop_roots();
+    std::vector<std::string> roots;
+    if (!data.empty()) {
+        roots.push_back(data.front() + kExports);  // $XDG_DATA_HOME, or ~/.local/share
+    }
+    bool listed_any = false;
+    for (size_t i = 1; i < data.size(); ++i) {
+        if (is_exports(data[i])) {
+            roots.push_back(data[i]);
+            listed_any = true;
+        }
+    }
+    if (!listed_any) {
+        roots.push_back("/var/lib/flatpak/exports/share");
+    }
+    return roots;
+}
+
+// A path with every link resolved, or empty. realpath() walks with lstat and
+// readlink and opens nothing, so a FIFO on the way cannot hold it.
+std::string resolved(const std::string& path) {
+    char* real = ::realpath(path.c_str(), nullptr);
+    if (!real) {
+        return {};
+    }
+    std::string out = real;
+    std::free(real);
+    return out;
+}
+
+struct Consent {
+    bool allowed = false;
+    std::string why;
+};
+
+// Whether the application with this id may be given the voice channel. Asked
+// of the host, never of the sandbox: the id is the name of the directory
+// Flatpak made for it under $XDG_RUNTIME_DIR/app, which the application
+// cannot choose, and everything else below is outside the sandbox.
+//
+// Two yeses. The user listed the id in `flatpak_apps`. Or the desktop entry
+// Flatpak exported for that id says Game -- by the same rule the detection
+// applies on the host (detail::categories_say_game: `Game`, not `GameTool` or
+// `LauncherStore`), which lets Steam, Heroic or Sober through and keeps a chat
+// client out.
+//
+// The exported entry is a symbolic link, always: measured, all five under
+// /var/lib/flatpak/exports/share/applications on this machine point into
+// `../../../app/<id>/current/active/export/...`. So the link is followed --
+// an O_NOFOLLOW open refuses every real Flatpak -- and what it resolves to
+// must be inside that installation's own `app/<id>/`: an exported name that
+// leads into another application's files is not that application's entry.
+// The file itself is read by detail::read_entry, which opens the resolved
+// path O_NOFOLLOW|O_NONBLOCK, regular files only, a megabyte at most.
+Consent consent_for(const std::string& id, const std::string& flatpak_apps) {
+    if (listed(flatpak_apps, id)) {
+        return {true, "listed in flatpak_apps"};
+    }
+    static const std::string kShare = "/exports/share";
+    for (const std::string& root : flatpak_export_roots()) {
+        const std::string link = root + "/applications/" + id + ".desktop";
+        const std::string entry_path = resolved(link);
+        if (entry_path.empty()) {
+            continue;
+        }
+        const std::string installation =
+            resolved(root.substr(0, root.size() >= kShare.size() ? root.size() - kShare.size() : 0));
+        const std::string own = installation + "/app/" + id + "/";
+        if (installation.empty() || entry_path.compare(0, own.size(), own) != 0) {
+            return {false, "its exported desktop entry " + link +
+                               " leads outside the application's own files"};
+        }
+        const detail::Entry entry = detail::read_entry(entry_path);
+        if (!entry.found) {
+            return {false, "its exported desktop entry " + link + " could not be read"};
+        }
+        if (detail::categories_say_game(entry.categories)) {
+            return {true, "its desktop entry says Game"};
+        }
+        return {false, "its desktop entry is not a game (Categories=" +
+                           printable_id(entry.categories.c_str()) + ")"};
+    }
+    return {false, "no Flatpak desktop entry is exported for it"};
+}
+
 }  // namespace
+
+void FlatpakBridge::decide(Mirror& mirror, bool announce) {
+    const Consent consent = consent_for(mirror.id, flatpak_apps_);
+    const bool was = mirror.consented;
+    mirror.consented = consent.allowed;
+    mirror.consent_why = consent.why;
+    if (!announce || was == consent.allowed) {
+        return;
+    }
+    if (consent.allowed) {
+        LOG("serving the voice channel to %s: %s", mirror.id.c_str(), consent.why.c_str());
+        return;
+    }
+    // Taken back. The words go now -- the next publish is a cleared state --
+    // and the refusal may be said again, since what it answers has changed.
+    ::unlinkat(mirror.directory, kBridgeNoteName, 0);
+    mirror.refusal_said = false;
+    LOG("no longer serving the voice channel to %s: %s", mirror.id.c_str(), consent.why.c_str());
+}
+
+// Once per adoption, and only for a sandbox that asks to draw: one that says
+// drawing=0 is not asking for anything this would refuse.
+void FlatpakBridge::say_refusal(Mirror& mirror) {
+    if (!mirror.drawing || mirror.consented || mirror.refusal_said) {
+        return;
+    }
+    mirror.refusal_said = true;
+    LOG("not serving the voice channel to %s: %s; add the id to flatpak_apps in config.ini to "
+        "allow it (it is given its settings and a cleared state)",
+        mirror.id.c_str(), mirror.consent_why.c_str());
+}
+
+void FlatpakBridge::refresh_consent() {
+    const long long mtime = Config::mtime();
+    if (mtime == consent_config_mtime_) {
+        return;
+    }
+    consent_config_mtime_ = mtime;
+    Config config;
+    config.load();
+    flatpak_apps_ = config.flatpak_apps;
+    for (Mirror& mirror : mirrors_) {
+        decide(mirror, true);
+    }
+}
 
 void FlatpakBridge::rescan() {
     if (applications_ < 0 && !start()) {
         return;
     }
+    refresh_consent();
     // Drop the sandboxes that stopped asking, the ones whose directory went away
     // with the application, and the ones whose state file is no longer the one
     // this daemon opened -- a sandbox that replaces it leaves the daemon writing
@@ -479,6 +632,7 @@ void FlatpakBridge::rescan() {
         }
         if (!gone) {
             mirror.drawing = request.drawing;
+            say_refusal(mirror);
             // The record arrives a frame after the request that adopted this
             // sandbox, so this is where it is usually seen.
             write_record_for(mirror, request);
@@ -561,15 +715,19 @@ void FlatpakBridge::publish(const SharedState& state) {
         // odd, the two runs of the struct that the sequence field divides, then
         // even. A reader that samples in between retries, exactly as it does on
         // the canonical segment.
-        // A sandbox whose overlay is not drawing is served a cleared state, not
-        // the channel: the user's per-application switch is what says whether
-        // the overlay belongs in that game, and it must mean something on this
-        // side of the wall too. It is still published rather than left alone, so
-        // that switching a game off empties its panel instead of freezing it.
+        // The channel goes only where both halves say yes (Mirror::voice()).
+        // The sandbox's `drawing` is the user's per-application switch as the
+        // overlay in there read it -- which holds for an overlay that tells
+        // the truth and for nothing else, because anything in that sandbox
+        // can write the line. The host's consent is what holds for the rest:
+        // an application id whose exported entry says Game, or one the user
+        // listed in flatpak_apps. Everywhere else the answer is a cleared
+        // state, published rather than left alone so that switching a game
+        // off empties its panel instead of freezing it.
         SharedState empty{};
         empty.abi_version = kAbiVersion;
         empty.status = static_cast<uint32_t>(DaemonStatus::WaitingForDiscord);
-        const SharedState& payload = mirror.drawing ? state : empty;
+        const SharedState& payload = mirror.voice() ? state : empty;
 
         const uint32_t odd = mirror.sequence + 1;
         const uint32_t even = mirror.sequence + 2;
@@ -604,7 +762,7 @@ void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
         }
         // Gone, or never wanted here. Unlinking is what tells a reader inside
         // the game that the words are history, exactly as it does on the host.
-        if (!body || serial == 0 || !mirror.drawing) {
+        if (!body || serial == 0 || !mirror.voice()) {
             ::unlinkat(mirror.directory, kBridgeNoteName, 0);
             continue;
         }
@@ -721,10 +879,10 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
 // same answer.
 //
 // Unlike the settings and the faces this is copied exactly once: sixteen
-// megabytes that never change while the daemon runs. Only into a sandbox the
-// overlay is actually drawing in, so a Flatpak the user has excluded costs
-// nothing, and sixteen megabytes of the runtime directory is a real cost to
-// name rather than spend quietly.
+// megabytes that never change while the daemon runs. Only into a sandbox that
+// is given the voice channel (Mirror::voice()), so a Flatpak the user has
+// excluded or never consented to costs nothing, and sixteen megabytes of the
+// runtime directory is a real cost to name rather than spend quietly.
 //
 // Two files, in this order: the sequence table first, the bank second. The
 // overlay waits on the BANK (emoji_bank.h: it looks twice a second, and reads
@@ -771,10 +929,13 @@ void FlatpakBridge::refresh_files(const SharedState& state) {
     for (Mirror& mirror : mirrors_) {
         // The settings always: they are what the overlay reads to decide whether
         // it draws in this game at all, so withholding them would make the
-        // decision unanswerable. The faces and the emoji bank only where it does
-        // draw.
+        // decision unanswerable -- and an overlay that cannot read shown_apps
+        // cannot say drawing=1 for a game the user switched on, so the refusal
+        // above would never be said for the one case it exists for. They carry
+        // the user's settings and application lists, not the voice channel.
+        // The faces and the emoji bank only where the channel goes.
         mirror_config(mirror);
-        if (mirror.drawing) {
+        if (mirror.voice()) {
             mirror_avatars(mirror, state);
             mirror_emoji_bank(mirror);
         }

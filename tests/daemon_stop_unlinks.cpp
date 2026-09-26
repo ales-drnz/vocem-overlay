@@ -326,6 +326,9 @@ int note_mirror(const char* daemon_path, const std::string& base) {
     mkdir(app.c_str(), 0700);
     mkdir((app + "/vocem").c_str(), 0700);
     write_file(app + "/vocem/request", "pid=1\ndrawing=1\n");
+    // And one the host consents to give the voice channel: a request alone is
+    // the sandbox's word, not the user's (flatpak_consent.cpp).
+    write_file(base + "/config/vocem/config.ini", "flatpak_apps = org.test.game\n");
     const std::string mirror_state = app + "/vocem/state";
     const std::string mirror_note = app + "/vocem/note";
 

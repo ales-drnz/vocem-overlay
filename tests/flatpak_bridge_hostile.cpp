@@ -135,7 +135,12 @@ int main() {
     setenv("XDG_CACHE_HOME", cache_home.c_str(), 1);
     unsetenv("FLATPAK_ID");
     make_directories(config_home + "/vocem");
-    write_file(config_home + "/vocem/config.ini", "[general]\nnotification_seconds = 7\n");
+    // The sandboxes whose copies are aimed at the user's files are ones the
+    // host consents to serve (flatpak_consent.cpp), so the copies are really
+    // attempted rather than refused before anything is opened.
+    write_file(config_home + "/vocem/config.ini",
+               "[general]\nnotification_seconds = 7\n"
+               "flatpak_apps = org.example.LinkedCopies, org.example.FifoConfig\n");
     make_directories(cache_home + "/vocem/avatars");
 
     // What the sandbox is trying to reach. Rewritten before every attempt so a

@@ -1287,3 +1287,11 @@ vocem_script_test(gl_beside_mangohud ARGS ${VOCEM_GL_PROBE_ARGS}
 # shape is built with bwrap rather than described; see the file's header.
 vocem_test(emoji_bank_arrives LINK rt
     ENV "VOCEM_TEST_BANK_SOURCE=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba" SKIP)
+
+# ---- 0.1.11 daemon lane ----
+# Who the Flatpak bridge serves the voice channel to: a sandbox's own
+# `drawing=1` is its word, and the host decides by application id -- an
+# exported desktop entry that says Game, or the id listed in flatpak_apps.
+vocem_test(flatpak_consent
+    SOURCES flatpak_consent.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
