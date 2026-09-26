@@ -1300,3 +1300,13 @@ vocem_test_run(vk_present_deferred TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=deferred" SKIP)
 vocem_m32_twin_run(vk_present_deferred TARGET vk_present_deferred
     ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=deferred")
+
+# A second device PRESENTING beside the first, which stays alive. The renderer
+# belongs to one device; the other was drawn with its buffers (commonparent
+# under the validation layer, then SIGSEGV). Passed through while both present,
+# moved once the owner has been silent for the hand-over interval (entry 210's
+# rule on this side), and moved back when the second device is destroyed.
+vocem_test_run(vk_present_second_presenter TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-presenter" SKIP TIMEOUT 120)
+vocem_m32_twin_run(vk_present_second_presenter TARGET vk_present_second_presenter
+    ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-presenter")

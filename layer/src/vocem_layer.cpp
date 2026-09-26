@@ -234,6 +234,96 @@ DeviceData* find_device(void* dispatchable) {
 }
 
 // ---------------------------------------------------------------------------
+// Whose present this is. The renderer lives on one device and uploads on one
+// queue (OverlayRenderer::owns); nothing used to ask, and a second device that
+// presented beside the first had its frames recorded with the first device's
+// vertex ring, pipeline and font image -- VUID-vkCmdBindVertexBuffers-
+// commonparent under the validation layer, then SIGSEGV -- and its post-present
+// phase submitting to, and waiting on, the first device's queue, which that
+// present holds no synchronisation for. A present that is not the owner's is
+// passed through, said once; once the owner has not presented for
+// kHandOverSeconds the backend moves to the one that does. That second half is
+// entry 210's lesson on the OpenGL side, where the first version of the same
+// fix refused every other context for good and a game that shows a loading
+// screen from one and plays from another had no overlay for the session.
+// Everything here is guarded by g_lock.
+// ---------------------------------------------------------------------------
+
+constexpr double kHandOverSeconds = 2.0;
+// When the owner last presented; 0 while nobody owns the renderer, or while its
+// owner has not presented since it was built -- then nothing is Abandoned.
+double g_owner_seen = 0.0;
+// The last non-owner that was told about, so it is said once and not per frame.
+VkDevice g_foreign_said_device = VK_NULL_HANDLE;
+VkQueue g_foreign_said_queue = VK_NULL_HANDLE;
+
+enum class Presenter { Owner, Foreign, Abandoned };
+
+Presenter whose_present(VkDevice device, VkQueue queue) {
+    // Nobody owns a renderer that is not up: whoever presents next builds it.
+    if (!vocem::renderer().ready()) {
+        return Presenter::Owner;
+    }
+    const double now = vocem::monotonic_seconds();
+    if (vocem::renderer().owns(device, queue)) {
+        g_owner_seen = now;
+        return Presenter::Owner;
+    }
+    if (g_owner_seen > 0.0 && now - g_owner_seen >= kHandOverSeconds) {
+        return Presenter::Abandoned;
+    }
+    if (device != g_foreign_said_device || queue != g_foreign_said_queue) {
+        g_foreign_said_device = device;
+        g_foreign_said_queue = queue;
+        VOCEM_LOG("not drawing on device %p queue %p: the overlay's renderer lives on device %p "
+                  "and its queue, which presented %.1f s ago", static_cast<void*>(device),
+                  static_cast<void*>(queue), static_cast<void*>(vocem::renderer().device()),
+                  g_owner_seen > 0.0 ? now - g_owner_seen : 0.0);
+    }
+    return Presenter::Foreign;
+}
+
+// Waits for every overlay submission still in flight on `device`, by the
+// per-image fences the layer submitted them with. Those command buffers read
+// the renderer's vertex ring, pipeline, font image and faces; the texture
+// cache's own uploads are the only other GPU work that does, and its
+// shutdown() waits for them itself. vkWaitForFences needs no queue's external
+// synchronisation; the vkDeviceWaitIdle that stood in the renderer's shutdown
+// needed every queue's.
+void wait_for_overlay_work(VkDevice device) {
+    DeviceData* dev = find_device(device);
+    if (!dev || !dev->disp.WaitForFences) {
+        return;
+    }
+    for (auto& entry : g_swapchains) {
+        SwapchainData& sc = entry.second;
+        if (sc.device != device) {
+            continue;
+        }
+        for (size_t i = 0; i < sc.submitted.size() && i < sc.fences.size(); ++i) {
+            if (sc.submitted[i] && sc.fences[i] != VK_NULL_HANDLE) {
+                dev->disp.WaitForFences(device, 1, &sc.fences[i], VK_TRUE, UINT64_MAX);
+            }
+        }
+    }
+}
+
+// The one way the renderer is torn down: every overlay submission that reads
+// it waited for first (OverlayRenderer::shutdown says why that is the
+// caller's), then the backend, the context and the texture cache. The atlas is
+// not the renderer's and stays (entry 144); callers that mean to hand it back
+// call fonts_release() after this.
+void release_renderer_locked() {
+    if (VkDevice owner = vocem::renderer().device()) {
+        wait_for_overlay_work(owner);
+    }
+    vocem::renderer().shutdown();
+    g_owner_seen = 0.0;
+    g_foreign_said_device = VK_NULL_HANDLE;
+    g_foreign_said_queue = VK_NULL_HANDLE;
+}
+
+// ---------------------------------------------------------------------------
 // Chain helpers
 // ---------------------------------------------------------------------------
 
@@ -341,7 +431,10 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
     // the Vulkan processes of a session -- has nothing here, and asking would
     // construct the renderer and the atlas object just to clear them.
     if (last && vocem::fonts_build_count() > 0) {
-        vocem::renderer().shutdown();
+        {
+            std::lock_guard<std::mutex> guard(g_lock);
+            release_renderer_locked();
+        }
         vocem::fonts_release();
         VOCEM_LOG("the last instance is gone: the font atlas handed back");
     }
@@ -502,7 +595,7 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
         // presenting, with no wait for the command buffers reading them.
         if (vocem::renderer().device() == device) {
             vocem::journal_note("device destroyed; renderer shutting down");
-            vocem::renderer().shutdown();
+            release_renderer_locked();
         }
     }
     if (destroy) {
@@ -1045,7 +1138,8 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     rp_begin.renderArea.extent = sc.extent;
     d.CmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
-    vocem::renderer().draw(cmd, *snapshot, sc.extent.width, sc.extent.height, pipeline);
+    vocem::renderer().draw(cmd, *snapshot, sc.extent.width, sc.extent.height, pipeline,
+                           dev.device, queue);
 
     d.CmdEndRenderPass(cmd);
     if (d.EndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -1178,6 +1272,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // Set under the lock when the verdict or the master switch turned off on
     // this present; acted on after it returns, where blocking is allowed.
     bool switched_off = false;
+    // Set when this present is not the renderer's and its owner has been
+    // silent for kHandOverSeconds: the backend is moved after the present.
+    bool hand_over = false;
+    VkDevice present_device = VK_NULL_HANDLE;
     vocem::RendererTarget pending_target;
 
     {
@@ -1187,6 +1285,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
             return VK_ERROR_INITIALIZATION_FAILED;
         }
         next = dev->disp.QueuePresentKHR;
+        present_device = dev->device;
 
         // A process the overlay could draw in, which is what the window's list is
         // a list of -- recorded below whether or not it is allowed to, since an
@@ -1226,7 +1325,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                     switched_off = !want;
                 }
                 g_drawing = want ? 1 : 0;
-                if (want) {
+                // Not the renderer's device, or not its queue: left alone,
+                // said once, and nothing of ours is built for it -- until the
+                // owner has been silent long enough to move to this one.
+                const Presenter presenter = want ? whose_present(dev->device, queue)
+                                                 : Presenter::Owner;
+                hand_over = presenter == Presenter::Abandoned;
+                if (want && presenter == Presenter::Owner) {
                     SwapchainData& sc = it->second;
 
                     auto family_it = dev->queue_families.find(queue);
@@ -1332,8 +1437,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
             it->second.colour_note_pending = false;
             vocem::journal_note("colour pipeline ready");
         }
-        // Read under the lock the poll itself runs under, acted on below with
-        // the lock let go: shutdown() takes the renderer's own.
+        // Read under the lock the poll itself runs under, and acted on below
+        // in a scope of its own: the release waits for the overlay's fences
+        // and takes the renderer's lock after this one, never the reverse.
         daemon_left = g_state.daemon_left();
     }
 
@@ -1354,8 +1460,25 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         VOCEM_LOG("%s: releasing the backend and the font atlas",
                   daemon_left ? "the daemon stopped" : "switched off");
         vocem::journal_note(daemon_left ? "daemon stopped: released" : "switched off: released");
-        vocem::renderer().shutdown();
+        {
+            std::lock_guard<std::mutex> guard(g_lock);
+            release_renderer_locked();
+        }
         vocem::fonts_release();
+    } else if (hand_over) {
+        // The owner has been silent for kHandOverSeconds: the backend is let
+        // go -- its device's own objects, waited for by fence and destroyed
+        // there -- and the next present here finds it not ready and builds it
+        // on this device and queue. The atlas stays (entry 144): what is built
+        // again is the context, the backend and the one upload. Asked again
+        // under the lock, because another thread may have moved it already.
+        std::lock_guard<std::mutex> guard(g_lock);
+        if (vocem::renderer().ready() && !vocem::renderer().owns(present_device, queue)) {
+            VOCEM_LOG("the renderer's device has not presented for %.0f s: moving the overlay "
+                      "to device %p", kHandOverSeconds, static_cast<void*>(present_device));
+            vocem::journal_note("renderer's device silent: moving the overlay");
+            release_renderer_locked();
+        }
     }
 
     // Safe here: the present has returned, so the queue is ours to block on.
@@ -1379,12 +1502,20 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         // chain, and the loader can route those back into this layer. Its
         // answer is remembered inside: a failure is said once and not retried
         // on every present.
-        vocem::renderer().prepare(pending_target);
+        if (vocem::renderer().prepare(pending_target)) {
+            // The owner's clock starts when it becomes the owner, not at its
+            // next present: a second device presenting in between must not
+            // find it silent since the process began.
+            std::lock_guard<std::mutex> guard(g_lock);
+            g_owner_seen = vocem::monotonic_seconds();
+        }
     } else if (vocem::renderer().ready()) {
         // Uploads and rebuilds submit and free what their fences say is done;
         // a rebuild waits the queue idle before it replaces the image, which is
-        // why they belong here and not in the present.
-        vocem::renderer().process_uploads();
+        // why they belong here and not in the present. Only on the owner's
+        // queue, which process_uploads() asks itself: this present's external
+        // synchronisation covers its own queue and no other.
+        vocem::renderer().process_uploads(present_device, queue);
     }
 
     return result;

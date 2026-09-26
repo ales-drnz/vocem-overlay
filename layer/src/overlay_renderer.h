@@ -8,9 +8,12 @@
 // *what* gets drawn, everything in vocem_layer.cpp is about *where* and *when*.
 //
 // ImGui keeps one context and one backend per process, so this is a process-wide
-// singleton that follows whichever swapchain is currently presenting. Games with
-// two simultaneous swapchains are out of scope for now; the layer already passes
-// those through untouched.
+// singleton on ONE device and ONE queue (owns()). A swapchain of that device
+// presented on that queue is drawn into, whichever it is; a single present of
+// two swapchains at once is passed through untouched; and a present on another
+// device or another queue is passed through, said once, until the owner has
+// been silent for the hand-over interval -- then the backend moves to the one
+// presenting (vocem_layer.cpp, entry 210's rule on this side).
 
 #ifndef VOCEM_OVERLAY_RENDERER_H
 #define VOCEM_OVERLAY_RENDERER_H
@@ -82,9 +85,23 @@ public:
     // prepare() was given -- the backend's stock pipeline was built against
     // that format's render pass and is compatible with no other; the layer
     // checks (format()) before handing a null here.
+    //
+    // `device` and `queue` are the present's: nothing is recorded unless the
+    // backend was built on that device and uploads on that queue (owns()).
+    // Asked here, under the renderer's own lock, as well as by the layer
+    // before it gets this far, because prepare() and shutdown() run on other
+    // threads with the layer's lock let go and can move the backend in
+    // between. A refused frame leaves the render pass empty, which loads and
+    // stores the game's pixels unchanged.
     void draw(VkCommandBuffer command_buffer, const Snapshot& snapshot, uint32_t width,
-              uint32_t height, VkPipeline pipeline);
+              uint32_t height, VkPipeline pipeline, VkDevice device, VkQueue queue);
 
+    // Tears the backend down: the texture cache waits for its own uploads, and
+    // the CALLER must already have waited for every overlay submission that
+    // reads the backend's objects -- the layer's per-image fences, which only
+    // it can see (vocem_layer.cpp's release_renderer_locked). No device-wide
+    // wait in here any more: vkDeviceWaitIdle needs every queue of the device
+    // externally synchronised, and a present holds only its own.
     void shutdown();
 
     // The device the backend was built for, and the swapchain format its stock
@@ -92,6 +109,14 @@ public:
     VkDevice device() {
         std::lock_guard<std::mutex> guard(lock_);
         return device_;
+    }
+    // Whether a present on `queue` of `device` is one this backend may draw
+    // and upload for: the device its objects were made on, and the queue its
+    // uploads and the font texture's copies are submitted to and ordered on.
+    // False before the backend is ready.
+    bool owns(VkDevice device, VkQueue queue) {
+        std::lock_guard<std::mutex> guard(lock_);
+        return backend_ready_ && device == device_ && queue == queue_;
     }
     VkFormat format() {
         std::lock_guard<std::mutex> guard(lock_);
@@ -101,8 +126,10 @@ public:
     // Called after the present returns: does the queued avatar uploads, which
     // submit work and therefore stay off the present path, rebuilds the font
     // atlas when the output size or the user's scale changed, and folds a new
-    // colour emoji into it.
-    void process_uploads();
+    // colour emoji into it. Only for a present on the queue the backend owns
+    // (owns()): the uploads are submitted to that queue, and the present's
+    // external synchronisation covers the queue it was made on and no other.
+    void process_uploads(VkDevice device, VkQueue queue);
 
     // Waits for the atlas worker if one is running. For the layer's ELF
     // destructor: the library must not be unmapped under a thread executing
@@ -171,8 +198,7 @@ private:
     // until shutdown() (a new device) clears it.
     bool failed_ = false;
     VkDevice device_ = VK_NULL_HANDLE;
-    // Resolved with the backend, spent in shutdown_locked(), which says why.
-    PFN_vkDeviceWaitIdle device_wait_idle_ = nullptr;
+    VkQueue queue_ = VK_NULL_HANDLE;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
 
     // Written by draw(), acted on by process_uploads(): the atlas size this output

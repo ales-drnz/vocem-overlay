@@ -109,8 +109,11 @@ bool OverlayRenderer::load_vulkan_functions(const RendererTarget& target) {
         return true;
     }
 
-    // ImGui stores these globally, so the first device wins. A game creating a
-    // second logical device would need a second context; not supported yet.
+    // ImGui stores these globally, so there is one backend per process and it
+    // lives on one device. A second device that presents is passed through by
+    // the layer while the first presents, and the backend moves to it -- a
+    // shutdown() and a fresh prepare(), which loads these again -- once the
+    // first has been silent for the hand-over interval (vocem_layer.cpp).
     if (!ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_1, resolve_function,
                                        &g_loader_context)) {
         VOCEM_RLOG("ImGui_ImplVulkan_LoadFunctions failed");
@@ -299,13 +302,8 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         vocem::journal_note("Vulkan backend ready");
         backend_ready_ = true;
         device_ = target.device;
+        queue_ = target.queue;
         format_ = target.format;
-        // Resolved here rather than at teardown, because by then the device may
-        // be the one being destroyed and vkGetDeviceProcAddr on it is not ours
-        // to call. shutdown_locked() says what it is for.
-        device_wait_idle_ = reinterpret_cast<PFN_vkDeviceWaitIdle>(
-            resolve_function("vkDeviceWaitIdle", &g_loader_context));
-
     }
     return true;
 }
@@ -348,9 +346,10 @@ bool OverlayRenderer::upload_font_texture(bool whole) {
 }
 
 void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snapshot,
-                           uint32_t width, uint32_t height, VkPipeline pipeline) {
+                           uint32_t width, uint32_t height, VkPipeline pipeline, VkDevice device,
+                           VkQueue queue) {
     std::lock_guard<std::mutex> guard(lock_);
-    if (!backend_ready_ || font_retry_at_ > 0.0) {
+    if (!backend_ready_ || font_retry_at_ > 0.0 || device != device_ || queue != queue_) {
         return;
     }
 
@@ -430,9 +429,9 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     session().frame_drawn();
 }
 
-void OverlayRenderer::process_uploads() {
+void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
     std::lock_guard<std::mutex> guard(lock_);
-    if (!backend_ready_) {
+    if (!backend_ready_ || device != device_ || queue != queue_) {
         return;
     }
 
@@ -533,23 +532,26 @@ void OverlayRenderer::shutdown_locked() {
     // else. Then a second caller arrived -- the daemon stopping, which fires on
     // an arbitrary present of a live, presenting device -- and the property went
     // with it. The overlay's submit for the previous image is at most one
-    // present old and no fence on this path consults it; textures_.shutdown()
-    // frees the images -- the font atlas's among them (entry 192) -- and the
-    // command pool it reads, and
+    // present old; textures_.shutdown() frees the images -- the font atlas's
+    // among them (entry 192) -- and the command pool it reads, and
     // ImGui_ImplVulkan_Shutdown() frees the vertex ring, its own font image
-    // where it made one, the pipeline and the descriptor pool (imgui_impl_vulkan.cpp has no wait of its
-    // own -- checked). The wait belongs here rather than at the new call site so
-    // that the next caller inherits it: entry 131 fixed exactly this shape for
-    // the second-device case and it came back through a door nobody had yet.
+    // where it made one, the pipeline and the descriptor pool
+    // (imgui_impl_vulkan.cpp has no wait of its own -- checked). Entry 131
+    // fixed exactly this shape for the second-device case and it came back
+    // through a door nobody had yet.
     //
-    // vkDeviceWaitIdle wants external synchronisation on the device's queues,
-    // which this has: it runs after the present returned, under the renderer's
-    // own lock, and destroy_swapchain_resources does the same thing for the same
-    // reason. A failure (a lost device) is not a reason to keep the memory --
-    // rule 7 -- so the answer is not checked.
-    if (device_wait_idle_ && backend_ready_ && device_ != VK_NULL_HANDLE) {
-        device_wait_idle_(device_);
-    }
+    // The wait was a vkDeviceWaitIdle here, under a comment saying its
+    // external synchronisation was had. It was not: vkDeviceWaitIdle wants
+    // every queue of the device externally synchronised, and a present holds
+    // only the queue it was made on -- and the hand-over to a second device
+    // (entry 210 on this side) calls this from ANOTHER device's present, which
+    // holds none of this one's. What reads these objects on the GPU is two
+    // things, each with fences of its own: the overlay's submissions, one per
+    // swapchain image, which the layer waits for before calling this
+    // (release_renderer_locked, the only way it is called), and the texture
+    // cache's uploads, which textures_.shutdown() waits for below.
+    // vkWaitForFences needs no queue's synchronisation at all.
+    //
     // The next device's first frame must not measure the gap between devices as
     // one animation step.
     session().reset_clock();
@@ -575,7 +577,7 @@ void OverlayRenderer::shutdown_locked() {
     failed_ = false;
     font_retry_at_ = 0.0;
     device_ = VK_NULL_HANDLE;
-    device_wait_idle_ = nullptr;
+    queue_ = VK_NULL_HANDLE;
     format_ = VK_FORMAT_UNDEFINED;
 }
 
