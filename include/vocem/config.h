@@ -694,7 +694,8 @@ struct Config {
     // would let it read a half-written one -- which is worse than it sounds,
     // because the mtime would already be its final value and the bad read
     // would stick until the next save. A symlink is resolved first, so the
-    // rename replaces the file it points at and the link stays a link; the
+    // rename replaces the file it points at and the link stays a link -- one
+    // whose target does not exist yet too (write_target); the
     // temporary takes the target's mode before it is renamed, and it is
     // fsync'd, so a crash leaves the old file or the new one.
     bool save() const {
@@ -703,10 +704,9 @@ struct Config {
         if (slash != std::string::npos) {
             make_directories(file_path.substr(0, slash));
         }
-        std::string target = file_path;
-        if (char* resolved = ::realpath(file_path.c_str(), nullptr)) {
-            target = resolved;
-            std::free(resolved);
+        const std::string target = write_target(file_path);
+        if (target.empty()) {
+            return false;  // a loop of links: there is no file to write
         }
         struct stat existing{};
         const bool exists = ::stat(target.c_str(), &existing) == 0;
@@ -939,6 +939,37 @@ private:
 
     // The whole file, however long its lines: the rewrite keeps every line
     // it does not own, and read_line's cap is for the reader inside a game.
+    // The file a write to `file_path` must land on: the path itself, or the
+    // end of the links it is. realpath() answers that for a link whose target
+    // exists and fails for one whose target does not -- dotfiles linked in
+    // before the file was first written -- and the rename then put a regular
+    // file where the link was. So a link realpath() cannot resolve is followed
+    // here, a relative target against the link's own directory; empty for a
+    // chain that does not end (a loop), which save() refuses.
+    static std::string write_target(const std::string& file_path) {
+        if (char* resolved = ::realpath(file_path.c_str(), nullptr)) {
+            std::string target = resolved;
+            std::free(resolved);
+            return target;
+        }
+        std::string current = file_path;
+        for (int hop = 0; hop < 40; ++hop) {
+            char buffer[4096];
+            const ssize_t length = ::readlink(current.c_str(), buffer, sizeof(buffer) - 1);
+            if (length < 0) {
+                return current;  // not a link (or not there): written as it is
+            }
+            std::string next(buffer, static_cast<size_t>(length));
+            if (next.empty() || next[0] != '/') {
+                const size_t slash = current.rfind('/');
+                next = (slash == std::string::npos ? std::string() : current.substr(0, slash + 1)) +
+                       next;
+            }
+            current = next;
+        }
+        return std::string();
+    }
+
     // False when the file cannot be opened or a read fails part way: the
     // caller must not take that for an empty file.
     static bool read_whole(const std::string& file_path, std::string& text) {

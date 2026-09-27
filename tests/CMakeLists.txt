@@ -1713,3 +1713,8 @@ vocem_test(config_save_unreadable SKIP)
 # does: makepkg -R runs package() alone.
 vocem_script_test(package_m32_makedepends)
 vocem_script_test(package_refuses_exemplar)
+
+# A config.ini linked to a file that does not exist yet stays a link: the
+# realpath() the save relied on fails there, and the rename put a regular
+# file where the link was.
+vocem_test(config_save_dangling_link)
