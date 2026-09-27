@@ -16,11 +16,14 @@
 // sandbox, and any Flatpak can write `drawing=1` into it: through 0.1.10 that
 // line alone handed the voice channel, the faces and the words of every message
 // to whichever application wrote it. What decides now is the host, by
-// application id -- the directory's name, which a sandbox cannot choose: the
-// id's exported desktop entry says Game, or the user listed the id in
-// `flatpak_apps`. A sandbox that is neither is adopted all the same (it gets
-// config.ini, so its overlay can decide what to say about itself) and is
-// published a cleared state and nothing else.
+// application id: the id's exported desktop entry says Game, or the user
+// listed the id in `flatpak_apps` -- AND a process of the user's is running
+// in a sandbox whose /.flatpak-info names that id. The id is the directory's
+// name, and a name is not evidence: Flatpak makes the directory, but any
+// sandbox holding the xdg-run/app grant can make one too, under any name
+// (entries 134 and 164). A sandbox that fails either half is adopted all the
+// same (it gets config.ini, so its overlay can decide what to say about
+// itself) and is published a cleared state and nothing else.
 //
 // Everything it touches is on the other side of a trust boundary. The directory
 // under $XDG_RUNTIME_DIR/app/<id> is writable by the sandboxed application, and
@@ -101,12 +104,19 @@ private:
         // either way, for the log.
         bool consented = false;
         std::string consent_why;
+        // Whether a process of this application is running now, which is
+        // what makes the directory the application its name says
+        // (check_running() in the implementation). Asked once per sweep, and
+        // only of a mirror both other halves would serve.
+        bool running = false;
+        // Its absence said, once per stretch of absence.
+        bool absence_said = false;
         // The refusal of a sandbox that asks to draw and has no consent, said
         // once per adoption and again only after consent came and went.
         bool refusal_said = false;
         // The voice state, the note, the faces and the emoji bank go where both
         // halves say yes, and nowhere else.
-        bool voice() const { return drawing && consented; }
+        bool voice() const { return drawing && consented && running; }
         // The seqlock's counter, kept here and not read back out of the file.
         // What is in the file is whatever the sandbox last left there.
         uint32_t sequence = 0;
@@ -143,6 +153,10 @@ private:
     // The host's decision for one mirror, and what changes when it moves.
     void decide(Mirror& mirror, bool announce);
     void say_refusal(Mirror& mirror);
+    void check_running(Mirror& mirror);
+    // The ids of the Flatpak sandboxes with a process running, scanned at most
+    // once per rescan() and only when a mirror asks.
+    const std::set<std::string>& running_ids();
     // flatpak_apps, reread when config.ini moves, and every mirror decided
     // again with it.
     void refresh_consent();
@@ -182,6 +196,9 @@ private:
     // config.ini modification time it was read at; -1 until the first read.
     std::string flatpak_apps_;
     long long consent_config_mtime_ = -1;
+    std::set<std::string> running_ids_;
+    bool running_scanned_ = false;  // this sweep's scan is in running_ids_
+    bool proc_refused_said_ = false;
     std::vector<Mirror> mirrors_;
 };
 

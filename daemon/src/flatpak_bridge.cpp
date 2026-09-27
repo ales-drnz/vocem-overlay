@@ -14,8 +14,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <vector>
 
+#include "flatpak_process.h"
 #include "log.h"
 #include "vocem/apps.h"
 #include "vocem/avatar_rgba.h"
@@ -469,6 +471,7 @@ bool FlatpakBridge::adopt(const char* id) {
     LOG("serving the overlay inside the Flatpak sandbox of %s (voice channel: %s, %s)", id,
         mirror.consented ? "yes" : "no", mirror.consent_why.c_str());
     say_refusal(mirror);
+    check_running(mirror);
     write_record_for(mirror, request);
     mirrors_.push_back(std::move(mirror));
     return true;
@@ -626,9 +629,13 @@ struct Consent {
 };
 
 // Whether the application with this id may be given the voice channel. Asked
-// of the host, never of the sandbox: the id is the name of the directory
-// Flatpak made for it under $XDG_RUNTIME_DIR/app, which the application
-// cannot choose, and everything else below is outside the sandbox.
+// of the host, never of the sandbox: everything below is outside it. The id
+// is the name of a directory under $XDG_RUNTIME_DIR/app -- which this comment
+// said the application "cannot choose" until the second fix round of 0.1.11,
+// while two other comments in this file and entries 134 and 164 said that a
+// sandbox holding the xdg-run/app grant can make one under any name. So this
+// answers what the id may be given, and check_running() answers whether the
+// directory is that application at all: a process of it must be running.
 //
 // Two yeses. The user listed the id in `flatpak_apps`. Or the desktop entry
 // Flatpak exported for that id says Game -- by the same rule the detection
@@ -696,6 +703,61 @@ void FlatpakBridge::decide(Mirror& mirror, bool announce) {
     LOG("no longer serving the voice channel to %s: %s", mirror.id.c_str(), consent.why.c_str());
 }
 
+// The ids of the sandboxes with a process running, once per sweep at most:
+// about a millisecond (flatpak_process.h), and only asked while some mirror
+// is drawing with the host's consent -- which is a Flatpak game being played.
+const std::set<std::string>& FlatpakBridge::running_ids() {
+    if (!running_scanned_) {
+        running_scanned_ = true;
+        if (!running_flatpak_ids(running_ids_) && !proc_refused_said_) {
+            proc_refused_said_ = true;
+            LOG("/proc cannot be listed: no Flatpak sandbox can be seen running, so none is "
+                "given the voice channel");
+        }
+    }
+    return running_ids_;
+}
+
+// Whether the directory is the application its name says: a process of this
+// user's is running in a sandbox whose /.flatpak-info names that id. The name
+// alone is not evidence -- `mkdir $XDG_RUNTIME_DIR/app/org.vinegarhq.Sober`
+// from any sandbox holding the xdg-run/app grant, a `request` with drawing=1
+// in it, and until the second fix round of 0.1.11 that sandbox was served as
+// Sober (a Game): channel, names, faces, the words of every message. A
+// process's /.flatpak-info is what a sandbox cannot forge (flatpak_process.h).
+//
+// Asked on every sweep, not once: a directory stays after its application
+// exits, and a mirror whose game has gone is somebody else's to write into
+// from then on. What a running application's own directory is exposed to --
+// another sandbox with the same grant can read it while the game runs -- is
+// not closed by this; the grant hands over the whole of $XDG_RUNTIME_DIR/app.
+void FlatpakBridge::check_running(Mirror& mirror) {
+    if (!mirror.drawing || !mirror.consented) {
+        mirror.running = false;  // nothing to be served, so nothing to ask
+        return;
+    }
+    const bool was = mirror.running;
+    mirror.running = running_ids().count(mirror.id) != 0;
+    if (mirror.running) {
+        if (mirror.absence_said) {
+            mirror.absence_said = false;
+            LOG("serving the voice channel to %s: a process of it is running", mirror.id.c_str());
+        }
+        return;
+    }
+    if (was) {
+        // Its game went away. The words go now, as when consent is taken back.
+        ::unlinkat(mirror.directory, kBridgeNoteName, 0);
+    }
+    if (!mirror.absence_said) {
+        mirror.absence_said = true;
+        LOG("%s the voice channel to %s: no process of this user's is running in its sandbox "
+            "(none has a /.flatpak-info naming it), and a directory's name alone is not the "
+            "application",
+            was ? "no longer serving" : "not serving", mirror.id.c_str());
+    }
+}
+
 // Once per adoption, and only for a sandbox that asks to draw: one that says
 // drawing=0 is not asking for anything this would refuse.
 void FlatpakBridge::say_refusal(Mirror& mirror) {
@@ -731,6 +793,7 @@ void FlatpakBridge::rescan() {
     if (applications_ < 0 && !start()) {
         return;
     }
+    running_scanned_ = false;  // this sweep asks /proc afresh, if anybody asks
     refresh_consent();
     // Drop the sandboxes that stopped asking, the ones whose directory went away
     // with the application, and the ones whose state file is no longer the one
@@ -749,6 +812,7 @@ void FlatpakBridge::rescan() {
         if (!gone) {
             mirror.drawing = request.drawing;
             say_refusal(mirror);
+            check_running(mirror);
             // The record arrives a frame after the request that adopted this
             // sandbox, so this is where it is usually seen.
             write_record_for(mirror, request);
@@ -837,7 +901,8 @@ void FlatpakBridge::publish(const SharedState& state) {
         // the truth and for nothing else, because anything in that sandbox
         // can write the line. The host's consent is what holds for the rest:
         // an application id whose exported entry says Game, or one the user
-        // listed in flatpak_apps. Everywhere else the answer is a cleared
+        // listed in flatpak_apps, with a process of that application running
+        // (check_running). Everywhere else the answer is a cleared
         // state, published rather than left alone so that switching a game
         // off empties its panel instead of freezing it.
         SharedState empty{};

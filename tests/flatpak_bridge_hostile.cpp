@@ -33,6 +33,7 @@
 #include <string>
 
 #include "probe_alarm.h"
+#include "fake_flatpak.h"
 #include "flatpak_bridge.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/flatpak.h"
@@ -374,7 +375,17 @@ int main() {
     }
 
     // 5 and 6. An adopted sandbox that then aims the copies at the user's files.
+    //    Its application is running -- a sandboxed process whose /.flatpak-info
+    //    names it -- or the faces would not be attempted at all, and the
+    //    avatar check below would pass for nothing.
     {
+        if (!vocem_test::fake_flatpak_available()) {
+            printf("skip bwrap is not installed, so no process can be put in a sandbox\n");
+            return 77;
+        }
+        vocem_test::FakeFlatpak running =
+            vocem_test::start_fake_flatpak(root, "org.example.LinkedCopies");
+        check(running.pid > 0, "a process of org.example.LinkedCopies is running");
         write_file(target, kSecret);
         sandbox.reset(root, "org.example.LinkedCopies");
         make_directories(sandbox.bridge);
@@ -405,6 +416,7 @@ int main() {
         struct stat info {};
         check(stat((elsewhere + "/" + (slash ? slash + 1 : leaf)).c_str(), &info) != 0,
               "and no avatar is written into the directory the link pointed at");
+        vocem_test::stop_fake_flatpak(running);
     }
 
     // 7. More sandboxes asking than any machine runs. Every mirror costs two

@@ -84,6 +84,8 @@
 #include <cerrno>
 #include <string>
 
+#include "flatpak_process.h"
+
 namespace vocem {
 
 // What a lookup can conclude.
@@ -209,45 +211,6 @@ struct PeerProcess {
 
 namespace detail {
 
-// The `[Application] name=` of the /.flatpak-info at this process's root. 1 with
-// the id, 0 when there is no such file (not a Flatpak), -1 when it cannot be
-// read. The root is the sandbox's own, so the open takes nothing on trust: no
-// following a link (an absolute one would resolve against OUR root, and a
-// sandbox could point it at an installed Discord's metadata), no waiting on a
-// FIFO, regular files of a size such a file has.
-inline int flatpak_info_name(const std::string& proc, long pid, std::string& id) {
-    const std::string path = proc + "/" + std::to_string(pid) + "/root/.flatpak-info";
-    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) {
-        return errno == ENOENT ? 0 : -1;
-    }
-    struct stat info {};
-    if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size > 64 * 1024) {
-        ::close(fd);
-        return -1;
-    }
-    std::FILE* file = ::fdopen(fd, "r");
-    if (!file) {
-        ::close(fd);
-        return -1;
-    }
-    char line[512];
-    bool in_application = false;
-    id.clear();
-    while (std::fgets(line, sizeof(line), file)) {
-        if (line[0] == '[') {
-            in_application = std::strncmp(line, "[Application]", 13) == 0;
-            continue;
-        }
-        if (in_application && std::strncmp(line, "name=", 5) == 0) {
-            id.assign(line + 5, std::strcspn(line + 5, "\r\n"));
-            break;
-        }
-    }
-    std::fclose(file);
-    return 1;
-}
-
 // The real uid on the `Uid:` line of /proc/<pid>/status, which stays
 // readable when the process is not dumpable; -1 when it cannot be read.
 inline long status_real_uid(const std::string& base) {
@@ -267,18 +230,6 @@ inline long status_real_uid(const std::string& base) {
     }
     std::fclose(file);
     return uid;
-}
-
-inline bool all_digits(const char* name) {
-    if (!*name) {
-        return false;
-    }
-    for (const char* c = name; *c; ++c) {
-        if (*c < '0' || *c > '9') {
-            return false;
-        }
-    }
-    return true;
 }
 
 }  // namespace detail

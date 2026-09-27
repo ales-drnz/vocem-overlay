@@ -32,11 +32,14 @@
 // Asking is not what hands over the voice channel, though. `request` is a file
 // inside the sandbox, and anything running there can write `drawing=1` into it
 // -- through 0.1.10 that alone was enough, for any Flatpak at all. The daemon
-// decides on the host, by application id (the directory's name, which the
-// sandbox cannot choose): the channel, the faces and the words go only to an
-// id whose exported desktop entry says Game or that the user listed in
-// `flatpak_apps`, and only while its overlay says it is drawing. Everyone else
-// that asks is given config.ini and a cleared state (flatpak_bridge.cpp).
+// decides on the host, by application id: the channel, the faces and the words
+// go only to an id whose exported desktop entry says Game or that the user
+// listed in `flatpak_apps`, only while a process of the user's runs in a
+// sandbox whose /.flatpak-info names that id, and only while its overlay says
+// it is drawing. The id is the directory's name, and the name alone proves
+// nothing: a sandbox holding the xdg-run/app grant can make a directory there
+// under any name (entries 134, 164). Everyone else that asks is given
+// config.ini and a cleared state (flatpak_bridge.cpp).
 //
 // What crosses is therefore under the sandbox's control, and the daemon is not:
 // it runs as the user with the user's whole home reachable. Everything it opens

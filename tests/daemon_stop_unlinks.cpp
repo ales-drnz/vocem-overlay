@@ -65,6 +65,7 @@
 
 #include "probe_alarm.h"
 #include "discord_stub.h"
+#include "fake_flatpak.h"
 #include "private_shm.h"
 #include "vocem/shared_state.h"
 
@@ -327,8 +328,11 @@ int note_mirror(const char* daemon_path, const std::string& base) {
     mkdir((app + "/vocem").c_str(), 0700);
     write_file(app + "/vocem/request", "pid=1\ndrawing=1\n");
     // And one the host consents to give the voice channel: a request alone is
-    // the sandbox's word, not the user's (flatpak_consent.cpp).
+    // the sandbox's word, not the user's (flatpak_consent.cpp), and a
+    // directory's name is not the application unless a process of it runs.
     write_file(base + "/config/vocem/config.ini", "flatpak_apps = org.test.game\n");
+    vocem_test::ScopedFakeFlatpak game(base, "org.test.game");
+    check(game.running(), "a process of org.test.game is running in a sandbox");
     const std::string mirror_state = app + "/vocem/state";
     const std::string mirror_note = app + "/vocem/note";
 

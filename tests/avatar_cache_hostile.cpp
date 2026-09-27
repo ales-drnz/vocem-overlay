@@ -28,6 +28,7 @@
 
 #include <string>
 
+#include "fake_flatpak.h"
 #include "flatpak_bridge.h"
 #include "probe_alarm.h"
 #include "vocem/avatar_rgba.h"
@@ -178,8 +179,19 @@ int main() {
         unlink(cached.c_str());
     }
 
-    // The bridge's copies, into a sandbox the host consents to serve.
+    // The bridge's copies, into a sandbox the host consents to serve: listed
+    // in flatpak_apps, and with a process of it running, without which nothing
+    // is copied at all and the checks below would pass for nothing.
     const char* id = "org.example.Game";
+    if (!vocem_test::fake_flatpak_available()) {
+        printf("skip bwrap is not installed, so no process can be put in a sandbox\n");
+        return 77;
+    }
+    vocem_test::FakeFlatpak game = vocem_test::start_fake_flatpak(root, id);
+    if (game.pid <= 0) {
+        printf("FAIL could not start a sandboxed process for %s\n", id);
+        return 1;
+    }
     const std::string bridge_dir = root + "/run/app/" + id + "/vocem";
     make_directories(bridge_dir);
     write_file(bridge_dir + "/" + vocem::kBridgeRequestName, "pid=1\ndrawing=1\n");
@@ -237,6 +249,20 @@ int main() {
         check(!exists(mirrored), "a cache file of any other size is not copied as a face");
         bridge.stop();
     }
+
+    // 7. The control: a face that is a face is copied, so the refusals above
+    //    are the bridge refusing and not the bridge doing nothing.
+    {
+        vocem::avatar_rgba_write(path, face, vocem::kAvatarPixels, vocem::kAvatarPixels);
+        vocem::FlatpakBridge bridge;
+        bridge.start();
+        bridge.rescan();
+        bridge.refresh_files(state);
+        check(read_file(mirrored).size() == vocem::kAvatarRgbaBytes,
+              "and a face of the format's one size is copied into the sandbox");
+        bridge.stop();
+    }
+    vocem_test::stop_fake_flatpak(game);
 
     (void)!system(("rm -rf '" + root + "'").c_str());
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
