@@ -64,12 +64,21 @@ depends=(
     # needed at runtime -- which is why it is in depends. makepkg installs
     # depends and makedepends alike before building (Arch package guidelines,
     # "Makepkg duties"), so depends alone already puts it there. namcap called
-    # the repetition redundant and it was right.
+    # the repetition redundant and it was right. lib32-gcc-libs is the other
+    # way round: needed to build and not at runtime, so it is here.
 makedepends=(
     'cmake'
     'ninja'
     'git'
     'vulkan-headers'
+    # The 32-bit configure: CMake's compiler check links a plain -m32
+    # executable before anything of ours, and that link opens
+    # /usr/lib32/libgcc_s.so.1 and libstdc++.so, which are this package's.
+    # The injected libraries carry their C++ runtime inside since 0.1.11, so
+    # it left depends and is needed to build only -- without it here the
+    # -m32 configure fails on a machine that lacks it, measured in bwrap
+    # with its 37 files taken out of /usr/lib32.
+    'lib32-gcc-libs'
 )
 # The Vulkan loaders are not dependencies: nothing this package ships NEEDs or
 # dlopens libvulkan.so.1 (readelf on 0.1.10-7, both widths). The layer is
@@ -195,6 +204,8 @@ build() {
 }
 
 package() {
+    # makepkg -R runs this and not build(), and still writes the package.
+    _refuse_to_replace_an_exemplar || return 1
     cd "$srcdir/$pkgname"
 
     DESTDIR="$pkgdir" cmake --install build

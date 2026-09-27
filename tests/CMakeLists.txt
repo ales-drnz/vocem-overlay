@@ -1705,3 +1705,11 @@ endif()
 # the empty read for "no file" and renamed a fresh file of the window's
 # values over it -- contents gone, the 0200 mode kept.
 vocem_test(config_save_unreadable SKIP)
+
+# The 32-bit configure's compiler check links a plain `c++ -m32` executable,
+# which opens lib32-gcc-libs' files; since the injected libraries carry their
+# C++ runtime inside, that package left depends=() and makepkg -s no longer
+# installed it. And package() refuses to replace an exemplar, as build()
+# does: makepkg -R runs package() alone.
+vocem_script_test(package_m32_makedepends)
+vocem_script_test(package_refuses_exemplar)
