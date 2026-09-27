@@ -1574,7 +1574,8 @@ vocem_m32_twin_run(gl_capture_pack_buffer TARGET gl_capture_pack_buffer
 # was first and took every hook, and the build tree's shim was never called
 # (dev_run_gl.cmake).
 vocem_test(which_shim LINK ${CMAKE_DL_LIBS} NO_TEST)
-vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>")
+vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>"
+    "-DPROBE32=$<$<TARGET_EXISTS:vocem_which_shim32>:$<TARGET_FILE:vocem_which_shim32>>")
 
 # ---- 0.1.11 daemon lane ----
 # Who the Flatpak bridge serves the voice channel to: a sandbox's own
@@ -1742,3 +1743,82 @@ vocem_test(config_save_dangling_link)
 # A line load() refused (past 64 KiB) survives the window's save, where one
 # click on a switch rewrote an 8000-entry hidden_apps as `hidden_apps = `.
 vocem_test(config_save_long_line)
+
+# ---- 0.1.11 round 2 inj lane ----
+
+# An owner sharing its objects with a loader context, destroyed SDL's and
+# GLFW's way -- NULL made current first: the first round's "not current, drop
+# without GL" left the backend's program, buffers and font texture in the share
+# group, one set per owner (gl_destroy_owner.cpp, `shared`). Both widths.
+vocem_test_run(gl_destroy_owner_shared TARGET gl_destroy_owner
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=shared" SKIP)
+vocem_m32_twin_run(gl_destroy_owner_shared TARGET gl_destroy_owner_shared
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=shared")
+# The same scene in a game that dlopens libX11 RTLD_LOCAL, as SDL and GLFW do:
+# the overlay's X error trap has to find Xlib among the loaded objects.
+vocem_test(gl_destroy_private_x11 SOURCES gl_destroy_owner.cpp DEFINES VOCEM_PROBE_PRIVATE_X11
+    LINK ${CMAKE_DL_LIBS} rt Threads::Threads LINK_OPTIONS -rdynamic
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=shared" SKIP)
+vocem_m32_twin(gl_destroy_private_x11
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=shared"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# The two heavy libraries loaded and unloaded forty times each: the libstdc++
+# they carry inside them since 0.1.11 left its ~73 KB exception emergency pool
+# on the heap at every unload, which is every vkDestroyInstance for the layer
+# (injected_unload.cpp). Both widths, both libraries.
+vocem_test(injected_unload LINK ${CMAKE_DL_LIBS}
+    ENV "LD_PRELOAD=" "VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
+        "VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>")
+vocem_m32_twin(injected_unload
+    ENV "LD_PRELOAD=" "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+        "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+
+# A backend left in a context, torn down while the atlas worker rasterises for
+# the context the overlay moved to: reclaim_left() (a present) and forget_left()
+# (a destroy) destroyed the left ImGui context without joining the worker, whose
+# allocations count themselves through the same global context pointer
+# (gl_handover.cpp, `worker`, `worker-destroy`). Both widths.
+vocem_test_run(gl_handover_worker TARGET gl_handover
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=worker" SKIP TIMEOUT 120)
+vocem_m32_twin_run(gl_handover_worker TARGET gl_handover_worker
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=worker")
+vocem_test_run(gl_handover_worker_destroy TARGET gl_handover
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=worker-destroy" SKIP TIMEOUT 120)
+vocem_m32_twin_run(gl_handover_worker_destroy TARGET gl_handover_worker_destroy
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=worker-destroy")
+
+# A context whose backend program does not link (Mesa, a desktop context held
+# at 2.1 by MESA_GL_VERSION_OVERRIDE, so no GLSL 1.30), and then a context the
+# backend can live in (ES 2 on the same display): the failure used to be
+# remembered for the whole process (gl_failed_context.cpp). `silent`: F stops
+# presenting and G gets the overlay at the hand-over; `destroyed`: F is
+# destroyed and G gets it at once. Both widths.
+set(VOCEM_GL_MESA_EGL_ENV
+    "__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+    "LIBGL_ALWAYS_SOFTWARE=1" "MESA_GL_VERSION_OVERRIDE=2.1" "MESA_GLSL_VERSION_OVERRIDE=120")
+vocem_test(gl_failed_context LINK EGL GLESv2 rt
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=silent" SKIP)
+vocem_m32_twin(gl_failed_context
+    ENV ${VOCEM_GL_PROBE32_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=silent"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_test_run(gl_failed_context_destroyed TARGET gl_failed_context
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=destroyed" SKIP)
+vocem_m32_twin_run(gl_failed_context_destroyed TARGET gl_failed_context_destroyed
+    ENV ${VOCEM_GL_PROBE32_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=destroyed")
+
+# One swapchain presented by two queues of the same family in turn, frames in
+# flight and colour emoji arriving meanwhile (vk_present_draw.cpp,
+# alternate-queue). Both widths.
+vocem_test_run(vk_present_alternate_queue TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=alternate-queue"
+    SKIP TIMEOUT 120)
+vocem_m32_twin_run(vk_present_alternate_queue TARGET vk_present_alternate_queue
+    ENV ${VOCEM_VK_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=alternate-queue")
+
+# scripts/dev-run-gl.sh for a 32-bit child: which_shim built -m32, run through
+# the script, must be answered by a 32-bit shim (dev_run_gl.cmake, PROBE32).
+vocem_m32_twin(which_shim)
