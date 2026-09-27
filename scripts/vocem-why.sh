@@ -69,29 +69,31 @@ config_value() {
             n = split(wanted, names, " ")
             for (i = 1; i <= n; i++) if (key == names[i]) { last = value; found = 1 }
         }
-        END { if (found) print last }' "$config"
+        END { if (found) print last; exit !found }' "$config"
 }
 # true/yes/on/1 in any case is on; a missing key is the default, on; anything
-# else is off (config.h, as_bool).
+# else is off (config.h, as_bool) -- an empty value included, which is why
+# config_value's status, not an empty answer, says whether the line is there.
 switch_state() {
     case $(printf '%s' "$1" | tr 'A-Z' 'a-z') in
         true|yes|on|1) echo on ;;
         *) echo off ;;
     esac
 }
+switched_off=
+enabled=
 if [ -r "$config" ]; then
     echo "settings: $config"
-    enabled=$(config_value enabled)
-    if [ -z "$enabled" ]; then
+    if ! enabled=$(config_value enabled); then
         echo "  overlay switch:    on (no 'enabled' line: the default)"
     elif [ "$(switch_state "$enabled")" = on ]; then
         echo "  overlay switch:    on (enabled = $enabled)"
     else
+        switched_off=yes
         echo "  overlay switch:    OFF (enabled = $enabled): nothing is drawn in any program"
     fi
 else
     echo "settings: $config is not there, so every setting is its default"
-    enabled=
 fi
 hidden_list=$(config_value "hidden_apps gl_blacklist")
 shown_list=$(config_value shown_apps)
@@ -236,16 +238,25 @@ for pid in $pids; do
     echo "  FLATPAK_ID:        $(env_of FLATPAK_ID)"
     echo "  LD_PRELOAD:        $(env_of LD_PRELOAD)"
 
-    # 4. What the user decided about it. VOCEM_DISABLE switches the OpenGL path
-    # off when it starts with 1 (and it is the Vulkan layer's
-    # disable_environment); the lists are matched against the process name and
-    # the executable's, and hidden wins over shown (vocem/apps.h, draw_here).
+    # 4. What the user decided about it. VOCEM_DISABLE is read twice, two
+    # ways: the OpenGL path is off when the value starts with 1, and the
+    # Vulkan loader drops the layer when the variable is SET at all -- it is
+    # the manifest's disable_environment, and the loader compares no value
+    # (measured with VK_LOADER_DEBUG=layer: unset inserts the layer; 1, 0,
+    # empty, 10 and no insert nothing). So "0" and an empty value still turn
+    # the Vulkan overlay off, and an empty value is not "not set". The lists
+    # are matched against the process name and the executable's, and hidden
+    # wins over shown (vocem/apps.h, draw_here).
     disable=$(env_of VOCEM_DISABLE)
-    case "$disable" in
-        "") echo "  VOCEM_DISABLE:     (not set)" ;;
-        1*) echo "  VOCEM_DISABLE:     $disable -> the overlay is switched off in this process" ;;
-        *)  echo "  VOCEM_DISABLE:     $disable (not '1': the OpenGL path ignores it)" ;;
-    esac
+    if ! cat "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' | grep -q '^VOCEM_DISABLE='; then
+        echo "  VOCEM_DISABLE:     (not set)"
+    else
+        case "$disable" in
+            1*) echo "  VOCEM_DISABLE:     $disable -> the overlay is switched off in this process" ;;
+            *)  echo "  VOCEM_DISABLE:     '$disable' -> the Vulkan layer is switched off in this process"
+                echo "    (the loader drops it for any value; the OpenGL path wants one starting with 1)" ;;
+        esac
+    fi
     binary=$(basename "$(readlink "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null)
     if hidden_by=$(list_names "$hidden_list" "$comm" "$binary"); then
         echo "  hidden_apps:       names it ('$hidden_by') -> never drawn here"
@@ -262,7 +273,7 @@ for pid in $pids; do
         echo "  shown_apps:        does not name it"
     fi
     hidden_by=
-    if [ -n "$enabled" ] && [ "$(switch_state "$enabled")" = off ]; then
+    if [ -n "$switched_off" ]; then
         echo "  overlay switch:    OFF (enabled = $enabled) -> nothing is drawn anywhere"
     fi
     if [ -n "$(env_of FLATPAK_ID)" ]; then
