@@ -35,6 +35,19 @@ bool bool_field(const json& object, const char* key) {
     return it != object.end() && it->is_boolean() && it->get<bool>();
 }
 
+// A value from the peer as one line of plain ASCII, for the log. dump() with
+// its defaults escapes the characters below U+0020 and nothing else: the C1
+// controls (U+009B is the one-character CSI, U+0085 NEXT LINE) and U+2028 went
+// into the journal as UTF-8, under a comment here that said dump() "escapes
+// every control character" (the second fix round of 0.1.11 measured it with
+// tests/daemon_log_lines.cpp). ensure_ascii writes every non-ASCII character
+// as \uXXXX, which keeps what the peer sent readable and makes it inert; the
+// replace handler keeps a string nlohmann could not re-encode from throwing
+// inside a log line.
+std::string loggable(const json& value) {
+    return value.dump(-1, ' ', true, json::error_handler_t::replace);
+}
+
 uint64_t parse_id(const std::string& text) {
     return text.empty() ? 0 : std::strtoull(text.c_str(), nullptr, 10);
 }
@@ -65,7 +78,8 @@ void RpcClient::send(const json& message) {
     if (broken_) {
         return;
     }
-    // dump() escapes every control character and throws on a string that is
+    // dump() escapes what JSON requires escaped (the characters below U+0020,
+    // not the C1 controls: loggable() above) and throws on a string that is
     // not valid UTF-8. Nothing here can carry one: what came off the wire went
     // through the parser, which refuses invalid UTF-8, and the token is
     // validated when it is loaded (auth.cpp) -- a token file with one 0xFF
@@ -135,7 +149,7 @@ void RpcClient::handle(const json& message) {
     if (command == "AUTHORIZE") {
         if (event == "ERROR") {
             // Usually the user declined; retrying would prompt them in a loop.
-            LOG("authorisation refused: %s", data.dump().c_str());
+            LOG("authorisation refused: %s", loggable(data).c_str());
             session_.set_status(DaemonStatus::AuthorisationRefused);
             failed_ = true;
             return;
@@ -182,7 +196,7 @@ void RpcClient::handle(const json& message) {
                 authorize();
                 return;
             }
-            LOG("authentication rejected: %s", data.dump().c_str());
+            LOG("authentication rejected: %s", loggable(data).c_str());
             failed_ = true;
             return;
         }
@@ -212,7 +226,7 @@ void RpcClient::handle(const json& message) {
         if (event == "ERROR") {
             // A channel we were told about and cannot read: ask the plain
             // question instead of being left believing the old answer.
-            DBG("channel query refused: %s", data.dump().c_str());
+            DBG("channel query refused: %s", loggable(data).c_str());
             if (command == "GET_CHANNEL") {
                 query_selected_channel();
             }
@@ -305,14 +319,16 @@ void RpcClient::handle(const json& message) {
     // A refused SUBSCRIBE is the sharp case: after one, the panel shows a
     // room where nobody ever talks, and a refusal that is not logged is
     // indistinguishable from a room that is simply quiet (entry 38's
-    // silence, on the wire). The dump is the error object Discord sent --
-    // a code and a message, never a user's content -- and dump() escapes
-    // every control character. The command is the peer's own string too, and
-    // went in raw until 0.1.11: a `cmd` with a newline in it wrote a line of
-    // its choosing into the journal (tests/daemon_log_lines.cpp), so it goes
-    // through sanitise_text like every other string from the other end.
+    // silence, on the wire). The data is the error object Discord sent --
+    // a code and a message, never a user's content -- written as ASCII by
+    // loggable(), which escapes every character that is not printable ASCII;
+    // plain dump() escaped only those below U+0020. The command is the peer's
+    // own string too, and went in raw until 0.1.11: a `cmd` with a newline in
+    // it wrote a line of its choosing into the journal
+    // (tests/daemon_log_lines.cpp), so it goes through sanitise_text like
+    // every other string from the other end.
     if (event == "ERROR") {
-        LOG("rpc refused %s: %s", sanitise_text(command).c_str(), data.dump().c_str());
+        LOG("rpc refused %s: %s", sanitise_text(command).c_str(), loggable(data).c_str());
     }
 }
 
