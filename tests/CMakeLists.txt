@@ -1700,3 +1700,8 @@ if(TARGET vocem-config)
         DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
     set_target_properties(vocem_config_apply_keeps_outside PROPERTIES AUTOMOC ON)
 endif()
+
+# save() on a config.ini that exists and cannot be read fails, where it took
+# the empty read for "no file" and renamed a fresh file of the window's
+# values over it -- contents gone, the 0200 mode kept.
+vocem_test(config_save_unreadable SKIP)

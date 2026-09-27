@@ -390,8 +390,10 @@ void ConfigBridge::apply() {
 
 bool ConfigBridge::reportSave(bool saved) {
     if (!saved) {
+        // save() also refuses a file it cannot read, rather than write over
+        // it with the window's copy: the sentence names that case too.
         reportFailure(tr("The settings could not be written to %1. Check that the directory "
-                         "exists and is writable.")
+                         "exists and is writable, and that the file can be read.")
                           .arg(QString::fromStdString(vocem::Config::path())));
         return false;
     }

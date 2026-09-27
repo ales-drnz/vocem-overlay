@@ -710,7 +710,14 @@ struct Config {
         }
         struct stat existing{};
         const bool exists = ::stat(target.c_str(), &existing) == 0;
-        const std::string text = rewritten(exists ? read_whole(target) : std::string());
+        // A file that is there and cannot be read is not an empty one: taken
+        // for "no file", its contents were replaced by a fresh file of this
+        // copy's values and its mode (0200, the case measured) carried over.
+        std::string current;
+        if (exists && !read_whole(target, current)) {
+            return false;
+        }
+        const std::string text = rewritten(current);
 
         const std::string temporary_path = target + ".tmp";
         int fd = ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
@@ -932,17 +939,22 @@ private:
 
     // The whole file, however long its lines: the rewrite keeps every line
     // it does not own, and read_line's cap is for the reader inside a game.
-    static std::string read_whole(const std::string& file_path) {
-        std::string text;
-        if (std::FILE* file = std::fopen(file_path.c_str(), "r")) {
-            char chunk[4096];
-            size_t got = 0;
-            while ((got = std::fread(chunk, 1, sizeof(chunk), file)) > 0) {
-                text.append(chunk, got);
-            }
-            std::fclose(file);
+    // False when the file cannot be opened or a read fails part way: the
+    // caller must not take that for an empty file.
+    static bool read_whole(const std::string& file_path, std::string& text) {
+        text.clear();
+        std::FILE* file = std::fopen(file_path.c_str(), "r");
+        if (!file) {
+            return false;
         }
-        return text;
+        char chunk[4096];
+        size_t got = 0;
+        while ((got = std::fread(chunk, 1, sizeof(chunk), file)) > 0) {
+            text.append(chunk, got);
+        }
+        const bool whole = !std::ferror(file);
+        std::fclose(file);
+        return whole;
     }
 
     static std::string trim_copy(const std::string& text) {
