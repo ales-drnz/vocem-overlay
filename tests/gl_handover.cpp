@@ -21,6 +21,20 @@
 // either context is the atlas, one texture, however many times the backend has
 // been there before. At kHandOverSeconds = 2 the scene takes about eleven
 // seconds; the interval is the library's own and is not overridden here.
+//
+// VOCEM_GL_SCENARIO=worker (and worker-destroy): a backend left in A is torn
+// down while the atlas worker is rasterising for B. Its teardown destroys the
+// left ImGui context -- SetCurrentContext to it, DestroyContext -- and the
+// worker's every ImGui allocation reads that same global context pointer to
+// count itself, so a worker still running can write into a context that has
+// just been freed. The release path joins the worker first (entry 192);
+// reclaim_left() and forget_left() did not. The scene leaves A behind, switches
+// the overlay off and on in B (the atlas goes with the switch, so the next
+// build is the worker's), and the moment the log says the worker started, A
+// presents (`worker`: reclaim_left) or is destroyed (`worker-destroy`:
+// forget_left). The witness is the worker's own "font atlas built" line: it
+// must already be in the log when the call that tore the left backend down
+// returns -- that is, the teardown waited for the worker.
 
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -82,6 +96,9 @@ int main() {
         return gate;
     }
     vocem_test::set_alarm(60, "two contexts taking turns");
+    const char* scenario = getenv("VOCEM_GL_SCENARIO") ? getenv("VOCEM_GL_SCENARIO") : "";
+    const bool worker_scene = strncmp(scenario, "worker", 6) == 0;
+    const bool destroy_scene = strcmp(scenario, "worker-destroy") == 0;
 
     char root[] = "/tmp/vocem-gl-handover-XXXXXX";
     if (!mkdtemp(root)) {
@@ -160,6 +177,17 @@ int main() {
             usleep(16000);
         }
     };
+    const auto write_config = [&](bool enabled) {
+        char config_path[700];
+        snprintf(config_path, sizeof(config_path), "%s/vocem/config.ini", root);
+        const std::string text = std::string("enabled = ") + (enabled ? "true" : "false") +
+                                 "\nshown_apps = " + vocem_test::own_name("vocem_gl_handover") +
+                                 "\n";
+        if (FILE* file = fopen(config_path, "w")) {
+            fputs(text.c_str(), file);
+            fclose(file);
+        }
+    };
     const auto textures = [&](int who) {
         eglMakeCurrent(display, surfaces[who], surfaces[who], contexts[who]);
         int alive = 0;
@@ -168,6 +196,77 @@ int main() {
         }
         return alive;
     };
+
+    if (worker_scene) {
+        present_for(0, 1.0);  // A builds the backend, and the first atlas
+        present_for(1, 2.5);  // A falls silent: the backend moves to B, A is left
+        check(lines_containing(log_path, "moving the overlay") == 1, "the backend moved to B");
+        // Off, then on, in B: the switch gives the atlas back, so the next one
+        // is the worker's. LiveConfig asks every two seconds.
+        write_config(false);
+        present_for(1, 2.5);
+        check(lines_containing(log_path, "switched off: releasing") == 1,
+              "the overlay was switched off in B");
+        write_config(true);
+        const long started_before = lines_containing(log_path, "off the game's thread");
+        eglMakeCurrent(display, surfaces[1], surfaces[1], contexts[1]);
+        const double deadline = now_ms() + 5000.0;
+        while (lines_containing(log_path, "off the game's thread") == started_before &&
+               now_ms() < deadline) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            eglSwapBuffers(display, surfaces[1]);
+            usleep(16000);
+        }
+        check(lines_containing(log_path, "off the game's thread") == started_before + 1,
+              "the overlay came back in B and the worker started rasterising");
+        const long built_before = lines_containing(log_path, "font atlas built at");
+        const long teardowns_before = lines_containing(log_path, "the backend left in context");
+        if (destroy_scene) {
+            eglDestroyContext(display, contexts[0]);  // A is not current
+        } else {
+            eglMakeCurrent(display, surfaces[0], surfaces[0], contexts[0]);
+            glClear(GL_COLOR_BUFFER_BIT);
+            eglSwapBuffers(display, surfaces[0]);
+        }
+        const bool worker_done_by_then =
+            lines_containing(log_path, "font atlas built at") > built_before;
+        const bool torn_down =
+            lines_containing(log_path, "the backend left in context") == teardowns_before + 1;
+        printf("     %s, the worker's build %s\n",
+               destroy_scene ? "A destroyed" : "A presented",
+               worker_done_by_then ? "had finished"
+                                   : "was still running");
+        printf("     the left backend was %s\n",
+               torn_down ? (worker_done_by_then ? "torn down after the build"
+                                                : "torn down DURING the build")
+                         : "not torn down yet: it waits for a present after the build");
+        check(!torn_down || worker_done_by_then,
+              "no left ImGui context was destroyed while the worker was rasterising");
+        if (destroy_scene) {
+            check(torn_down, "A's destruction tore down the backend left in it");
+        }
+        present_for(1, 1.0);  // the worker finishes, B draws
+        if (!destroy_scene) {
+            eglMakeCurrent(display, surfaces[0], surfaces[0], contexts[0]);
+            glClear(GL_COLOR_BUFFER_BIT);
+            eglSwapBuffers(display, surfaces[0]);
+            check(lines_containing(log_path, "the backend left in context") ==
+                      teardowns_before + 1,
+                  "A's present after the build tore down the backend left in it");
+        }
+        // The live backend in B took the worker's atlas up whole, and has it.
+        check(lines_containing(log_path, "font texture uploaded whole") >= 2,
+              "B uploaded the worker's atlas");
+        const int b_textures = textures(1);
+        printf("     B holds %d texture(s)\n", b_textures);
+        check(b_textures == 1, "and holds it, the one texture of the atlas");
+        eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        char cleanup[700];
+        snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
+        system(cleanup);
+        printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
+        return failures == 0 ? 0 : 1;
+    }
 
     present_for(0, 1.0);
     const int first = textures(0);

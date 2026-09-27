@@ -1716,3 +1716,17 @@ vocem_m32_twin(injected_unload
     ENV "LD_PRELOAD=" "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
         "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so"
     BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
+
+# A backend left in a context, torn down while the atlas worker rasterises for
+# the context the overlay moved to: reclaim_left() (a present) and forget_left()
+# (a destroy) destroyed the left ImGui context without joining the worker, whose
+# allocations count themselves through the same global context pointer
+# (gl_handover.cpp, `worker`, `worker-destroy`). Both widths.
+vocem_test_run(gl_handover_worker TARGET gl_handover
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=worker" SKIP TIMEOUT 120)
+vocem_m32_twin_run(gl_handover_worker TARGET gl_handover_worker
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=worker")
+vocem_test_run(gl_handover_worker_destroy TARGET gl_handover
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=worker-destroy" SKIP TIMEOUT 120)
+vocem_m32_twin_run(gl_handover_worker_destroy TARGET gl_handover_worker_destroy
+    ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=worker-destroy")

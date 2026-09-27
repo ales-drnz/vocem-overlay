@@ -489,6 +489,16 @@ struct AtlasWorker {
             running = false;
         }
     }
+
+    // Until a running build has finished, without joining it: the draw path
+    // joins, and a join is how it learns the atlas came from here and has to
+    // go up whole (atlas_from_worker). After `done` the thread touches nothing.
+    void wait_until_built() {
+        while (busy() && !done.load(std::memory_order_acquire)) {
+            const timespec millisecond{0, 1000000};
+            nanosleep(&millisecond, nullptr);
+        }
+    }
 };
 
 AtlasWorker& atlas_worker() {
@@ -1226,7 +1236,16 @@ public:
     // `display` with eglTerminate). A backend left in it is shut down properly
     // when that context is current on the calling thread, and dropped without
     // GL otherwise -- its objects go with the context, as release(false)'s do.
+    //
+    // A build still running is waited for first, as release() and move_away()
+    // wait for it: tearing down a left backend destroys its ImGui context --
+    // made the current one for the purpose -- and every allocation the worker
+    // makes counts itself through that same global pointer (ImGui::MemAlloc),
+    // so a worker still rasterising could write into the context just freed
+    // (tests/gl_handover.cpp, `worker-destroy`). Waited for, not joined: the
+    // live backend's next present joins it and uploads what it built.
     void forget_left(void* display, void* context, bool egl) {
+        atlas_worker().wait_until_built();
         for (size_t i = left_.size(); i-- > 0;) {
             LeftBackend& left = left_[i];
             if (left.egl != egl || (context ? left.context != context : left.display != display)) {
@@ -1648,9 +1667,19 @@ private:
     }
 
     // In a present: a backend left in the context current now goes, properly.
+    // Not while the atlas worker is still rasterising -- the teardown destroys
+    // an ImGui context the worker's allocations can reach (forget_left() says
+    // how) -- and not by waiting for it either, inside the game's present: the
+    // reclaim waits for a present after the build, and a context that dies
+    // first goes through forget_left(), which does wait (tests/gl_handover.cpp,
+    // `worker`). A finished build is not joined here: the live backend's
+    // present joins it and uploads what it built.
     void reclaim_left(bool egl) {
         void* current = current_context_of(egl);
         if (!current) {
+            return;
+        }
+        if (atlas_worker().busy() && !atlas_worker().done.load(std::memory_order_acquire)) {
             return;
         }
         for (size_t i = 0; i < left_.size(); ++i) {
