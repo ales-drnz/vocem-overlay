@@ -1692,3 +1692,53 @@ if(TARGET vocem)
     vocem_test(cli_refused_segment INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
         ENV "VOCEM_CLI=$<TARGET_FILE:vocem>" TIMEOUT 60 SKIP)
 endif()
+
+# ---- 0.1.11 round 2 gui lane ----
+if(TARGET vocem-config)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
+    find_package(Fontconfig QUIET)
+
+    # Apply writes the keys the window changed on top of the file as it stands.
+    # It saved the window's whole copy, which does not follow the file while an
+    # edit is pending, so a hand-written flatpak_apps -- consent the window has
+    # no control for -- went back to its startup value on the next Apply.
+    vocem_test(config_apply_keeps_outside
+        SOURCES config_apply_keeps_outside.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_config_apply_keeps_outside PROPERTIES AUTOMOC ON)
+
+    # The switch beside an application whose process name the kernel cut
+    # after a space ("Slay the Spire 2" runs as "Slay the Spire "): no list
+    # entry can hold that name, so the rule goes on the executable's name,
+    # which the overlay also matches -- refused only when neither fits.
+    vocem_test(config_bridge_comm_name
+        SOURCES config_bridge_comm_name.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_config_bridge_comm_name PROPERTIES AUTOMOC ON)
+endif()
+
+# save() on a config.ini that exists and cannot be read fails, where it took
+# the empty read for "no file" and renamed a fresh file of the window's
+# values over it -- contents gone, the 0200 mode kept.
+vocem_test(config_save_unreadable SKIP)
+
+# The 32-bit configure's compiler check links a plain `c++ -m32` executable,
+# which opens lib32-gcc-libs' files; since the injected libraries carry their
+# C++ runtime inside, that package left depends=() and makepkg -s no longer
+# installed it. And package() refuses to replace an exemplar, as build()
+# does: makepkg -R runs package() alone.
+vocem_script_test(package_m32_makedepends)
+vocem_script_test(package_refuses_exemplar)
+
+# A config.ini linked to a file that does not exist yet stays a link: the
+# realpath() the save relied on fails there, and the rename put a regular
+# file where the link was.
+vocem_test(config_save_dangling_link)
+
+# A line load() refused (past 64 KiB) survives the window's save, where one
+# click on a switch rewrote an 8000-entry hidden_apps as `hidden_apps = `.
+vocem_test(config_save_long_line)

@@ -256,6 +256,64 @@ if(NOT switches_errors STREQUAL "")
 endif()
 message("ok   and says what the user decided: VOCEM_DISABLE, the master switch, the two lists")
 
+# Leg 1c: the two readings the report got wrong. The Vulkan loader drops the
+# layer when VOCEM_DISABLE is SET, whatever its value (the manifest's
+# disable_environment; measured with VK_LOADER_DEBUG=layer: unset inserts the
+# layer, 1, 0, empty, 10 and no insert nothing), while the report said of "0"
+# only "the OpenGL path ignores it" and of an empty value "(not set)". And
+# `enabled =` with nothing after it is OFF for config.h's as_bool, while the
+# report said "on (no 'enabled' line: the default)".
+file(WRITE "${work}/config/vocem/config.ini" "enabled =\n")
+execute_process(COMMAND cp "${SLEEP_BINARY}" "${work}/target/whyzero")
+execute_process(COMMAND cp "${SLEEP_BINARY}" "${work}/target/whyempty")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "PATH=${work}/bin:$ENV{PATH}"
+            "XDG_CACHE_HOME=${work}/cache"
+            "XDG_CONFIG_HOME=${work}/config"
+            sh -c "VOCEM_DISABLE=0 '${work}/target/whyzero' 30 & zero=$!; VOCEM_DISABLE= '${work}/target/whyempty' 30 & empty=$!; sleep 0.3; sh '${SOURCE_DIR}/scripts/vocem-why.sh' whyzero; sh '${SOURCE_DIR}/scripts/vocem-why.sh' whyempty; kill $zero $empty"
+    OUTPUT_VARIABLE values_output
+    ERROR_VARIABLE values_errors
+    RESULT_VARIABLE ignored
+    TIMEOUT 60)
+message("---- VOCEM_DISABLE=0, VOCEM_DISABLE= and enabled = ----")
+message("${values_output}")
+if(NOT values_output MATCHES "== whyzero" OR NOT values_output MATCHES "== whyempty")
+    message(FATAL_ERROR "the script did not report on both targets it was given")
+endif()
+set(values_problems "")
+if(values_output MATCHES "no 'enabled' line")
+    list(APPEND values_problems "an empty 'enabled =' line was read as no line at all, and called on")
+endif()
+if(NOT values_output MATCHES "overlay switch:[ \t]*OFF")
+    list(APPEND values_problems "an empty 'enabled =' is off for the overlay and the report does not say OFF")
+endif()
+# Each target's part of the output: whyzero was asked about first.
+string(FIND "${values_output}" "== whyzero" zero_at)
+string(FIND "${values_output}" "== whyempty" empty_at)
+math(EXPR zero_length "${empty_at} - ${zero_at}")
+string(SUBSTRING "${values_output}" ${zero_at} ${zero_length} zero_report)
+string(SUBSTRING "${values_output}" ${empty_at} -1 empty_report)
+if(NOT zero_report MATCHES "VOCEM_DISABLE:[^\n]*Vulkan layer is switched off")
+    list(APPEND values_problems "VOCEM_DISABLE=0 turns the Vulkan layer off and the report does not say so")
+endif()
+if(empty_report MATCHES "VOCEM_DISABLE:[ \t]*\\(not set\\)")
+    list(APPEND values_problems "an empty VOCEM_DISABLE is set, and the report says '(not set)'")
+endif()
+if(NOT empty_report MATCHES "VOCEM_DISABLE:[^\n]*Vulkan layer is switched off")
+    list(APPEND values_problems "an empty VOCEM_DISABLE turns the Vulkan layer off and the report does not say so")
+endif()
+if(NOT values_errors STREQUAL "")
+    list(APPEND values_problems "the script wrote to stderr: ${values_errors}")
+endif()
+if(values_problems)
+    foreach(problem IN LISTS values_problems)
+        message("FAIL ${problem}")
+    endforeach()
+    message(FATAL_ERROR "the report reads the switches differently from what obeys them")
+endif()
+message("ok   and reads VOCEM_DISABLE as the loader does, and 'enabled =' as config.h does")
+
 # Leg 2: a kernel thread -- no map, another uid.
 run_why("kthreadd" kernel_output kernel_errors)
 if(NOT kernel_output MATCHES "kthreadd")

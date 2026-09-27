@@ -309,6 +309,7 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
     vocem::Config written;
     const bool saved = vocem::Config::write_switch(which, config_.*which, &written);
     if (reportSave(saved)) {
+        const vocem::Config followed = saved_;
         saved_ = written;
         saved_.start_at_login = config_.start_at_login;
         // This write IS the file moving under the window, and `written` is the
@@ -323,16 +324,16 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
         // just wrote, which changes nothing, and a write that lands between
         // this save and that sweep is read rather than adopted unread.
         //
-        // With an edit waiting for Apply the window keeps its own copy, exactly
-        // as reloadIfMoved decides it: Apply means "what the window shows".
+        // With an edit waiting for Apply the window keeps its own edits, and
+        // only those, exactly as reloadIfMoved decides it: every key it did not
+        // change follows the file (Config::merged), so neither the window nor
+        // the next Apply carries a value the file no longer has.
         // start_at_login is read from the autostart entry, not from the file
         // (which carries the key and is not believed) -- so it is carried
         // across rather than taken from the read.
-        if (!pending_) {
-            const bool login = config_.start_at_login;
-            config_ = written;
-            config_.start_at_login = login;
-        }
+        const bool login = config_.start_at_login;
+        config_ = pending_ ? vocem::Config::merged(followed, config_, written) : written;
+        config_.start_at_login = login;
     } else {
         // The write failed and the switch in the window has already moved. Left
         // alone, the window shows "on" against a file that says "off" for the
@@ -352,9 +353,22 @@ void ConfigBridge::apply() {
     if (!pending_) {
         return;
     }
-    if (!reportSave(config_.save())) {
+    // What the window changed, on top of the file as it stands: config_ is
+    // the window's copy, saved_ the file it last followed, and a key the
+    // window did not change takes the file's value now (Config::merged).
+    // Saving config_ whole wrote back every key edited outside the window
+    // since it last followed the file -- a hand-written flatpak_apps, which
+    // the window has no control for, went back to its startup value.
+    vocem::Config fresh;
+    fresh.load();
+    vocem::Config written = vocem::Config::merged(saved_, config_, fresh);
+    // Not believed from the file (it is read from the autostart entry): the
+    // window's value is the intent, carried out below whatever saved_ says.
+    written.start_at_login = config_.start_at_login;
+    if (!reportSave(written.save())) {
         return;  // still pending: the button stays live and the message says why
     }
+    config_ = written;
     saved_ = config_;
     disk_mtime_ = vocem::Config::mtime();
     // The autostart entry is a file rather than a line in the settings, so it is
@@ -376,8 +390,10 @@ void ConfigBridge::apply() {
 
 bool ConfigBridge::reportSave(bool saved) {
     if (!saved) {
+        // save() also refuses a file it cannot read, rather than write over
+        // it with the window's copy: the sentence names that case too.
         reportFailure(tr("The settings could not be written to %1. Check that the directory "
-                         "exists and is writable.")
+                         "exists and is writable, and that the file can be read.")
                           .arg(QString::fromStdString(vocem::Config::path())));
         return false;
     }
@@ -405,14 +421,15 @@ void ConfigBridge::reloadIfMoved() {
     vocem::Config fresh;
     fresh.load();
     fresh.start_at_login = vocem::autostart_enabled();
-    saved_ = fresh;
-    // An edit waiting for Apply keeps the window's copy: Apply means "what the
-    // window shows", and a reload underneath it would take that away. With
+    // An edit waiting for Apply keeps the window's edits: Apply means "what the
+    // window shows", and a reload underneath it would take them away. Every
+    // key the window did not change follows the file even then
+    // (Config::merged): the window kept its whole copy here once, and the next
+    // Apply wrote the keys edited outside back to their old values. With
     // nothing pending the window follows the file, as the game does.
-    if (!pending_) {
-        config_ = fresh;
-        emit configChanged();
-    }
+    config_ = pending_ ? vocem::Config::merged(saved_, config_, fresh) : fresh;
+    saved_ = fresh;
+    emit configChanged();
 }
 
 void ConfigBridge::setNumber(const char* key, float vocem::Config::*member, qreal value) {
@@ -646,22 +663,9 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
     if (key.empty()) {
         return;
     }
-    // A name the lists cannot hold -- a comma, or a space at either end -- is
-    // refused and said, and the checkbox is put back by re-announcing the
-    // list it reads: stored, "Foo, Bar" hid the applications Foo and Bar.
-    if (!vocem::list_entry_fits(key)) {
-        reportFailure(tr("\"%1\" cannot be put in the list of applications: a name with a comma "
-                         "in it, or a space at either end, would be read back as another name.")
-                          .arg(name));
-        emit applicationsChanged();
-        return;
-    }
-
-    // Both spellings a rule may use are taken out: the process name, and the
-    // executable's own name, which config.h says a rule may be written
-    // against and which the list page honours when it reads. The switch used
-    // to remove the process name alone, so a hand-written rule on the
-    // executable's name snapped the box back the moment it was ticked.
+    // The executable's own name, the second spelling a rule may use: config.h
+    // says a rule may be written against it, and the overlay matches it
+    // (vocem/apps.h, draw_here).
     std::string binary;
     for (const QVariant& entry : applications_) {
         const QVariantMap map = entry.toMap();
@@ -672,6 +676,47 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
             break;
         }
     }
+
+    // The name the process really runs under. The kernel cuts it to fifteen
+    // bytes, and a cut can end on a space -- "Slay the Spire 2" runs as
+    // "Slay the Spire " -- which the registry's reader trims away: the page
+    // then names it "Slay the Spire", a rule on that matches neither the
+    // process name nor the executable's, and the switch stored it and showed
+    // the application hidden while the overlay went on drawing there. The
+    // executable's first fifteen bytes are the cut when they trim to the
+    // page's name.
+    std::string process = key;
+    if (binary.size() >= 15) {
+        const std::string cut = binary.substr(0, 15);
+        std::string trimmed = cut;
+        while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) {
+            trimmed.pop_back();
+        }
+        if (trimmed == key) {
+            process = cut;
+        }
+    }
+    // The process name when a list can hold it -- under Proton the executable
+    // is wine's loader, and a rule on that would take in every Windows game --
+    // and the executable's name when only that one fits. A name neither can
+    // be -- a comma, or a space at either end, in both -- is refused and
+    // said, and the checkbox is put back by re-announcing the list it reads:
+    // stored, "Foo, Bar" hid the applications Foo and Bar.
+    const std::string rule = vocem::list_entry_fits(process) ? process : binary;
+    if (!vocem::list_entry_fits(rule)) {
+        reportFailure(tr("\"%1\" cannot be put in the list of applications: a name with a comma "
+                         "in it, or a space at either end, would be read back as another name, "
+                         "and the program's file name cannot stand in for it.")
+                          .arg(name));
+        emit applicationsChanged();
+        return;
+    }
+
+    // Both spellings a rule may use are taken out: the process name, and the
+    // executable's own name, which config.h says a rule may be written
+    // against and which the list page honours when it reads. The switch used
+    // to remove the process name alone, so a hand-written rule on the
+    // executable's name snapped the box back the moment it was ticked.
     for (const std::string& spelling : {key, binary}) {
         if (spelling.empty()) {
             continue;
@@ -680,9 +725,9 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
         config_.shown_apps = vocem::list_without(config_.shown_apps, spelling);
     }
     if (game && !drawn) {
-        config_.hidden_apps = vocem::list_with(config_.hidden_apps, key);
+        config_.hidden_apps = vocem::list_with(config_.hidden_apps, rule);
     } else if (!game && drawn) {
-        config_.shown_apps = vocem::list_with(config_.shown_apps, key);
+        config_.shown_apps = vocem::list_with(config_.shown_apps, rule);
     }
 
     persist();
