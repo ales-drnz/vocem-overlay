@@ -1683,3 +1683,12 @@ vocem_test_run(vk_present_second_queue TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-queue" SKIP TIMEOUT 120)
 vocem_m32_twin_run(vk_present_second_queue TARGET vk_present_second_queue
     ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-queue")
+
+# ---- 0.1.11 round 2 daemon lane ----
+# A segment the reader refuses (not this user's 0600 regular file) is not "no
+# daemon": the CLI says it was refused and why, once and under --watch.
+# Private /dev/shm; skips where bwrap is missing.
+if(TARGET vocem)
+    vocem_test(cli_refused_segment INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV "VOCEM_CLI=$<TARGET_FILE:vocem>" TIMEOUT 60 SKIP)
+endif()

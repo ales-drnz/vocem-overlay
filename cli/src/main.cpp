@@ -59,6 +59,20 @@ void print_snapshot(const vocem::Snapshot& snapshot) {
     }
 }
 
+// Why there is no snapshot to print. A reader that met an object at the
+// segment's name and refused it (not this user's, not a regular file, or open
+// to others: segment_trust_problem in vocem/shm.h) has not met "no daemon",
+// and until the second fix round of 0.1.11 this said it had -- the refusal was
+// kept in the reader and never asked for. Entry 55 is what a refusal that
+// reads like silence costs.
+void say_nothing_to_read(std::FILE* out, const vocem::StateReader& reader) {
+    if (const char* refusal = reader.refusal()) {
+        std::fprintf(out, "the shared state segment was refused: %s\n", refusal);
+    } else {
+        std::fprintf(out, "vocemd is not running (no shared state segment)\n");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -79,7 +93,7 @@ int main(int argc, char** argv) {
 
     vocem::StateReader reader;
     if (!reader.open()) {
-        std::fprintf(stderr, "vocemd is not running (no shared state segment)\n");
+        say_nothing_to_read(stderr, reader);
         return 1;
     }
 
@@ -98,13 +112,13 @@ int main(int argc, char** argv) {
         }
         if (!reader.valid() && !reader.open()) {
             if (!watch) {
-                std::fprintf(stderr, "vocemd is not running (no shared state segment)\n");
+                say_nothing_to_read(stderr, reader);
                 return 1;
             }
             if (clear_screen) {
                 std::printf("\033[2J\033[H");
             }
-            std::printf("vocemd is not running (no shared state segment)\n");
+            say_nothing_to_read(stdout, reader);
             std::fflush(stdout);
             usleep(250 * 1000);
             continue;
