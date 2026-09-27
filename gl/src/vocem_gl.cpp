@@ -2335,6 +2335,11 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
 
 }  // extern "C"
 
+// libstdc++'s own, defined in the copy this library carries (eh_alloc.cc).
+namespace __gnu_cxx {
+void __freeres() noexcept;
+}
+
 namespace {
 
 // The clean end of the journal: a process that unwinds normally runs this and
@@ -2346,6 +2351,16 @@ __attribute__((destructor)) void vocem_gl_journal_close() {
     // way this runs.
     atlas_worker().join();
     vocem::journal_end();
+    // Last, the exception emergency pool of this library's own libstdc++.
+    // The library carries its C++ runtime inside it (-static-libstdc++, the top-level CMakeLists.txt),
+    // and that runtime's exception emergency pool -- about 73 KB, malloc'd by
+    // its constructor at every load -- is never freed by its destructor:
+    // libstdc++ leaves it to __gnu_cxx::__freeres(), which only memory
+    // checkers call. Every unload kept one, which for the layer is every
+    // vkDestroyInstance: 73,744 bytes a cycle (12,816 at 32 bits), measured
+    // by tests/injected_unload.cpp. It frees this library's own copy, never the
+    // game's -- the runtime inside is local to it (entry 195).
+    __gnu_cxx::__freeres();
 }
 
 }  // namespace

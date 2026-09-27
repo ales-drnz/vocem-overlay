@@ -1704,3 +1704,15 @@ vocem_m32_twin(gl_destroy_private_x11
     ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
         "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=shared"
     BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+
+# The two heavy libraries loaded and unloaded forty times each: the libstdc++
+# they carry inside them since 0.1.11 left its ~73 KB exception emergency pool
+# on the heap at every unload, which is every vkDestroyInstance for the layer
+# (injected_unload.cpp). Both widths, both libraries.
+vocem_test(injected_unload LINK ${CMAKE_DL_LIBS}
+    ENV "LD_PRELOAD=" "VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
+        "VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>")
+vocem_m32_twin(injected_unload
+    ENV "LD_PRELOAD=" "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+        "VOCEM_VK_LIBRARY=${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "${VOCEM_BUILD32_DIR}/layer/libvocem_vk.so")
