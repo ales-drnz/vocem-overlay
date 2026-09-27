@@ -1,3 +1,60 @@
+## [0.1.11] - 2026-09-27
+
+### Added
+
+- `flatpak_apps` in config.ini names Flatpak applications that may be shown the voice channel beside those whose desktop entry says Game.
+- `vocem-why` reports a process's `VOCEM_DISABLE`, the overlay's master switch, and whether the application lists name it.
+
+### Changed
+
+- A Flatpak sandbox is given the voice channel, the faces and the messages only when the host consents to its application id and a process of it is running.
+- The injected libraries carry their own C++ runtime, so the overlay loads in games that ship an older libstdc++.
+- The Vulkan loaders are optional dependencies, and the 32-bit libraries depend on lib32-glibc alone.
+
+### Fixed
+
+- The OpenGL shim no longer tells a thread that a GL function is missing when several threads ask for it at the same moment.
+- An OpenGL game no longer exits with an X error when it destroys the overlay's context from another thread or after recreating its window.
+- An OpenGL game that destroys its context the way SDL and GLFW do no longer keeps the overlay's textures in its shared context.
+- The OpenGL overlay no longer leaves a backend behind in each context it moves away from, nor deletes another context's objects at eglTerminate.
+- An OpenGL present no longer goes to a dispatch stub after one API's dispatcher is asked for the other API's name.
+- OpenGL ES games that expose no dispatcher before the first frame get the overlay instead of a shader that never linked.
+- An OpenGL context the overlay cannot draw in no longer takes the overlay away from the game's other contexts.
+- `VOCEM_CAPTURE_FRAME` reads the frame the overlay drew into and leaves the game's pack state alone.
+- A swapchain created with deferred memory allocation no longer loses the device on the overlay's first frame.
+- A second Vulkan device or queue presenting beside the game's is left alone, and the overlay moves to it once the first falls silent.
+- Destroying or resizing a Vulkan swapchain waits only for the overlay's own work on it, not for the whole device.
+- A Vulkan game that quits while the first font atlas is being built no longer leaves the atlas mapped.
+- Unloading the overlay's libraries, as the Vulkan loader does at every vkDestroyInstance, no longer leaves heap behind.
+- A new emoji sequence no longer draws as a question mark for its first frame in a Vulkan game.
+- The first flag or joined emoji in a name no longer costs each drawing process about 10 MB.
+- A new emoji in a Vulkan game is looked up in the colour bank after the present instead of inside it.
+- An update of the voice state no longer blanks a game's overlay for a frame, and a version mismatch is always logged.
+- The shared memory segments are refused when another user could have created or written them.
+- The debug log writes whole lines from several threads and keeps its file out of launched programs.
+- A journal that cannot be created is retried every 30 seconds instead of on every OpenGL frame.
+- A cache path containing `.running` or `.done` no longer sends journals outside their directory.
+- A daemon restarting over a leftover segment no longer lets a game read it half cleared.
+- Without HOME, the settings and the token are no longer read from the working directory.
+- The overlay is sized from the resolution the display runs at, not from its preferred mode.
+- The daemon no longer sends the Discord token to a listener inside a Flatpak sandbox or hidden from it.
+- Avatar files are never written through links or blocked on FIFOs, and SIGTERM always ends the daemon promptly.
+- A second vocemd for the same user exits at once instead of sharing the first one's segment.
+- A Flatpak sandbox writes one application record of its own and can no longer flood or overwrite the host's.
+- Faces copied into a Flatpak sandbox are removed when it stops being served and when the daemon stops.
+- A failed settings copy into a Flatpak sandbox is retried, and the emoji bank is copied into it once.
+- Names, titles and logged replies lose C1 controls, line separators and bytes hidden behind broken UTF-8.
+- `vocem` says the shared state segment was refused, and why, instead of claiming the daemon is not running.
+- The settings window never signals the running daemon while it is being measured, and a quick close waits for systemd.
+- The window's saves keep comments, unknown keys, a symlinked settings file, its permissions and edits made outside it.
+- A settings file that cannot be read is no longer written over.
+- The font box follows a font set outside the window.
+- "Start at login" honours an entry the desktop switched off.
+- The Debug page says "Next login" when only the service manager carries the OpenGL preload.
+- An application whose process name the lists cannot hold is ruled by its executable's name, or refused, instead of hiding two others.
+- The installed settings window no longer carries a RUNPATH.
+- ImGui's asserts are compiled out of the injected libraries in every build type.
+
 ## [0.1.10] - 2026-09-22
 
 ### Added

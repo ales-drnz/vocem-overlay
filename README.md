@@ -285,10 +285,10 @@ the overlay inside the sandbox reads it through a directory Flatpak shares with
 the host.
 
 The daemon gives the voice channel only to a Flatpak whose desktop entry says
-it is a game (`Categories=Game`, as Steam's and most games' do). Any other
-application id gets an empty panel, and the daemon's log names it; to allow
-it, add the id to `flatpak_apps` in `~/.config/vocem/config.ini`, comma
-separated:
+it is a game (`Categories=Game`, as Steam's and most games' do), and only
+while a process of that application is running. Any other application id gets
+an empty panel, and the daemon's log names it; to allow it, add the id to
+`flatpak_apps` in `~/.config/vocem/config.ini`, comma separated:
 
 ```ini
 flatpak_apps = com.example.SomeGame
