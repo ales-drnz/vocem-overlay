@@ -33,6 +33,9 @@
 // sandbox check", and the token went out. A socket of this user's that no
 // visible process holds, while some of this user's processes are hidden, is
 // refused now.
+//
+// And with an app id that hides an ESC behind a UTF-8 lead byte, which must
+// reach the daemon's log without the ESC.
 
 #include <fcntl.h>
 #include <signal.h>
@@ -316,6 +319,16 @@ int main() {
           "a listener that made itself undumpable is not sent AUTHENTICATE");
     check(log.find("refusing port 6463") != std::string::npos,
           "and the daemon's log says it refused the port");
+
+    // The sandbox's name is the sandbox's to write, and it reaches the log.
+    // sanitise_text() took a lead byte's next byte as its continuation
+    // whatever it was, so "\xC3\x1B" went out whole, ESC included.
+    const std::string escaped =
+        scenario(daemon_path, base, "escape", "org.evil\xC3\x1B[31mRED", false, &log);
+    check(escaped == "NOTHING" || escaped == "NO-CONNECTION",
+          "a listener whose app id carries an escape is refused like any other");
+    check(log.find("[31mRED") != std::string::npos && log.find('\x1B') == std::string::npos,
+          "and its id is logged without the ESC byte");
 
     (void)!system(("rm -rf '" + base + "'").c_str());
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
