@@ -663,22 +663,9 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
     if (key.empty()) {
         return;
     }
-    // A name the lists cannot hold -- a comma, or a space at either end -- is
-    // refused and said, and the checkbox is put back by re-announcing the
-    // list it reads: stored, "Foo, Bar" hid the applications Foo and Bar.
-    if (!vocem::list_entry_fits(key)) {
-        reportFailure(tr("\"%1\" cannot be put in the list of applications: a name with a comma "
-                         "in it, or a space at either end, would be read back as another name.")
-                          .arg(name));
-        emit applicationsChanged();
-        return;
-    }
-
-    // Both spellings a rule may use are taken out: the process name, and the
-    // executable's own name, which config.h says a rule may be written
-    // against and which the list page honours when it reads. The switch used
-    // to remove the process name alone, so a hand-written rule on the
-    // executable's name snapped the box back the moment it was ticked.
+    // The executable's own name, the second spelling a rule may use: config.h
+    // says a rule may be written against it, and the overlay matches it
+    // (vocem/apps.h, draw_here).
     std::string binary;
     for (const QVariant& entry : applications_) {
         const QVariantMap map = entry.toMap();
@@ -689,6 +676,47 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
             break;
         }
     }
+
+    // The name the process really runs under. The kernel cuts it to fifteen
+    // bytes, and a cut can end on a space -- "Slay the Spire 2" runs as
+    // "Slay the Spire " -- which the registry's reader trims away: the page
+    // then names it "Slay the Spire", a rule on that matches neither the
+    // process name nor the executable's, and the switch stored it and showed
+    // the application hidden while the overlay went on drawing there. The
+    // executable's first fifteen bytes are the cut when they trim to the
+    // page's name.
+    std::string process = key;
+    if (binary.size() >= 15) {
+        const std::string cut = binary.substr(0, 15);
+        std::string trimmed = cut;
+        while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) {
+            trimmed.pop_back();
+        }
+        if (trimmed == key) {
+            process = cut;
+        }
+    }
+    // The process name when a list can hold it -- under Proton the executable
+    // is wine's loader, and a rule on that would take in every Windows game --
+    // and the executable's name when only that one fits. A name neither can
+    // be -- a comma, or a space at either end, in both -- is refused and
+    // said, and the checkbox is put back by re-announcing the list it reads:
+    // stored, "Foo, Bar" hid the applications Foo and Bar.
+    const std::string rule = vocem::list_entry_fits(process) ? process : binary;
+    if (!vocem::list_entry_fits(rule)) {
+        reportFailure(tr("\"%1\" cannot be put in the list of applications: a name with a comma "
+                         "in it, or a space at either end, would be read back as another name, "
+                         "and the program's file name cannot stand in for it.")
+                          .arg(name));
+        emit applicationsChanged();
+        return;
+    }
+
+    // Both spellings a rule may use are taken out: the process name, and the
+    // executable's own name, which config.h says a rule may be written
+    // against and which the list page honours when it reads. The switch used
+    // to remove the process name alone, so a hand-written rule on the
+    // executable's name snapped the box back the moment it was ticked.
     for (const std::string& spelling : {key, binary}) {
         if (spelling.empty()) {
             continue;
@@ -697,9 +725,9 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
         config_.shown_apps = vocem::list_without(config_.shown_apps, spelling);
     }
     if (game && !drawn) {
-        config_.hidden_apps = vocem::list_with(config_.hidden_apps, key);
+        config_.hidden_apps = vocem::list_with(config_.hidden_apps, rule);
     } else if (!game && drawn) {
-        config_.shown_apps = vocem::list_with(config_.shown_apps, key);
+        config_.shown_apps = vocem::list_with(config_.shown_apps, rule);
     }
 
     persist();

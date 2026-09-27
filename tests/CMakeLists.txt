@@ -1699,6 +1699,17 @@ if(TARGET vocem-config)
         LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
         DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
     set_target_properties(vocem_config_apply_keeps_outside PROPERTIES AUTOMOC ON)
+
+    # The switch beside an application whose process name the kernel cut
+    # after a space ("Slay the Spire 2" runs as "Slay the Spire "): no list
+    # entry can hold that name, so the rule goes on the executable's name,
+    # which the overlay also matches -- refused only when neither fits.
+    vocem_test(config_bridge_comm_name
+        SOURCES config_bridge_comm_name.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_config_bridge_comm_name PROPERTIES AUTOMOC ON)
 endif()
 
 # save() on a config.ini that exists and cannot be read fails, where it took
