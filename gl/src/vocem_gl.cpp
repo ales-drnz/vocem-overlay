@@ -21,6 +21,7 @@
 // deals with getting a frame, a size, and a texture upload path.
 
 #include <dlfcn.h>
+#include <link.h>
 #include <pthread.h>
 #include <time.h>
 
@@ -29,6 +30,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -707,12 +709,14 @@ public:
 
     // Every texture name we hold belongs to a GL context. Forget them.
     //
-    // No `glDeleteTextures` even when the context is still alive: the two callers
-    // are a context being destroyed, where the names are already meaningless, and
-    // the user switching the overlay off, where the tidiest thing is not to touch
-    // the application's GL state on the way out. The pictures cost a few hundred
-    // kilobytes and are re-uploaded from the cache on the first frame after the
-    // overlay comes back, which is the same path that put them there to begin with.
+    // No `glDeleteTextures` here. A context being destroyed deletes them first
+    // wherever it can reach them (GlOverlay::release_dying) -- the names are
+    // NOT meaningless there: in a share group they outlive the context -- and
+    // the user switching the overlay off is where the tidiest thing is not to
+    // touch the application's GL state on the way out. The pictures cost a few
+    // hundred kilobytes and are re-uploaded from the cache on the first frame
+    // after the overlay comes back, which is the same path that put them there
+    // to begin with.
     void forget() {
         textures_.clear();
         waiting_.clear();
@@ -1235,6 +1239,34 @@ public:
     }
 
     static bool left_anywhere() { return __atomic_load_n(&g_left_backends, __ATOMIC_ACQUIRE) > 0; }
+
+    // Whether a backend was left in this very context (move_away). Under g_gl_lock.
+    bool left_in(void* context, bool egl) const {
+        for (const LeftBackend& left : left_) {
+            if (left.egl == egl && left.context == context) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // release() for the owner context's death. With `gl_current` the faces go
+    // too, with glDeleteTextures: a context that dies shares its objects with
+    // every context in its share group -- a game's loader context is the
+    // common case -- and a name dropped without GL there is a texture kept
+    // for the life of that group, not a name that "dies with the context".
+    void release_dying(bool gl_current) {
+        if (gl_current && backend_ready_) {
+            std::vector<GLuint> faces;
+            avatars_.take_texture_names(faces);
+            if (!faces.empty()) {
+                if (auto delete_textures = gl_symbol<PFN_glDeleteTextures>("glDeleteTextures")) {
+                    delete_textures(static_cast<GLsizei>(faces.size()), faces.data());
+                }
+            }
+        }
+        release(gl_current);
+    }
 
     // Whether the context presenting now is the one the backend lives in,
     // asked with the API it arrived through: one getter call per frame, only
@@ -1787,6 +1819,290 @@ void query_glx_size(void* display, unsigned long drawable, uint32_t& width, uint
     height = value;
 }
 
+// The context the backend lives in, dying while it is not current here.
+//
+// Its objects -- the program, two buffers, the 16-64 MB font texture, a
+// texture per face -- can only be deleted with it current, and they do not
+// always die with it: SDL_GL_DeleteContext and glfwDestroyWindow make NULL
+// current and then destroy, which is the standard order, and a game with a
+// loader context shares its objects with every window context it makes. The
+// first round of 0.1.11 dropped the backend without GL whenever the dying
+// context was not current, and every owner left a whole set in the share group
+// for good: 8 textures, 4 programs and 8 buffers after four owners
+// (tests/gl_destroy_owner.cpp, `shared`).
+//
+// So the dying context is made current here, for the teardown and no longer,
+// on a 1x1 pbuffer made from its own framebuffer configuration -- never on the
+// game's drawable, whose configuration may not match (that was the BadMatch of
+// the `visual` scene) -- and what was current before is put back, read and
+// draw drawables both. A GLX failure is an X error, and with no handler of
+// the game's own that is Xlib's default one calling exit(1) (the `thread`
+// scene's BadAccess: the dying context still current on another thread). So
+// everything between the first request and the last runs under a handler of
+// ours that swallows the errors this thread's requests raise from the first
+// serial on, and hands every other error to the handler it replaced. Any
+// error, or any function that cannot be found, and the teardown is the one
+// without GL, as before.
+//
+// Xlib is found where the game put it: the global scope when the game links
+// it, and otherwise among the loaded objects -- SDL and GLFW dlopen libX11
+// RTLD_LOCAL -- asked through its own handle. Nothing here opens a file.
+struct XErrorEventLayout {  // XErrorEvent as <X11/Xlib.h> lays it out, unchanged since X11R4
+    int type;
+    void* display;
+    unsigned long resourceid;
+    unsigned long serial;
+    unsigned char error_code;
+    unsigned char request_code;
+    unsigned char minor_code;
+};
+using XErrorHandlerFn = int (*)(void*, XErrorEventLayout*);
+
+struct XErrorTrap {
+    // Written by the thread holding g_gl_lock; read by the handler, which Xlib
+    // may call on any thread.
+    int active = 0;
+    pthread_t thread{};
+    void* display = nullptr;
+    unsigned long first_serial = 0;
+    int errors = 0;
+    int last_code = 0;
+    // The handler ours replaced, kept after ours is taken off: another
+    // library that swapped handlers while ours was in (SDL does, around its
+    // own GLX calls) may put ours back for good, and then it forwards.
+    XErrorHandlerFn forward = nullptr;
+};
+XErrorTrap g_x_trap;
+
+int x_error_trap(void* display, XErrorEventLayout* event) {
+    if (__atomic_load_n(&g_x_trap.active, __ATOMIC_ACQUIRE) &&
+        pthread_equal(pthread_self(), g_x_trap.thread) &&
+        (display != g_x_trap.display ||
+         static_cast<long>(event->serial - g_x_trap.first_serial) >= 0)) {
+        ++g_x_trap.errors;
+        g_x_trap.last_code = event->error_code;
+        return 0;
+    }
+    XErrorHandlerFn next = __atomic_load_n(&g_x_trap.forward, __ATOMIC_ACQUIRE);
+    return next ? next(display, event) : 0;
+}
+
+struct X11Found {
+    void* handle = nullptr;
+};
+
+int find_loaded_x11(struct dl_phdr_info* info, size_t, void* data) {
+    const char* name = info->dlpi_name ? std::strrchr(info->dlpi_name, '/') : nullptr;
+    name = name ? name + 1 : info->dlpi_name;
+    if (!name || std::strncmp(name, "libX11.so.6", 11) != 0) {
+        return 0;
+    }
+    for (int i = 0; i < info->dlpi_phnum; ++i) {
+        if (info->dlpi_phdr[i].p_type == PT_LOAD) {
+            Dl_info where;
+            void* map = nullptr;
+            const void* address =
+                reinterpret_cast<const void*>(info->dlpi_addr + info->dlpi_phdr[i].p_vaddr);
+            // glibc's handle is the object's link_map: dlsym on it searches
+            // the object and its own dependencies.
+            if (dladdr1(address, &where, &map, RTLD_DL_LINKMAP) && map) {
+                static_cast<X11Found*>(data)->handle = map;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// The caller keeps what is found; a null is asked again next time.
+template <typename Fn>
+Fn x11_symbol(const char* name) {
+    if (Fn found = next_symbol<Fn>(name)) {
+        return found;
+    }
+    X11Found x11;
+    dl_iterate_phdr(&find_loaded_x11, &x11);
+    return x11.handle ? reinterpret_cast<Fn>(real_dlsym(x11.handle, name)) : nullptr;
+}
+
+class DyingGlxCurrent {
+public:
+    DyingGlxCurrent(void* display, void* context) : display_(display) {
+        using PFN_current = void* (*)();
+        using PFN_drawable = unsigned long (*)();
+        using PFN_setHandler = XErrorHandlerFn (*)(XErrorHandlerFn);
+        using PFN_sync = int (*)(void*, int);
+        using PFN_nextRequest = unsigned long (*)(void*);
+        using PFN_free = int (*)(void*);
+        using PFN_queryContext = int (*)(void*, void*, int, int*);
+        using PFN_chooseConfig = void** (*)(void*, int, const int*, int*);
+        using PFN_configAttrib = int (*)(void*, void*, int, int*);
+        using PFN_createPbuffer = unsigned long (*)(void*, void*, const int*);
+
+        static PFN_setHandler set_handler = nullptr;
+        static PFN_sync sync = nullptr;
+        static PFN_nextRequest next_request = nullptr;
+        static PFN_free x_free = nullptr;
+        if (!set_handler) set_handler = x11_symbol<PFN_setHandler>("XSetErrorHandler");
+        if (!sync) sync = x11_symbol<PFN_sync>("XSync");
+        if (!next_request) next_request = x11_symbol<PFN_nextRequest>("XNextRequest");
+        if (!x_free) x_free = x11_symbol<PFN_free>("XFree");
+        // Each looked up until found, then remembered: a lookup walks the
+        // loader's lists under its lock (entry 36), and a game may destroy
+        // contexts often.
+        static PFN_makeContextCurrent make_current = nullptr;
+        static PFN_destroyPbuffer destroy_pbuffer = nullptr;
+        static PFN_current get_context = nullptr;
+        static PFN_current get_display = nullptr;
+        static PFN_drawable get_draw = nullptr;
+        static PFN_drawable get_read = nullptr;
+        static PFN_queryContext query_context = nullptr;
+        static PFN_chooseConfig choose_config = nullptr;
+        static PFN_configAttrib config_attrib = nullptr;
+        static PFN_createPbuffer create_pbuffer = nullptr;
+        if (!make_current) make_current = gl_symbol<PFN_makeContextCurrent>("glXMakeContextCurrent");
+        if (!destroy_pbuffer) destroy_pbuffer = gl_symbol<PFN_destroyPbuffer>("glXDestroyPbuffer");
+        if (!get_context) get_context = gl_symbol<PFN_current>("glXGetCurrentContext");
+        if (!get_display) get_display = gl_symbol<PFN_current>("glXGetCurrentDisplay");
+        if (!get_draw) get_draw = gl_symbol<PFN_drawable>("glXGetCurrentDrawable");
+        if (!get_read) get_read = gl_symbol<PFN_drawable>("glXGetCurrentReadDrawable");
+        if (!query_context) query_context = gl_symbol<PFN_queryContext>("glXQueryContext");
+        if (!choose_config) choose_config = gl_symbol<PFN_chooseConfig>("glXChooseFBConfig");
+        if (!config_attrib) config_attrib = gl_symbol<PFN_configAttrib>("glXGetFBConfigAttrib");
+        if (!create_pbuffer) create_pbuffer = gl_symbol<PFN_createPbuffer>("glXCreatePbuffer");
+        make_current_ = make_current;
+        destroy_pbuffer_ = destroy_pbuffer;
+        if (!display || !context || !set_handler || !sync || !x_free || !make_current ||
+            !destroy_pbuffer || !get_context || !get_display || !get_draw || !get_read ||
+            !query_context || !choose_config || !config_attrib || !create_pbuffer) {
+            VOCEM_GLOG("dying context %p: GLX or Xlib functions missing, so its objects "
+                       "are dropped without GL",
+                       context);
+            return;
+        }
+        sync_ = sync;
+        set_handler_ = set_handler;
+        previous_context_ = get_context();
+        previous_display_ = get_display();
+        previous_draw_ = get_draw();
+        previous_read_ = get_read();
+
+        // Errors already on their way are the game's, delivered to its handler.
+        sync(display, 0);
+        g_x_trap.thread = pthread_self();
+        g_x_trap.display = display;
+        g_x_trap.first_serial = next_request ? next_request(display) : 0;
+        g_x_trap.errors = 0;
+        g_x_trap.last_code = 0;
+        __atomic_store_n(&g_x_trap.active, 1, __ATOMIC_RELEASE);
+        XErrorHandlerFn replaced = set_handler(&x_error_trap);
+        if (replaced != &x_error_trap) {
+            __atomic_store_n(&g_x_trap.forward, replaced, __ATOMIC_RELEASE);
+        }
+        replaced_ = replaced;
+        trapped_ = true;
+
+        constexpr int kGlxFbconfigId = 0x8013;
+        constexpr int kGlxScreen = 0x800C;
+        constexpr int kGlxDrawableType = 0x8010;
+        constexpr int kGlxPbufferBit = 0x4;
+        constexpr int kGlxPbufferWidth = 0x8041;
+        constexpr int kGlxPbufferHeight = 0x8040;
+        int config_id = 0;
+        int screen = 0;
+        if (query_context(display, context, kGlxFbconfigId, &config_id) != 0 ||
+            query_context(display, context, kGlxScreen, &screen) != 0) {
+            VOCEM_GLOG("dying context %p: its configuration could not be asked", context);
+            return;
+        }
+        const int wanted[] = {kGlxFbconfigId, config_id, 0};
+        int count = 0;
+        void** configs = choose_config(display, screen, wanted, &count);
+        if (configs && count > 0) {
+            int drawable_types = 0;
+            if (config_attrib(display, configs[0], kGlxDrawableType, &drawable_types) == 0 &&
+                (drawable_types & kGlxPbufferBit)) {
+                const int size[] = {kGlxPbufferWidth, 1, kGlxPbufferHeight, 1, 0};
+                pbuffer_ = create_pbuffer(display, configs[0], size);
+            }
+        }
+        if (configs) {
+            x_free(configs);
+        }
+        // Without a pbuffer the context is asked with no drawable at all,
+        // which GL 3.0 contexts accept; an older one refuses, trapped.
+        sync(display, 0);
+        attempted_ = g_x_trap.errors == 0;
+        if (attempted_ && make_current_(display, pbuffer_, pbuffer_, context)) {
+            sync(display, 0);
+            current_ = g_x_trap.errors == 0 && get_context() == context;
+        }
+        VOCEM_GLOG("dying context %p %s", context,
+                   current_ ? "made current on a pbuffer of its own configuration, to delete "
+                              "the backend's objects in it"
+                            : "could not be made current: the backend's objects are dropped "
+                              "without GL");
+    }
+
+    ~DyingGlxCurrent() {
+        if (!trapped_) {
+            return;
+        }
+        // What was current goes back, whether or not the dying context was
+        // made current: a failed attempt may have unbound it.
+        if (!attempted_) {
+        } else if (previous_context_) {
+            make_current_(previous_display_ ? previous_display_ : display_, previous_draw_,
+                          previous_read_, previous_context_);
+        } else {
+            make_current_(display_, 0, 0, nullptr);
+        }
+        if (pbuffer_) {
+            destroy_pbuffer_(display_, pbuffer_);
+        }
+        sync_(display_, 0);
+        if (previous_display_ && previous_display_ != display_) {
+            sync_(previous_display_, 0);
+        }
+        __atomic_store_n(&g_x_trap.active, 0, __ATOMIC_RELEASE);
+        // Ours comes off only if it is still the one installed; a handler put
+        // in on top of ours in the meantime stays, and ours keeps forwarding.
+        XErrorHandlerFn installed = set_handler_(replaced_);
+        if (installed != &x_error_trap) {
+            set_handler_(installed);
+        }
+        if (g_x_trap.errors > 0) {
+            VOCEM_GLOG("dying context: %d X error(s) raised and kept from the game's handler "
+                       "(the last, code %d)",
+                       g_x_trap.errors, g_x_trap.last_code);
+        }
+    }
+
+    DyingGlxCurrent(const DyingGlxCurrent&) = delete;
+    DyingGlxCurrent& operator=(const DyingGlxCurrent&) = delete;
+
+    bool current() const { return current_; }
+
+private:
+    using PFN_makeContextCurrent = int (*)(void*, unsigned long, unsigned long, void*);
+    using PFN_destroyPbuffer = void (*)(void*, unsigned long);
+
+    void* display_ = nullptr;
+    bool trapped_ = false;
+    bool attempted_ = false;
+    bool current_ = false;
+    unsigned long pbuffer_ = 0;
+    void* previous_context_ = nullptr;
+    void* previous_display_ = nullptr;
+    unsigned long previous_draw_ = 0;
+    unsigned long previous_read_ = 0;
+    XErrorHandlerFn replaced_ = nullptr;
+    PFN_makeContextCurrent make_current_ = nullptr;
+    PFN_destroyPbuffer destroy_pbuffer_ = nullptr;
+    int (*sync_)(void*, int) = nullptr;
+    XErrorHandlerFn (*set_handler_)(XErrorHandlerFn) = nullptr;
+};
+
 // ---------------------------------------------------------------------------
 // EGL
 // ---------------------------------------------------------------------------
@@ -1877,28 +2193,27 @@ VOCEM_EXPORT void vocem_gl_present_egl(void* display, void* surface) {
 
 // A GL context is going away, and everything we built lives in one.
 //
-// Called from the shim before the real destroy runs. When the dying context is
-// the one current on the calling thread, the backend is shut down properly --
-// its program, buffers and font texture deleted -- because that is the one
-// state in which GL calls reach it. In every other case the state is dropped
-// without calling GL: the objects die with the context, and what is lost is
-// ImGui's own small heap block, once -- unless another living context shares
-// the dying one's objects, in which case the backend's program, buffers and
-// font texture stay in that share group until it ends (DESIGN, Open risks).
+// Called from the shim before the real destroy runs. The backend's program,
+// buffers, font texture and faces are deleted in the dying context: directly
+// when it is current on the calling thread, and otherwise after making it
+// current for the teardown on a pbuffer of its own configuration, under a
+// trapped X error handler, with what was current put back afterwards
+// (DyingGlxCurrent says why each of those three is there). Only when that
+// fails -- the context current on another thread, a function missing, any X
+// error -- is the state dropped without calling GL, and then the objects stay
+// wherever the context's share group lives on (DESIGN, Open risks).
 //
-// There used to be a third way, MangoHud's dance: remember what is current,
-// make the dying context current with the current drawable, tear down, put the
-// previous one back. On GLX that is an X request that can fail, and a failed
-// one is an X error -- which, in a game with no error handler of its own, is
-// Xlib's default handler calling exit(1). Measured twice
-// (tests/gl_destroy_owner.cpp): a game that recreated its window and context
-// with MSAA and destroyed the old context after making the new one current
-// died of BadMatch on NVIDIA, the dying context being made current on a
-// drawable of another configuration; and an owner destroyed from a second
-// thread while still current on the render thread died of BadAccess under
-// Mesa. The overlay was killing the game inside its own glXDestroyContext, to
-// save a hundred bytes. No context is made current here any more, so there is
-// nothing to put back either.
+// The first version of this hook did MangoHud's dance: glXMakeCurrent of the
+// dying context on the CURRENT drawable, with Xlib's handler in place. A
+// failed GLX request is an X error, and in a game with no handler of its own
+// that is exit(1). Measured twice (tests/gl_destroy_owner.cpp): BadMatch on
+// NVIDIA for a game that recreated its window with MSAA, the dying context
+// made current on a drawable of another configuration; BadAccess under Mesa
+// for an owner destroyed from a second thread while current on the render
+// thread. 0.1.11's first round then made nothing current at all, and a game
+// that makes NULL current before destroying -- SDL, GLFW -- with a loader
+// context sharing its objects kept one whole backend per window context it
+// ever made (the `shared` scene).
 //
 // Without this hook the overlay held texture names and a shader program
 // belonging to a context that no longer existed, and used them on the next
@@ -1919,22 +2234,34 @@ VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
         return;
     }
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
-    // A backend the overlay moved away from, left in this context (move_away).
-    if (GlOverlay::left_anywhere()) {
-        overlay().forget_left(display, context, false);
-    }
     // Asked again under the lock: a present on another thread may have moved
     // the backend (the hand-over) between the look above and the lock.
-    if (!GlOverlay::owns(display, context, false)) {
+    const bool owner = GlOverlay::owns(display, context, false);
+    const bool left = context && GlOverlay::left_anywhere() && overlay().left_in(context, false);
+    if (!owner && !left) {
         return;
     }
-    vocem::journal_note("GLX context destroyed");
     using PFN_glXGetCurrentContext = void* (*)();
     static PFN_glXGetCurrentContext current_context = nullptr;
     if (!current_context) {
         current_context = gl_symbol<PFN_glXGetCurrentContext>("glXGetCurrentContext");
     }
-    overlay().release(context && current_context && current_context() == context);
+    bool gl_current = context && current_context && current_context() == context;
+    // Not current here: made current for the teardown, on a pbuffer of its
+    // own, and what was current put back when this scope ends (DyingGlxCurrent).
+    std::optional<DyingGlxCurrent> made;
+    if (context && !gl_current) {
+        made.emplace(display, context);
+        gl_current = made->current();
+    }
+    // A backend the overlay moved away from, left in this context (move_away).
+    if (left) {
+        overlay().forget_left(display, context, false);
+    }
+    if (owner) {
+        vocem::journal_note("GLX context destroyed");
+        overlay().release_dying(gl_current);
+    }
 }
 
 // The EGL side of the same thing. `eglDestroyContext` and `eglTerminate` both end

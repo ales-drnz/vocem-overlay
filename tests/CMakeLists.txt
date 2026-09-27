@@ -1683,3 +1683,24 @@ vocem_test_run(vk_present_second_queue TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-queue" SKIP TIMEOUT 120)
 vocem_m32_twin_run(vk_present_second_queue TARGET vk_present_second_queue
     ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-queue")
+
+# ---- 0.1.11 round 2 inj lane ----
+
+# An owner sharing its objects with a loader context, destroyed SDL's and
+# GLFW's way -- NULL made current first: the first round's "not current, drop
+# without GL" left the backend's program, buffers and font texture in the share
+# group, one set per owner (gl_destroy_owner.cpp, `shared`). Both widths.
+vocem_test_run(gl_destroy_owner_shared TARGET gl_destroy_owner
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=shared" SKIP)
+vocem_m32_twin_run(gl_destroy_owner_shared TARGET gl_destroy_owner_shared
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=shared")
+# The same scene in a game that dlopens libX11 RTLD_LOCAL, as SDL and GLFW do:
+# the overlay's X error trap has to find Xlib among the loaded objects.
+vocem_test(gl_destroy_private_x11 SOURCES gl_destroy_owner.cpp DEFINES VOCEM_PROBE_PRIVATE_X11
+    LINK ${CMAKE_DL_LIBS} rt Threads::Threads LINK_OPTIONS -rdynamic
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=shared" SKIP)
+vocem_m32_twin(gl_destroy_private_x11
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=shared"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
