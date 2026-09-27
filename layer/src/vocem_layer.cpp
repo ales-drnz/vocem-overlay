@@ -241,7 +241,16 @@ DeviceData* find_device(void* dispatchable) {
 // entry 210's lesson on the OpenGL side, where the first version of the same
 // fix refused every other context for good and a game that shows a loading
 // screen from one and plays from another had no overlay for the session.
-// Everything here is guarded by g_lock.
+//
+// The owner is the QUEUE, not only the device, and that has a price: one
+// swapchain presented from two queues of a family in turn has the overlay in
+// every other frame (vk_present_draw's alternate-queue scene: 1780 pixels in
+// the owner queue's frames, 0 in the other's). Drawing for the whole device
+// was measured and not taken: the texture cache orders its in-place copies
+// into the font image, and its rebuild's wait, on the renderer's queue alone,
+// so a draw submitted on another queue is ordered against neither, and the
+// validation layer reported synchronisation hazards under that variant that
+// it never reports under this one. Everything here is guarded by g_lock.
 // ---------------------------------------------------------------------------
 
 constexpr double kHandOverSeconds = 2.0;

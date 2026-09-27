@@ -1749,3 +1749,12 @@ vocem_test_run(gl_failed_context_destroyed TARGET gl_failed_context
     ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=destroyed" SKIP)
 vocem_m32_twin_run(gl_failed_context_destroyed TARGET gl_failed_context_destroyed
     ENV ${VOCEM_GL_PROBE32_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=destroyed")
+
+# One swapchain presented by two queues of the same family in turn, frames in
+# flight and colour emoji arriving meanwhile (vk_present_draw.cpp,
+# alternate-queue). Both widths.
+vocem_test_run(vk_present_alternate_queue TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=alternate-queue"
+    SKIP TIMEOUT 120)
+vocem_m32_twin_run(vk_present_alternate_queue TARGET vk_present_alternate_queue
+    ENV ${VOCEM_VK_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=alternate-queue")

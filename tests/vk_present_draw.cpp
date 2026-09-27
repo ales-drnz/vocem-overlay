@@ -737,6 +737,7 @@ int main() {
     const bool deferred = strcmp(scenario, "deferred") == 0;
     const bool second_presenter = strcmp(scenario, "second-presenter") == 0;
     const bool second_queue = strcmp(scenario, "second-queue") == 0;
+    const bool alternate_queue = strcmp(scenario, "alternate-queue") == 0;
     const bool no_cache = strcmp(scenario, "no-texture-cache") == 0;
     const bool srgb_first = getenv("VOCEM_VK_FORMAT_FIRST") &&
                             strcmp(getenv("VOCEM_VK_FORMAT_FIRST"), "srgb") == 0;
@@ -1272,14 +1273,14 @@ int main() {
 
     // The second-queue scene presents a second window from a second queue of
     // the same family, on the same device.
-    if (second_queue && family_queues < 2) {
+    if ((second_queue || alternate_queue) && family_queues < 2) {
         skip("the presenting family has one queue, so there is no second queue to present from");
     }
     const float priorities[2] = {1.0f, 1.0f};
     VkDeviceQueueCreateInfo queue_info{};
     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queue_info.queueFamilyIndex = queue_family;
-    queue_info.queueCount = second_queue ? 2 : 1;
+    queue_info.queueCount = second_queue || alternate_queue ? 2 : 1;
     queue_info.pQueuePriorities = priorities;
     const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                        VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
@@ -1322,6 +1323,16 @@ int main() {
     // From here on the device exists: a failure is a failure, never a skip.
     VkQueue queue = VK_NULL_HANDLE;
     vk.vkGetDeviceQueue(device, queue_family, 0, &queue);
+    // The alternate-queue scene's second queue of the same family, which
+    // presents every other frame of the ONE swapchain.
+    VkQueue queue_alternate = VK_NULL_HANDLE;
+    if (alternate_queue) {
+        vk.vkGetDeviceQueue(device, queue_family, 1, &queue_alternate);
+    }
+    // Set by the in-flight loop below to present every other frame on it.
+    VkQueue alternate_with = VK_NULL_HANDLE;
+    // The image the last read_back acquired.
+    uint32_t read_index = 0;
 
     VkExtent2D extent = caps.currentExtent;
     if (extent.width == 0xFFFFFFFFu) {
@@ -1390,6 +1401,11 @@ int main() {
     vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, images);
     printf("     swapchain: %ux%u, format %d, %u images\n", extent.width, extent.height,
            (int)chosen.format, image_count);
+    // Which queue last presented each image: 0 the first, 1 the alternate.
+    int image_queue[kMaxSwapchainImages];
+    for (int& which : image_queue) {
+        which = 0;
+    }
 
     VkCommandPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -1474,6 +1490,9 @@ int main() {
             const long long after = now_ns();
             if (g_present_count < 2048) {
                 g_presents[g_present_count++] = {before, after, 0};
+            }
+            if (index < kMaxSwapchainImages) {
+                image_queue[index] = queue == queue_alternate ? 1 : 0;
             }
             if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
                 printf("FAIL vkQueuePresentKHR returned %d on frame %d\n", (int)presented, frame);
@@ -1571,7 +1590,11 @@ int main() {
             submit.pCommandBuffers = &slot_cmd[slot];
             submit.signalSemaphoreCount = 1;
             submit.pSignalSemaphores = &done[index];
-            vk.vkQueueSubmit(queue, 1, &submit, slot_fence[slot]);
+            // The alternate-queue scene: every other frame, submitted and
+            // presented on the family's second queue.
+            const VkQueue frame_queue =
+                alternate_with != VK_NULL_HANDLE && (frame % 2) == 1 ? alternate_with : queue;
+            vk.vkQueueSubmit(frame_queue, 1, &submit, slot_fence[slot]);
 
             VkPresentInfoKHR present{};
             present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1581,10 +1604,13 @@ int main() {
             present.pSwapchains = &chain;
             present.pImageIndices = &index;
             const long long before = now_ns();
-            const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
+            const VkResult presented = vk.vkQueuePresentKHR(frame_queue, &present);
             const long long after = now_ns();
             if (g_present_count < 2048) {
                 g_presents[g_present_count++] = {before, after, 0};
+            }
+            if (index < kMaxSwapchainImages) {
+                image_queue[index] = frame_queue == queue_alternate ? 1 : 0;
             }
             if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
                 printf("FAIL vkQueuePresentKHR returned %d on frame %d\n", (int)presented, frame);
@@ -1629,6 +1655,7 @@ int main() {
         }
         vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
         vk.vkResetFences(device, 1, &fence);
+        read_index = index;
 
         const VkDeviceSize bytes = (VkDeviceSize)extent.width * extent.height * 4;
         VkBufferCreateInfo buffer_info{};
@@ -1722,6 +1749,9 @@ int main() {
             present.pImageIndices = &index;
             vk.vkQueuePresentKHR(queue, &present);
             vk.vkQueueWaitIdle(queue);
+            if (index < kMaxSwapchainImages) {
+                image_queue[index] = queue == queue_alternate ? 1 : 0;
+            }
         }
         return true;
     };
@@ -2038,6 +2068,95 @@ int main() {
             }
         }
     }
+    // Filled by the alternate-queue scene: the fewest foreign pixels in a frame
+    // last presented by each queue, -1 for a queue none of the frames read had.
+    long alternate_foreign[2] = {-1, -1};
+    if (alternate_queue) {
+        // ONE swapchain, presented by two queues of the same family on the
+        // same device, turn and turn about (the 0.1.11 refutation pass's
+        // finding: the owner rule is (device, queue), so every other frame
+        // is not the owner's): frames chained two in flight, and
+        // people arriving with colour emoji meanwhile, so the font image is
+        // copied into while frames of both queues may be sampling it (the
+        // arrivals scene's hazard, entry 192, across two queues). The
+        // renderer is built on the first queue (the warm-up above). Then
+        // every frame read back is attributed to the queue that last
+        // presented its image.
+        static const char* const kAlternate[] = {
+            "Alterna \xF0\x9F\x98\x80", "Alterna \xF0\x9F\x94\xA5",
+            "Alterna \xF0\x9F\x8E\xAE", "Alterna \xF0\x9F\x9A\x80"};
+        alternate_with = queue_alternate;
+        for (int joined = 1; joined <= 4; ++joined) {
+            writer.publish([&](vocem::SharedState& state) {
+                state.connected = 1;
+                state.in_channel = 1;
+                state.status = 2;  // Connected
+                snprintf(state.channel_name, sizeof(state.channel_name), "present-hook");
+                state.user_count = 3 + static_cast<uint32_t>(joined);
+                for (uint32_t i = 0; i < 3; ++i) {
+                    state.users[i].id = 700 + i;
+                    snprintf(state.users[i].name, sizeof(state.users[i].name), "Present %u",
+                             i + 1);
+                }
+                for (int i = 0; i < joined; ++i) {
+                    state.users[3 + i].id = 800 + static_cast<uint64_t>(i);
+                    snprintf(state.users[3 + i].name, sizeof(state.users[3 + i].name), "%s",
+                             kAlternate[i]);
+                }
+            });
+            if (!run_frames_in_flight(swapchain, images, 12)) {
+                return 1;
+            }
+        }
+        alternate_with = VK_NULL_HANDLE;
+        // Then frames read back: each image acquired is read, then painted
+        // afresh and presented by the two queues in turn, so what the next
+        // read of it finds is that queue's frame. Until a frame of each queue
+        // has been read, a deadline of four rounds of the swapchain.
+        const VkQueue first_queue = queue;
+        for (uint32_t k = 0; k < 4 * image_count &&
+                             (alternate_foreign[0] < 0 || alternate_foreign[1] < 0);
+             ++k) {
+            int background_k = 0;
+            long foreign_k = 0;
+            if (!read_back(swapchain, images, background_k, foreign_k, false)) {
+                return 1;
+            }
+            const int which = read_index < kMaxSwapchainImages ? image_queue[read_index] : 0;
+            printf("     image %u, last presented by queue %d: %ld foreign pixels\n", read_index,
+                   which, foreign_k);
+            if (alternate_foreign[which] < 0 || foreign_k < alternate_foreign[which]) {
+                alternate_foreign[which] = foreign_k;
+            }
+            const VkQueue next = (k % 2) == 0 ? queue_alternate : first_queue;
+            vk.vkResetCommandBuffer(cmd, 0);
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vk.vkBeginCommandBuffer(cmd, &begin);
+            image_barrier(cmd, images[read_index], VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+            vk.vkCmdClearColorImage(cmd, images[read_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    &grey, 1, &whole);
+            image_barrier(cmd, images[read_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+            vk.vkEndCommandBuffer(cmd);
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &cmd;
+            vk.vkQueueSubmit(next, 1, &submit, VK_NULL_HANDLE);
+            vk.vkQueueWaitIdle(next);
+            VkPresentInfoKHR present{};
+            present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            present.swapchainCount = 1;
+            present.pSwapchains = &swapchain;
+            present.pImageIndices = &read_index;
+            vk.vkQueuePresentKHR(next, &present);
+            vk.vkQueueWaitIdle(next);
+            image_queue[read_index] = next == queue_alternate ? 1 : 0;
+        }
+    }
     if (recreate) {
         VkSwapchainCreateInfoKHR again = swap_info;
         again.imageFormat = other.format;
@@ -2299,6 +2418,32 @@ int main() {
         check(foreign > 500, "the overlay drew into the RECREATED swapchain, in the other format");
     } else if (second_device) {
         check(foreign > 500, "the overlay still drew after a second device came and went");
+    } else if (alternate_queue) {
+        const long foreign_said = lines_containing(layer_log, "not drawing on device");
+        const long moved = lines_containing(layer_log, "moving the overlay");
+        const long ready = lines_containing(layer_log, "backend ready");
+        printf("     one swapchain, two queues in turn: the fewest foreign pixels in a frame of "
+               "queue 0 is %ld, of queue 1 %ld; \"not drawing on device\" %ld time(s), "
+               "\"moving the overlay\" %ld, \"backend ready\" %ld\n",
+               alternate_foreign[0], alternate_foreign[1], foreign_said, moved, ready);
+        // What is held here is the owner rule, and a flicker with it: the
+        // renderer's queue's frames carry the overlay and the other queue's
+        // are passed through whole, said once, with no hand-over back and
+        // forth (which would rebuild the backend every 2 s). Drawing the
+        // other queue's frames too was measured (0.1.11's second round): the
+        // flicker goes (1773 pixels in its frames), but the texture cache
+        // orders the font image's in-place copies and its rebuild's wait on
+        // the renderer's queue alone, so a draw on another queue has no
+        // ordering against either -- and the validation layer, clean in
+        // every run of this scene as it stands, reported 1-2
+        // SYNC-HAZARD-WRITE-AFTER-PRESENT per run of that variant.
+        check(alternate_foreign[0] > 500,
+              "the frames of the renderer's queue carry the overlay");
+        check(alternate_foreign[1] == 0,
+              "the other queue's frames are passed through whole, not drawn half");
+        check(foreign_said == 1, "the other queue is told once, not per frame");
+        check(moved == 0 && ready == 1,
+              "and the backend stays where it was built: no hand-over while both present");
     } else if (second_queue) {
         check(second_idle_foreign == 0,
               "while both queues present, the second queue's frame is its own: the renderer "
