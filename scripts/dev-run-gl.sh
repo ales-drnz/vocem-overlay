@@ -21,6 +21,16 @@
 # (tests/dev_run_gl.cmake). Whatever else is preloaded stays, after ours, the
 # order the session and the mangohud wrapper produce.
 #
+# Ours is preloaded as the session's is, through ld.so's literal $LIB: a
+# directory in the build tree holds `lib` (this tree's build/gl) and `lib32`
+# (build32/gl when it has a shim, the installed /usr/lib32 otherwise), and
+# LD_PRELOAD names <that directory>/$LIB/libvocem_gl_shim.so, so a 32-bit child
+# -- a 32-bit game, or one a 64-bit launcher starts -- gets a 32-bit shim. The
+# first version of the stripping preloaded the 64-bit build shim alone, and a
+# 32-bit child got "wrong ELF class" and no shim at all. The heavy libraries
+# are found the same way: LD_LIBRARY_PATH carries both trees, and ld.so passes
+# over the one of the other width.
+#
 # Launchers can be passed directly: they are in hidden_apps, so the panel is not
 # drawn on the launcher itself, and the game it starts inherits the environment.
 
@@ -55,7 +65,17 @@ done
 IFS=$old_ifs
 set +f
 
-LD_LIBRARY_PATH="$root/build/gl${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-LD_PRELOAD="$shim${others:+:$others}" \
+preload="$root/build/dev-gl-preload"
+mkdir -p "$preload"
+ln -sfn "$root/build/gl" "$preload/lib"
+if [ -f "$root/build32/gl/libvocem_gl_shim.so" ]; then
+    ln -sfn "$root/build32/gl" "$preload/lib32"
+else
+    ln -sfn /usr/lib32 "$preload/lib32"
+fi
+
+# Single quotes: `$LIB` is ld.so's to expand, per process, not the shell's.
+LD_LIBRARY_PATH="$root/build/gl:$root/build32/gl${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+LD_PRELOAD="$preload/"'$LIB'"/libvocem_gl_shim.so${others:+:$others}" \
 VOCEM_DEBUG="${VOCEM_DEBUG:-1}" \
 exec "$@"

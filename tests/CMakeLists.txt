@@ -1574,7 +1574,8 @@ vocem_m32_twin_run(gl_capture_pack_buffer TARGET gl_capture_pack_buffer
 # was first and took every hook, and the build tree's shim was never called
 # (dev_run_gl.cmake).
 vocem_test(which_shim LINK ${CMAKE_DL_LIBS} NO_TEST)
-vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>")
+vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>"
+    "-DPROBE32=$<$<TARGET_EXISTS:vocem_which_shim32>:$<TARGET_FILE:vocem_which_shim32>>")
 
 # ---- 0.1.11 daemon lane ----
 # Who the Flatpak bridge serves the voice channel to: a sandbox's own
@@ -1758,3 +1759,7 @@ vocem_test_run(vk_present_alternate_queue TARGET vk_present_draw
     SKIP TIMEOUT 120)
 vocem_m32_twin_run(vk_present_alternate_queue TARGET vk_present_alternate_queue
     ENV ${VOCEM_VK_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_VK_SCENARIO=alternate-queue")
+
+# scripts/dev-run-gl.sh for a 32-bit child: which_shim built -m32, run through
+# the script, must be answered by a 32-bit shim (dev_run_gl.cmake, PROBE32).
+vocem_m32_twin(which_shim)
