@@ -45,8 +45,29 @@
 //   * "cannot tell" is not "hostile". Where neither file can be read -- a
 //     container with /proc restricted -- the caller is told the answer is unknown
 //     and says so out loud, rather than treating every peer as an impostor. The
-//     same holds for the process: when no process holding the socket can be
-//     found, or its root cannot be read, the caller says so and goes on.
+//     same holds for the process when /proc cannot be listed at all, when the
+//     holder's root cannot be read, and when no process holds the socket while
+//     every process of this user's could be looked into (a daemon in a pid
+//     namespace of its own sees none of the host's): the caller says so and
+//     goes on.
+//
+// One "cannot tell" is not that, and it was treated as if it were until the
+// second fix round of 0.1.11: the row says the socket is this user's, no
+// process the scan could look into holds it, and some of this user's
+// processes could NOT be looked into. A user's own /proc hides nothing from
+// the user -- hidepid hides other users' processes -- so a process of ours
+// that cannot be looked into made itself so: prctl(PR_SET_DUMPABLE, 0) gives
+// its /proc/<pid> to global root, which a Flatpak's user namespace does not
+// map, and its descriptors and root are closed to us. Measured: the review's
+// refutation added only that call to tests/daemon_peer_sandbox.cpp's squatter
+// and it was sent AUTHENTICATE with the token, because the scan found no
+// holder and the caller "continued without the sandbox check". Such a peer is
+// PeerPlace::Hidden now and refused. What it costs: this user's processes
+// that are closed to the daemon for reasons of their own count too -- four on
+// this machine: (sd-pam), kwin_wayland (it holds capabilities), the polkit
+// agent and a setuid fusermount3 -- so a legitimate listener the scan cannot
+// see would be refused as well; the live Discord's holder is an ordinary
+// dumpable process of this user's, which the scan finds (measured).
 
 #ifndef VOCEM_PEER_IDENTITY_H
 #define VOCEM_PEER_IDENTITY_H
@@ -168,15 +189,22 @@ inline bool is_discord_flatpak(const std::string& id) {
 
 // What holds the other end of the connection.
 enum class PeerPlace {
-    Unknown,  // no process holding the socket could be found, or read
+    Unknown,  // /proc could not be listed, the holder's root could not be read,
+              // or no process holds the socket and none of ours is hidden
     Host,     // a process with no /.flatpak-info at its root
     Flatpak,  // a process in a Flatpak sandbox; `app_id` says whose
+    Hidden,   // no process we can look into holds it, and `hidden` of this
+              // user's processes cannot be looked into: one of them may
 };
 
 struct PeerProcess {
     PeerPlace place = PeerPlace::Unknown;
     long pid = -1;
     std::string app_id;
+    // For Hidden: how many of this user's processes the scan could not look
+    // into, and the first few of their pids, for the log.
+    int hidden = 0;
+    std::string hidden_pids;
 };
 
 namespace detail {
@@ -220,6 +248,27 @@ inline int flatpak_info_name(const std::string& proc, long pid, std::string& id)
     return 1;
 }
 
+// The real uid on the `Uid:` line of /proc/<pid>/status, which stays
+// readable when the process is not dumpable; -1 when it cannot be read.
+inline long status_real_uid(const std::string& base) {
+    std::FILE* file = std::fopen((base + "/status").c_str(), "re");
+    if (!file) {
+        return -1;
+    }
+    char line[256];
+    long uid = -1;
+    while (std::fgets(line, sizeof(line), file)) {
+        if (std::strncmp(line, "Uid:", 4) == 0) {
+            if (std::sscanf(line + 4, "%ld", &uid) != 1) {
+                uid = -1;
+            }
+            break;
+        }
+    }
+    std::fclose(file);
+    return uid;
+}
+
 inline bool all_digits(const char* name) {
     if (!*name) {
         return false;
@@ -243,6 +292,13 @@ inline bool all_digits(const char* name) {
 // Flatpak that is not Discord's over a Discord one, and either over a host
 // process, because the question is whether the token may go there. Once per
 // connection, never per message.
+//
+// When no holder is found, the processes that were closed to the scan are
+// counted: this user's entries whose fd directory would not open, and the
+// entries owned by somebody else (root, for an undumpable process) whose
+// status names this user as the real uid -- a second pass, run only then.
+// Any of those could be the holder, so the answer is Hidden; with none of
+// them it is Unknown (see the header).
 inline PeerProcess socket_process(unsigned long inode, const char* proc = "/proc") {
     PeerProcess found;
     if (inode == 0) {
@@ -260,6 +316,12 @@ inline PeerProcess socket_process(unsigned long inode, const char* proc = "/proc
         return found;
     }
     int rank = -1;  // 0 host, 1 unreadable, 2 Discord's Flatpak, 3 any other Flatpak
+    const auto note_hidden = [&found](const char* pid) {
+        if (found.hidden++ < 4) {
+            found.hidden_pids += found.hidden_pids.empty() ? "" : ", ";
+            found.hidden_pids += pid;
+        }
+    };
     while (const dirent* entry = ::readdir(processes)) {
         if (!detail::all_digits(entry->d_name)) {
             continue;
@@ -276,6 +338,9 @@ inline PeerProcess socket_process(unsigned long inode, const char* proc = "/proc
         const std::string fd_path = base + "/fd";
         DIR* descriptors = ::opendir(fd_path.c_str());
         if (!descriptors) {
+            if (errno != ENOENT) {  // not a process that simply exited
+                note_hidden(entry->d_name);
+            }
             continue;
         }
         const int fd_dir = ::dirfd(descriptors);
@@ -307,6 +372,23 @@ inline PeerProcess socket_process(unsigned long inode, const char* proc = "/proc
                                       : PeerPlace::Flatpak;
             found.app_id = info > 0 ? id : std::string();
         }
+    }
+    if (rank < 0) {
+        ::rewinddir(processes);
+        while (const dirent* entry = ::readdir(processes)) {
+            if (!detail::all_digits(entry->d_name)) {
+                continue;
+            }
+            const std::string base = root + "/" + entry->d_name;
+            struct stat owner {};
+            if (::stat(base.c_str(), &owner) != 0 || owner.st_uid == self_uid) {
+                continue;  // ours were counted above
+            }
+            if (detail::status_real_uid(base) == static_cast<long>(self_uid)) {
+                note_hidden(entry->d_name);
+            }
+        }
+        found.place = found.hidden > 0 ? PeerPlace::Hidden : PeerPlace::Unknown;
     }
     ::closedir(processes);
     return found;

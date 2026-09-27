@@ -329,11 +329,28 @@ int main() {
                     socket.close();
                     continue;
                 }
+                if (process.place == vocem::PeerPlace::Hidden) {
+                    // The socket is this user's and no process the daemon can
+                    // look into holds it, while some of this user's cannot be
+                    // looked into: a user's own /proc hides nothing from the
+                    // user, so the listener made itself unseeable
+                    // (prctl(PR_SET_DUMPABLE, 0) was enough to be sent the
+                    // token until the second fix round of 0.1.11). Refused.
+                    LOG("refusing port %u: the socket listening there is this user's, but no "
+                        "process this daemon can look into holds it, and %d of this user's "
+                        "processes are closed to it (pid %s%s) -- not sending the Discord token "
+                        "to a listener that cannot be seen",
+                        port, process.hidden, process.hidden_pids.c_str(),
+                        process.hidden > 4 ? ", ..." : "");
+                    socket.close();
+                    continue;
+                }
                 if (process.place == vocem::PeerPlace::Unknown) {
-                    // The same rule as above, one question further: no process
-                    // holding the socket could be found, or its root could not
-                    // be read, which is a /proc this daemon cannot see into and
-                    // not evidence of anything. Said, every time.
+                    // The same rule as above, one question further: /proc could
+                    // not be listed, the holder's root could not be read, or no
+                    // process holds the socket while every process of this
+                    // user's could be looked into -- a /proc this daemon cannot
+                    // see all of, not evidence of anything. Said, every time.
                     LOG("could not establish which process listens on port %u%s; continuing "
                         "without the sandbox check",
                         port, process.pid > 0 ? " (its root cannot be read)" : "");

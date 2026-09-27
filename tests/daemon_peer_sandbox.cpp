@@ -26,12 +26,20 @@
 // Named org.evil.Squatter it must not be sent AUTHENTICATE; named
 // com.discordapp.Discord it must. The whole test runs inside
 // ensure_private_shm(true), so the port and the segment are private.
+//
+// And once more as org.evil.Squatter after prctl(PR_SET_DUMPABLE, 0): the
+// refutation of the first fix showed that one call hid the holder from the
+// scan (its /proc/<pid> becomes root's), the daemon "continued without the
+// sandbox check", and the token went out. A socket of this user's that no
+// visible process holds, while some of this user's processes are hidden, is
+// refused now.
 
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -81,6 +89,15 @@ std::string read_file(const std::string& path) {
 // whatever the daemon sends for eight seconds. Prints one verdict line.
 int listener() {
     alarm(30);
+    // The one call the review's refutation added: a process that is not
+    // dumpable has a /proc/<pid> owned by root -- global root, which a
+    // Flatpak's user namespace does not map -- so its descriptors and its
+    // root are closed to the daemon, and the scan that looks for the holder
+    // of the socket does not find one. Chromium does this in its own children.
+    if (getenv("VOCEM_PEER_NODUMP") && prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) {
+        printf("PRCTL-FAILED\n");
+        return 1;
+    }
     const int server = vocem_test::listen_on(6463);
     if (server < 0) {
         printf("LISTEN-FAILED\n");
@@ -113,8 +130,9 @@ int listener() {
 // The listener under its own bwrap: a tmpfs root holding only what a program
 // needs, the test's own directory, and a /.flatpak-info naming `app_id`. The
 // network is NOT unshared: it is the daemon's, as a Flatpak's is the host's.
-pid_t start_listener(const std::string& base, const char* app_id, int* out_fd) {
-    const std::string info = base + "/flatpak-info-" + app_id;
+pid_t start_listener(const std::string& base, const char* label, const char* app_id, bool nodump,
+                     int* out_fd) {
+    const std::string info = base + "/flatpak-info-" + label;
     write_file(info, std::string("[Application]\nname=") + app_id + "\nruntime=runtime/x/y/z\n");
     char self[4096];
     const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
@@ -134,6 +152,10 @@ pid_t start_listener(const std::string& base, const char* app_id, int* out_fd) {
         close(pipe_fds[0]);
         dup2(pipe_fds[1], 1);
         close(pipe_fds[1]);
+        // bwrap passes the environment through to the listener.
+        if (nodump) {
+            setenv("VOCEM_PEER_NODUMP", "1", 1);
+        }
         execlp("bwrap", "bwrap", "--unshare-user", "--unshare-pid", "--die-with-parent",
                "--tmpfs", "/", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib",
                "--symlink", "usr/lib", "/lib64", "--symlink", "usr/bin", "/bin", "--ro-bind",
@@ -201,11 +223,12 @@ void stop(pid_t pid) {
     waitpid(pid, nullptr, 0);
 }
 
-// One listener, one daemon; what the listener was sent.
-std::string scenario(const char* daemon_path, const std::string& base, const char* app_id,
-                     std::string* daemon_log) {
+// One listener, one daemon; what the listener was sent. `label` names the
+// scenario's files; `nodump` makes the listener undumpable.
+std::string scenario(const char* daemon_path, const std::string& base, const char* label,
+                     const char* app_id, bool nodump, std::string* daemon_log) {
     int from_listener = -1;
-    const pid_t listener_pid = start_listener(base, app_id, &from_listener);
+    const pid_t listener_pid = start_listener(base, label, app_id, nodump, &from_listener);
     if (listener_pid < 0) {
         return "no listener";
     }
@@ -214,7 +237,7 @@ std::string scenario(const char* daemon_path, const std::string& base, const cha
         stop(listener_pid);
         return "listener did not start: '" + ready + "'";
     }
-    const std::string log = base + "/daemon-" + app_id + ".log";
+    const std::string log = base + "/daemon-" + label + ".log";
     const pid_t daemon_pid = start_daemon(daemon_path, base, log);
     const std::string verdict = line_from(from_listener, 15.0);
     stop(daemon_pid);
@@ -269,18 +292,30 @@ int main() {
     write_file(base + "/config/vocem/config.ini", "");
 
     std::string log;
-    const std::string squatter = scenario(daemon_path, base, "org.evil.Squatter", &log);
+    const std::string squatter = scenario(daemon_path, base, "squatter", "org.evil.Squatter", false, &log);
     printf("--  a listener in the sandbox of org.evil.Squatter was sent: %s\n", squatter.c_str());
     check(squatter == "NOTHING" || squatter == "NO-CONNECTION",
           "a listener in a non-Discord Flatpak sandbox is not sent AUTHENTICATE");
     check(log.find("org.evil.Squatter") != std::string::npos,
           "and the daemon's log names the sandbox it refused");
 
-    const std::string discord = scenario(daemon_path, base, "com.discordapp.Discord", &log);
+    const std::string discord = scenario(daemon_path, base, "discord", "com.discordapp.Discord", false, &log);
     printf("--  a listener in the sandbox of com.discordapp.Discord was sent: %s\n",
            discord.c_str());
     check(discord == "AUTHENTICATE with-token",
           "the same listener in Discord's own Flatpak is sent AUTHENTICATE with the token");
+
+    // The squatter again, after prctl(PR_SET_DUMPABLE, 0). Its /proc entry is
+    // root's now, so no process the daemon can look into holds the socket
+    // whose row says it is this user's -- which a user's own /proc never
+    // hides, so unseen is made unseeable, and that is refused.
+    const std::string hidden = scenario(daemon_path, base, "nodump", "org.evil.Squatter", true, &log);
+    printf("--  an undumpable listener in the sandbox of org.evil.Squatter was sent: %s\n",
+           hidden.c_str());
+    check(hidden == "NOTHING" || hidden == "NO-CONNECTION",
+          "a listener that made itself undumpable is not sent AUTHENTICATE");
+    check(log.find("refusing port 6463") != std::string::npos,
+          "and the daemon's log says it refused the port");
 
     (void)!system(("rm -rf '" + base + "'").c_str());
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
