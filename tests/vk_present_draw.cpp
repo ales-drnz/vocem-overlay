@@ -558,6 +558,63 @@ unsigned long long handle_value(Handle handle) {
     return (unsigned long long)handle;
 }
 
+// Which of this probe's presents last showed each swapchain image, by the
+// image's handle: 1 for the first present of the run, counting every present
+// the probe makes. The read-back asks it, because acquiring an image says only
+// that the presentation engine is done with it -- not when it was last
+// presented. With FIFO and three images the engine here can keep one image
+// for many frames while it hands the other two back in turn (measured,
+// NVIDIA under Xwayland: every frame after a hand-over's build went to images
+// 1 and 2, image 0 held since the last present before the renderer existed),
+// and the read-back then acquired that one: a frame presented before the overlay could draw,
+// read as the overlay failing to draw.
+struct ImagePresent {
+    unsigned long long image;
+    long long sequence;
+};
+ImagePresent g_image_presents[32];
+int g_image_present_count = 0;
+long long g_present_sequence = 0;
+
+void note_presented(VkImage image) {
+    ++g_present_sequence;
+    const unsigned long long key = handle_value(image);
+    for (int i = 0; i < g_image_present_count; ++i) {
+        if (g_image_presents[i].image == key) {
+            g_image_presents[i].sequence = g_present_sequence;
+            return;
+        }
+    }
+    if (g_image_present_count < 32) {
+        g_image_presents[g_image_present_count++] = {key, g_present_sequence};
+    }
+}
+
+// 0 for an image this probe never presented.
+long long last_presented(VkImage image) {
+    const unsigned long long key = handle_value(image);
+    for (int i = 0; i < g_image_present_count; ++i) {
+        if (g_image_presents[i].image == key) {
+            return g_image_presents[i].sequence;
+        }
+    }
+    return 0;
+}
+
+// A destroyed swapchain's images: a later swapchain may be handed the same
+// handles, and an image it never presented must not inherit their history.
+void forget_presented(const VkImage* images, uint32_t count) {
+    for (uint32_t k = 0; k < count; ++k) {
+        const unsigned long long key = handle_value(images[k]);
+        for (int i = 0; i < g_image_present_count; ++i) {
+            if (g_image_presents[i].image == key) {
+                g_image_presents[i] = g_image_presents[--g_image_present_count];
+                break;
+            }
+        }
+    }
+}
+
 // The semaphores this probe presents with in the in-flight scenario, so the
 // analysis below can tell "the overlay passed the frame through" from "the
 // overlay substituted its own".
@@ -1333,6 +1390,17 @@ int main() {
     VkQueue alternate_with = VK_NULL_HANDLE;
     // The image the last read_back acquired.
     uint32_t read_index = 0;
+    // The first present (note_presented's count) whose frame the scene holds
+    // the overlay to: an image the read-back acquires that was last presented
+    // before it is given a frame first. 0 -- every presented frame counts --
+    // until a scene has waited for the layer to say its renderer is up, and
+    // from then on the second present after the batch the line was found
+    // after: the line comes from the post-present phase of that batch's last
+    // present at the latest, and the first frame a new ImGui context draws is
+    // empty while it sizes its window (measured: 0 vertices on that frame
+    // after every build).
+    long long drawn_from = 0;
+    const auto overlay_from_next_frames = [&]() { drawn_from = g_present_sequence + 2; };
 
     VkExtent2D extent = caps.currentExtent;
     if (extent.width == 0xFFFFFFFFu) {
@@ -1436,6 +1504,52 @@ int main() {
     whole.levelCount = 1;
     whole.layerCount = 1;
 
+    // One frame into an image already acquired: cleared, handed to the
+    // present, the queue drained after it. Shared by the frame loop and by the
+    // read-back, which gives a frame to an image it acquired too stale to read.
+    const auto paint_and_present = [&](VkSwapchainKHR chain, VkImage* chain_images,
+                                       uint32_t index) -> VkResult {
+        vk.vkResetCommandBuffer(cmd, 0);
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vk.vkBeginCommandBuffer(cmd, &begin);
+        // UNDEFINED as the old layout: the previous contents are of no
+        // interest and discarding them is what a game clearing its frame does.
+        image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+        vk.vkCmdClearColorImage(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                &grey, 1, &whole);
+        image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+        vk.vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+        vk.vkQueueWaitIdle(queue);
+
+        // The call this whole file exists for: the layer's hook draws here.
+        VkPresentInfoKHR present{};
+        present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present.swapchainCount = 1;
+        present.pSwapchains = &chain;
+        present.pImageIndices = &index;
+        const long long before = now_ns();
+        const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
+        const long long after = now_ns();
+        if (g_present_count < 2048) {
+            g_presents[g_present_count++] = {before, after, 0};
+        }
+        note_presented(chain_images[index]);
+        if (index < kMaxSwapchainImages) {
+            image_queue[index] = queue == queue_alternate ? 1 : 0;
+        }
+        vk.vkQueueWaitIdle(queue);
+        return presented;
+    };
     // ---- The frames --------------------------------------------------------
     // 45 of them, and at least a second's worth (see below): the overlay skips
     // its first frames while ImGui sizes itself, and the first atlas is built
@@ -1456,49 +1570,11 @@ int main() {
             }
             vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
             vk.vkResetFences(device, 1, &fence);
-
-            vk.vkResetCommandBuffer(cmd, 0);
-            VkCommandBufferBeginInfo begin{};
-            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            vk.vkBeginCommandBuffer(cmd, &begin);
-            // UNDEFINED as the old layout: the previous contents are of no
-            // interest and discarding them is what a game clearing its frame does.
-            image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_UNDEFINED,
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
-            vk.vkCmdClearColorImage(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                    &grey, 1, &whole);
-            image_barrier(cmd, chain_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
-            vk.vkEndCommandBuffer(cmd);
-
-            VkSubmitInfo submit{};
-            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &cmd;
-            vk.vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
-            vk.vkQueueWaitIdle(queue);
-
-            // The call this whole file exists for: the layer's hook draws here.
-            VkPresentInfoKHR present{};
-            present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-            present.swapchainCount = 1;
-            present.pSwapchains = &chain;
-            present.pImageIndices = &index;
-            const long long before = now_ns();
-            const VkResult presented = vk.vkQueuePresentKHR(queue, &present);
-            const long long after = now_ns();
-            if (g_present_count < 2048) {
-                g_presents[g_present_count++] = {before, after, 0};
-            }
-            if (index < kMaxSwapchainImages) {
-                image_queue[index] = queue == queue_alternate ? 1 : 0;
-            }
+            const VkResult presented = paint_and_present(chain, chain_images, index);
             if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
                 printf("FAIL vkQueuePresentKHR returned %d on frame %d\n", (int)presented, frame);
                 return false;
             }
-            vk.vkQueueWaitIdle(queue);
             usleep(4000);
         }
         return true;
@@ -1609,6 +1685,7 @@ int main() {
             if (g_present_count < 2048) {
                 g_presents[g_present_count++] = {before, after, 0};
             }
+            note_presented(chain_images[index]);
             if (index < kMaxSwapchainImages) {
                 image_queue[index] = frame_queue == queue_alternate ? 1 : 0;
             }
@@ -1644,17 +1721,46 @@ int main() {
         foreign = 0;
         // Acquired rather than grabbed: once acquire hands an image back it is ours
         // again and the presentation engine is done with it, so the read is not a
-        // race. Every image in the swapchain has carried the overlay by now -- 45
-        // frames over a handful of images -- so whichever comes back is a presented,
-        // overlaid frame.
+        // race. But acquire says nothing about WHEN the image was last presented:
+        // this used to say that every image had carried the overlay by then, "45
+        // frames over a handful of images", and the engine is free to keep one
+        // image back while it cycles the others. After a hand-over the frames
+        // after the build all went to images 1 and 2 and the read-back got image
+        // 0, held since the last frame before the new renderer existed: 0
+        // foreign pixels, 6 runs in 75 of the hand-over scenes, while the layer
+        // had drawn into every one of the owner's presents after "backend
+        // ready" (instrumented, 10 runs, 0 missed). An image last
+        // presented before `drawn_from` -- or never -- is given a frame first and
+        // the acquire asked again; each such frame makes one more image current,
+        // so the swapchain's size bounds it.
         uint32_t index = 0;
-        if (vk.vkAcquireNextImageKHR(device, chain, UINT64_MAX, VK_NULL_HANDLE, fence, &index) !=
-            VK_SUCCESS) {
-            printf("FAIL could not acquire an image to read back\n");
-            return false;
+        for (uint32_t given = 0;; ++given) {
+            if (vk.vkAcquireNextImageKHR(device, chain, UINT64_MAX, VK_NULL_HANDLE, fence,
+                                         &index) != VK_SUCCESS) {
+                printf("FAIL could not acquire an image to read back\n");
+                return false;
+            }
+            vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+            vk.vkResetFences(device, 1, &fence);
+            const long long last = last_presented(chain_images[index]);
+            if (last > 0 && last >= drawn_from) {
+                break;
+            }
+            if (given >= kMaxSwapchainImages) {
+                printf("FAIL no image of the swapchain was presented after the scene's mark, "
+                       "%u frames given\n", given);
+                return false;
+            }
+            printf("     the read-back acquired image %u, %s: given a frame first\n", index,
+                   last == 0 ? "never presented"
+                             : "last presented before the overlay could draw it");
+            const VkResult presented = paint_and_present(chain, chain_images, index);
+            if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR) {
+                printf("FAIL vkQueuePresentKHR returned %d on the read-back's frame\n",
+                       (int)presented);
+                return false;
+            }
         }
-        vk.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-        vk.vkResetFences(device, 1, &fence);
         read_index = index;
 
         const VkDeviceSize bytes = (VkDeviceSize)extent.width * extent.height * 4;
@@ -1749,6 +1855,7 @@ int main() {
             present.pImageIndices = &index;
             vk.vkQueuePresentKHR(queue, &present);
             vk.vkQueueWaitIdle(queue);
+            note_presented(chain_images[index]);
             if (index < kMaxSwapchainImages) {
                 image_queue[index] = queue == queue_alternate ? 1 : 0;
             }
@@ -1852,6 +1959,7 @@ int main() {
                 return 1;
             }
             if (lines_containing(layer_log, ready_line) > 0) {
+                overlay_from_next_frames();
                 if (!run_frames(swapchain, images, 10)) {
                     return 1;
                 }
@@ -2018,6 +2126,7 @@ int main() {
             }
             if (lines_containing(layer_log, "backend ready") > ready_before) {
                 moved_after = now_ns() - alone_from;
+                overlay_from_next_frames();
                 if (!run_frames(swapchain_b, images_b, 10)) {
                     return 1;
                 }
@@ -2041,6 +2150,7 @@ int main() {
                 g_destroys[g_destroy_count++] = {destroy_from, now_ns(), 0};
             }
         }
+        forget_presented(images_b, count_b);
         vk.vkDestroyFence(device_b, fence_b, nullptr);
         vk.vkDestroyCommandPool(device_b, pool_b, nullptr);
         if (!second_queue) {
@@ -2061,6 +2171,7 @@ int main() {
                 return 1;
             }
             if (lines_containing(layer_log, "backend ready") > ready_again) {
+                overlay_from_next_frames();
                 if (!run_frames(swapchain, images, 10)) {
                     return 1;
                 }
@@ -2154,6 +2265,7 @@ int main() {
             present.pImageIndices = &read_index;
             vk.vkQueuePresentKHR(next, &present);
             vk.vkQueueWaitIdle(next);
+            note_presented(images[read_index]);
             image_queue[read_index] = next == queue_alternate ? 1 : 0;
         }
     }
@@ -2177,6 +2289,7 @@ int main() {
             }
         }
         swapchain = replacement;
+        forget_presented(images, image_count);
         image_count = 0;
         vk.vkGetSwapchainImagesKHR(device, swapchain, &image_count, nullptr);
         if (image_count > kMaxSwapchainImages) {
@@ -2259,6 +2372,7 @@ int main() {
             }
             if (after_ready == 0 && lines_containing(layer_log, "backend ready") >= 2) {
                 after_ready = now_ns() + 500000000LL;
+                overlay_from_next_frames();
             }
         }
     }
