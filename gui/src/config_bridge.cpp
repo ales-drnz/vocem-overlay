@@ -309,6 +309,7 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
     vocem::Config written;
     const bool saved = vocem::Config::write_switch(which, config_.*which, &written);
     if (reportSave(saved)) {
+        const vocem::Config followed = saved_;
         saved_ = written;
         saved_.start_at_login = config_.start_at_login;
         // This write IS the file moving under the window, and `written` is the
@@ -323,16 +324,16 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
         // just wrote, which changes nothing, and a write that lands between
         // this save and that sweep is read rather than adopted unread.
         //
-        // With an edit waiting for Apply the window keeps its own copy, exactly
-        // as reloadIfMoved decides it: Apply means "what the window shows".
+        // With an edit waiting for Apply the window keeps its own edits, and
+        // only those, exactly as reloadIfMoved decides it: every key it did not
+        // change follows the file (Config::merged), so neither the window nor
+        // the next Apply carries a value the file no longer has.
         // start_at_login is read from the autostart entry, not from the file
         // (which carries the key and is not believed) -- so it is carried
         // across rather than taken from the read.
-        if (!pending_) {
-            const bool login = config_.start_at_login;
-            config_ = written;
-            config_.start_at_login = login;
-        }
+        const bool login = config_.start_at_login;
+        config_ = pending_ ? vocem::Config::merged(followed, config_, written) : written;
+        config_.start_at_login = login;
     } else {
         // The write failed and the switch in the window has already moved. Left
         // alone, the window shows "on" against a file that says "off" for the
@@ -352,9 +353,22 @@ void ConfigBridge::apply() {
     if (!pending_) {
         return;
     }
-    if (!reportSave(config_.save())) {
+    // What the window changed, on top of the file as it stands: config_ is
+    // the window's copy, saved_ the file it last followed, and a key the
+    // window did not change takes the file's value now (Config::merged).
+    // Saving config_ whole wrote back every key edited outside the window
+    // since it last followed the file -- a hand-written flatpak_apps, which
+    // the window has no control for, went back to its startup value.
+    vocem::Config fresh;
+    fresh.load();
+    vocem::Config written = vocem::Config::merged(saved_, config_, fresh);
+    // Not believed from the file (it is read from the autostart entry): the
+    // window's value is the intent, carried out below whatever saved_ says.
+    written.start_at_login = config_.start_at_login;
+    if (!reportSave(written.save())) {
         return;  // still pending: the button stays live and the message says why
     }
+    config_ = written;
     saved_ = config_;
     disk_mtime_ = vocem::Config::mtime();
     // The autostart entry is a file rather than a line in the settings, so it is
@@ -405,14 +419,15 @@ void ConfigBridge::reloadIfMoved() {
     vocem::Config fresh;
     fresh.load();
     fresh.start_at_login = vocem::autostart_enabled();
-    saved_ = fresh;
-    // An edit waiting for Apply keeps the window's copy: Apply means "what the
-    // window shows", and a reload underneath it would take that away. With
+    // An edit waiting for Apply keeps the window's edits: Apply means "what the
+    // window shows", and a reload underneath it would take them away. Every
+    // key the window did not change follows the file even then
+    // (Config::merged): the window kept its whole copy here once, and the next
+    // Apply wrote the keys edited outside back to their old values. With
     // nothing pending the window follows the file, as the game does.
-    if (!pending_) {
-        config_ = fresh;
-        emit configChanged();
-    }
+    config_ = pending_ ? vocem::Config::merged(saved_, config_, fresh) : fresh;
+    saved_ = fresh;
+    emit configChanged();
 }
 
 void ConfigBridge::setNumber(const char* key, float vocem::Config::*member, qreal value) {

@@ -1683,3 +1683,20 @@ vocem_test_run(vk_present_second_queue TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-queue" SKIP TIMEOUT 120)
 vocem_m32_twin_run(vk_present_second_queue TARGET vk_present_second_queue
     ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-queue")
+
+# ---- 0.1.11 round 2 gui lane ----
+if(TARGET vocem-config)
+    find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Qml)
+    find_package(Fontconfig QUIET)
+
+    # Apply writes the keys the window changed on top of the file as it stands.
+    # It saved the window's whole copy, which does not follow the file while an
+    # edit is pending, so a hand-written flatpak_apps -- consent the window has
+    # no control for -- went back to its startup value on the next Apply.
+    vocem_test(config_apply_keeps_outside
+        SOURCES config_apply_keeps_outside.cpp "${CMAKE_SOURCE_DIR}/gui/src/config_bridge.cpp"
+        INCLUDE "${CMAKE_SOURCE_DIR}/gui/src"
+        LINK vocem_common Qt6::Gui Qt6::Qml Fontconfig::Fontconfig
+        DEFINES VOCEM_VERSION="${PROJECT_VERSION}")
+    set_target_properties(vocem_config_apply_keeps_outside PROPERTIES AUTOMOC ON)
+endif()

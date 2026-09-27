@@ -500,97 +500,96 @@ struct Config {
                 continue;
             }
             *equals = '\0';
-            const char* key = trim(text);
-            const char* value = trim(equals + 1);
-
-            // The numbers, by the table above.
-            {
-                size_t count = 0;
-                const Number* table = numbers(count);
-                bool numeric = false;
-                for (size_t i = 0; i < count && !numeric; ++i) {
-                    if (std::strcmp(key, table[i].key) == 0) {
-                        this->*(table[i].member) =
-                            clamp(to_number(value), table[i].low, table[i].high);
-                        numeric = true;
-                    }
-                }
-                if (numeric) {
-                    continue;
-                }
-            }
-
-            if (std::strcmp(key, "panel_colour") == 0) {
-                panel_colour = to_colour(value, panel_colour);
-            } else if (std::strcmp(key, "notification_colour") == 0) {
-                notification_colour = to_colour(value, notification_colour);
-            } else if (std::strcmp(key, "text_idle_colour") == 0) {
-                text_idle_colour = to_colour_or_auto(value, text_idle_colour);
-            } else if (std::strcmp(key, "text_speaking_colour") == 0) {
-                text_speaking_colour = to_colour_or_auto(value, text_speaking_colour);
-            } else if (std::strcmp(key, "notification_text_colour") == 0) {
-                notification_text_colour = to_colour_or_auto(value, notification_text_colour);
-            } else if (std::strcmp(key, "speaking_colour") == 0) {
-                speaking_colour = to_colour(value, speaking_colour);
-            } else if (std::strcmp(key, "accent_background") == 0) {
-                // Retired, and deliberately not migrated. It was a switch between
-                // two fixed colours, and both boxes now have a colour of their own;
-                // carrying its "off" value across would start people on the
-                // near-black without their having chosen it, in a version where the
-                // choice is finally visible. Anyone who wants that colour can pick
-                // it, and the default stays what the Discord client looks like.
-            } else if (std::strcmp(key, "panel_layout") == 0) {
-                panel_layout = to_layout(value, panel_layout);
-            } else if (std::strcmp(key, "panel_box") == 0) {
-                panel_box = to_box(value, panel_box);
-            } else if (std::strcmp(key, "keep_running") == 0) {
-                keep_running = as_bool(value);
-            } else if (std::strcmp(key, "start_at_login") == 0) {
-                start_at_login = as_bool(value);
-            } else if (std::strcmp(key, "tray_voice_icon") == 0) {
-                tray_voice_icon = as_bool(value);
-            } else if (std::strcmp(key, "text_shadow") == 0) {
-                text_shadow = as_bool(value);
-            } else if (std::strcmp(key, "show_channel_name") == 0) {
-                show_channel_name = as_bool(value);
-            } else if (std::strcmp(key, "notifications_enabled") == 0) {
-                notifications_enabled = as_bool(value);
-            } else if (std::strcmp(key, "notification_corner") == 0) {
-                // A number 0-3, or the current value kept: atoi() answers 0 for
-                // a word, and 0 is top-left, so a typo used to move the box to
-                // a corner nobody chose -- unlike panel_layout and panel_box,
-                // whose readers keep the value on a typo. Same rule now.
-                notification_corner = to_corner(value, notification_corner);
-            } else if (std::strcmp(key, "font_family") == 0) {
-                font_family = value;
-            } else if (std::strcmp(key, "font_path") == 0) {
-                font_path = value;
-            } else if (std::strcmp(key, "font_path_strong") == 0) {
-                font_path_strong = value;
-            } else if (std::strcmp(key, "only_speaking") == 0) {
-                only_speaking = as_bool(value);
-            } else if (std::strcmp(key, "hide_self") == 0) {
-                hide_self = as_bool(value);
-            } else if (std::strcmp(key, "show_muted_state") == 0) {
-                show_muted_state = as_bool(value);
-            } else if (std::strcmp(key, "panel_enabled") == 0) {
-                panel_enabled = as_bool(value);
-            } else if (std::strcmp(key, "enabled") == 0) {
-                enabled = as_bool(value);
-            } else if (std::strcmp(key, "shown_apps") == 0) {
-                shown_apps = value;
-            } else if (std::strcmp(key, "hidden_apps") == 0 ||
-                       std::strcmp(key, "gl_blacklist") == 0) {
-                hidden_apps = value;
-            } else if (std::strcmp(key, "flatpak_apps") == 0) {
-                flatpak_apps = value;
-            } else if (std::strcmp(key, "preview_display_panel") == 0) {
-                preview_display_panel = value;
-            } else if (std::strcmp(key, "preview_display_notification") == 0) {
-                preview_display_notification = value;
-            }
+            assign(trim(text), trim(equals + 1));
         }
         std::fclose(file);
+    }
+
+    // One setting, from the text a file line carries for it (already trimmed).
+    // An unknown key changes nothing. load() reads every line through this, and
+    // merged() puts one key of another copy through it.
+    void assign(const char* key, const char* value) {
+        // The numbers, by the table above.
+        {
+            size_t count = 0;
+            const Number* table = numbers(count);
+            for (size_t i = 0; i < count; ++i) {
+                if (std::strcmp(key, table[i].key) == 0) {
+                    this->*(table[i].member) =
+                        clamp(to_number(value), table[i].low, table[i].high);
+                    return;
+                }
+            }
+        }
+        if (std::strcmp(key, "panel_colour") == 0) {
+            panel_colour = to_colour(value, panel_colour);
+        } else if (std::strcmp(key, "notification_colour") == 0) {
+            notification_colour = to_colour(value, notification_colour);
+        } else if (std::strcmp(key, "text_idle_colour") == 0) {
+            text_idle_colour = to_colour_or_auto(value, text_idle_colour);
+        } else if (std::strcmp(key, "text_speaking_colour") == 0) {
+            text_speaking_colour = to_colour_or_auto(value, text_speaking_colour);
+        } else if (std::strcmp(key, "notification_text_colour") == 0) {
+            notification_text_colour = to_colour_or_auto(value, notification_text_colour);
+        } else if (std::strcmp(key, "speaking_colour") == 0) {
+            speaking_colour = to_colour(value, speaking_colour);
+        } else if (std::strcmp(key, "accent_background") == 0) {
+            // Retired, and deliberately not migrated. It was a switch between
+            // two fixed colours, and both boxes now have a colour of their own;
+            // carrying its "off" value across would start people on the
+            // near-black without their having chosen it, in a version where the
+            // choice is finally visible. Anyone who wants that colour can pick
+            // it, and the default stays what the Discord client looks like.
+        } else if (std::strcmp(key, "panel_layout") == 0) {
+            panel_layout = to_layout(value, panel_layout);
+        } else if (std::strcmp(key, "panel_box") == 0) {
+            panel_box = to_box(value, panel_box);
+        } else if (std::strcmp(key, "keep_running") == 0) {
+            keep_running = as_bool(value);
+        } else if (std::strcmp(key, "start_at_login") == 0) {
+            start_at_login = as_bool(value);
+        } else if (std::strcmp(key, "tray_voice_icon") == 0) {
+            tray_voice_icon = as_bool(value);
+        } else if (std::strcmp(key, "text_shadow") == 0) {
+            text_shadow = as_bool(value);
+        } else if (std::strcmp(key, "show_channel_name") == 0) {
+            show_channel_name = as_bool(value);
+        } else if (std::strcmp(key, "notifications_enabled") == 0) {
+            notifications_enabled = as_bool(value);
+        } else if (std::strcmp(key, "notification_corner") == 0) {
+            // A number 0-3, or the current value kept: atoi() answers 0 for
+            // a word, and 0 is top-left, so a typo used to move the box to
+            // a corner nobody chose -- unlike panel_layout and panel_box,
+            // whose readers keep the value on a typo. Same rule now.
+            notification_corner = to_corner(value, notification_corner);
+        } else if (std::strcmp(key, "font_family") == 0) {
+            font_family = value;
+        } else if (std::strcmp(key, "font_path") == 0) {
+            font_path = value;
+        } else if (std::strcmp(key, "font_path_strong") == 0) {
+            font_path_strong = value;
+        } else if (std::strcmp(key, "only_speaking") == 0) {
+            only_speaking = as_bool(value);
+        } else if (std::strcmp(key, "hide_self") == 0) {
+            hide_self = as_bool(value);
+        } else if (std::strcmp(key, "show_muted_state") == 0) {
+            show_muted_state = as_bool(value);
+        } else if (std::strcmp(key, "panel_enabled") == 0) {
+            panel_enabled = as_bool(value);
+        } else if (std::strcmp(key, "enabled") == 0) {
+            enabled = as_bool(value);
+        } else if (std::strcmp(key, "shown_apps") == 0) {
+            shown_apps = value;
+        } else if (std::strcmp(key, "hidden_apps") == 0 ||
+                   std::strcmp(key, "gl_blacklist") == 0) {
+            hidden_apps = value;
+        } else if (std::strcmp(key, "flatpak_apps") == 0) {
+            flatpak_apps = value;
+        } else if (std::strcmp(key, "preview_display_panel") == 0) {
+            preview_display_panel = value;
+        } else if (std::strcmp(key, "preview_display_notification") == 0) {
+            preview_display_notification = value;
+        }
     }
 
     // One line of the file: the section it is written under when the file
@@ -652,6 +651,29 @@ struct Config {
             {"behaviour", "preview_display_panel", preview_display_panel},
             {"behaviour", "preview_display_notification", preview_display_notification},
         };
+    }
+
+    // The window's copy with the file brought in under it: `mine` is what the
+    // window shows, `base` is the file as it was when that copy last followed
+    // it, `disk` is the file now. A setting the window changed (its text in
+    // `mine` is not its text in `base`) keeps the window's value; every other
+    // one takes the file's. The window saves this on Apply rather than
+    // `mine`: `mine` does not follow the file while an edit waits for Apply,
+    // so saving it put back every key changed outside the window since then --
+    // flatpak_apps, which the README says to edit by hand and the window has
+    // no control for, among them. Compared as the text the file would carry,
+    // which is the precision a value has once written.
+    static Config merged(const Config& base, const Config& mine, const Config& disk) {
+        Config result = mine;
+        const std::vector<Entry> before = base.entries();
+        const std::vector<Entry> window = mine.entries();
+        const std::vector<Entry> now = disk.entries();
+        for (size_t i = 0; i < window.size(); ++i) {
+            if (window[i].value == before[i].value && now[i].value != window[i].value) {
+                result.assign(now[i].key, now[i].value.c_str());
+            }
+        }
+        return result;
     }
 
     // Only the GUI writes; the injected code never touches the file.
