@@ -959,7 +959,9 @@ public:
         // very change found it). The old context's GL objects cannot be deleted
         // from here -- it is not current -- so they are remembered with it and
         // deleted the next time it presents (move_away(), reclaim_left()).
-        if (backend_ready_) {
+        // A context the backend could not be made in holds the overlay the
+        // same way (fail_in_this_context), so it can be handed over too.
+        if (backend_ready_ || failed_) {
             switch (whose_present(egl, now)) {
                 case Present::Owner:
                     break;
@@ -1259,6 +1261,10 @@ public:
 
     static bool left_anywhere() { return __atomic_load_n(&g_left_backends, __ATOMIC_ACQUIRE) > 0; }
 
+    // Whether the backend has GL objects to delete (a context it could not be
+    // made in holds none). Under g_gl_lock.
+    bool backend_ready() const { return backend_ready_; }
+
     // Whether a backend was left in this very context (move_away). Under g_gl_lock.
     bool left_in(void* context, bool egl) const {
         for (const LeftBackend& left : left_) {
@@ -1307,9 +1313,11 @@ public:
         }
         if (current != foreign_said_) {
             foreign_said_ = current;
-            VOCEM_GLOG("not drawing in context %p: the backend does not live in it (it "
-                       "belongs to context %p, which presented %.1f s ago)", current, owner,
-                       now - owner_seen_);
+            VOCEM_GLOG(failed_ ? "not drawing in context %p: the overlay is held by context %p, "
+                                 "where it could not be made and which presented %.1f s ago"
+                               : "not drawing in context %p: the backend does not live in it (it "
+                                 "belongs to context %p, which presented %.1f s ago)",
+                       current, owner, now - owner_seen_);
         }
         return Present::Foreign;
     }
@@ -1487,8 +1495,7 @@ private:
 
         if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
             VOCEM_GLOG("ImGui OpenGL3 backend failed to initialise");
-            failed_ = true;
-            return false;
+            return fail_in_this_context(egl);
         }
         // Asked again after Init where the first ask found nothing: in a game
         // that never resolved a dispatcher of its own (this project's own GLX
@@ -1513,8 +1520,7 @@ private:
                 ImGui_ImplOpenGL3_Shutdown();
                 if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
                     VOCEM_GLOG("ImGui OpenGL3 backend failed to initialise");
-                    failed_ = true;
-                    return false;
+                    return fail_in_this_context(egl);
                 }
             }
         }
@@ -1540,8 +1546,7 @@ private:
             if (!ImGui_ImplOpenGL3_CreateDeviceObjects()) {
                 VOCEM_GLOG("ImGui OpenGL3 backend could not create its GL objects");
                 ImGui_ImplOpenGL3_Shutdown();
-                failed_ = true;
-                return false;
+                return fail_in_this_context(egl);
             }
         }
         // CreateDeviceObjects answers true whether or not its program linked
@@ -1552,8 +1557,7 @@ private:
             VOCEM_GLOG("not drawing in this context: the backend's shader program did not link "
                        "(ImGui's complaint is on stderr)");
             ImGui_ImplOpenGL3_Shutdown();
-            failed_ = true;
-            return false;
+            return fail_in_this_context(egl);
         }
         // Resolved once, beside the rest. Null only when no GL can be reached
         // at all (see GlAvatarProvider::resolve): under glvnd a context older
@@ -1612,6 +1616,23 @@ private:
         return data->shader_handle != 0 && linked != 0;
     }
 
+    // The backend could not be made in the context current now. The failure
+    // belongs to that context, and it is remembered WITH it: the context is
+    // taken as the owner, so the ways an owner is given up -- its teardown,
+    // the hand-over once it has been silent for kHandOverSeconds, the switch,
+    // the daemon stopping -- all clear the failure and let the next context
+    // try. The flag used to be set before any owner was remembered, and only
+    // those four clear it, the first two of them only for an owner: a splash
+    // or helper context whose program did not link took the overlay away from
+    // the whole process for good (tests/gl_failed_context.cpp: 0 backends and
+    // 0 overlay pixels in the context that came next, however long it
+    // presented). Asked every frame in the meantime is one flag.
+    bool fail_in_this_context(bool egl) {
+        failed_ = true;
+        remember_owner(egl);
+        return false;
+    }
+
     // Asked once, when the backend comes up, of the API the present arrived
     // through: which context is current right now is the one the backend's
     // objects were just created in.
@@ -1637,7 +1658,10 @@ private:
         __atomic_store_n(&g_owner_egl, egl ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_owner_context, context, __ATOMIC_RELEASE);
         owner_seen_ = vocem::monotonic_seconds();
-        VOCEM_GLOG("backend belongs to %s context %p", egl ? "EGL" : "GLX", context);
+        VOCEM_GLOG(failed_ ? "the overlay stays with %s context %p, where it could not be made, "
+                             "until that context is destroyed or falls silent"
+                           : "backend belongs to %s context %p",
+                   egl ? "EGL" : "GLX", context);
     }
 
     void forget_owner() {
@@ -2279,7 +2303,7 @@ VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
     // Not current here: made current for the teardown, on a pbuffer of its
     // own, and what was current put back when this scope ends (DyingGlxCurrent).
     std::optional<DyingGlxCurrent> made;
-    if (context && !gl_current) {
+    if (context && !gl_current && ((owner && overlay().backend_ready()) || left)) {
         made.emplace(display, context);
         gl_current = made->current();
     }
@@ -2332,7 +2356,10 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
     constexpr int kEglDraw = 0x3059;
     constexpr int kEglRead = 0x305A;
 
-    if (!display || !current_context || !current_surface || !make_current) {
+    // Nothing to delete -- the backend could not be made in this context --
+    // needs no context made current.
+    if (!display || !current_context || !current_surface || !make_current ||
+        !overlay().backend_ready()) {
         overlay().release(false);
         return;
     }

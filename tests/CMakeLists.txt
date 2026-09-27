@@ -1730,3 +1730,22 @@ vocem_test_run(gl_handover_worker_destroy TARGET gl_handover
     ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=worker-destroy" SKIP TIMEOUT 120)
 vocem_m32_twin_run(gl_handover_worker_destroy TARGET gl_handover_worker_destroy
     ENV ${VOCEM_GL_PROBE32_ENV} "VOCEM_GL_SCENARIO=worker-destroy")
+
+# A context whose backend program does not link (Mesa, a desktop context held
+# at 2.1 by MESA_GL_VERSION_OVERRIDE, so no GLSL 1.30), and then a context the
+# backend can live in (ES 2 on the same display): the failure used to be
+# remembered for the whole process (gl_failed_context.cpp). `silent`: F stops
+# presenting and G gets the overlay at the hand-over; `destroyed`: F is
+# destroyed and G gets it at once. Both widths.
+set(VOCEM_GL_MESA_EGL_ENV
+    "__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+    "LIBGL_ALWAYS_SOFTWARE=1" "MESA_GL_VERSION_OVERRIDE=2.1" "MESA_GLSL_VERSION_OVERRIDE=120")
+vocem_test(gl_failed_context LINK EGL GLESv2 rt
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=silent" SKIP)
+vocem_m32_twin(gl_failed_context
+    ENV ${VOCEM_GL_PROBE32_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=silent"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_test_run(gl_failed_context_destroyed TARGET gl_failed_context
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=destroyed" SKIP)
+vocem_m32_twin_run(gl_failed_context_destroyed TARGET gl_failed_context_destroyed
+    ENV ${VOCEM_GL_PROBE32_ENV} ${VOCEM_GL_MESA_EGL_ENV} "VOCEM_GL_SCENARIO=destroyed")
