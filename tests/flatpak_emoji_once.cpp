@@ -25,6 +25,7 @@
 
 #include <string>
 
+#include "fake_flatpak.h"
 #include "flatpak_bridge.h"
 #include "probe_alarm.h"
 #include "vocem/flatpak.h"
@@ -86,6 +87,14 @@ int main() {
     unsetenv("FLATPAK_ID");
     make_directories(root + "/config/vocem");
     write_file(root + "/config/vocem/config.ini", "flatpak_apps = org.example.Game\n");
+    // And running: a directory is served only while a process of its
+    // application is (flatpak_consent.cpp).
+    if (!vocem_test::fake_flatpak_available()) {
+        printf("skip bwrap is not installed, so no process can be put in a sandbox\n");
+        return 77;
+    }
+    vocem_test::ScopedFakeFlatpak game(root, "org.example.Game");
+    check(game.running(), "a process of org.example.Game is running in a sandbox");
 
     // A bank and its table, a megabyte of it: the size is not the point, the
     // count is.

@@ -1166,7 +1166,7 @@ vocem_test(flatpak_bridge
 # user's home reachable. Every name it opens down there is a symbolic link here.
 vocem_test(flatpak_bridge_hostile
     SOURCES flatpak_bridge_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
-    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 
 # One installed package, one answer to "which version is this?".
 #
@@ -1582,7 +1582,7 @@ vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>")
 # exported desktop entry that says Game, or the id listed in flatpak_apps.
 vocem_test(flatpak_consent
     SOURCES flatpak_consent.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
-    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 # A listener in a Flatpak sandbox that is not Discord's is not sent the token:
 # the peer socket is mapped to its process and that process's /.flatpak-info
 # read. The listener really is sandboxed -- a nested bwrap with its own user
@@ -1596,7 +1596,7 @@ endif()
 # FIFO, and only a regular file of the format's one size is a face.
 vocem_test(avatar_cache_hostile
     SOURCES avatar_cache_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
-    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 # A SIGTERM ends a daemon blocked inside a system call: the handler is installed
 # without SA_RESTART, so a blocked open() returns EINTR and the flag is read.
 if(TARGET vocemd)
@@ -1623,7 +1623,7 @@ vocem_test(flatpak_config_retry
 # asks again is not given sixteen megabytes again, on the daemon's main thread.
 vocem_test(flatpak_emoji_once
     SOURCES flatpak_emoji_once.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
-    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 # What the peer names reaches the daemon's log as one line of text: a refused
 # RPC command is logged through sanitise_text, like every other string from it.
 if(TARGET vocemd)
@@ -1683,3 +1683,12 @@ vocem_test_run(vk_present_second_queue TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=second-queue" SKIP TIMEOUT 120)
 vocem_m32_twin_run(vk_present_second_queue TARGET vk_present_second_queue
     ENV ${VOCEM_VK_PROBE32_ENV} "VOCEM_VK_SCENARIO=second-queue")
+
+# ---- 0.1.11 round 2 daemon lane ----
+# A segment the reader refuses (not this user's 0600 regular file) is not "no
+# daemon": the CLI says it was refused and why, once and under --watch.
+# Private /dev/shm; skips where bwrap is missing.
+if(TARGET vocem)
+    vocem_test(cli_refused_segment INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
+        ENV "VOCEM_CLI=$<TARGET_FILE:vocem>" TIMEOUT 60 SKIP)
+endif()

@@ -79,6 +79,20 @@ int main() {
     check(sanitise_text("") == "", "nothing in, nothing out");
     check(sanitise_text("\xE2\x81") == "\xE2\x81",
           "a truncated sequence is copied through, never read past");
+    // A lead byte whose continuation bytes are not continuation bytes. The
+    // decoder took the next bytes' low six bits whatever they were, so
+    // "\xC3\x1B" decoded to U+00DB, which is kept -- and both raw bytes went
+    // out, ESC included. main.cpp logs the /.flatpak-info name through here,
+    // and any bwrap can write that file: the second fix round's refutation
+    // put `org.evil\303\033[31mRED` into the daemon's log that way.
+    check(sanitise_text("org.evil\xC3\x1B[31mRED") == "org.evil\xC3[31mRED",
+          "a lead byte before a control byte is a stray byte, and the control goes");
+    check(sanitise_text("a\xE2\x80\x0A" "b") == "a\xE2\x80" "b",
+          "a three-byte sequence broken at its last byte keeps no newline");
+    check(sanitise_text("\xF0\x9F\x1B\x8E" "x").find('\x1B') == std::string::npos,
+          "nor does a four-byte one broken in the middle keep an ESC");
+    check(sanitise_text("\xC3\xAB\xF0\x9F\x8E\xAE") == "\xC3\xAB\xF0\x9F\x8E\xAE",
+          "while well-formed sequences are untouched");
 
     // --- what shape a message may have before it is parsed at all ---------
     //

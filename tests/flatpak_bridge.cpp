@@ -38,6 +38,7 @@
 #include <string>
 
 #include "probe_alarm.h"
+#include "fake_flatpak.h"
 #include "flatpak_bridge.h"
 #include "vocem/apps.h"
 #include "vocem/avatar_rgba.h"
@@ -225,6 +226,13 @@ int main() {
     const std::string config_ini =
         "[general]\nnotification_seconds = 11\nflatpak_apps = org.example.Game\n";
     write_file(config_home + "/vocem/config.ini", config_ini.data(), config_ini.size());
+    // And the application is running: a directory under $XDG_RUNTIME_DIR/app
+    // is served only while a process whose /.flatpak-info names its id is.
+    vocem_test::ScopedFakeFlatpak game(root, kServed);
+    if (!game.running()) {
+        printf("FAIL could not start a sandboxed process for %s\n", kServed);
+        return 1;
+    }
     make_directories(cache_home + "/vocem/avatars");
     unsigned char avatar[vocem::kAvatarRgbaBytes];
     fill_avatar(avatar);

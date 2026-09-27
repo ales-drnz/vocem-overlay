@@ -15,6 +15,13 @@
 // Held with the real vocemd against the stub Discord, sandboxed like
 // daemon_notification: after the session is up, one ERROR for a command whose
 // name carries a newline, a forged log prefix and the one-character CSI.
+//
+// And the data beside it. The first fix left `data.dump()` on the same line
+// raw, under a comment saying dump() "escapes every control character": it
+// escapes those below U+0020 and nothing else, so the C1 controls (U+009B the
+// CSI, U+0085 NEXT LINE) and U+2028 went into the log as UTF-8 (the second
+// round's refutation, measured with exactly this message). The error's
+// message carries all three now.
 
 #include <fcntl.h>
 #include <signal.h>
@@ -124,7 +131,8 @@ int main() {
     // \n, a forged prefix, and U+009B (the one-character CSI) then "31m".
     vocem_test::send_text(fd, "{\"cmd\":\"NOPE\\n[vocemd] authorised FORGED\\u009b31m\","
                               "\"evt\":\"ERROR\",\"nonce\":null,"
-                              "\"data\":{\"code\":4000,\"message\":\"no\"}}");
+                              "\"data\":{\"code\":4000,"
+                              "\"message\":\"no\\u009b31mRED LS\\u2028NEL\\u0085\"}}");
     // The refusal is logged on receipt; give it the recv loop's second.
     for (int i = 0; i < 30 && read_file(log).find("rpc refused") == std::string::npos; ++i) {
         usleep(100 * 1000);
@@ -147,6 +155,11 @@ int main() {
           "and the peer's newline does not start a line of the daemon's log");
     check(said.find("\xC2\x9B") == std::string::npos,
           "and the one-character CSI does not reach the log");
+    check(said.find("\xE2\x80\xA8") == std::string::npos &&
+              said.find("\xC2\x85") == std::string::npos,
+          "nor the line separator or NEXT LINE in the error's data");
+    check(said.find("RED LS") != std::string::npos,
+          "while the data's words are still logged");
 
     (void)!system(("rm -rf '" + base + "'").c_str());
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");

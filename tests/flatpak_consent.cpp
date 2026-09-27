@@ -13,14 +13,24 @@
 // every message Discord toasted (review of 2026-09-26: a bare request and a
 // note_probe read "hey, the door code is 4812" out of the sandbox).
 //
-// The decision is the host's now, by application id -- the directory name, which
-// a sandbox cannot choose -- and it is one of two things: the id's exported
+// The decision is the host's now, by application id -- the directory's name --
+// and it is one of two things: the id's exported
 // desktop entry says Game, or the user listed the id in `flatpak_apps`. This
 // file is a sandbox that asks with each of those shapes and looks at what it was
 // given: the note, the state mirror, the avatars and the emoji bank.
 //
-// No shared segment and no bwrap: FlatpakBridge is given a state on the stack,
-// and every directory it touches is a scratch one named through XDG_* here.
+// And the directory's name is not evidence either: a sandbox holding the
+// xdg-run/app grant can make `$XDG_RUNTIME_DIR/app/org.vinegarhq.Sober` itself
+// (entries 134, 164), and was served as Sober through the first fix round. A
+// directory is served only while a process of the user's runs in a sandbox
+// whose /.flatpak-info names its id: the ids here that are meant to be served
+// have one (tests/fake_flatpak.h, a nested bwrap), org.example.Absent has a
+// Game entry and no process, and org.example.UserGame's process is stopped at
+// the end.
+//
+// No shared segment: FlatpakBridge is given a state on the stack, and every
+// directory it touches is a scratch one named through XDG_* here. bwrap only
+// for the sandboxed processes; without it the test skips.
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -32,6 +42,7 @@
 
 #include <string>
 
+#include "fake_flatpak.h"
 #include "flatpak_bridge.h"
 #include "probe_alarm.h"
 #include "vocem/avatar_rgba.h"
@@ -179,6 +190,10 @@ long count_in(const std::string& path, const char* needle, const char* also = nu
 
 int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);
+    if (!vocem_test::fake_flatpak_available()) {
+        printf("skip bwrap is not installed, so no process can be put in a sandbox\n");
+        return 77;
+    }
     vocem_test::set_alarm(60, "who the bridge serves");
     char scratch[] = "/tmp/vocem-flatpak-consent-XXXXXX";
     if (!mkdtemp(scratch)) {
@@ -236,6 +251,7 @@ int main() {
     install_flatpak(system_flatpak, "org.example.SystemGame", "GNOME;GTK;Game;");
     install_flatpak(system_flatpak, "org.example.Chat", "Chat;Network;InstantMessaging;");
     install_flatpak(system_flatpak, "org.example.Tool", "Game;GameTool;");
+    install_flatpak(system_flatpak, "org.example.Absent", "Game;");
     {
         // org.example.Borrowed's exported name, pointing at the game's entry.
         const std::string link =
@@ -256,6 +272,20 @@ int main() {
     }
     for (const char* id : served) {
         scene.ask(id);
+    }
+    // A Game entry, a directory that asks, and no process of it anywhere: the
+    // shape a sandbox with the xdg-run/app grant makes under somebody else's id.
+    const char* absent = "org.example.Absent";
+    scene.ask(absent);
+
+    // The applications that are meant to be served are running.
+    vocem_test::FakeFlatpak running[3];
+    for (int i = 0; i < 3; ++i) {
+        running[i] = vocem_test::start_fake_flatpak(scene.root, served[i]);
+        if (running[i].pid <= 0) {
+            printf("FAIL could not start a sandboxed process for %s\n", served[i]);
+            return 1;
+        }
     }
 
     // Every bridge line goes to stderr; kept, so the refusal can be counted.
@@ -291,6 +321,18 @@ int main() {
         check(said == 1, std::string(id) +
                              ": the refusal is said once, naming the key that would allow it");
     }
+    {
+        const Handed handed = what_was_handed(scene, absent, state);
+        printf("--  %-22s note=%d channel=%d avatar=%d emoji=%d\n", absent, handed.note,
+               handed.channel, handed.avatar, handed.emoji);
+        check(!handed.note && !handed.channel && !handed.avatar && !handed.emoji,
+              std::string(absent) +
+                  ": a Game's id with no process of it running is given nothing");
+        const std::string line = std::string("not serving the voice channel to ") + absent + ":";
+        const long said = count_in(log, line.c_str(), "no process");
+        printf("--  %s: absence said %ld time(s) over five sweeps\n", absent, said);
+        check(said == 1, std::string(absent) + ": and that is said once, naming the reason");
+    }
     for (const char* id : served) {
         const Handed handed = what_was_handed(scene, id, state);
         printf("--  %-22s note=%d channel=%d avatar=%d emoji=%d\n", id, handed.note,
@@ -312,8 +354,35 @@ int main() {
     const Handed withdrawn = what_was_handed(scene, "org.example.Listed", state);
     check(!withdrawn.note && !withdrawn.channel,
           "an id taken off flatpak_apps loses the words and the channel on the next sweep");
+    // And the faces: until the second fix round the note was the only thing
+    // taken back, and every face already copied stayed in the sandbox.
+    check(!withdrawn.avatar, "and the faces already copied into it");
+
+    // The game exits and its directory stays, as Flatpak leaves it: from now
+    // on the directory is whoever writes into it.
+    vocem_test::stop_fake_flatpak(running[1]);  // org.example.UserGame
+    bool gone = false;
+    for (int i = 0; i < 30 && !gone; ++i) {
+        tick(bridge, state);
+        const Handed after = what_was_handed(scene, "org.example.UserGame", state);
+        gone = !after.note && !after.channel;
+        if (!gone) {
+            usleep(100 * 1000);
+        }
+    }
+    check(gone, "an application whose process exited loses the words and the channel");
+    check(!what_was_handed(scene, "org.example.UserGame", state).avatar, "and the faces");
+
+    // The daemon stops: every face it put in a sandbox goes with the state.
+    check(what_was_handed(scene, "org.example.SystemGame", state).avatar,
+          "a served sandbox holds a face while the daemon runs");
 
     bridge.stop();
+    check(!what_was_handed(scene, "org.example.SystemGame", state).avatar,
+          "and none after the daemon stopped");
+    for (vocem_test::FakeFlatpak& process : running) {
+        vocem_test::stop_fake_flatpak(process);
+    }
     close(saved);
     close(out);
     (void)!system(("rm -rf '" + scene.root + "'").c_str());

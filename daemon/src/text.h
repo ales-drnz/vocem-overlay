@@ -77,11 +77,17 @@ inline bool text_drops(uint32_t code) {
     return false;
 }
 
-// The text with those characters removed. Not a UTF-8 validator: the daemon's
-// JSON parser already refuses a message whose strings are not valid UTF-8,
-// so what arrives here is well-formed, and a truncated sequence -- which the
-// parser cannot produce -- is copied through byte by byte rather than read
-// past the end.
+// The text with those characters removed. Not a UTF-8 repairer, but not blind
+// to broken UTF-8 either: what the JSON parser hands over is well-formed, and
+// not everything arrives that way -- main.cpp logs the `name=` of a peer's
+// /.flatpak-info through here, a file any unprivileged bwrap can write. A
+// sequence is decoded only when its continuation bytes are 10xxxxxx and all
+// there; otherwise its lead is a stray byte, copied through alone, and the
+// bytes after it are looked at on their own -- so a control byte hiding where
+// a continuation should be is dropped like any other. Until the second fix
+// round of 0.1.11 the continuations were not looked at: "\xC3\x1B" decoded to
+// U+00DB, which is kept, and both raw bytes went out, ESC included (measured
+// in the daemon's log from a peer whose app id was "org.evil\xC3\x1B[31mRED").
 inline std::string sanitise_text(const std::string& source) {
     std::string out;
     out.reserve(source.size());
@@ -99,17 +105,22 @@ inline std::string sanitise_text(const std::string& source) {
             length = 4;
             code = lead & 0x07u;
         }
-        // A truncated sequence, or a byte that starts none (a stray
-        // continuation byte): copy it and move on rather than read past the
-        // end, or read the byte's value as a code point -- 0x81 alone is not
-        // U+0081. Nothing here is the place to repair broken UTF-8.
-        if (i + length > source.size() || (length == 1 && lead >= 0x80)) {
+        // A truncated sequence, a byte that starts none (a stray continuation
+        // byte), or a lead whose continuations are not continuation bytes:
+        // copy the one byte and move on, rather than read past the end, read
+        // the byte's value as a code point -- 0x81 alone is not U+0081 -- or
+        // swallow the next bytes whatever they are. Nothing here is the place
+        // to repair broken UTF-8.
+        bool whole = i + length <= source.size() && !(length == 1 && lead >= 0x80);
+        for (size_t k = 1; whole && k < length; ++k) {
+            const unsigned char next = static_cast<unsigned char>(source[i + k]);
+            whole = (next & 0xC0) == 0x80;
+            code = (code << 6) | (next & 0x3Fu);
+        }
+        if (!whole) {
             out.push_back(source[i]);
             ++i;
             continue;
-        }
-        for (size_t k = 1; k < length; ++k) {
-            code = (code << 6) | (static_cast<unsigned char>(source[i + k]) & 0x3Fu);
         }
         if (!text_drops(code)) {
             out.append(source, i, length);
