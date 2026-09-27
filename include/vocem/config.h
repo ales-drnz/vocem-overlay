@@ -680,9 +680,10 @@ struct Config {
     //
     // The file is the user's, and the window rewrites it IN PLACE: each line
     // carrying a key the window knows gets that key's value, every other line
-    // -- comments, blank lines, sections, keys from a newer version -- stays
-    // where it was, and the known keys the file lacked are added at the end of
-    // their section. It used to print a fresh file of its own and rename it over
+    // -- comments, blank lines, sections, keys from a newer version, and a
+    // known key's line too long for load() to have read -- stays where it
+    // was, and the known keys the file lacked are added at the end of their
+    // section. It used to print a fresh file of its own and rename it over
     // config.ini, which, measured on 0.1.10 with one click on a switch, turned a
     // symlinked config.ini into a regular file (the target kept the old values
     // and stopped reaching the overlay), deleted every comment and an unknown
@@ -763,6 +764,8 @@ struct Config {
         static const char* const kHeader = "# Written by vocem-config. Edits are picked up live.";
         const std::vector<Entry> wanted = entries();
         std::vector<bool> placed(wanted.size(), false);
+        // Keys with a line load() refused (read_line: past kMaxLineBytes).
+        std::vector<bool> refused(wanted.size(), false);
         const auto index_of = [&wanted](const std::string& key) -> int {
             // The name this setting had before 0.1.0 is the same setting.
             const std::string name = key == "gl_blacklist" ? std::string("hidden_apps") : key;
@@ -787,6 +790,8 @@ struct Config {
                 end = current.size();
             }
             std::string line = current.substr(at, end - at);
+            // The bytes read_line() counts: the line and its newline.
+            const size_t read_length = line.size() + (end < current.size() ? 1 : 0);
             at = end + 1;
             // The same reading load() gives the line: a key is text before an
             // '=' on a line that does not open with '#', '[' or ';'.
@@ -797,7 +802,15 @@ struct Config {
                 const size_t equals = line.find('=');
                 if (equals != std::string::npos) {
                     const int known = index_of(trim_copy(line.substr(0, equals)));
-                    if (known >= 0) {
+                    if (known >= 0 && read_length > kMaxLineBytes) {
+                        // load() dropped this line whole, so the value in
+                        // this copy is not the line's: rewriting it wiped an
+                        // 8000-entry hidden_apps with one click on a switch.
+                        // It stays as it is; this copy's value, when there
+                        // is one, goes after it (see below), where the
+                        // reader takes it.
+                        refused[static_cast<size_t>(known)] = true;
+                    } else if (known >= 0) {
                         if (placed[static_cast<size_t>(known)]) {
                             // load() takes the LAST of two, so a second copy
                             // left behind would overrule the value written.
@@ -817,7 +830,10 @@ struct Config {
         std::vector<std::vector<std::string>> after(lines.size() + 1);
         std::vector<std::string> tail;
         for (size_t i = 0; i < wanted.size(); ++i) {
-            if (placed[i]) {
+            // A refused line with nothing of this copy's to put after it:
+            // an empty line added there would say nothing the reader does
+            // not already conclude.
+            if (placed[i] || (refused[i] && wanted[i].value.empty())) {
                 continue;
             }
             size_t anchor = lines.size();

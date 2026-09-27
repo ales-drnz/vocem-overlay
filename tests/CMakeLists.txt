@@ -1718,3 +1718,7 @@ vocem_script_test(package_refuses_exemplar)
 # realpath() the save relied on fails there, and the rename put a regular
 # file where the link was.
 vocem_test(config_save_dangling_link)
+
+# A line load() refused (past 64 KiB) survives the window's save, where one
+# click on a switch rewrote an 8000-entry hidden_apps as `hidden_apps = `.
+vocem_test(config_save_long_line)
