@@ -79,7 +79,8 @@ public:
     // reason: unlinking is how a reader inside a game learns that what it holds
     // is history. Without it a Flatpak game would go on drawing the last channel
     // the daemon ever published, for as long as it ran -- the file stays where
-    // it is and every check the reader makes keeps passing.
+    // it is and every check the reader makes keeps passing. The faces it copied
+    // go too; the emoji bank, which is the package's and nobody's data, stays.
     void stop();
 
     size_t served() const { return mirrors_.size(); }
@@ -128,6 +129,11 @@ private:
         // The avatars directory's refusal, said once per sandbox rather than
         // once per tick (mirror_avatars).
         bool avatars_refused = false;
+        // Whether faces may be in its avatars directory: set by
+        // mirror_avatars(), and at adoption for whatever a daemon before this
+        // one left. Cleared by take_faces_back(), which runs whenever the
+        // voice channel stops going there.
+        bool faces_given = false;
         // Whether this mirror has settled the colour emoji bank: copied, found
         // already there (mirror_emoji_bank), or found missing on the host.
         // Sixteen megabytes that never change, and only for a sandbox that is
@@ -154,6 +160,8 @@ private:
     void decide(Mirror& mirror, bool announce);
     void say_refusal(Mirror& mirror);
     void check_running(Mirror& mirror);
+    // The faces follow the channel: where it no longer goes, they are removed.
+    void take_faces_back(Mirror& mirror);
     // The ids of the Flatpak sandboxes with a process running, scanned at most
     // once per rescan() and only when a mirror asks.
     const std::set<std::string>& running_ids();

@@ -294,6 +294,43 @@ bool copy_into(int directory, const char* source_path, const char* name, Source 
 // the same size carrying the same modification time, which copy_into() gives
 // every bank copy it makes. A copy of another version, or one the sandbox
 // removed or replaced, is not the same copy.
+// Every face this bridge may have put in a sandbox's avatars directory: the
+// names that end in `.rgba`, and their `.part` temporaries. The directory is
+// the sandbox's, so it is opened O_NOFOLLOW, and unlinkat() removes a link and
+// never what it points at. At most a few thousand names are looked at: the
+// sandbox can fill the directory, and this runs on the daemon's main thread.
+void remove_faces(int directory) {
+    const int avatars =
+        ::openat(directory, kBridgeAvatarsName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (avatars < 0) {
+        return;
+    }
+    DIR* listing = ::fdopendir(avatars);
+    if (!listing) {
+        ::close(avatars);
+        return;
+    }
+    const auto ends_with = [](const std::string& name, const char* suffix) {
+        const size_t length = std::strlen(suffix);
+        return name.size() > length && name.compare(name.size() - length, length, suffix) == 0;
+    };
+    std::vector<std::string> faces;
+    size_t looked = 0;
+    while (const dirent* entry = ::readdir(listing)) {
+        if (++looked > 4096) {
+            break;
+        }
+        const std::string name = entry->d_name;
+        if (ends_with(name, ".rgba") || ends_with(name, ".rgba.part")) {
+            faces.push_back(name);
+        }
+    }
+    for (const std::string& name : faces) {
+        ::unlinkat(::dirfd(listing), name.c_str(), 0);
+    }
+    ::closedir(listing);
+}
+
 bool same_copy(int directory, const char* name, const char* source_path) {
     struct stat source {};
     struct stat copy {};
@@ -330,6 +367,7 @@ void FlatpakBridge::stop() {
     for (Mirror& mirror : mirrors_) {
         if (mirror.directory >= 0) {
             ::unlinkat(mirror.directory, kBridgeStateName, 0);
+            remove_faces(mirror.directory);
         }
         close(mirror);
     }
@@ -472,6 +510,10 @@ bool FlatpakBridge::adopt(const char* id) {
         mirror.consented ? "yes" : "no", mirror.consent_why.c_str());
     say_refusal(mirror);
     check_running(mirror);
+    // Faces already in there came from a daemon before this one; like the
+    // note above, they stay only if this one serves the channel here.
+    mirror.faces_given = true;
+    take_faces_back(mirror);
     write_record_for(mirror, request);
     mirrors_.push_back(std::move(mirror));
     return true;
@@ -696,9 +738,12 @@ void FlatpakBridge::decide(Mirror& mirror, bool announce) {
         LOG("serving the voice channel to %s: %s", mirror.id.c_str(), consent.why.c_str());
         return;
     }
-    // Taken back. The words go now -- the next publish is a cleared state --
-    // and the refusal may be said again, since what it answers has changed.
+    // Taken back. The words and the faces go now -- the next publish is a
+    // cleared state -- and the refusal may be said again, since what it
+    // answers has changed. Until the second fix round of 0.1.11 the words
+    // were all that went: every face already copied stayed in the sandbox.
     ::unlinkat(mirror.directory, kBridgeNoteName, 0);
+    take_faces_back(mirror);
     mirror.refusal_said = false;
     LOG("no longer serving the voice channel to %s: %s", mirror.id.c_str(), consent.why.c_str());
 }
@@ -758,6 +803,18 @@ void FlatpakBridge::check_running(Mirror& mirror) {
     }
 }
 
+// Wherever the voice channel stops going -- consent taken back, the game gone,
+// the overlay switched off there -- the faces copied for it are removed, as the
+// note is. The emoji bank stays: it is the package's, the same for everyone,
+// and sixteen megabytes to copy again.
+void FlatpakBridge::take_faces_back(Mirror& mirror) {
+    if (mirror.voice() || !mirror.faces_given) {
+        return;
+    }
+    remove_faces(mirror.directory);
+    mirror.faces_given = false;
+}
+
 // Once per adoption, and only for a sandbox that asks to draw: one that says
 // drawing=0 is not asking for anything this would refuse.
 void FlatpakBridge::say_refusal(Mirror& mirror) {
@@ -813,12 +870,14 @@ void FlatpakBridge::rescan() {
             mirror.drawing = request.drawing;
             say_refusal(mirror);
             check_running(mirror);
+            take_faces_back(mirror);
             // The record arrives a frame after the request that adopted this
             // sandbox, so this is where it is usually seen.
             write_record_for(mirror, request);
             continue;
         }
         LOG("no longer serving the Flatpak sandbox of %s: %s", mirror.id.c_str(), gone);
+        remove_faces(mirror.directory);
         close(mirror);
         mirrors_.erase(mirrors_.begin() + static_cast<long>(i - 1));
     }
@@ -1025,6 +1084,7 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
         return;
     }
     mirror.avatars_refused = false;
+    mirror.faces_given = true;
 
     // Only what this state names: at most the people in the channel plus the
     // author of the last message. The picture for a given id and hash never

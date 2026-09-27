@@ -354,6 +354,9 @@ int main() {
     const Handed withdrawn = what_was_handed(scene, "org.example.Listed", state);
     check(!withdrawn.note && !withdrawn.channel,
           "an id taken off flatpak_apps loses the words and the channel on the next sweep");
+    // And the faces: until the second fix round the note was the only thing
+    // taken back, and every face already copied stayed in the sandbox.
+    check(!withdrawn.avatar, "and the faces already copied into it");
 
     // The game exits and its directory stays, as Flatpak leaves it: from now
     // on the directory is whoever writes into it.
@@ -368,8 +371,15 @@ int main() {
         }
     }
     check(gone, "an application whose process exited loses the words and the channel");
+    check(!what_was_handed(scene, "org.example.UserGame", state).avatar, "and the faces");
+
+    // The daemon stops: every face it put in a sandbox goes with the state.
+    check(what_was_handed(scene, "org.example.SystemGame", state).avatar,
+          "a served sandbox holds a face while the daemon runs");
 
     bridge.stop();
+    check(!what_was_handed(scene, "org.example.SystemGame", state).avatar,
+          "and none after the daemon stopped");
     for (vocem_test::FakeFlatpak& process : running) {
         vocem_test::stop_fake_flatpak(process);
     }
