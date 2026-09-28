@@ -26,12 +26,8 @@ def covered(cp: int, ranges) -> bool:
 def main() -> int:
     fonts_cpp = (ROOT / "common/src/fonts.cpp").read_text()
     # All FOUR range functions and all SIX fonts, which is what the atlas is
-    # built from (common/src/fonts.cpp's add_weight). This asked for three of
-    # each: it never parsed symbol_ranges and never opened the three symbol
-    # faces entry 128 added -- so the one tool that answers "what can the
-    # overlay not draw" over-reported by three times (6472 missing codepoints
-    # against 2180) and was blind to the 3860 codepoints of the very blocks it
-    # was last extended for.
+    # built from (common/src/fonts.cpp's add_weight); fewer of either
+    # over-reports what is missing (entry 182).
     letters = parse_ranges(fonts_cpp, "letter_ranges")
     emoji = parse_ranges(fonts_cpp, "emoji_ranges")
     punct = parse_ranges(fonts_cpp, "punctuation_ranges")
@@ -83,9 +79,9 @@ def main() -> int:
     }
     # "in the atlas" and not "drawable": ImGui does no shaping, so a script
     # whose letters join or reorder is out of scope however many of its
-    # codepoints a face happens to carry (DESIGN says so of Arabic and Indic).
-    # Since the symbol faces joined the atlas some of those codepoints ARE
-    # present, which is why this line says what it measures.
+    # codepoints a face happens to carry (Arabic and Indic, for instance). Some
+    # of those codepoints ARE present, which is why this line says what it
+    # measures.
     shaping = {"Arabic (U+0600-06FF)", "Hebrew (U+0590-05FF)", "Thai (U+0E00-0E7F)",
                "Devanagari (U+0900-097F)"}
     for label, (a, b) in classes.items():

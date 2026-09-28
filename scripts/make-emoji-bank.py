@@ -3,10 +3,9 @@
 # from Noto Color Emoji.
 #
 # The colour emoji in the font are PNG bitmaps (CBDT), and a PNG parser has no
-# business inside somebody's game -- the avatar cache fought exactly this fight
-# (DESIGN, entry 34's family). So the decoding happens here, offline, and what
-# ships is the least interpretable thing there is: fixed-size raw RGBA records,
-# sorted by key, binary-searched by the reader in vocem/emoji_bank.h.
+# business inside somebody's game. So the decoding happens here, offline, and
+# what ships is the least interpretable thing there is: fixed-size raw RGBA
+# records, sorted by key, binary-searched by the reader in vocem/emoji_bank.h.
 # Record: u32 little-endian key + 32*32*4 bytes of straight (unmultiplied) RGBA.
 #
 # Two kinds of key. A codepoint, for every emoji the font's cmap maps to a glyph
@@ -14,9 +13,8 @@
 # the font reaches only through a GSUB ligature -- the ZWJ sequences (🍋‍🟩 is
 # 🍋 + ZWJ + 🟩, the families, the professions, the skin tones), the flags
 # (pairs of regional indicators), the keycaps, the tag sequences -- because
-# ImGui shapes nothing, so a renderer that only knows codepoints drew the lime
-# as a lemon beside a green square (DESIGN entry 142). The sequences file says
-# which sequence of codepoints each private-use key stands for, in fixed-size
+# ImGui shapes nothing and would draw the parts (entry 142). The sequences
+# file says which sequence of codepoints each private-use key stands for, in fixed-size
 # records too: u32 length, u32 key, 12 x u32 codepoints (zero-padded), sorted
 # by the codepoint sequence. The overlay reads both files and rewrites a known
 # sequence into its key before the text reaches the atlas.
@@ -59,8 +57,7 @@ PRIVATE_USE_LAST = 0x10FFFD
 # The bank is a Modified Version of Noto Color Emoji under the OFL 1.1
 # (common/emoji/OFL-NotoColorEmoji.txt, README.md beside it). The input is
 # pinned so the committed bank stays reproducible from a named font version
-# rather than from whatever the build machine has today: the pinned URL is
-# byte-identical to the system font this was first built from.
+# rather than from whatever the build machine has today.
 PIN_URL = ("https://raw.githubusercontent.com/googlefonts/noto-emoji/"
            "v2.051/fonts/NotoColorEmoji.ttf")
 PIN_SHA256 = "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b"

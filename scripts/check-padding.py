@@ -5,50 +5,32 @@
 #
 # The window's paddings, as numbers.
 #
-# The seam this exists for is small and was found by eye: a loose Label dropped
-# into a Card sits flush against the card's edge, while the SettingRow beside it
-# is inset by Theme.cardPadding. Nothing in QML complains, the page still looks
-# like a page, and the only way to see it is to notice that two things which
-# should share a left edge do not.
-#
-# So it is measured instead. Every card in the window carries objectName "card"
-# and every padded block inside one carries "cardContent", so the geometry dump
-# the window writes for VOCEM_CONFIG_GEOMETRY already says where they all
-# landed. Two claims are checked, per section and per window size:
+# Every card in the window carries objectName "card" and every padded block
+# inside one "cardContent", so the geometry dump the window writes for
+# VOCEM_CONFIG_GEOMETRY says where they all landed. Checked per section and per
+# window size:
 #
 #   * every block is inset from its card by the same amount on the left and on
-#     the right -- the amount is not written here, it is taken to be whatever
-#     the window agrees on most often, so this reports disagreement rather than
-#     enforcing a taste;
+#     the right -- the amount is whatever the window agrees on most often, so
+#     this reports disagreement rather than enforcing a taste;
 #   * a card's height is exactly the sum of its blocks' heights plus their
-#     paddings. This is the half that catches the defect above: an item in a
-#     card that is not a padded block adds height nothing accounts for, and the
-#     card comes out taller than its contents explain.
-#
-# Blocks are attributed to cards by geometry rather than by name. The dump's
-# paths are built from named ancestors and do not distinguish the second card on
-# a page from the first, so where a thing actually is on screen is the only
-# honest key -- and it is the thing being measured anyway.
-#
-# Two more columns are held the same way, for the same reason -- each was a seam
-# nobody could see without putting the numbers side by side:
-#
+#     paddings: an item in a card that is not a padded block (a loose Label
+#     flush against the card's edge) adds height nothing accounts for;
 #   * every row's way back to its default ("rowReset") ends at one right edge
-#     per page, and is in the keyboard's tab chain. On the Appearance page the
-#     colour rows' resets stood 65 units left of the slider rows', and none of
-#     them could be reached without a pointer at all;
+#     per page, and is in the keyboard's tab chain;
 #   * the room under a page's content ("pageContent") is the same on every page,
 #     whether what ends the page is the Apply bar ("pageBar") or the window's
-#     own edge. It was 12 on a page that does not scroll and 24 on one with no
-#     bar, with another page margin hidden inside the scrolling half;
+#     own edge;
 #   * every group heading -- a card's own title ("cardTitle") and the foldable
 #     headers on the Applications page ("groupHeading") -- starts at the left
-#     edge the blocks under it start at. A card's title sat at 239 and a
-#     foldable group's heading at 224, on the same page;
+#     edge the blocks under it start at;
 #   * a scrolling page that carries a card ("pageColumn") is exactly as tall as
-#     its contents. A column told to fill the page hands the slack to every
-#     child that is itself a layout -- which a Card is -- so this is what
-#     catches dead space opening up between the groups.
+#     its contents: a column told to fill the page hands the slack to every
+#     child that is itself a layout, a Card included.
+#
+# Blocks are attributed to cards by geometry rather than by name: the dump's
+# paths are built from named ancestors and do not distinguish the second card
+# on a page from the first.
 
 import argparse
 import collections
@@ -124,10 +106,8 @@ def main():
             visible_resets = [r for r in records
                               if leaf(r["item"]) == "rowReset" and r["visible"]]
             if visible_resets:
-                # A window that does not print activeFocusOnTab at all predates
-                # the instrument, and "absent" must not be read as "false" --
-                # that is a check failing because it cannot see, which reads
-                # exactly like a check failing because it found something.
+                # A window that does not print activeFocusOnTab at all cannot
+                # be judged: "absent" must not be read as "false".
                 measured = [r for r in visible_resets if "activeFocusOnTab" in r]
                 resets.append((size, section,
                                sorted({round(r["x"] + r["w"], 1) for r in visible_resets}),

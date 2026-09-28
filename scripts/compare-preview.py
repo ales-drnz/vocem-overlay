@@ -89,10 +89,8 @@ def run_window(build, settings, config_home, sections, width, height):
     environment = dict(os.environ)
     environment["XDG_CONFIG_HOME"] = config_home
     environment["VOCEM_CONFIG_GEOMETRY"] = dump
-    # Off the screen, unless somebody wants to watch it. This walks the window
-    # through its sections one at a time, and it used to do that in a real window
-    # on the real desktop: eight pages flicking past over nine seconds, on top of
-    # whatever the person running it was doing. Every distance it measures comes
+    # Off the screen, unless somebody wants to watch it: this walks the window
+    # through its sections one at a time, and every distance it measures comes
     # out identical offscreen, because they are all laid out rather than rendered.
     #
     # VOCEM_PREVIEW_VISIBLE=1 puts the window back, which is what to do when the
@@ -103,7 +101,7 @@ def run_window(build, settings, config_home, sections, width, height):
     # the maps stand for, which the window otherwise takes from whatever screen it
     # is on. Pinned to the display the overlay side was measured at, so the two are
     # comparing the same screen -- and so the same command gives the same numbers on
-    # somebody else's monitor, which it did not before.
+    # somebody else's monitor.
     environment["VOCEM_CONFIG_SCREEN"] = f"{width}x{height}"
     # Only the sections that will be read. The other six are a page switch and a
     # render each, for a dump nothing looks at.
@@ -111,10 +109,8 @@ def run_window(build, settings, config_home, sections, width, height):
     # Qt writes to the journal when JOURNAL_STREAM is set, which hides QML errors
     # completely. Clearing it puts them back on stderr where they can be seen.
     environment["JOURNAL_STREAM"] = ""
-    # Nothing has to be kept away from the window any more: its previews draw a
-    # fixed roster and never the live channel, so a daemon connected to a busy
-    # server changes nothing in the dump. This used to run under bwrap with a
-    # private /dev/shm and a synthetic channel published into it.
+    # No sandbox needed: the previews draw a fixed roster and never the live
+    # channel, so a daemon connected to a busy server changes nothing in the dump.
     command = [os.path.join(build, "gui", "vocem-config")]
     result = subprocess.run(command, env=environment, capture_output=True, text=True,
                             timeout=120)
@@ -227,8 +223,7 @@ def compare(overlay, window, section, verbose, settings):
 
     # How much of the display each box covers. Every other row divides both sides by
     # the scale the view drew at, which validates what is inside a box but can never
-    # catch a view that chose the wrong scale for the box itself -- the corner picker
-    # drew the message at a size of its own and no figure below moved.
+    # catch a view that chose the wrong scale for the box itself.
     def share(what, real, real_of, shown, shown_of):
         if real is None or shown is None:
             return
