@@ -222,11 +222,6 @@ vocem_script_test(emoji_bank_licence ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}")
 # mkdir -p (vocem/paths.h), the curl write callback (curl_sink.h). A lint.
 vocem_script_test(one_spelling)
 
-# A slider's bounds are config.h's clamp for the same key ("Show for" once
-# offered 1-20 over 1-30). A reading of the QML: the harness dump carries no
-# from/to to measure.
-vocem_script_test(slider_bounds)
-
 # PKGBUILD and PKGBUILD.local build one package: build(), package(), depends
 # and makedepends agree modulo their legitimate differences (entry 76).
 vocem_script_test(pkgbuild_agree)
@@ -837,11 +832,6 @@ if(TARGET vocem-config)
     # loads decides it.
     vocem_script_test(single_instance ARGS ${VOCEM_WINDOW_ARG})
 endif()
-
-# A Switch only for the three settings written on the click (KDE HIG); every
-# other boolean waits for Apply and is a CheckBox. Fails against 0.1.0-64's
-# sources. A reading of the QML: the dump does not say which type an item is.
-vocem_script_test(instant_switches)
 
 # An empty view says so with a placeholder, on every page with one. Fails on
 # section 5 against 0.1.0-64.
@@ -1520,3 +1510,18 @@ vocem_m32_twin(config_hostile)
 vocem_test(flatpak_config_hostile
     SOURCES flatpak_config_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
+
+# A slider's ends are config.h's clamps (Config::numbers(), compiled): every
+# Slider and SpinBox in the running window is moved to both ends and the
+# setting it changed must land on the clamp's ends ("Show for" once offered
+# 1-20 over 1-30). And every Switch writes config.ini on the click while every
+# CheckBox waits for Apply (KDE HIG), measured by clicking each one
+# (VOCEM_CONFIG_DRIVE, window_controls.cmake). They replace two readings of
+# the QML source.
+vocem_test(config_numbers NO_TEST)
+if(TARGET vocem-config)
+    vocem_script_test(slider_bounds
+        ARGS ${VOCEM_WINDOW_ARG} "-DNUMBERS_BINARY=$<TARGET_FILE:vocem_config_numbers>")
+    vocem_script_test(instant_switches ARGS ${VOCEM_WINDOW_ARG})
+endif()
+

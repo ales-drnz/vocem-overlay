@@ -2,122 +2,116 @@
 # All rights reserved.
 # Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 #
-# A slider's bounds are the settings file's bounds, and they are spelled twice:
-# config.h clamps what is read, the page says what can be dragged. Nothing held
-# the two together, and one pair had drifted: "Show for" offered 1-20 over a
-# clamp of 1-30, so a legitimate 30 in the file showed as a slider pinned at 20
-# that rewrote the setting the moment it was touched -- the window silently
-# narrowing what the file is allowed to say. This walks every SliderRow/SpinRow
-# bound to a config value and holds its from/to to the clamp of the snake_case
-# key with the same name; a percentage control (value * 100) is held to the
-# clamp times one hundred. Values are compared in integer thousandths, because
-# CMake's EQUAL is not a float comparison.
+# A slider's ends are the ends the settings file is read with.
 #
-# The count is asserted too: a walk that pairs nothing must fail, not pass on
-# an empty set (entry 77's shape -- a test that can pass for a reason other
-# than the one it names).
+# config.h clamps what is read (Config::numbers()), the page says what can be
+# dragged, and the two drifted once: "Show for" offered 1-20 over a clamp of
+# 1-30, so a legitimate 30 in the file showed as a slider pinned at 20 that
+# rewrote the setting the moment it was touched. This moves every Slider and
+# SpinBox in the running window to its `to` and its `from` (window_controls
+# .cmake) and holds what the bridge then holds to the compiled clamp of the
+# setting the control changed:
+#   * the control changes exactly one setting, and it is a clamped number;
+#   * at `from` the setting is the clamp's low end, at `to` its high end --
+#     so a slider narrower than the clamp, or wider (the bridge clamps it), is
+#     a failure;
+#   * `from` and `to` are those ends in the control's own unit, the same or a
+#     hundred times (a percentage);
+#   * moving it does not write config.ini: numbers wait for Apply.
+# At least 14 controls must be paired: a walk that finds none must fail rather
+# than agree with nothing.
+#
+# Expects CONFIG_BINARY, NUMBERS_BINARY (tests/config_numbers.cpp) and
+# CMAKE_CURRENT_BINARY_DIR (a test directory).
 
-if(NOT SOURCE_DIR)
-    get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/window_controls.cmake")
+vocem_window_controls("${CMAKE_CURRENT_BINARY_DIR}/slider-bounds")
 
-# "0.5" -> 500, "120" -> 120000, "3.0" -> 3000. Integer thousandths, so that
-# math(EXPR) can scale and compare exactly.
+# In integer thousandths, so that CMake can compare exactly.
 function(to_thousandths value out)
-    if(value MATCHES "^([0-9]+)\\.([0-9]+)$")
-        set(whole "${CMAKE_MATCH_1}")
-        set(frac "${CMAKE_MATCH_2}000")
+    if(value MATCHES "^(-?)([0-9]+)(\\.([0-9]*))?$")
+        set(frac "${CMAKE_MATCH_4}000")
         string(SUBSTRING "${frac}" 0 3 frac)
-        math(EXPR result "${whole} * 1000 + ${frac}")
-    elseif(value MATCHES "^[0-9]+$")
-        math(EXPR result "${value} * 1000")
+        math(EXPR result "${CMAKE_MATCH_2} * 1000 + ${frac}")
+        if(CMAKE_MATCH_1)
+            math(EXPR result "0 - ${result}")
+        endif()
     else()
         message(FATAL_ERROR "slider_bounds: cannot read '${value}' as a number")
     endif()
     set(${out} "${result}" PARENT_SCOPE)
 endfunction()
 
-# The clamps, from the one place the file's bounds are stated. Whole-file
-# regex, not file(STRINGS): the source is full of semicolons, which CMake
-# treats as list separators and mangles a per-line walk with.
-# The bounds are one table since 0.1.8 -- Config::numbers() -- rows of
-# {"key", &Config::member, low, high, decimals}; load(), the window's setters
-# and this walk all read it.
-file(READ "${SOURCE_DIR}/include/vocem/config.h" config_text)
-string(REGEX MATCHALL "{\"[a-z_]+\", &Config::[a-z_]+, [0-9.]+, [0-9.]+, [0-9]+}"
-       clamp_hits "${config_text}")
+execute_process(COMMAND "${NUMBERS_BINARY}" OUTPUT_VARIABLE numbers RESULT_VARIABLE got)
+if(NOT got EQUAL 0)
+    message(FATAL_ERROR "slider_bounds: ${NUMBERS_BINARY} answered ${got}")
+endif()
+string(REPLACE "\n" ";" numbers "${numbers}")
 set(clamp_count 0)
-foreach(hit IN LISTS clamp_hits)
-    if(hit MATCHES "{\"([a-z_]+)\", &Config::[a-z_]+, ([0-9.]+), ([0-9.]+), [0-9]+}")
-        set(key "${CMAKE_MATCH_1}")
-        to_thousandths("${CMAKE_MATCH_2}" lo)
-        to_thousandths("${CMAKE_MATCH_3}" hi)
-        set(clamp_lo_${key} "${lo}")
-        set(clamp_hi_${key} "${hi}")
+foreach(row IN LISTS numbers)
+    if(row MATCHES "^([a-z_]+) ([0-9.]+) ([0-9.]+) [0-9]+$")
+        to_thousandths("${CMAKE_MATCH_2}" low)
+        to_thousandths("${CMAKE_MATCH_3}" high)
+        set(low_${CMAKE_MATCH_1} "${low}")
+        set(high_${CMAKE_MATCH_1} "${high}")
         math(EXPR clamp_count "${clamp_count} + 1")
     endif()
 endforeach()
-if(clamp_count LESS 16)
-    message(FATAL_ERROR "slider_bounds: only ${clamp_count} clamps read from config.h -- "
-                        "the parse has stopped matching the source, which is not agreement")
-endif()
 
-# The rows. A block's from/to and the config binding that names the pair are
-# taken from one stretch of text that cannot cross a closing brace, so a row
-# without a config binding (an animation, a preview control) never borrows the
-# next block's. Whole-file matching for the same semicolon reason as above --
-# the from/to line itself contains one.
-file(GLOB qml_files "${SOURCE_DIR}/gui/qml/*.qml")
 set(paired 0)
-set(mismatches "")
-foreach(qml IN LISTS qml_files)
-    file(READ "${qml}" qml_text)
-    # Semicolons are CMake's list separator, and the from/to line contains one:
-    # a match kept as a list element would be split apart at exactly the
-    # character the pattern pivots on. Neutralised before matching.
-    string(REPLACE ";" "," qml_text "${qml_text}")
-    string(REGEX MATCHALL "from: [0-9.]+, to: [0-9.]+[^}]*" blocks "${qml_text}")
-    foreach(block IN LISTS blocks)
-        string(REGEX MATCH "from: ([0-9.]+), to: ([0-9.]+)" _ "${block}")
-        to_thousandths("${CMAKE_MATCH_1}" qml_lo)
-        to_thousandths("${CMAKE_MATCH_2}" qml_hi)
-        set(scale 1)
-        set(camel "")
-        if(block MATCHES "value: Math\\.round\\(root\\.config\\.([a-zA-Z]+) \\* 100\\)")
-            set(camel "${CMAKE_MATCH_1}")
-            set(scale 100)
-        elseif(block MATCHES "value: root\\.config\\.([a-zA-Z]+)")
-            set(camel "${CMAKE_MATCH_1}")
-        endif()
-        if(camel STREQUAL "")
-            continue()
-        endif()
-        string(REGEX REPLACE "([A-Z])" "_\\1" snake "${camel}")
-        string(TOLOWER "${snake}" snake)
-        if(NOT DEFINED clamp_lo_${snake})
-            # A row bound to something config.h does not clamp is a different
-            # kind of control (or a rename): say so rather than skip quietly.
-            message(FATAL_ERROR "slider_bounds: ${qml} binds '${camel}' "
-                                "(read as '${snake}') and config.h has no clamp for it")
-        endif()
-        math(EXPR expected_lo "${clamp_lo_${snake}} * ${scale}")
-        math(EXPR expected_hi "${clamp_hi_${snake}} * ${scale}")
-        if(NOT qml_lo EQUAL expected_lo OR NOT qml_hi EQUAL expected_hi)
-            get_filename_component(page "${qml}" NAME)
-            list(APPEND mismatches
-                 "${page}: '${camel}' offers ${qml_lo}..${qml_hi} (thousandths) "
-                 "over a clamp of ${expected_lo}..${expected_hi}")
-        endif()
-        math(EXPR paired "${paired} + 1")
+set(problems "")
+foreach(line IN LISTS controls)
+    string(JSON type GET "${line}" control)
+    if(NOT type STREQUAL "Slider" AND NOT type STREQUAL "SpinBox")
+        continue()
+    endif()
+    string(JSON label GET "${line}" label)
+    string(JSON drives GET "${line}" drives)
+    string(JSON writes GET "${line}" writesAtOnce)
+    set(name "${type} '${label}'")
+    if(drives STREQUAL "" OR drives MATCHES ",")
+        list(APPEND problems "${name} changes '${drives}', not exactly one setting")
+        continue()
+    endif()
+    string(REGEX REPLACE "([A-Z])" "_\\1" key "${drives}")
+    string(TOLOWER "${key}" key)
+    if(NOT DEFINED low_${key})
+        list(APPEND problems "${name} changes ${drives} (${key}), which config.h does not clamp")
+        continue()
+    endif()
+    string(JSON from GET "${line}" from)
+    string(JSON to GET "${line}" to)
+    string(JSON at_from GET "${line}" atFrom)
+    string(JSON at_to GET "${line}" atTo)
+    foreach(v from to at_from at_to)
+        to_thousandths("${${v}}" ${v})
     endforeach()
+    if(NOT at_from EQUAL low_${key} OR NOT at_to EQUAL high_${key})
+        list(APPEND problems "${name}: ${key} reaches ${at_from}..${at_to} (thousandths) at the "
+                             "control's ends, over a clamp of ${low_${key}}..${high_${key}}")
+    endif()
+    math(EXPR from_percent "${low_${key}} * 100")
+    math(EXPR to_percent "${high_${key}} * 100")
+    if(NOT ((from EQUAL low_${key} AND to EQUAL high_${key}) OR
+            (from EQUAL from_percent AND to EQUAL to_percent)))
+        list(APPEND problems "${name} offers ${from}..${to} (thousandths), which is neither "
+                             "${key}'s clamp nor that clamp as a percentage")
+    endif()
+    if(writes)
+        list(APPEND problems "${name} wrote config.ini when it moved: a number waits for Apply")
+    endif()
+    math(EXPR paired "${paired} + 1")
 endforeach()
 
+if(clamp_count LESS 16)
+    message(FATAL_ERROR "slider_bounds: config_numbers printed ${clamp_count} clamps")
+endif()
 if(paired LESS 14)
-    message(FATAL_ERROR "slider_bounds: only ${paired} rows paired with a clamp -- "
-                        "the walk has stopped seeing the pages, which is not agreement")
+    list(APPEND problems "only ${paired} controls were driven and paired, of at least 14 -- a "
+                         "walk that stopped reaching the pages is not agreement")
 endif()
-if(mismatches)
-    string(REPLACE ";" "\n  " mismatches "${mismatches}")
-    message(FATAL_ERROR "a slider disagrees with the file it edits:\n  ${mismatches}")
+if(problems)
+    string(REPLACE ";" "\n  " problems "${problems}")
+    message(FATAL_ERROR "a control disagrees with the file it edits:\n  ${problems}")
 endif()
-message(STATUS "ok slider_bounds: ${paired} rows agree with config.h's clamps")
+message(STATUS "ok slider_bounds: ${paired} controls reach exactly config.h's clamps")
