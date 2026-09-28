@@ -163,7 +163,7 @@ int main() {
     // The channel, published by this process: the reader in the overlay cannot
     // tell it from the daemon, which is the point. The display height is the
     // owner's own, because it is what the atlas is sized from (entry 39) and a
-    // rebuild is the thing being counted -- at 2160 the atlas is the 4096x4096
+    // rebuild is the thing being counted -- at 2160 the atlas is the 4096x2611
     // one fonts.cpp measures, not a small one nobody would notice.
     vocem::StateWriter writer;
     check(writer.open(), "the private state segment opens");

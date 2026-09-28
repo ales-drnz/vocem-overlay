@@ -1029,6 +1029,13 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     g_built_count = 0;
     g_folded_count = 0;
 
+    // The texture is as tall as the packed glyphs, not the next power of two:
+    // at a 2160-line display that is 4096x2611 instead of 4096x4096, 24 MB less
+    // in the CPU copy and as much again on the GPU, with every glyph's metrics
+    // and pixels unchanged. Both backends and every GL context the overlay
+    // draws in (desktop GL and ES 3) take a non-power-of-two texture.
+    atlas->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+
     // The rasteriser's own answer. False means it could not parse one of the
     // sources: the atlas has no pixels, every font in it is unloaded, and the
     // caller has to build something else.

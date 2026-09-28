@@ -29,9 +29,10 @@
 // because what was wrong was not how many times something ran but that 117 MB
 // stayed mapped. The probe reads its own `/proc/self/smaps_rollup` before and
 // after, in one process, so the two numbers are the same process's and nothing
-// external can move them; the threshold is 40 MB against a measured 64 MB of
-// atlas alone (80 MB before entry 207 freed the alpha8 image), which is far enough from the noise (the two readings before the
-// fix differed by 1 kB) to mean only one thing. The log line is counted beside
+// external can move them; the threshold is 30 MB against the atlas's RGBA copy
+// alone (43 MB at 4096x2611, the height the packed glyphs need), which is far
+// enough from the noise (the two readings before the fix differed by 1 kB) to
+// mean only one thing. The log line is counted beside
 // it, which is the half that says the code ran on purpose rather than by luck.
 //
 // **And the return leg is a count, because that is where the cost is.** The
@@ -165,7 +166,7 @@ int main() {
     setenv("VOCEM_LOG_FILE", log_path, 1);
 
     // The display height is the owner's own: it is what the atlas is sized from
-    // (entry 39), and at 2160 the atlas is the 4096x4096 one whose 64 MB this
+    // (entry 39), and at 2160 the atlas is the 4096x2611 one whose 43 MB this
     // test is about.
     vocem::StateWriter writer;
     check(writer.open(), "the private state segment opens");
@@ -304,7 +305,7 @@ int main() {
     // the last instance (entry 211). Printed both, asserted on the heap.
     printf("     handed back: %ld kB of Pss, %ld kB of mmapped heap (%ld -> %ld)\n", held - after,
            held_heap - after_heap, held_heap, after_heap);
-    check(held_heap - after_heap > 40 * 1024,
+    check(held_heap - after_heap > 30 * 1024,
           "and hands back what it was holding, instead of keeping it for the life of the process");
 
     const long said = lines_containing(log_path, "releasing the backend and the font atlas");
