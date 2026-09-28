@@ -49,13 +49,12 @@ bool token_is_well_formed(const std::string& token) {
 }
 
 std::string load_token() {
-    // The same discipline as the avatar cache's local read (entry 47): the
+    // The same discipline as the avatar cache's local read (avatar_decode.h): the
     // path is under the user's own state directory, and a file there that
     // is not a regular file is not a token. O_NONBLOCK so a FIFO does not
     // hold the daemon at its very first line; O_NOFOLLOW so a link does not
     // send the read elsewhere; fstat so the size is known before anything is
-    // read, and a symbolic link to /dev/zero -- which the old ifstream +
-    // getline read until MemoryMax -- is refused as not regular.
+    // read, and a link to /dev/zero is refused as not regular.
     const int fd = ::open(token_path().c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         return {};
@@ -97,9 +96,9 @@ bool save_token(const std::string& token) {
     // Create with 0600 from the start rather than fixing the mode afterwards:
     // between the two there would be a window where the token is world-readable.
     // Written to a temporary and renamed into place, like every other file
-    // this project writes: a crash between open and write used to leave an
-    // empty token, and O_NOFOLLOW keeps a link at that name from steering the
-    // write. O_EXCL, so a temporary somebody else left is not written over.
+    // this project writes, so a crash cannot leave an empty token; O_NOFOLLOW
+    // keeps a link at that name from steering the write, and O_EXCL keeps a
+    // temporary somebody else left from being written over.
     const std::string temporary = path + ".part";
     ::unlink(temporary.c_str());
     const int fd =
@@ -148,15 +147,13 @@ std::string exchange_code_for_token(const std::string& code,
     curl_easy_setopt(curl, CURLOPT_USERAGENT, VOCEM_USER_AGENT);
     // Required of a multi-threaded program by libcurl's own documentation:
     // without it a resolver timeout is delivered by SIGALRM to whichever
-    // thread is unlucky. Inert with the threaded resolver Arch builds, which
-    // is exactly the kind of build assumption to write down rather than rely
-    // on.
+    // thread is unlucky. Inert with the threaded resolver Arch builds, but
+    // that is a build assumption, not something to rely on.
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // The way out on a stop: the same progress callback the avatar worker has
-    // (avatars.cpp, entry 134). Without it a SIGTERM during this exchange --
-    // the one transfer the daemon makes on its main thread -- waited for the
-    // connect timeout, past the unit's TimeoutStopSec, and the daemon was
-    // killed with its segment published.
+    // (avatars.cpp). This is the one transfer the daemon makes on its main
+    // thread, and a SIGTERM must end it before the unit's TimeoutStopSec kills
+    // the daemon with its segment published.
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, const_cast<volatile std::sig_atomic_t*>(stop));
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,

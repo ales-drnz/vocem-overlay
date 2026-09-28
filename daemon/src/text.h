@@ -4,50 +4,27 @@
 //
 // What this daemon does to a piece of text from Discord before it trusts it.
 //
-// Two things, which is one more than the file's name suggests and is said here
-// rather than left to be found: `sanitise_text` takes characters OUT of a
-// string before it is shown, logged or written into the segment, and
-// `json_within` at the bottom refuses a whole message before it is
-// parsed. What they have in common is where they live rather than what they
-// do -- header-only and dependency-free, so a test compiles either alone,
-// which is the reason entry 133 put the first one here and entry 183 the
-// second.
+// Two things: `sanitise_text` takes characters OUT of a string before it is
+// shown, logged or written into the segment, and `json_within` at the bottom
+// refuses a whole message before it is parsed. Both are header-only and
+// dependency-free so a test compiles either alone.
 //
-// The characters first. Two kinds go, for two reasons:
+// Two kinds of character go:
 //
 //   * The bidirectional formatting characters. Discord wraps every name it
-//     interpolates into a sentence in Unicode's directional isolates, so that
-//     a right-to-left name cannot scramble the text around it: a notification
-//     title arrives as "⁨Lele⁩ (⁨Chilling⁩, ⁨Canali vocali⁩)". Those characters
-//     are invisible by definition and no font in the overlay's atlas has a
-//     glyph for one -- measured: Inter, Inter SemiBold and Noto Sans JP have
-//     none in their cmap, and ImGui draws its FallbackChar, which is '?'. Six
-//     isolates in that title were six question marks in the box on the
-//     owner's screen (DESIGN entry 66). They are removed rather than given
-//     blank glyphs because the atlas lives inside somebody's game, and because
-//     they exist to drive the bidirectional algorithm, which ImGui does not
-//     implement: here they can never do anything but take up a glyph. Listed
-//     by hand rather than by Unicode category: "every default-ignorable code
-//     point" would sweep up the zero-width joiner and the variation selectors
-//     that entry 27 put in the atlas on purpose.
-//   * The C0 controls and DEL. A newline in a nickname reaches the panel as a
-//     second row and the daemon's own log as a second line -- and the journal
-//     is what the Debug section shows, so a name Discord let somebody choose
-//     was a way to write lines into it. The Flatpak bridge already refuses
-//     control characters in what a sandbox writes (`printable()` in
-//     flatpak_bridge.cpp); names, channel names and titles come from the other
-//     direction and had no such rule (entry 133). Tab included: nothing here
-//     is columnar. The C1 controls, U+0080..U+009F, for the same reason one
-//     block up: U+009B is the single-character CSI, an escape sequence to a
-//     terminal that honours 8-bit controls, and `vocem` prints names straight
-//     to a terminal; U+0085 is NEXT LINE. Only below U+0020 went through
-//     0.1.10 (the review's c1 probe). And U+2028/U+2029, the line and
-//     paragraph separators, which are line breaks by Unicode's own definition
-//     (UAX #14 class BK): a newline spelled in three bytes is still one.
-//
-// This lived inside main.cpp's anonymous namespace as `without_bidi_marks`,
-// where nothing could test it; entry 66's second defect had no test of its
-// own for exactly that reason.
+//     interpolates into a sentence in directional isolates ("⁨Lele⁩ (⁨Chilling⁩,
+//     ⁨Canali vocali⁩)"); no font in the overlay's atlas has a glyph for them,
+//     so ImGui draws its '?' fallback, and ImGui does not implement the
+//     bidirectional algorithm they exist to drive. Listed by hand
+//     rather than by Unicode category: "every default-ignorable code point"
+//     would sweep up the zero-width joiner and the variation selectors that
+//     the atlas carries on purpose.
+//   * The C0 controls, DEL and the C1 controls. A newline in a nickname would
+//     be a second row in the panel and a second line in the daemon's journal,
+//     which the Debug section shows. Tab included: nothing here is
+//     columnar. U+009B is the single-character CSI and `vocem` prints names
+//     straight to a terminal; U+0085 is NEXT LINE. U+2028/U+2029 go too: they
+//     are line breaks by Unicode's own definition (UAX #14 class BK).
 
 #ifndef VOCEM_DAEMON_TEXT_H
 #define VOCEM_DAEMON_TEXT_H
@@ -78,16 +55,12 @@ inline bool text_drops(uint32_t code) {
 }
 
 // The text with those characters removed. Not a UTF-8 repairer, but not blind
-// to broken UTF-8 either: what the JSON parser hands over is well-formed, and
-// not everything arrives that way -- main.cpp logs the `name=` of a peer's
-// /.flatpak-info through here, a file any unprivileged bwrap can write. A
-// sequence is decoded only when its continuation bytes are 10xxxxxx and all
-// there; otherwise its lead is a stray byte, copied through alone, and the
-// bytes after it are looked at on their own -- so a control byte hiding where
-// a continuation should be is dropped like any other. Until the second fix
-// round of 0.1.11 the continuations were not looked at: "\xC3\x1B" decoded to
-// U+00DB, which is kept, and both raw bytes went out, ESC included (measured
-// in the daemon's log from a peer whose app id was "org.evil\xC3\x1B[31mRED").
+// to broken UTF-8 either: main.cpp logs the `name=` of a peer's /.flatpak-info
+// through here, a file any unprivileged bwrap can write. A sequence is decoded
+// only when its continuation bytes are 10xxxxxx and all there; otherwise its
+// lead is a stray byte, copied through alone, and the bytes after it are looked
+// at on their own -- so a control byte hiding where a continuation should be
+// ("\xC3\x1B") is dropped like any other.
 inline std::string sanitise_text(const std::string& source) {
     std::string out;
     out.reserve(source.size());
@@ -135,24 +108,16 @@ inline std::string sanitise_text(const std::string& source) {
 // structural tokens (every `[`, `{`, `,` and `:` outside a string), without
 // parsing it.
 //
-// `json::parse(raw, nullptr, false)` bounds parse ERRORS and nothing else:
-// nlohmann has no depth or element limit, so the cost of a message is the
-// peer's to choose, up to `kMaxMessage` -- 8 MiB, the reassembly cap entry 72
-// put on a frame. Measured through nlohmann alone, 8 MiB of each shape:
-// **nested `[` 624 MB** (entry 183), and flat, which a depth ceiling cannot
-// see (entry 199): `[{},{},...]` **221 MB**, strings 171 MB, `{"a":0}`
-// objects 168 MB, empty arrays 136 MB, numbers 65 MB. The unit says
-// `MemoryMax=128M`, and measured under exactly that with this machine's zram
-// swap, the parse is not killed: it survives with ~436 MB pushed into swap,
-// the daemon stalled while it happens. Without swap it is a SIGKILL
-// (`MemorySwapMax=0`: exit 137, measured) -- which runs no destructor and
-// leaves `/dev/shm/vocem-<uid>`, the note's words and every Flatpak mirror
-// behind, the leftover entry 81 forbids.
+// nlohmann has no depth or element limit, so without this the cost of a
+// message is the peer's to choose, up to `kMaxMessage` (8 MiB): nested `[`
+// costs hundreds of MB to parse, and flat shapes nearly as much
+// (entries 183 and 199). Under the unit's `MemoryMax=128M` that is a stall in swap or a
+// SIGKILL, which runs no destructor and leaves the segment and every Flatpak
+// mirror behind.
 //
-// The ceilings come from what Discord sends: the largest of the 539 real
-// payloads phase 0b kept (a GET_CHANNEL with its messages) is 17 KB, 1342
-// tokens and 8 levels deep. 64 levels and 131072 tokens are far above that and
-// bound the worst shape to ~10 MB.
+// The ceilings come from what Discord sends: the largest real payload seen is
+// 17 KB, 1342 tokens and 8 levels deep. 64 levels and 131072 tokens are far
+// above that and bound the worst shape to ~10 MB.
 //
 // One pass over the bytes, no allocation, stopping at a ceiling: strings are
 // skipped so a name full of brackets or commas is not counted, and `\`

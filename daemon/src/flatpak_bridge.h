@@ -9,20 +9,19 @@
 // config.ini or its avatar cache: see vocem/flatpak.h for the measurements and
 // for the one directory that does cross. This class is the daemon's half of
 // that. It finds the sandboxes whose overlay asked to be served, keeps a
-// MAP_SHARED mirror of the segment in each, and copies config.ini and the
+// mirror of the segment in a file in each, and copies config.ini and the
 // avatar files those sandboxes need.
 //
 // Asking is not being given. `vocem/request` is written by whatever runs in the
-// sandbox, and any Flatpak can write `drawing=1` into it: through 0.1.10 that
-// line alone handed the voice channel, the faces and the words of every message
-// to whichever application wrote it. What decides now is the host, by
-// application id: the id's exported desktop entry says Game, or the user
-// listed the id in `flatpak_apps` -- AND a process of the user's is running
-// in a sandbox whose /.flatpak-info names that id. The id is the directory's
-// name, and a name is not evidence: Flatpak makes the directory, but any
-// sandbox holding the xdg-run/app grant can make one too, under any name
-// (entries 134 and 164). A sandbox that fails either half is adopted all the
-// same (it gets config.ini, so its overlay can decide what to say about
+// sandbox, and any Flatpak can write `drawing=1` into it, so that line alone
+// never hands over the voice channel, the faces or the words of a message.
+// What decides is the host, by application id: the id's exported desktop entry
+// says Game, or the user listed the id in `flatpak_apps` -- AND a process of
+// the user's is running in a sandbox of that id (flatpak_process.h). The id
+// is the directory's name, and a name is not evidence: Flatpak makes the
+// directory, but any sandbox holding the xdg-run/app grant can make one too,
+// under any name (entry 164). A sandbox that fails either half is adopted all
+// the same (it gets config.ini, so its overlay can decide what to say about
 // itself) and is published a cleared state and nothing else.
 //
 // Everything it touches is on the other side of a trust boundary. The directory
@@ -74,13 +73,11 @@ public:
     // Off the publish path: these change on a human's timescale.
     void refresh_files(const SharedState& state);
 
-    // The daemon is going. Takes every mirror's name away, which is what
-    // StateWriter::unlink_segment() does for the segment and for the same
-    // reason: unlinking is how a reader inside a game learns that what it holds
-    // is history. Without it a Flatpak game would go on drawing the last channel
-    // the daemon ever published, for as long as it ran -- the file stays where
-    // it is and every check the reader makes keeps passing. The faces it copied
-    // go too; the emoji bank, which is the package's and nobody's data, stays.
+    // The daemon is going. Takes every mirror's name away, as
+    // StateWriter::unlink_segment() does for the segment: unlinking is how a
+    // reader inside a game learns that what it holds is stale, since the file
+    // itself keeps passing every check. The faces it copied go too; the emoji
+    // bank, which is the package's and nobody's data, stays.
     void stop();
 
     size_t served() const { return mirrors_.size(); }
@@ -136,8 +133,6 @@ private:
         bool faces_given = false;
         // Whether this mirror has settled the colour emoji bank: copied, found
         // already there (mirror_emoji_bank), or found missing on the host.
-        // Sixteen megabytes that never change, and only for a sandbox that is
-        // given the voice channel.
         bool emoji_bank_copied = false;
         // The name of the record already written on the host for this sandbox, so
         // that a tick which learns nothing new writes nothing. The record is one
@@ -146,8 +141,7 @@ private:
         std::string recorded;
         bool rename_said = false;
         // The publish failure's line, said once per sandbox: publish() runs on
-        // every tick, so a mirror whose file cannot be written was one line a
-        // second for as long as the sandbox existed.
+        // every tick.
         bool publish_refused = false;
     };
 
@@ -179,20 +173,19 @@ private:
     static constexpr size_t kMirrorCeiling = 32;
 
     // Whether a refusal about this directory NAME has already been said.
-    // rescan() retries adopt() on every one-second tick, and two of its
-    // refusals had no memory at all: `mkdir $XDG_RUNTIME_DIR/app/x` -- which
-    // any process of this user's can do, a sandbox with the xdg-run/app grant
-    // included, the grant entry 134 names as what hands a sandbox this power --
-    // put one line a second into the journal for ever, from a directory name.
-    // The retry itself is unchanged and must be: a directory that appears
-    // before the game inside it has written its `request` is the ordinary case,
-    // and only the SAYING is once. A name is forgotten again when it is
-    // adopted, so a sandbox that comes back and fails differently speaks again.
+    // rescan() retries adopt() on every one-second tick, and any process of
+    // this user's (a sandbox with the xdg-run/app grant included) can
+    // `mkdir $XDG_RUNTIME_DIR/app/x`; without this memory one name would put a
+    // line a second into the journal for ever. The retry itself must stay: a
+    // directory that appears before the game inside it has written its
+    // `request` is the ordinary case, and only the SAYING is once. A name is
+    // forgotten again when it is adopted, so a sandbox that comes back and
+    // fails differently speaks again.
     //
     // Bounded by the same ceiling as the mirrors, and for the same reason: the
     // set is fed by names somebody else chooses. Past the bound the refusals go
     // quiet with one line saying so, which is the honest end of a bounded
-    // memory (entry 126's shape).
+    // memory.
     bool say_refusal_once(const char* id);
 
     int applications_ = -1;  // $XDG_RUNTIME_DIR/app

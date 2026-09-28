@@ -13,8 +13,7 @@
 // This file is the loops: the port walk, the connection, the pauses between
 // them, and the tick every one of them drives. What the channel is
 // (session.h) and what the protocol says (rpc_client.h) are files of their
-// own since entry 134; a thousand lines in one anonymous namespace was a
-// model nothing could test and a protocol nobody could read in one sitting.
+// own.
 //
 // Authorisation is its own: the daemon asks Discord for a token the first time it
 // connects and stores it. See auth.h for how, and for what that costs us.
@@ -53,13 +52,12 @@ namespace {
 
 constexpr const char* kOrigin = "http://localhost:3000";
 // Discord's client takes the first free port in this range, "trying sequentially
-// until it can bind to one", and tells clients to check the same way. Only 6463
-// was ever tried: with anything else holding it, Discord ran on 6464 and the
-// overlay said "Waiting for Discord" for ever, with nothing in the log.
+// until it can bind to one", and tells clients to check the same way; with
+// anything else holding 6463, Discord runs on a later port (entry 73).
 constexpr uint16_t kRpcPortFirst = 6463;
 constexpr uint16_t kRpcPortLast = 6472;
 
-// The cadences, named. Each was a bare number in the loop that used it.
+// The cadences, named.
 constexpr double kReconcileSeconds = 5.0;  // ask Discord where we are
 constexpr double kDisplaySeconds = 60.0;   // re-read /sys/class/drm
 constexpr double kBridgeSeconds = 1.0;     // sweep the Flatpak sandboxes
@@ -76,20 +74,15 @@ void handle_signal(int) { g_stop = 1; }
 // the question could not be asked, with the reason in `why`.
 //
 // The segment is opened O_CREAT without O_EXCL and its seqlock assumes one
-// writer, so a second vocemd -- started by hand beside the unit, or while it
-// was restarting -- published into the first one's segment under its own
-// count, and whichever stopped first unlinked the name the other was still
-// publishing under (tests/daemon_single_instance.cpp: the second daemon still
-// running 3 s later, and the segment gone once it was stopped).
+// writer, so a second vocemd would publish into the first one's segment, and
+// whichever stopped first would unlink the name the other was still using
+// (tests/daemon_single_instance.cpp).
 //
-// The lock file sits beside the segment in /dev/shm, named from the segment's
-// own name, and not in $XDG_RUNTIME_DIR: /dev/shm is what every daemon test
-// makes private, and a lock in the runtime directory would make each of them
-// collide with the live daemon. /dev/shm is world-writable, so the file is
-// opened without following a link or waiting on a FIFO and is believed only
-// when it is a regular file of this user's: one planted by somebody else is
-// not a lock this daemon can hold, and treating another user's file as "a
-// daemon is running" would let them keep this one from starting.
+// The lock file sits beside the segment in /dev/shm, not in $XDG_RUNTIME_DIR,
+// because /dev/shm is what every daemon test makes private. /dev/shm is
+// world-writable, so the file is opened without following a link or waiting
+// on a FIFO and is believed only when it is a regular file of this user's: a
+// file planted by another user must not keep this daemon from starting.
 int take_instance_lock(std::string& why) {
     char segment[64];
     vocem::shm_name(segment, sizeof(segment), static_cast<unsigned>(getuid()));
@@ -124,14 +117,11 @@ int main() {
     // sigaction and not std::signal, for one flag: SA_RESTART, which glibc's
     // signal() sets. With it, a handler that only raises g_stop changes
     // nothing for a call that is blocked -- the kernel restarts the call and
-    // the flag is never read. Measured: a FIFO planted at an avatar cache name
-    // held rescan() in open() through SIGTERM until the unit's SIGKILL left
-    // the segment published (entry 81), and a FIFO at config.ini holds the
-    // settings reload the same way -- still alive 6 s after SIGTERM with it,
-    // exited in 0.10 s without (tests/daemon_stop_blocked.cpp). Without it a
-    // blocked call returns EINTR, and every loop here reads g_stop. The avatar
-    // worker blocks both signals (avatars.cpp) so that they land on this
-    // thread, the one that has to notice.
+    // the flag is never read, so a FIFO planted at an avatar cache name or at
+    // config.ini would hold the daemon through SIGTERM until the unit's
+    // SIGKILL. Without it a blocked call returns EINTR, and every loop here
+    // reads g_stop. The avatar worker blocks both signals (avatars.cpp) so
+    // that they land on this thread, the one that has to notice.
     struct sigaction stop_action {};
     stop_action.sa_handler = handle_signal;
     sigemptyset(&stop_action.sa_mask);
@@ -201,15 +191,11 @@ int main() {
     // -- the port walk's pause, the reconnect pause, the wait after a refused
     // authorisation, and the recv loop itself -- calls this and nothing else.
     //
-    // That shape is the fix for a defect, not a tidying: the note's expiry used
-    // to be called from the recv loop alone, so it ran only while a Discord
-    // connection was up. Discord quitting after a message therefore left the
-    // words of that message in /dev/shm, readable by every process in the
-    // session, for as long as it stayed away -- measured against the packaged
-    // 0.1.4-1 daemon as still there forty seconds after the connection closed,
-    // which is where the counting stopped and not where the exposure ended.
-    // `vocem/note.h` promises the words live no longer than the toast; the toast
-    // is timed by this daemon, so the clock has to be this daemon's own.
+    // The note's expiry in particular must run while no Discord connection is
+    // up: `vocem/note.h` promises the words live no longer than the toast, and
+    // Discord quitting after a message must not leave them in /dev/shm
+    // (entry 112). The toast is timed by this daemon, so the clock has to be
+    // this daemon's own.
     double bridge_checked = 0.0;
     double display_checked = 0.0;
     const auto tick = [&] {
@@ -219,10 +205,8 @@ int main() {
 
         // The display, on its own slower clock: a mode switch or a plugged
         // monitor is rare, and four sysfs opens a minute cost nothing. Here and
-        // not in the recv loop, where it lived until 0.1.5: there it ran only
-        // while a Discord connection was up, so a monitor plugged in while
-        // Discord was closed left every running game sized to the old mode
-        // until Discord came back.
+        // not in the recv loop, so a monitor plugged in while Discord is closed
+        // still resizes every running game.
         if (now - display_checked >= kDisplaySeconds) {
             display_checked = now;
             session.set_display_height(vocem::display_height());
@@ -245,7 +229,7 @@ int main() {
         }
     };
 
-    // A pause that keeps ticking. Three loops spelled this by hand.
+    // A pause that keeps ticking.
     const auto pause_ticking = [&](int seconds) {
         for (int i = 0; i < seconds && !g_stop; ++i) {
             sleep(1);
@@ -254,14 +238,10 @@ int main() {
     };
 
     // A note found here was written by a daemon that is gone, and its toast went
-    // with it. `~NoteWriter()` retires the words on a clean exit, but the unit
-    // carries `Restart=on-failure` and `MemoryMax=128M`, and a SIGKILL runs no
-    // destructor -- so an OOM-killed daemon leaves the last message's text
-    // behind exactly as a crash does. Nothing can be done inside the process
-    // being killed; declining the inheritance is what the next one can do.
-    // `clear()` is the whole retirement and not just the unlink: it also fires
-    // the `on_publish` hook above, which removes the mirror of those words from
-    // every Flatpak sandbox that was being served.
+    // with it: a SIGKILL (the unit's MemoryMax, a crash) runs no destructor, so
+    // `~NoteWriter()` never retired the words. Declining the inheritance is what
+    // the next daemon can do. `clear()` also fires the `on_publish` hook above,
+    // which removes the mirror of those words from every Flatpak sandbox.
     session.note().clear();
 
     const std::string path = std::string("/?v=1&client_id=") + vocem::kClientId;
@@ -319,8 +299,8 @@ int main() {
             // First source: the cgroup the listener's socket was made in, which
             // the kernel reports without any access to a process. It is the
             // only one the shipped unit leaves the daemon: its user namespace
-            // closes every process of the session to the /proc walk below, and
-            // 0.1.11-1 refused the owner's real Discord for it (entry 285).
+            // closes every process of the session to the /proc walk below
+            // (entry 285).
             const vocem::PeerCgroup cgroup = socket.peer_cgroup();
             bool cgroup_answered = false;
             if (!cgroup.known) {
@@ -378,14 +358,10 @@ int main() {
                     process.place == vocem::PeerPlace::Unknown) {
                     // Cannot tell, which is not hostile: /proc could not be
                     // listed, the holder's root could not be read, or no
-                    // process this daemon can look into holds the socket. The
-                    // last one was refused in the second fix round of 0.1.11
-                    // (an undumpable squatter was sent the token), and that
-                    // refusal is what refused the real Discord from the unit,
-                    // where no process of the session can be looked into.
-                    // An undumpable squatter in a Flatpak is refused above, by
-                    // its cgroup. Said, every time, when the cgroup did not
-                    // answer either.
+                    // process this daemon can look into holds the socket --
+                    // always the case from the unit. An undumpable squatter in
+                    // a Flatpak is refused above, by its cgroup. Said, every
+                    // time, when the cgroup did not answer either.
                     if (!cgroup_answered) {
                         if (process.place == vocem::PeerPlace::Hidden) {
                             LOG("could not establish which process listens on port %u: none "
@@ -408,15 +384,11 @@ int main() {
             reached_on = port;
             break;
         }
-        // The tick above runs once per port, which is what a comment here
-        // claimed for four releases while the only call sat HERE, after the
-        // loop's closing brace -- so ten ports that accept and say nothing were
-        // one deadline each with nothing in between: ~100 s in which
-        // expire_note(), the bridge rescan, the republish and the display
-        // re-read did not run (entry 159). This one stays for the time the last
-        // attempt took, before the pause below starts ticking on its own
-        // second. The tick is cheap and idempotent (its two slower halves carry
-        // their own clocks).
+        // The tick above runs once per port; this one covers the time the
+        // last attempt took, before the pause below starts ticking on its own
+        // second, so ten ports that accept and say nothing cannot keep the
+        // tick away for ten deadlines. The tick is cheap and idempotent (its
+        // two slower halves carry their own clocks).
         tick();
         if (reached_on == 0) {
             DBG("Discord not reachable on ports %u-%u, retrying in %ds", kRpcPortFirst,
@@ -436,19 +408,12 @@ int main() {
             std::string raw;
             const auto result = socket.recv(raw, kRecvTimeoutMs);
             // The recv timeout is one of the four places the tick is driven
-            // from, and for a long time it was the only one -- which is what
-            // left a message's words in /dev/shm whenever Discord went away
-            // between the toast and the tick. See `tick` above.
+            // from. See `tick` above.
             tick();
             const double tick_now = vocem::monotonic_seconds();
-            // Which channel we are actually in, asked rather than remembered.
-            // Discord announces a move it performs for you; being moved by
-            // somebody else is not the client joining anything, and
-            // VOICE_CHANNEL_SELECT is documented as "dispatched when the client
-            // joins a voice channel". The panel is meant to describe what is
-            // around you right now, so where you are is reconciled on a tick and
-            // the events only make it instant. The reply costs nothing when the
-            // answer is the channel we already know.
+            // Which channel we are actually in, asked rather than remembered:
+            // a move by somebody else is announced by no event (see
+            // RpcClient::reconcile_channel).
             if (client.authenticated() && tick_now - channel_checked >= kReconcileSeconds) {
                 channel_checked = tick_now;
                 client.reconcile_channel();
@@ -460,11 +425,10 @@ int main() {
                 continue;
             }
             // Bounded before it is parsed, not after: nlohmann limits neither
-            // depth nor element count, and 8 MiB -- kMaxMessage, entry 72's
-            // reassembly cap -- costs 624 MB nested and up to 221 MB flat
-            // against the unit's MemoryMax of 128M. vocem::json_within says
-            // what each shape costs, what the cgroup then does, and where the
-            // two ceilings come from (entries 183 and 199).
+            // depth nor element count, and an 8 MiB message (kMaxMessage) can
+            // cost several times the unit's MemoryMax to parse.
+            // vocem::json_within says what each shape costs and where the two
+            // ceilings come from.
             //
             // Said once: a peer that does this once will do it again, and the
             // journal is what somebody reads afterwards.
@@ -478,15 +442,11 @@ int main() {
                 }
                 continue;
             }
-            // A second line for an allocation that fails, which is not a parse
-            // error and so arrives as an exception whatever `allow_exceptions =
-            // false` says. Under the unit's MemoryMax it does not: a cgroup
-            // limit never makes malloc fail -- pages are charged when touched,
-            // and past the limit the answer is reclaim, swap or the OOM killer
-            // (measured: the 624 MB parse under MemoryMax=128M swapped and
-            // survived). What reaches this catch is an address-space limit
-            // (RLIMIT_AS) or strict overcommit, which the shape check above
-            // already keeps a message far away from.
+            // An allocation that fails arrives as an exception whatever
+            // `allow_exceptions = false` says. Not under the unit's MemoryMax,
+            // which never makes malloc fail (past it the answer is reclaim,
+            // swap or the OOM killer), but under RLIMIT_AS or strict
+            // overcommit.
             json message;
             try {
                 message = json::parse(raw, nullptr, false);
@@ -524,17 +484,9 @@ int main() {
         // One that did not is a peer that took the connection and dropped it --
         // Discord refusing an origin or a client_id, a client still starting,
         // or something else on the port entirely -- and reconnecting at once
-        // turns that into a busy loop. The backoff used to be reset the moment
-        // the socket connected, which made "reachable" and "willing to talk"
-        // the same question: measured against the packaged **0.1.3-7** daemon,
-        // **2215** connections in five seconds against a peer that answered the
-        // handshake and hung up, where this makes 3 -- and the stub, not the
-        // daemon, was what set that ceiling, so the real figure is higher
-        // (tests/daemon_reconnect.cpp). This comment said "0.1.4-1 ... 1914"
-        // until 2026-09-18: entry 103 withdrew that pair on 2026-09-07 --
-        // 0.1.4-1 is the release that carries the fix and makes 3 -- and the
-        // correcting commit had this file open and corrected the test alone,
-        // which is entry 33's pattern inside the pass correcting entry 103.
+        // turns that into a busy loop. "Reachable" and "willing to talk" are
+        // different questions, so the backoff is not reset on connect alone
+        // (tests/daemon_reconnect.cpp).
         if (client.authenticated()) {
             backoff_seconds = 1;
         }
@@ -544,17 +496,13 @@ int main() {
             vocem::journal_note("connection lost, reconnecting");
         }
         // Always a pause, and for the authenticated case always the shortest
-        // one. "Evidence Discord is really there, so reconnect at once" left
-        // the authenticated path with no sleep in it at all: a session that
-        // authenticates and then ends -- Discord restarting, a client that
-        // accepts AUTHENTICATE and drops, anything that makes
-        // `authenticated_` true without staying -- re-entered this loop with
-        // nothing sleeping, and each turn is a token read, a port walk, a
-        // handshake, a publish and a fan-out to every mirror on
-        // set_connected(true), then the same again on false, plus two journal
-        // lines. A spin, with `connected` flapping under every game's panel.
-        // One second is not a wait anybody notices and is not a busy loop;
-        // only the never-authenticated case doubles from here.
+        // one: a session that authenticates and then ends -- Discord
+        // restarting, a client that accepts AUTHENTICATE and drops -- would
+        // otherwise re-enter this loop with nothing sleeping, each turn a token
+        // read, a port walk, a handshake, a publish and a fan-out to every
+        // mirror, with `connected` flapping under every game's panel. One
+        // second is not a wait anybody notices; only the never-authenticated
+        // case doubles from here.
         pause_ticking(backoff_seconds);
         if (!client.authenticated()) {
             backoff_seconds = backoff_seconds < kBackoffCapSeconds ? backoff_seconds * 2
@@ -567,24 +515,16 @@ int main() {
     // process is -- the segment's name, the note's words, every Flatpak
     // mirror -- goes now, while nothing can still delay it. The avatar worker
     // is joined afterwards: a download in flight is aborted from its progress
-    // callback the moment stop() is called (avatars.cpp), but a join that ran
-    // FIRST, as it did through 0.1.7, put a stalled CDN between SIGTERM and
-    // the unlink -- up to the transfer's own fifteen-second timeout against a
-    // unit whose TimeoutStopSec is ten, so systemctl stop ended in SIGKILL
-    // with the segment still published, the exact leftover entry 81 forbids
+    // callback the moment stop() is called (avatars.cpp), but a stalled CDN
+    // must not stand between SIGTERM and the unlink, or the unit's
+    // TimeoutStopSec ends in SIGKILL with the segment still published
     // (entry 134). tests/daemon_stop_unlinks.cpp measures the seconds.
     // The note's words first of all, and BEFORE bridge.stop(). `clear()` fires
     // the on_publish hook into FlatpakBridge::publish_note(), which unlinks the
     // mirrored copy in every sandbox it is serving -- and stop() empties
-    // `mirrors_`, so with these two the other way round the hook iterated
-    // nothing and unlinked nothing. A clean stop -- the tray's Quit,
-    // `systemctl --user stop`, SIGTERM -- therefore left the last message's
-    // text in `$XDG_RUNTIME_DIR/app/<id>/vocem/note` in every served drawing
-    // sandbox, readable by that application until logout, where
-    // `vocem/note.h` says the daemon "removes it at the same moment it unlinks
-    // the segment". Entry 112 closed this on the host and the sandbox half
-    // stayed open; `adopt()` unlinks a stale note, but "Quit means quit" means
-    // there is no later daemon to do it.
+    // `mirrors_`, so the other way round the hook would unlink nothing and
+    // leave the last message's text in every served sandbox until logout.
+    // "Quit means quit" means there is no later daemon to clean it up.
     session.note().clear();
     bridge.stop();
     writer.close();

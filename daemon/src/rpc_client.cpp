@@ -36,14 +36,12 @@ bool bool_field(const json& object, const char* key) {
 }
 
 // A value from the peer as one line of plain ASCII, for the log. dump() with
-// its defaults escapes the characters below U+0020 and nothing else: the C1
-// controls (U+009B is the one-character CSI, U+0085 NEXT LINE) and U+2028 went
-// into the journal as UTF-8, under a comment here that said dump() "escapes
-// every control character" (the second fix round of 0.1.11 measured it with
-// tests/daemon_log_lines.cpp). ensure_ascii writes every non-ASCII character
-// as \uXXXX, which keeps what the peer sent readable and makes it inert; the
-// replace handler keeps a string nlohmann could not re-encode from throwing
-// inside a log line.
+// its defaults escapes the characters below U+0020 and nothing else, so the C1
+// controls (U+009B is the one-character CSI, U+0085 NEXT LINE) and U+2028 would
+// reach the journal raw. ensure_ascii writes every non-ASCII
+// character as \uXXXX, which keeps what the peer sent readable and makes it
+// inert; the replace handler keeps a string nlohmann could not re-encode from
+// throwing inside a log line.
 std::string loggable(const json& value) {
     return value.dump(-1, ' ', true, json::error_handler_t::replace);
 }
@@ -67,8 +65,8 @@ std::string display_name(const json& entry) {
     return {};
 }
 
-// The five events a channel subscription is made of, in one place: the list
-// was spelled twice, once to subscribe and once to unsubscribe.
+// The five events a channel subscription is made of, in one place, for both
+// subscribing and unsubscribing.
 const char* const kVoiceEvents[] = {"VOICE_STATE_CREATE", "VOICE_STATE_UPDATE",
                                     "VOICE_STATE_DELETE", "SPEAKING_START", "SPEAKING_STOP"};
 
@@ -82,9 +80,7 @@ void RpcClient::send(const json& message) {
     // not the C1 controls: loggable() above) and throws on a string that is
     // not valid UTF-8. Nothing here can carry one: what came off the wire went
     // through the parser, which refuses invalid UTF-8, and the token is
-    // validated when it is loaded (auth.cpp) -- a token file with one 0xFF
-    // byte in it used to end the daemon right here, on the first READY, and
-    // again every ten seconds under Restart=on-failure.
+    // validated when it is loaded (auth.cpp).
     if (!socket_.send_text(message.dump())) {
         broken_ = true;
         LOG("the peer stopped taking what was sent to it: reconnecting");
@@ -165,11 +161,10 @@ void RpcClient::handle(const json& message) {
         // one wait in this daemon that is a call rather than a loop, and it
         // happens once per authorisation, before any message can have
         // arrived in the session, so what stalls is the bridge and the
-        // display re-read. Written down rather than discovered, and kept: a
-        // thread or a poll loop would buy a Flatpak game a few seconds of
-        // earlier adoption during the one moment the user is looking at a
-        // Discord prompt. What was NOT acceptable was a stop that could not
-        // get in: the flag below ends the transfer within a second.
+        // display re-read. A thread or a poll loop would buy a Flatpak game a
+        // few seconds of earlier adoption during the one moment the user is
+        // looking at a Discord prompt. A stop still gets in: the flag below
+        // ends the transfer within a second.
         token_ = exchange_code_for_token(code, stop_);
         if (token_.empty()) {
             session_.set_status(DaemonStatus::AuthorisationRefused);
@@ -318,15 +313,11 @@ void RpcClient::handle(const json& message) {
     // this point is a request Discord refused that nothing was waiting on.
     // A refused SUBSCRIBE is the sharp case: after one, the panel shows a
     // room where nobody ever talks, and a refusal that is not logged is
-    // indistinguishable from a room that is simply quiet (entry 38's
-    // silence, on the wire). The data is the error object Discord sent --
-    // a code and a message, never a user's content -- written as ASCII by
-    // loggable(), which escapes every character that is not printable ASCII;
-    // plain dump() escaped only those below U+0020. The command is the peer's
-    // own string too, and went in raw until 0.1.11: a `cmd` with a newline in
-    // it wrote a line of its choosing into the journal
-    // (tests/daemon_log_lines.cpp), so it goes through sanitise_text like
-    // every other string from the other end.
+    // indistinguishable from a room that is simply quiet. The data
+    // is the error object Discord sent -- a code and a message, never a
+    // user's content -- written as ASCII by loggable(). The command is the
+    // peer's own string too, so it goes through sanitise_text like every
+    // other string from the other end (entry 251).
     if (event == "ERROR") {
         LOG("rpc refused %s: %s", sanitise_text(command).c_str(), loggable(data).c_str());
     }
@@ -398,9 +389,8 @@ void RpcClient::apply_notification(const json& data) {
         // That a message arrived and how long it was, and nothing about who
         // sent it or where: the journal is a file that outlives the session
         // (twenty are kept for the Debug section), and the title is the
-        // sender's name with the guild and the channel -- exactly what entry
-        // 163 retired from the segment the moment the toast is over. This line
-        // used to carry it, for twenty sessions (entry 197).
+        // sender's name with the guild and the channel -- exactly what is
+        // retired from the segment the moment the toast is over.
         char note[96];
         std::snprintf(note, sizeof(note), "notification received (%zu bytes of text)", body.size());
         journal_note(note);

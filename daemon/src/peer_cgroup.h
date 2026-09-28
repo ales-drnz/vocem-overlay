@@ -12,30 +12,23 @@
 // user unit a user namespace of its own, and a process in a child user
 // namespace holds no CAP_SYS_PTRACE over a process in the parent one, so every
 // descriptor directory of the session is closed to it -- Discord's renderer,
-// which holds the RPC socket, among them. Measured on 0.1.11-1: the daemon
-// refused the owner's real Discord every 30 s, while the same code run from a
-// shell found the holder (entry 285).
+// which holds the RPC socket, among them (entry 285).
 //
 // A socket, though, carries the cgroup of the process that created it, and
 // NETLINK_SOCK_DIAG reports it (INET_DIAG_CGROUP_ID) to anyone in the socket's
-// network namespace, with no access to any process: `ss -tlne` inside
-// `systemd-run --user -p ProtectKernelTunables=yes` still names Discord's
-// `app-discord-<n>.scope` (measured). The id is the inode number of that
-// cgroup's directory under /sys/fs/cgroup, which the unit can read. And a
-// Flatpak's processes live in `app-flatpak-<app-id>-<n>.scope`, which the
-// sandbox cannot leave: /sys/fs/cgroup is read-only inside it (measured with
-// com.rtosta.zapzap). A Flatpak holding the whole session bus could ask the
-// user's systemd for a scope of any name -- and could ask Flatpak itself to
-// run anything on the host, so it is no longer in a sandbox to be told
-// apart from.
+// network namespace, with no access to any process. The id is the inode number
+// of that cgroup's directory under /sys/fs/cgroup, which the unit can read.
+// A Flatpak's processes live in `app-flatpak-<app-id>-<n>.scope`, which the
+// sandbox cannot leave: /sys/fs/cgroup is read-only inside it. A Flatpak
+// holding the whole session bus could ask the user's systemd for a scope of
+// any name -- and could ask Flatpak itself to run anything on the host, so it
+// is not in a sandbox to be told apart from.
 //
 // The row the daemon asks about is the peer's end of its own connection, the
 // socket accept() hands the listener, which the kernel clones from the
-// listening one. Measured against the live Discord from inside the unit's
-// confinement: the accepted row and the listening row both name the same
-// `app-discord-<n>.scope`. tests/daemon_unit_peer.cpp holds the rest: the
-// real daemon under the unit's own properties, and a listener in a scope named
-// like Discord's (sent the token) and like a Flatpak's (refused).
+// listening one, so it names the listener's scope. tests/daemon_unit_peer.cpp
+// runs the real daemon under the unit's own properties against a listener in a
+// scope named like Discord's (sent the token) and like a Flatpak's (refused).
 
 #ifndef VOCEM_PEER_CGROUP_H
 #define VOCEM_PEER_CGROUP_H

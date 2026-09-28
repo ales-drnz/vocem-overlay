@@ -50,11 +50,10 @@ const char* leaf_of(const char* path) {
 // can replace any of these names with something that is not a file, and this
 // process runs as the user with the user's whole home reachable.
 //
-// `O_NONBLOCK` is the load-bearing flag and it was not here at first. The
-// `S_ISREG` check below is useless without it, because it is on the far side of
-// the `open` -- opening a FIFO `O_RDONLY` waits for a writer that never comes,
-// and one `mkfifo` inside any sandbox hung `vocemd` in `rescan()` before it had
-// even reached Discord, through a wait `SIGTERM` does not interrupt. With the
+// `O_NONBLOCK` is the load-bearing flag. The `S_ISREG` check below is useless
+// without it, because it is on the far side of the `open`: opening a FIFO
+// `O_RDONLY` waits for a writer that never comes, in a wait `SIGTERM` does not
+// interrupt, so one `mkfifo` inside any sandbox would hang `rescan()`. With the
 // flag the open returns, the check runs, and the flag is taken off again so
 // nothing downstream inherits non-blocking semantics it did not ask for. On a
 // regular file `O_NONBLOCK` means nothing, which is the point.
@@ -209,11 +208,9 @@ enum class Source {
     Bank,
 };
 
-// A source opened O_NONBLOCK and checked with fstat before one byte is read.
-// Through 0.1.10 this was `fopen(source, "rb")`: measured, a link planted at
-// a cache name copied the file it named (a stand-in token) into the sandbox,
-// and a FIFO there held rescan() in open() -- through SIGTERM, which restarts
-// the call -- until the unit's SIGKILL, leaving the segment behind.
+// A source opened O_NONBLOCK and checked with fstat before one byte is read,
+// so that a link planted at a cache name cannot copy the file it names into
+// the sandbox, and a FIFO there cannot hold rescan() in open() (entry 245).
 int open_source(const char* path, Source kind, struct stat& info) {
     const int follow = kind == Source::Avatar ? O_NOFOLLOW : 0;
     const int fd = ::open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | follow);
@@ -221,7 +218,7 @@ int open_source(const char* path, Source kind, struct stat& info) {
         return -1;
     }
     const off_t ceiling = kind == Source::Settings ? off_t{1} << 20   // a settings file is KB
-                          : kind == Source::Bank   ? off_t{64} << 20  // 16.3 MB today
+                          : kind == Source::Bank   ? off_t{64} << 20  // the bank is about 16 MB
                                                    : static_cast<off_t>(kAvatarRgbaBytes);
     const bool shaped = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
                         (kind == Source::Avatar ? info.st_size == ceiling
@@ -290,10 +287,6 @@ bool copy_into(int directory, const char* source_path, const char* name, Source 
     return true;
 }
 
-// Whether the sandbox already holds a copy of this source: a regular file of
-// the same size carrying the same modification time, which copy_into() gives
-// every bank copy it makes. A copy of another version, or one the sandbox
-// removed or replaced, is not the same copy.
 // Every face this bridge may have put in a sandbox's avatars directory: the
 // names that end in `.rgba`, and their `.part` temporaries. The directory is
 // the sandbox's, so it is opened O_NOFOLLOW, and unlinkat() removes a link and
@@ -331,6 +324,10 @@ void remove_faces(int directory) {
     ::closedir(listing);
 }
 
+// Whether the sandbox already holds a copy of this source: a regular file of
+// the same size carrying the same modification time, which copy_into() gives
+// every bank copy it makes. A copy of another version, or one the sandbox
+// removed or replaced, is not the same copy.
 bool same_copy(int directory, const char* name, const char* source_path) {
     struct stat source {};
     struct stat copy {};
@@ -394,8 +391,7 @@ bool FlatpakBridge::start() {
     if (directory.empty()) {
         // Once, not once per second: rescan() retries this for the life of the
         // process, and the header promises the refusal is said "once and
-        // quietly" -- which this line, unguarded, made false in both halves on
-        // any machine without a session runtime directory.
+        // quietly".
         if (!runtime_missing_said_) {
             runtime_missing_said_ = true;
             LOG("no XDG_RUNTIME_DIR: Flatpak games cannot be reached from here");
@@ -444,11 +440,10 @@ void FlatpakBridge::close(Mirror& mirror) {
 
 bool FlatpakBridge::adopt(const char* id) {
     // Walked one component at a time from the directory descriptor this class
-    // already holds, `O_NOFOLLOW` on every step. The first version built one
-    // absolute path and put `O_NOFOLLOW` on the last component only, which left
-    // the application's own directory able to be a symbolic link: with write
-    // access to $XDG_RUNTIME_DIR/app -- which `--filesystem=xdg-run/app` grants
-    // -- the state and the settings copy went through it. Nothing above
+    // already holds, `O_NOFOLLOW` on every step, so the application's own
+    // directory cannot be a symbolic link: with write access to
+    // $XDG_RUNTIME_DIR/app -- which `--filesystem=xdg-run/app` grants -- the
+    // state and the settings copy would go through it (entry 86). Nothing above
     // $XDG_RUNTIME_DIR/app is reachable from a sandbox, so the walk starts there.
     const int application =
         ::openat(applications_, id, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -530,15 +525,12 @@ bool FlatpakBridge::adopt(const char* id) {
 //
 // One record per sandbox, under a file name made from the application id --
 // `flatpak@` and the id with its dots spelled as colons -- and never under the
-// name the sandbox gives. Through 0.1.10 it was the name the sandbox gave, and a
-// new file for every new name: measured, a sandbox rewriting its own request
-// 5000 times left 5000 files in ~/.cache/vocem/apps, and one naming itself
-// `java` replaced the host's own Minecraft record, verdict and evidence
-// included. A host record's file name is detail::sanitised() of a process name,
-// which never holds '@' or ':', so the two cannot meet; the dots are spelled
-// otherwise because the reader skips any name holding ".tmp." -- an id like
-// `com.tmp.Game` would have been a record nobody saw. A name that changes
-// replaces the sandbox's one file, and is said once.
+// name the sandbox gives, which could fill ~/.cache/vocem/apps or replace a host
+// application's record (entry 247). A host record's file name is
+// detail::sanitised() of a process name, which never holds '@' or ':', so the
+// two cannot meet; the dots are spelled otherwise because the reader skips any
+// name holding ".tmp." -- an id like `com.tmp.Game` would be a record nobody
+// sees. A name that changes replaces the sandbox's one file, and is said once.
 void FlatpakBridge::write_record_for(Mirror& mirror, const Request& request) {
     if (request.name.empty() || request.name == mirror.recorded) {
         return;
@@ -620,7 +612,7 @@ std::string printable_id(const char* id) {
 // The Flatpak exports directories this daemon asks about an application id:
 // the user's installation under $XDG_DATA_HOME/flatpak, and every
 // $XDG_DATA_DIRS root that is one (Flatpak's own profile and its systemd user
-// environment generator put both there -- measured on this machine:
+// environment generator put both there:
 // `~/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:...`).
 // The system installation is added by name only when the list does not carry
 // any exports directory at all, which is a session Flatpak's profile never
@@ -672,12 +664,10 @@ struct Consent {
 
 // Whether the application with this id may be given the voice channel. Asked
 // of the host, never of the sandbox: everything below is outside it. The id
-// is the name of a directory under $XDG_RUNTIME_DIR/app -- which this comment
-// said the application "cannot choose" until the second fix round of 0.1.11,
-// while two other comments in this file and entries 134 and 164 said that a
-// sandbox holding the xdg-run/app grant can make one under any name. So this
-// answers what the id may be given, and check_running() answers whether the
-// directory is that application at all: a process of it must be running.
+// is the name of a directory under $XDG_RUNTIME_DIR/app, which a sandbox
+// holding the xdg-run/app grant can make under any name. So this answers what
+// the id may be given, and check_running() answers whether the directory is
+// that application at all: a process of it must be running.
 //
 // Two yeses. The user listed the id in `flatpak_apps`. Or the desktop entry
 // Flatpak exported for that id says Game -- by the same rule the detection
@@ -685,8 +675,7 @@ struct Consent {
 // `LauncherStore`), which lets Steam, Heroic or Sober through and keeps a chat
 // client out.
 //
-// The exported entry is a symbolic link, always: measured, all five under
-// /var/lib/flatpak/exports/share/applications on this machine point into
+// The exported entry is always a symbolic link, into
 // `../../../app/<id>/current/active/export/...`. So the link is followed --
 // an O_NOFOLLOW open refuses every real Flatpak -- and what it resolves to
 // must be inside that installation's own `app/<id>/`: an exported name that
@@ -740,8 +729,7 @@ void FlatpakBridge::decide(Mirror& mirror, bool announce) {
     }
     // Taken back. The words and the faces go now -- the next publish is a
     // cleared state -- and the refusal may be said again, since what it
-    // answers has changed. Until the second fix round of 0.1.11 the words
-    // were all that went: every face already copied stayed in the sandbox.
+    // answers has changed.
     ::unlinkat(mirror.directory, kBridgeNoteName, 0);
     take_faces_back(mirror);
     mirror.refusal_said = false;
@@ -765,13 +753,11 @@ const std::set<std::string>& FlatpakBridge::running_ids() {
 
 // Whether the directory is the application its name says: a process of this
 // user's is running in that id's Flatpak scope, or in a sandbox whose
-// /.flatpak-info names it (flatpak_process.h; from the daemon's unit only the
-// scope can be seen, entry 285). The name
-// alone is not evidence -- `mkdir $XDG_RUNTIME_DIR/app/org.vinegarhq.Sober`
-// from any sandbox holding the xdg-run/app grant, a `request` with drawing=1
-// in it, and until the second fix round of 0.1.11 that sandbox was served as
-// Sober (a Game): channel, names, faces, the words of every message. A
-// process's scope and its /.flatpak-info are what a sandbox cannot forge.
+// /.flatpak-info names it (flatpak_process.h: from the daemon's unit only the
+// scope can be seen). The name alone is not evidence: any sandbox
+// holding the xdg-run/app grant can `mkdir $XDG_RUNTIME_DIR/app/<a game's id>`
+// and write a `request` with drawing=1 in it. A process's scope and its
+// /.flatpak-info are what a sandbox cannot forge.
 //
 // Asked on every sweep, not once: a directory stays after its application
 // exits, and a mirror whose game has gone is somebody else's to write into
@@ -907,16 +893,14 @@ void FlatpakBridge::rescan() {
         // The two bounds on who gets served, refused out loud (entry 134).
         // A directory under $XDG_RUNTIME_DIR/app can be made by any process
         // of the user's -- a sandbox with the xdg-run/app grant included --
-        // and every mirror costs two descriptors, the emoji bank -- 16.3 MB
-        // today, with its sequence table beside it, where this comment said six
-        // megabytes until 2026-09-18 and the two other comments about the same
-        // file were corrected without it -- and a share of every publish:
-        // without a ceiling a few hundred
-        // asking directories exhausted this process's descriptors, after
-        // which the socket, /proc/net/tcp and the segment itself all failed
-        // to open. A Flatpak application id is reverse-DNS -- letters,
-        // digits, '.', '_' and '-', at least one dot -- and a name that is
-        // not one was never made by Flatpak.
+        // and every mirror costs two descriptors, the emoji bank (about
+        // 16 MB, with its sequence table beside it) and a share of every
+        // publish: without a ceiling a few hundred asking directories would
+        // exhaust this process's descriptors, after which the socket,
+        // /proc/net/tcp and the segment itself would fail to open. A Flatpak
+        // application id is reverse-DNS -- letters, digits, '.', '_' and '-',
+        // at least one dot -- and a name that is not one was never made by
+        // Flatpak.
         if (mirrors_.size() >= kMirrorCeiling) {
             if (!ceiling_said_) {
                 ceiling_said_ = true;
@@ -1019,8 +1003,7 @@ void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
         note.sequence.store(2, std::memory_order_relaxed);
         copy_string(note.body, kNotificationBodyCapacity, body, std::strlen(body));
 
-        // The same "<name>.part" rule copy_into() spells: this was the one
-        // place the bridge's file naming was stated twice, as a literal.
+        // The same "<name>.part" rule copy_into() spells.
         const std::string temporary = std::string(kBridgeNoteName) + ".part";
         const int fd =
             open_regular(mirror.directory, temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
@@ -1039,10 +1022,8 @@ void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
 }
 
 // config.ini when it moved, and again on every sweep until a copy of that
-// version has arrived. What was copied and what was said are two memories:
-// they used to be one, set on failure too so that the failure was said once
-// per change -- which also meant it was never tried again until the user next
-// changed a setting, and the overlay in that game drew with whatever it had.
+// version has arrived. What was copied and what was said are two memories, so
+// that a failure is said once per version and still retried (entry 248).
 void FlatpakBridge::mirror_config(Mirror& mirror) {
     const long long mtime = Config::mtime();
     if (mtime == mirror.config_mtime) {
@@ -1064,9 +1045,8 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
     // Both refusals below are said once per sandbox: this directory is inside
     // territory the sandbox owns, so a file planted at the avatars name (which
     // makes the O_DIRECTORY|O_NOFOLLOW open fail) is exactly the hostile shape
-    // the rest of this file refuses out loud -- and a game whose faces never
-    // arrive with an empty log was the one quiet corner of it. Once, because
-    // this runs on the tick and the condition persists.
+    // the rest of this file refuses out loud. Once, because this runs on the
+    // tick and the condition persists.
     if (::mkdirat(mirror.directory, kBridgeAvatarsName, 0700) != 0 && errno != EEXIST) {
         if (!mirror.avatars_refused) {
             mirror.avatars_refused = true;
@@ -1123,24 +1103,19 @@ void FlatpakBridge::mirror_avatars(Mirror& mirror, const SharedState& state) {
 // The colour emoji bank, once per sandbox that draws.
 //
 // Inside a Flatpak the compiled-in path names the *runtime's* /usr and finds
-// nothing, so the overlay drew every emoji in the monochrome fallback and said
-// so in the log and nowhere else. It is the same omission the note segment had
-// before entry 88 -- a fourth thing to carry that nothing carried -- and the
-// same answer.
+// nothing, so without this copy the overlay would draw every emoji in the
+// monochrome fallback.
 //
 // Unlike the settings and the faces this is copied once per sandbox: sixteen
 // megabytes that never change while the daemon runs. Once per SANDBOX and not
 // once per mirror: a mirror is dropped when the sandbox stops asking and made
-// anew when it asks again, and the flag below used to be the whole memory, so
-// a sandbox toggling its request had the bank copied again every time, on
-// this thread (measured: five re-adoptions, five more copies). What is asked
-// now is the sandbox's own directory -- same_copy(): the pair is already
+// anew when it asks again, so the flag below is not the whole memory. What is
+// asked is the sandbox's own directory -- same_copy(): the pair is already
 // there, at the source's size and modification time -- which also holds
 // across a daemon restart, and still copies a bank that changed on the host
-// or that the sandbox took away. Only into a sandbox that
-// is given the voice channel (Mirror::voice()), so a Flatpak the user has
-// excluded or never consented to costs nothing, and sixteen megabytes of the
-// runtime directory is a real cost to name rather than spend quietly.
+// or that the sandbox took away. Only into a sandbox that is given the voice
+// channel (Mirror::voice()), so a Flatpak the user has excluded or never
+// consented to costs nothing.
 //
 // Two files, in this order: the sequence table first, the bank second. The
 // overlay waits on the BANK (emoji_bank.h: it looks twice a second, and reads
@@ -1154,10 +1129,8 @@ void FlatpakBridge::mirror_emoji_bank(Mirror& mirror) {
     }
     // The same resolution every reader of the bank makes (emoji_bank.h, and
     // CMakeLists.txt documents the override): $VOCEM_EMOJI_BANK first, the
-    // installed path otherwise. The bridge used to take the installed path
-    // alone, so in a dev tree the overlay opened the built bank while the
-    // daemon copied nothing and logged a missing file that was not the one
-    // being used. The table is beside whichever bank that is.
+    // installed path otherwise, so a dev tree's daemon copies the bank its
+    // overlay opens. The table is beside whichever bank that is.
     const char* bank_path = std::getenv("VOCEM_EMOJI_BANK");
     if (!bank_path || !bank_path[0]) {
         bank_path = VOCEM_EMOJI_BANK_PATH;  // not sandboxed: the installed path is right here

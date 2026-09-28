@@ -23,23 +23,19 @@
 //
 // /proc/<pid>/root of a process of this user's is readable from a shell --
 // PTRACE_MODE_READ, which yama ptrace_scope=1 does not restrict -- including
-// under `bwrap --unshare-user --unshare-pid` (measured). A process that is
-// not dumpable, or that holds capabilities, is closed to it. And so is EVERY
-// process of the session from the daemon's own unit: its ProtectClock,
-// ProtectKernel* and ProtectControlGroups give a user unit a user namespace
-// of its own, and from a child user namespace a ptrace-mode read of a process
-// in the parent one is refused (commoncap: not the same namespace, no
-// CAP_SYS_PTRACE in the target's). Measured on 0.1.11-1: under
-// `systemd-run --user -p ProtectKernelTunables=yes` the root and the
-// descriptors of a plain `sleep` started from a shell read EACCES, and
-// running_flatpak_ids() found no Flatpak with ZapZap running (entry 285).
+// under `bwrap --unshare-user --unshare-pid`. A process that is not dumpable,
+// or that holds capabilities, is closed to it. And so is EVERY process of the
+// session from the daemon's own unit: its ProtectClock, ProtectKernel* and
+// ProtectControlGroups give a user unit a user namespace of its own, and from
+// a child user namespace a ptrace-mode read of a process in the parent one is
+// refused (commoncap: not the same namespace, no CAP_SYS_PTRACE in the
+// target's), so from there no root can be read (entry 285).
 //
 // So the process's cgroup is asked first. Flatpak starts every sandbox in a
 // systemd scope named `app-flatpak-<app-id>-<n>.scope`, the sandbox cannot
 // leave it (/sys/fs/cgroup is read-only inside), and /proc/<pid>/cgroup is
-// readable without any ptrace access -- from the unit too (measured: the five
-// processes of a running ZapZap, from both sides). The /.flatpak-info stays as
-// the second source, for a Flatpak started where no scope is made.
+// readable without any ptrace access, from the unit too. The /.flatpak-info
+// stays as the second source, for a Flatpak started where no scope is made.
 
 #ifndef VOCEM_DAEMON_FLATPAK_PROCESS_H
 #define VOCEM_DAEMON_FLATPAK_PROCESS_H
@@ -174,8 +170,8 @@ inline bool all_digits(const char* name) {
 
 // The application ids of every Flatpak sandbox with a process of this user's
 // running in it now, as far as this process can see: one stat and one or two
-// opens per process of the user's, about a millisecond for the 147 of 489 on
-// this machine. False when /proc cannot be listed at all, which leaves `ids`
+// opens per process of the user's, about a millisecond for a desktop
+// session's. False when /proc cannot be listed at all, which leaves `ids`
 // empty. The cgroup is asked first and the /.flatpak-info second (see the
 // header); a sandbox that answers neither is not in the answer, and a caller
 // must treat that as "not seen running".

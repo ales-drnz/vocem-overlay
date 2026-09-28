@@ -32,14 +32,14 @@ namespace {
 
 // A ceiling on what the RPC port can make this process remember. Every key
 // arrives off the socket -- a voice event's participant or a notification's
-// author -- and nothing removes one until its download fails, so a peer
-// emitting a fresh author id per message grew `known_` (and with it `queue_`,
-// which only ever holds keys `known_` just admitted) without limit, against a
-// unit that carries MemoryMax=128M. The participant path has its own ceiling
-// in main.cpp; this is the same answer for the container both paths land in.
-// The number is far above any real session -- a channel holds kMaxUsers faces
-// and a busy evening of messages is dozens -- so hitting it is a statement
-// about the peer, and it is said in the log once.
+// author -- and nothing removes one until its download fails, so without it a
+// peer emitting a fresh author id per message grows `known_` (and `queue_`)
+// without limit against the unit's MemoryMax=128M. The participant
+// path has its own ceiling (kParticipantCeiling in session.h); this is the
+// same answer for the container both paths land in. The number is far above
+// any real session -- a channel holds kMaxUsers faces and a busy evening of
+// messages is dozens -- so hitting it is a statement about the peer, and it is
+// said in the log once.
 constexpr size_t kAvatarKnownCeiling = 1024;
 
 }  // namespace
@@ -114,7 +114,7 @@ size_t AvatarCache::tracked() const {
 
 bool AvatarCache::download(const std::string& url, std::string& body) {
     // Into memory, not onto disk: what the CDN serves is input to a parser, and
-    // the only thing this cache writes to disk any more is the parser's output.
+    // the only thing this cache writes to disk is the parser's output.
     CURL* curl = curl_easy_init();
     if (!curl) {
         return false;
@@ -123,8 +123,7 @@ bool AvatarCache::download(const std::string& url, std::string& body) {
     // A 64-pixel PNG is a few kilobytes; a megabyte is not an avatar, whatever
     // the server says it is. The limit is in the write callback because
     // CURLOPT_MAXFILESIZE only reads the length a server advertises, and a
-    // chunked response advertises none -- so the option alone let a hostile or
-    // hijacked host stream for the whole 15-second timeout.
+    // chunked response advertises none (see curl_sink.h).
     CurlSink sink;
     sink.limit = 1024u * 1024u;
 
@@ -146,11 +145,10 @@ bool AvatarCache::download(const std::string& url, std::string& body) {
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // A way out of a transfer that is under way when the daemon is told to
     // stop. stop() sets the flag and joins this thread, and a stalled CDN --
-    // or a proxy that accepted the connection and went quiet -- used to hold
-    // the join for the transfer's whole fifteen seconds, past the unit's
-    // TimeoutStopSec, so the daemon was killed with its segment still
-    // published (entry 134). libcurl consults this callback as the transfer
-    // progresses and ends it on a non-zero answer.
+    // or a proxy that accepted the connection and went quiet -- must not hold
+    // the join past the unit's TimeoutStopSec, which kills the daemon with its
+    // segment still published (main.cpp's shutdown). libcurl consults this callback as
+    // the transfer progresses and ends it on a non-zero answer.
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
@@ -184,11 +182,10 @@ void AvatarCache::worker() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             wake_.wait(lock, [this] { return stopping_.load() || !queue_.empty(); });
-            // Stopping means stopping. This used to drain the queue first, so a
-            // channel filling up against an unreachable CDN made shutdown as long
-            // as twenty-four downloads at fifteen seconds each -- well past the
-            // unit's stop timeout, and a SIGKILL skips the unlink that takes the
-            // segment away. A face nobody downloaded arrives on the next start.
+            // Stopping means stopping: the queue is not drained, because a
+            // channel filling up against an unreachable CDN would make shutdown
+            // last many downloads' timeouts, past the unit's stop timeout. A face
+            // nobody downloaded arrives on the next start.
             if (stopping_.load()) {
                 return;
             }
@@ -255,8 +252,7 @@ void AvatarCache::worker() {
             // Which half failed is the whole diagnosis -- a CDN that cannot be
             // reached and a payload that will not decode are different
             // problems, and the user-visible symptom (a grey disc that never
-            // fills in) is identical for both. auth.cpp names its two failure
-            // modes; this path was the one that did not.
+            // fills in) is identical for both.
             LOG("avatar for %llu not %s", static_cast<unsigned long long>(request.user_id),
                 fetched ? "decodable: the CDN's bytes were refused"
                         : "downloaded: the CDN could not be reached or refused the request");

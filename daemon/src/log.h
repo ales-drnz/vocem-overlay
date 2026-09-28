@@ -4,10 +4,8 @@
 //
 // The daemon's log, in one place.
 //
-// These two macros lived inside main.cpp's anonymous namespace while main.cpp
-// was the only thing that logged. The Flatpak bridge is a second translation
-// unit with things to say -- how many sandboxes it serves, and every one it
-// refuses and why -- and a second copy of the spelling is how a prefix drifts.
+// Every translation unit that logs (main.cpp, the Flatpak bridge and the rest)
+// uses these two macros, so the prefix has one spelling and cannot drift.
 
 #ifndef VOCEM_DAEMON_LOG_H
 #define VOCEM_DAEMON_LOG_H

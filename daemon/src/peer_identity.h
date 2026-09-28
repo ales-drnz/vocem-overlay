@@ -5,43 +5,36 @@
 // Who owns the other end of a loopback connection.
 //
 // The daemon connects to whatever answers on 127.0.0.1 in Discord's RPC port
-// range and, the moment that peer says READY, sends it the stored OAuth token --
-// whose scopes include messages.read. Nothing about the peer was ever checked, so
-// any process that bound the port before Discord did was handed the credential:
-// another user on the machine, or a sandboxed process of the user's own that can
-// bind loopback but cannot read $XDG_STATE_HOME. The project's own
-// tests/daemon_notification.cpp is a working demonstration -- a stub that does
-// nothing but listen gets AUTHENTICATE with the real token.
+// range and, when that peer says READY, sends it the stored OAuth token, whose
+// scopes include messages.read. Any process that bound the port before Discord
+// would be handed the credential: another user on the machine, or a sandboxed
+// process of the user's own that can bind loopback but cannot read
+// $XDG_STATE_HOME.
 //
 // /proc/net/tcp lists every TCP socket with the uid that owns it. The peer's row
 // is the one whose local endpoint is our remote and whose remote endpoint is our
 // local, which is exact: a connected pair of endpoints identifies one socket.
-// That closes the cross-user case and nothing more. A sandbox runs as the same
-// uid -- measured by the review of 2026-09-26: a listener under
-// `bwrap --unshare-user --unshare-pid`, network shared, read outcome=Found
-// uid=1000, and this header's claim that the uid "closes the cross-sandbox case"
-// was false for as long as it stood.
+// The uid closes the cross-user case and nothing more, because a sandbox runs
+// as the same uid.
 //
 // So the row's inode is taken too, and socket_process() below finds the process
 // that holds it (a `socket:[inode]` link under /proc/<pid>/fd) and reads the
 // `/.flatpak-info` Flatpak puts at the root of every sandbox, which the
 // application inside cannot change. A peer in a Flatpak sandbox that is not one
-// of Discord's own application ids is refused by the caller. Measured on this
-// machine with yama ptrace_scope=1: /proc/<pid>/fd and /proc/<pid>/root of a
-// process under `bwrap --unshare-user --unshare-pid` are readable from the host,
-// because both are PTRACE_MODE_READ, which Yama does not restrict, and the uid
-// is the same.
+// of Discord's own application ids is refused by the caller. Under yama
+// ptrace_scope=1 both /proc/<pid>/fd and /proc/<pid>/root of a same-uid process
+// are readable (PTRACE_MODE_READ, which Yama does not restrict).
 //
-// This still does not defend against a process running as the same user
-// outside any sandbox -- nothing can, and Discord's own client is one.
+// This does not defend against a process running as the same user outside any
+// sandbox -- nothing can, and Discord's own client is one.
 //
-// Two things this deliberately does NOT do, because a daemon that refuses to work
-// is worse than one that is not confined:
+// Two things this deliberately does, because a daemon that refuses to work is
+// worse than one that is not confined:
 //
 //   * it looks in /proc/net/tcp6 as well. A server socket bound dual-stack
 //     accepts our IPv4 connection into a socket the kernel lists there, as
-//     ::ffff:127.0.0.1 -- so looking only at /proc/net/tcp would have refused a
-//     perfectly ordinary Discord client;
+//     ::ffff:127.0.0.1, so looking only at /proc/net/tcp would refuse an
+//     ordinary Discord client;
 //   * "cannot tell" is not "hostile". Where neither file can be read -- a
 //     container with /proc restricted -- the caller is told the answer is unknown
 //     and says so out loud, rather than treating every peer as an impostor. The
@@ -51,28 +44,15 @@
 //     namespace of its own sees none of the host's): the caller says so and
 //     goes on.
 //
-// One "cannot tell" was refused for a while, and that refusal is what broke
-// 0.1.11-1. The second fix round of 0.1.11 refused a socket of this user's
-// that no process the scan could look into holds, while some of this user's
-// processes could not be looked into (PeerPlace::Hidden): the review's
-// refutation had made its squatter undumpable -- prctl(PR_SET_DUMPABLE, 0)
-// gives its /proc/<pid> to global root -- and it was sent the token. Both the
-// fix and its refuter measured the live Discord from a SHELL, where its
-// renderer is an ordinary dumpable process the scan finds. The daemon does not
-// run in a shell: its unit's ProtectClock, ProtectHostname, ProtectKernel* and
-// ProtectControlGroups give it a user namespace of its own, and from there a
-// readlink under /proc/<pid>/fd of ANY process of the session is EACCES
-// (measured on a plain `sleep`: commoncap refuses a ptrace-mode read across
-// user namespaces without CAP_SYS_PTRACE in the target's). No holder is ever
-// found from the unit, four of the user's processes always have fd
-// directories that will not open, so every listener was Hidden and the real
-// Discord was refused every 30 s (entry 285).
-//
-// Hidden is "cannot tell" again, said and allowed. The Flatpak squatter it was
-// meant for, undumpable or not, is refused by the cgroup its socket was made
-// in (peer_cgroup.h), which the kernel reports without looking into any
-// process; this scan is the second source, and still refuses a Flatpak it CAN
-// see (tests/daemon_peer_sandbox.cpp, from a shell).
+// Hidden (no holder found while some of this user's processes are closed to
+// the scan) is "cannot tell" too, said and allowed. The daemon's unit gives it
+// a user namespace of its own (the Protect* properties imply one), and from
+// there a readlink under /proc/<pid>/fd of any process of the session is
+// EACCES, so from the unit every listener is Hidden and refusing it would
+// refuse the real Discord (entry 285). A Flatpak squatter, undumpable or not,
+// is refused by the cgroup its socket was made in (peer_cgroup.h), which the
+// kernel reports without looking into any process; this scan is the second
+// source, and still refuses a Flatpak it can see.
 
 #ifndef VOCEM_PEER_IDENTITY_H
 #define VOCEM_PEER_IDENTITY_H
@@ -186,10 +166,9 @@ inline PeerIdentity socket_owner(uint32_t local_address, uint16_t local_port,
 }
 
 // Discord's own Flatpak application ids: the Flathub build and the Canary one
-// Flathub's beta repository carries (`flatpak search` on this machine lists
-// com.discordapp.Discord and no PTB). A client built on arRPC (Vesktop and the
-// like) answers presence on this port and cannot authorise, so it has no use
-// for the token either.
+// Flathub's beta repository carries; there is no PTB Flatpak. A client built
+// on arRPC (Vesktop and the like) answers presence on this port and cannot
+// authorise, so it has no use for the token either.
 inline bool is_discord_flatpak(const std::string& id) {
     return id == "com.discordapp.Discord" || id == "com.discordapp.DiscordCanary";
 }
