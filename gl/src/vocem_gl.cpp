@@ -700,7 +700,7 @@ public:
                 give_back_here(egl);
                 // The atlas belongs to the fonts module and survives release()
                 // on purpose, so that a game cycling its context pays nothing;
-                // being switched off is when its 64 MB of glyphs go back.
+                // being switched off is when its glyphs go back.
                 vocem::fonts_release();
             }
         }
@@ -868,13 +868,10 @@ public:
             vocem::configure_style(config);
             // A fold changed a few 32-pixel squares of an atlas the texture
             // already holds, so only those go up (entry 192): the whole atlas
-            // is a 64 MB glTexImage2D. A build replaces the texture whole, and
-            // so does a fold the regions cannot describe.
+            // is a 43 MB glTexImage2D at 2160 lines. A build replaces the
+            // texture whole, and so does a fold the regions cannot describe.
             if (rebuilt || atlas_from_worker || !upload_folded_regions()) {
-                vocem::fonts_take_folded(nullptr, 0);  // the whole atlas carries them
-                ImGui_ImplOpenGL3_DestroyFontsTexture();
-                ImGui_ImplOpenGL3_CreateFontsTexture();
-                VOCEM_GLOG("font texture uploaded whole");
+                upload_atlas_whole();
                 atlas_from_worker = false;
             }
         }
@@ -883,10 +880,7 @@ public:
             // backend's texture still holds the default bitmap it was created
             // with, so the atlas goes up whole now.
             vocem::configure_style(config);
-            vocem::fonts_take_folded(nullptr, 0);
-            ImGui_ImplOpenGL3_DestroyFontsTexture();
-            ImGui_ImplOpenGL3_CreateFontsTexture();
-            VOCEM_GLOG("font texture uploaded whole");
+            upload_atlas_whole();
         }
 
         // Why there are no colour emoji, and why the text is not in the font
@@ -1282,7 +1276,15 @@ private:
             // upload: CreateFontsTexture zeroes GL_UNPACK_ROW_LENGTH and never
             // restores it.
             const PixelStoreGuard unpack = avatars_.pixel_store_guard();
-            if (!ImGui_ImplOpenGL3_CreateDeviceObjects()) {
+            // CreateDeviceObjects uploads the atlas as it finds it: the RGBA
+            // copy with the colour squares in it, handed back once it is up.
+            unsigned char* pixels = nullptr;
+            int atlas_width = 0;
+            int atlas_height = 0;
+            vocem::fonts_atlas_rgba(&pixels, &atlas_width, &atlas_height);
+            const bool created = ImGui_ImplOpenGL3_CreateDeviceObjects();
+            vocem::fonts_atlas_uploaded();
+            if (!created) {
                 VOCEM_GLOG("ImGui OpenGL3 backend could not create its GL objects");
                 ImGui_ImplOpenGL3_Shutdown();
                 return fail_in_this_context(egl);
@@ -1506,32 +1508,47 @@ private:
     // the dispatcher and no lookup.
     void* (*current_context_)() = nullptr;
 
+    // The whole atlas into a new font texture: the fonts module's RGBA copy
+    // (widened again, colour squares and all, if it was handed back after the
+    // last one) goes up through the backend's CreateFontsTexture and is handed
+    // back once it is up -- the texture holds it from there. Under draw()'s
+    // PixelStoreGuard.
+    void upload_atlas_whole() {
+        vocem::fonts_take_folded(nullptr, 0);  // the whole atlas carries them
+        ImGui_ImplOpenGL3_DestroyFontsTexture();
+        unsigned char* pixels = nullptr;
+        int width = 0;
+        int height = 0;
+        vocem::fonts_atlas_rgba(&pixels, &width, &height);
+        ImGui_ImplOpenGL3_CreateFontsTexture();
+        vocem::fonts_atlas_uploaded();
+        VOCEM_GLOG("font texture uploaded whole");
+    }
+
     // The squares a fold wrote, uploaded into the font texture the backend
-    // already made. Runs under draw()'s PixelStoreGuard; each square is copied
-    // into a contiguous buffer first, because ES 2 has no GL_UNPACK_ROW_LENGTH
-    // to read it out of the atlas. The game's texture binding goes back
+    // already made, each from the fonts module's own packed copy of it (ES 2
+    // has no GL_UNPACK_ROW_LENGTH to read one out of a wider image, and the
+    // atlas's RGBA copy is gone once the whole atlas is up). Runs under
+    // draw()'s PixelStoreGuard. The game's texture binding goes back
     // (rule 12). False when anything is missing: the caller then replaces the
     // texture whole, which is always correct.
     bool upload_folded_regions() {
         if (!tex_sub_image_ || !bind_texture_ || !get_integer_) {
             return false;
         }
-        const GLuint texture =
-            static_cast<GLuint>(ImGui::GetIO().Fonts->TexID);  // an ImU64 in 1.91
-        unsigned char* pixels = nullptr;
-        int width = 0;
-        int height = 0;
-        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-        if (texture == 0 || !pixels) {
+        const ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+        const GLuint texture = static_cast<GLuint>(atlas->TexID);  // an ImU64 in 1.91
+        const int width = atlas->TexWidth;
+        const int height = atlas->TexHeight;
+        if (texture == 0 || width <= 0 || height <= 0) {
             return false;
         }
         vocem::AtlasRegion regions[vocem::kMaxFoldedRegions];
         const uint32_t count = vocem::fonts_take_folded(regions, vocem::kMaxFoldedRegions);
-        static unsigned char square[vocem::kMaxFoldedSide * vocem::kMaxFoldedSide * 4];
         for (uint32_t i = 0; i < count; ++i) {
             const vocem::AtlasRegion& region = regions[i];
-            if (region.width <= 0 || region.height <= 0 ||
-                static_cast<uint32_t>(region.width * region.height * 4) > sizeof(square) ||
+            if (!region.pixels || region.width <= 0 || region.height <= 0 ||
+                region.width > vocem::kMaxFoldedSide || region.height > vocem::kMaxFoldedSide ||
                 region.x + region.width > width || region.y + region.height > height) {
                 return false;
             }
@@ -1541,13 +1558,8 @@ private:
         bind_texture_(GL_TEXTURE_2D, texture);
         for (uint32_t i = 0; i < count; ++i) {
             const vocem::AtlasRegion& region = regions[i];
-            for (int row = 0; row < region.height; ++row) {
-                std::memcpy(square + row * region.width * 4,
-                            pixels + ((region.y + row) * width + region.x) * 4,
-                            static_cast<size_t>(region.width) * 4);
-            }
             tex_sub_image_(GL_TEXTURE_2D, 0, region.x, region.y, region.width, region.height,
-                           GL_RGBA, GL_UNSIGNED_BYTE, square);
+                           GL_RGBA, GL_UNSIGNED_BYTE, region.pixels);
         }
         bind_texture_(GL_TEXTURE_2D, static_cast<GLuint>(previous));
         // Said, so the arrivals scene can count it: a fold that went up whole

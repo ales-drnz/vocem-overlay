@@ -74,10 +74,12 @@ public:
     // with no CPU wait: a barrier on the same queue orders the copy after the
     // frames that sample it, queue order before the next. Up to
     // kFontCopiesInFlight copies in flight; the oldest is waited for only when
-    // all are still copying. False when the image does not match the atlas --
-    // the caller then uploads it whole.
-    bool update_font_atlas(const unsigned char* rgba, uint32_t atlas_width,
-                           uint32_t atlas_height, const AtlasRegion* regions, uint32_t count);
+    // all are still copying. Each square's pixels are the region's own
+    // (vocem/fonts.h); the atlas's size only has to match the image's. False
+    // when the image does not match the atlas -- the caller then uploads it
+    // whole.
+    bool update_font_atlas(uint32_t atlas_width, uint32_t atlas_height,
+                           const AtlasRegion* regions, uint32_t count);
 
     void shutdown();
 

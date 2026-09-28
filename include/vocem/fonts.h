@@ -83,7 +83,7 @@ bool fonts_atlas_made();
 // Hand the pixels back: the atlas above is cleared and the cached pointers
 // forgotten, so the next ensure_fonts() builds from nothing.
 //
-// For when the overlay should stop holding 64 MB of RGBA32 glyphs: the user
+// For when the overlay should stop holding its rasterised glyphs: the user
 // switched it off, the daemon stopped, or -- on the Vulkan path -- the last
 // instance went, after which the loader unloads the library holding the only
 // pointer to it. NOT for a context death, which must cost nothing, nor for a
@@ -120,18 +120,43 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path = nul
 // space. A session that meets forty new emoji should say 1.
 uint32_t fonts_build_count();
 
-// A rectangle of the atlas's RGBA32 pixels, in pixels.
+// A rectangle of the atlas, in pixels, and the RGBA32 pixels that belong in
+// it: width * height * 4 bytes, rows packed, owned by this module and valid
+// until the next build or fonts_release(). A fold's square is read from here,
+// not from the whole atlas's RGBA copy, which exists only around a whole upload.
 struct AtlasRegion {
     int x = 0;
     int y = 0;
     int width = 0;
     int height = 0;
+    const unsigned char* pixels = nullptr;
 };
+
+// The whole atlas as RGBA32, for a whole upload of a font texture: what
+// `GetTexDataAsRGBA32` answers, widened from the alpha8 image if the RGBA
+// copy is not there, with every colour emoji folded so far pasted back in.
+// ImGui's own widening knows nothing of the colour squares, so every whole
+// upload -- the backend's own included (the GL backend's CreateDeviceObjects
+// and CreateFontsTexture read the atlas themselves) -- goes after a call to
+// this. False when the atlas has no pixels.
+//
+// The copy is 4 bytes a pixel, 43 MB at a 2160-line display, and after the
+// upload nothing needs it: fonts_atlas_uploaded() hands it back and keeps the
+// alpha8 image (a quarter of it) and the squares. A build leaves the copy in
+// place, widened where the build ran (on the worker for the first one), for
+// the upload that follows it.
+bool fonts_atlas_rgba(unsigned char** pixels, int* width, int* height);
+
+// The whole atlas went up: its RGBA copy is freed, the alpha8 image and the
+// folded squares stay. Nothing is freed unless the alpha8 image is there to
+// widen from again -- asking ImGui for pixels with neither would rebuild the
+// atlas.
+void fonts_atlas_uploaded();
 
 // The rectangles fold_wanted_emoji() has written since the last call, handed
 // over and forgotten: exactly the pixels a new colour emoji changed, so a
 // caller whose font texture already holds the rest of the atlas uploads these
-// and nothing else rather than the whole 64 MB.
+// and nothing else rather than the whole atlas.
 //
 // Only meaningful when ensure_fonts() answered true WITHOUT fonts_build_count()
 // moving; after a real build this list is empty and the texture is replaced

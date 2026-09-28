@@ -156,6 +156,61 @@ int main() {
         check(strong != nullptr && strong->Colored, said);
     }
 
+    // The atlas once its first whole upload is done: the texture holds it, and
+    // the module hands its RGBA copy back and keeps the alpha8 image and the
+    // colour squares. A fold then must not widen the atlas again (a copy
+    // nobody would hand back), its squares must come with their own pixels,
+    // and the next whole upload -- a new context, a second device -- must find
+    // every colour square back in the widened copy: ImGui's own widening knows
+    // nothing of them.
+    vocem::fonts_atlas_uploaded();
+    check(ImGui::GetIO().Fonts->TexPixelsRGBA32 == nullptr &&
+              ImGui::GetIO().Fonts->TexPixelsAlpha8 != nullptr,
+          "after the whole upload the atlas keeps its alpha8 image and no RGBA copy");
+    vocem::fonts_take_folded(nullptr, 0);
+    {
+        char name[128];
+        snprintf(name, sizeof(name), "confetti \xF0\x9F\x8E\x89");  // U+1F389
+        vocem::fonts_prepare_text(name, sizeof(name));
+        check(vocem::ensure_fonts(16.0f, 16.0f), "an emoji folds into an atlas that is alpha8 only");
+        check(vocem::fonts_build_count() == 1, "  without rasterising");
+        check(ImGui::GetIO().Fonts->TexPixelsRGBA32 == nullptr, "  and without widening it");
+        vocem::AtlasRegion regions[vocem::kMaxFoldedRegions];
+        const uint32_t count = vocem::fonts_take_folded(regions, vocem::kMaxFoldedRegions);
+        int best = -1;
+        for (uint32_t r = 0; r < count; ++r) {
+            if (!regions[r].pixels) {
+                best = -1;
+                break;
+            }
+            for (int p = 0; p < regions[r].width * regions[r].height; ++p) {
+                const unsigned char* px = regions[r].pixels + p * 4;
+                const int spread = px[0] > px[1] ? px[0] - px[1] : px[1] - px[0];
+                if (px[3] >= 128 && spread > best) {
+                    best = spread;
+                }
+            }
+        }
+        char said[192];
+        snprintf(said, sizeof(said),
+                 "  its %u square(s) carry their own coloured pixels (chroma %d)", count, best);
+        check(count == 2 && best > 40, said);
+    }
+    {
+        unsigned char* pixels = nullptr;
+        int width = 0;
+        int height = 0;
+        check(vocem::fonts_atlas_rgba(&pixels, &width, &height) && pixels != nullptr,
+              "the next whole upload widens the atlas again");
+        bool all = glyph_chroma(body_now(), 0x1F389) > 40 &&
+                   glyph_chroma(strong_now(), 0x1F389) > 40;
+        for (unsigned i = 0; i < arrivals; ++i) {
+            all = all && glyph_chroma(body_now(), kArrivals[i].codepoint) > 40 &&
+                  glyph_chroma(strong_now(), kArrivals[i].codepoint) > 40;
+        }
+        check(all, "  with every colour square back in it, in both weights");
+    }
+
     // Nothing new: the dead band still holds, and no caller is told to re-upload.
     check(!vocem::ensure_fonts(16.0f, 16.0f), "a quiet frame folds nothing");
     check(vocem::fonts_build_count() == 1, "and rasterises nothing");

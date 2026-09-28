@@ -29,9 +29,11 @@
 // because what was wrong was not how many times something ran but that 117 MB
 // stayed mapped. The probe reads its own `/proc/self/smaps_rollup` before and
 // after, in one process, so the two numbers are the same process's and nothing
-// external can move them; the threshold is 30 MB against the atlas's RGBA copy
-// alone (43 MB at 4096x2611, the height the packed glyphs need), which is far
-// enough from the noise (the two readings before the fix differed by 1 kB) to
+// external can move them; the threshold is 8 MB against the atlas's alpha8
+// image alone (10.4 MB at 4096x2611, the height the packed glyphs need -- the
+// RGBA copy is handed back after every whole upload, so a drawing process no
+// longer holds it), which is far enough from the noise (the mmapped heap reads
+// the same to the kB on every run, and 0 against the defective 0.1.10-2) to
 // mean only one thing. The log line is counted beside
 // it, which is the half that says the code ran on purpose rather than by luck.
 //
@@ -166,8 +168,8 @@ int main() {
     setenv("VOCEM_LOG_FILE", log_path, 1);
 
     // The display height is the owner's own: it is what the atlas is sized from
-    // (entry 39), and at 2160 the atlas is the 4096x2611 one whose 43 MB this
-    // test is about.
+    // (entry 39), and at 2160 the atlas is the 4096x2611 one whose 10.4 MB
+    // alpha8 image this test is about.
     vocem::StateWriter writer;
     check(writer.open(), "the private state segment opens");
     writer.publish([](vocem::SharedState& state) {
@@ -302,10 +304,12 @@ int main() {
     // foreign load: noise the size of the claim once entry 207 took 16 MB out
     // of the atlas. The heap's mmapped blocks are the atlas and nothing the
     // driver chooses: counted exactly, as vk_present_draw counts them after
-    // the last instance (entry 211). Printed both, asserted on the heap.
+    // the last instance (entry 211). Printed both, asserted on the heap:
+    // 11,968 kB at 64 bits and 12,984 at 32 once the RGBA copy stopped being
+    // held (43,300 and 44,316 kB while it was, the same on two runs each).
     printf("     handed back: %ld kB of Pss, %ld kB of mmapped heap (%ld -> %ld)\n", held - after,
            held_heap - after_heap, held_heap, after_heap);
-    check(held_heap - after_heap > 30 * 1024,
+    check(held_heap - after_heap > 8 * 1024,
           "and hands back what it was holding, instead of keeping it for the life of the process");
 
     const long said = lines_containing(log_path, "releasing the backend and the font atlas");

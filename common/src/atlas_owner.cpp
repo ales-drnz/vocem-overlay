@@ -52,7 +52,7 @@ void rasterise_fonts(const AtlasWorker::Job& job) {
     unsigned char* rgba = nullptr;
     int width = 0;
     int height = 0;
-    fonts_atlas()->GetTexDataAsRGBA32(&rgba, &width, &height);
+    fonts_atlas_rgba(&rgba, &width, &height);
 }
 
 }  // namespace
