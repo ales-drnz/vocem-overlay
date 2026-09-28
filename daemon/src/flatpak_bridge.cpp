@@ -822,12 +822,13 @@ void FlatpakBridge::refresh_consent() {
         return;
     }
     consent_config_mtime_ = mtime;
-    // Read only when it is a regular file: Config::load() is a plain fopen,
-    // and a FIFO at the name would hold the sweep until a writer came.
-    struct stat info {};
+    // Config::load() refuses what is not a regular file without opening it
+    // for long (a FIFO at the name cannot hold the sweep), and says when the
+    // file could not be read whole: consent is then what the defaults give,
+    // which is nobody, rather than whatever part of the list was read.
     Config config;
-    if (::stat(Config::path().c_str(), &info) == 0 && S_ISREG(info.st_mode)) {
-        config.load();
+    if (!config.load()) {
+        config = Config();
     }
     flatpak_apps_ = config.flatpak_apps;
     for (Mirror& mirror : mirrors_) {
