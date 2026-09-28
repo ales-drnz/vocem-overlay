@@ -47,6 +47,7 @@ third_party/fonts/NotoSansSymbols2-Regular.ttf
 .claude/
 CLAUDE.md
 DESIGN.md
+design/
 PROMPT-*.md
 AUDIT-*.md
 
