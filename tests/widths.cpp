@@ -33,19 +33,10 @@
 #include "vocem/config.h"
 #include "vocem/flatpak.h"
 #include "vocem/shared_state.h"
+#include "vocem_check.h"
 
-namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-}  // namespace
+using vocem_test::check;
+using vocem_test::failures;
 
 int main() {
     printf("built for %zu-bit (unsigned long is %zu bits)\n", sizeof(void*) * 8,

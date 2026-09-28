@@ -25,17 +25,12 @@
 #include <string.h>
 
 #include "real_dlsym.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // The real dlsym, reached the way the shim reaches it, so the shim's exports can
 // be told apart from what the application should be seeing.

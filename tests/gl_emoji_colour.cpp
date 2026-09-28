@@ -40,20 +40,15 @@
 #include "probe_alarm.h"
 #include "probe_name.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
 
 const int W = 360;
 const int H = 360;
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void write_file(const char* path, const char* contents) {
     if (FILE* file = fopen(path, "w")) {

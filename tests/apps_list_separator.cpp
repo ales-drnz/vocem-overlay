@@ -24,19 +24,10 @@
 #include <string>
 
 #include "vocem/apps.h"
+#include "vocem_check.h"
 
-namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-}  // namespace
+using vocem_test::check;
+using vocem_test::failures;
 
 int main() {
     const std::string comma = vocem::list_with("", "Foo, Bar");

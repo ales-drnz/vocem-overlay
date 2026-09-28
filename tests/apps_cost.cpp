@@ -28,19 +28,15 @@
 #include <unistd.h>
 
 #include "vocem/draw_decision.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
 
-int failures = 0;
 long allocations = 0;
 bool counting = false;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // The window in which allocations are counted, so that the printf of the result
 // is never itself part of the measurement.

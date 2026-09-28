@@ -76,10 +76,12 @@
 
 #include <string>
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
 
 // The overlay's own glXMakeCurrent calls. This probe never calls the name
 // through the global scope -- its own calls go through the pointer it took
@@ -87,13 +89,6 @@ int failures = 0;
 using PFN_glXMakeCurrent_real = int (*)(Display*, XID, void*);
 PFN_glXMakeCurrent_real g_real_make_current = nullptr;
 volatile long g_overlay_make_current = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void write_file(const char* path, const char* contents) {
     if (FILE* file = fopen(path, "w")) {

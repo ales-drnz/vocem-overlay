@@ -38,17 +38,12 @@
 #include "vocem/avatar_rgba.h"
 #include "vocem/flatpak.h"
 #include "vocem/shared_state.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 constexpr const char* kSecret = "the user's own file, which no sandbox may steer a write into";
 

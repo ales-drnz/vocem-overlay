@@ -30,19 +30,10 @@
 #include <string.h>
 
 #include "vk_stub_device.h"
+#include "vocem_check.h"
 
-namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-}  // namespace
+using vocem_test::check;
+using vocem_test::failures;
 
 int main() {
     using vk_stub::fake_handle;

@@ -163,20 +163,15 @@
 #include "probe_name.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 // The layer's file calls on the emoji bank, stamped (tests/vk_file_witness.cpp).
 extern "C" int vocem_file_witness_stamps(const long long** stamps);
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 [[noreturn]] void skip(const char* why) {
     printf("skip %s\n", why);

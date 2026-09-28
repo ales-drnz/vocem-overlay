@@ -30,6 +30,10 @@
 #include "probe_alarm.h"
 #include "vocem/journal.h"
 #include "vocem/overlay_session.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 // Every opendir() of this process, the vocem_common archive's included:
 // the executable's definition is the one its calls resolve to.
@@ -42,15 +46,6 @@ extern "C" DIR* opendir(const char* name) {
 }
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 int count_lines_with(const std::string& path, const char* needle) {
     int found = 0;

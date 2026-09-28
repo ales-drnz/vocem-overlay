@@ -65,10 +65,12 @@
 
 #include <string>
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
 
 // How many contexts the game goes through, and how many frames it presents in
 // each. Two frames would do -- the panel is built from the first -- and three
@@ -94,13 +96,6 @@ long foreign_pixels() {
         }
     }
     return count;
-}
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
 }
 
 void write_file(const char* path, const char* contents) {

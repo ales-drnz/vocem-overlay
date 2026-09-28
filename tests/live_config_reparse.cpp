@@ -25,17 +25,12 @@
 #include <ctime>
 
 #include "vocem/live_config.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void write_config(const char* path, float row_spacing) {
     std::FILE* file = std::fopen(path, "w");

@@ -36,17 +36,12 @@
 #include "unit_confinement.h"
 #include "probe_alarm.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const std::string& what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what.c_str());
-    if (!condition) {
-        ++failures;
-    }
-}
 
 std::string read_file(const std::string& path) {
     FILE* file = fopen(path.c_str(), "rb");

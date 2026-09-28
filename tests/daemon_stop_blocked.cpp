@@ -33,19 +33,10 @@
 #include "discord_stub.h"
 #include "unit_confinement.h"
 #include "probe_alarm.h"
+#include "vocem_check.h"
 
-namespace {
-
-int failures = 0;
-
-void check(bool condition, const std::string& what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what.c_str());
-    if (!condition) {
-        ++failures;
-    }
-}
-
-}  // namespace
+using vocem_test::check;
+using vocem_test::failures;
 
 int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);

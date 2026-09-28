@@ -69,6 +69,10 @@
 #include "probe_name.h"
 #include "vocem/avatar_rgba.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 #ifdef VOCEM_PROBE_PRIVATE_X11
 // Xlib reached only through a private handle: every call below goes through
@@ -104,15 +108,6 @@ bool load() {
 #endif
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 long lines_containing(const char* path, const char* needle) {
     FILE* file = fopen(path, "r");

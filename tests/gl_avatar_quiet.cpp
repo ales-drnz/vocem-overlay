@@ -55,21 +55,16 @@
 #include "vocem/avatar_rgba.h"
 #include "private_shm.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
 
 // The overlay asking "has it arrived?". Its own reads are counted elsewhere: see
 // the note at the top of this file.
 volatile long g_stats = 0;
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void write_file(const char* path, const char* contents) {
     if (FILE* file = fopen(path, "w")) {

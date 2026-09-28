@@ -47,17 +47,12 @@
 #include "vocem/note.h"
 #include "vocem/shm.h"
 #include "private_shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 constexpr uint64_t kUserId = 310503940594860049ULL;
 constexpr const char* kUserHash = "a71d433becd902959baa0b8e59e9095c";

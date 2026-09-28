@@ -49,17 +49,12 @@
 #include "vocem/flatpak.h"
 #include "vocem/note.h"
 #include "vocem/shared_state.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const std::string& what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what.c_str());
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void make_directories(const std::string& path) {
     std::string partial;

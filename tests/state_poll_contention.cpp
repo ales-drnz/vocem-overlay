@@ -35,17 +35,12 @@
 #include "probe_alarm.h"
 #include "vocem/shm.h"
 #include "vocem/state_poll.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // The poll's log, kept: the lines are the second half of the measurement.
 char g_lines[64][256];

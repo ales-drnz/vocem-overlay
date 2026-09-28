@@ -30,17 +30,12 @@
 
 #include "imgui.h"
 #include "vocem/fonts.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // The biggest |r-g| over the glyph's opaque atlas pixels: zero for a white
 // monochrome shape, large for a real colour emoji. emoji_atlas.cpp's helper,

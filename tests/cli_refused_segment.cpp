@@ -30,17 +30,12 @@
 #include "private_shm.h"
 #include "probe_alarm.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const std::string& what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what.c_str());
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // Everything the command wrote, stdout and stderr together, and its status.
 std::string run(const std::string& command, int* status) {

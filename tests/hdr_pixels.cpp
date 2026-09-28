@@ -42,6 +42,10 @@
 
 #include "hdr_pipeline.h"
 #include "imgui.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
 
@@ -61,15 +65,6 @@ constexpr VkFormat kTargetFormat = VK_FORMAT_R8G8B8A8_SRGB;
 #else
 constexpr VkFormat kTargetFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 #endif
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 [[noreturn]] void skip(const char* why) {
     printf("skip %s\n", why);

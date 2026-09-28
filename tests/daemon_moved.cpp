@@ -64,6 +64,10 @@
 #include "discord_stub.h"
 #include "unit_confinement.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
 
@@ -71,15 +75,6 @@ namespace {
 using vocem_test::monotonic;
 using vocem_test::recv_text;
 using vocem_test::send_text;
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // ---------------------------------------------------------------------------
 

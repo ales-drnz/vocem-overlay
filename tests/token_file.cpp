@@ -31,17 +31,12 @@
 
 #include "auth.h"
 #include "vocem/paths.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void write_bytes(const std::string& path, const char* bytes, size_t length) {
     if (FILE* file = std::fopen(path.c_str(), "wb")) {

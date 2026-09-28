@@ -44,17 +44,12 @@
 #include "discord_stub.h"
 #include "unit_confinement.h"
 #include "vocem/shared_state.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void write_file(const std::string& path, const char* contents) {
     FILE* file = fopen(path.c_str(), "w");

@@ -21,17 +21,12 @@
 #include "vocem/emoji_bank.h"
 #include "vocem/fonts.h"
 #include "vocem/shared_state.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // The glyph's rectangle in the atlas, sampled for chroma: the biggest |r-g|
 // over its opaque pixels. Zero for the monochrome font's rendering.

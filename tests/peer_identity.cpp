@@ -39,17 +39,12 @@
 
 #include "peer_cgroup.h"
 #include "peer_identity.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 std::string write_fixture(const char* directory, const char* name, const std::string& body) {
     std::string path = std::string(directory) + "/" + name;
