@@ -58,6 +58,7 @@
 #include "vocem/avatar_rgba.h"
 #include "vocem/shm.h"
 #include "vocem_check.h"
+#include "gl_window.h"
 
 using vocem_test::check;
 using vocem_test::failures;
@@ -149,20 +150,12 @@ int main() {
         return 1;
     }
     char path[900];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // The rule names THIS binary, read off /proc/self/exe: a literal is
     // wrong the day the binary is renamed and wrong at -m32 today
     // (tests/probe_name.h, entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_unpack_state") + "\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_unpack_state"));
     char cache[800];
     snprintf(cache, sizeof(cache), "%s/cache", root);
-    mkdir(cache, 0700);
-    setenv("XDG_CACHE_HOME", cache, 1);
     snprintf(path, sizeof(path), "%s/vocem", cache);
     mkdir(path, 0700);
     snprintf(path, sizeof(path), "%s/vocem/avatars", cache);
@@ -256,14 +249,7 @@ int main() {
         return 1;
     }
     const int W = 400, H = 400;
-    XSetWindowAttributes swa;
-    swa.colormap =
-        XCreateColormap(display, RootWindow(display, visual->screen), visual->visual, AllocNone);
-    swa.override_redirect = True;  // nothing on the owner's desktop
-    Window window = XCreateWindow(display, RootWindow(display, visual->screen), -4000, 0, W, H, 0,
-                                  visual->depth, InputOutput, visual->visual,
-                                  CWColormap | CWOverrideRedirect, &swa);
-    XMapWindow(display, window);
+    Window window = vocem_test::offscreen_window(display, visual, W, H);
     void* context = create(display, visual, nullptr, 1);
     make_current(display, window, context);
 

@@ -90,13 +90,14 @@ inline void remove_tree(const std::string& path) {
 
 // The settings of an overlay under test: `root`/vocem/config.ini saying
 // `enabled = true` and `shown_apps = <program>` (probes are not games, and
-// the detection is right to ignore them), $XDG_CONFIG_HOME at `root` and
-// $XDG_CACHE_HOME at `root`/cache.
-inline bool overlay_config_home(const std::string& root, const std::string& program) {
+// the detection is right to ignore them) followed by `more` lines,
+// $XDG_CONFIG_HOME at `root` and $XDG_CACHE_HOME at `root`/cache.
+inline bool overlay_config_home(const std::string& root, const std::string& program,
+                                const std::string& more = {}) {
     mkdir((root + "/vocem").c_str(), 0700);
     mkdir((root + "/cache").c_str(), 0700);
     const bool written = write_file(root + "/vocem/config.ini",
-                                    "enabled = true\nshown_apps = " + program + "\n");
+                                    "enabled = true\nshown_apps = " + program + "\n" + more);
     setenv("XDG_CONFIG_HOME", root.c_str(), 1);
     setenv("XDG_CACHE_HOME", (root + "/cache").c_str(), 1);
     return written;

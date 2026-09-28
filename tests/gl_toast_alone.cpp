@@ -38,6 +38,7 @@
 #include "vocem/note.h"
 #include "vocem/shm.h"
 #include "vocem_check.h"
+#include "gl_window.h"
 
 using vocem_test::check;
 using vocem_test::failures;
@@ -89,21 +90,11 @@ int main() {
         printf("FAIL mkdtemp\n");
         return 1;
     }
-    char path[600];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // A long toast, so the read-back at frame 45 is nowhere near its exit.
     // The rule names THIS binary, read off /proc/self/exe (probe_name.h,
     // entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_toast_alone") +
-                             "\nnotification_seconds = 30\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
-    snprintf(path, sizeof(path), "%s/cache", root);
-    mkdir(path, 0700);
-    setenv("XDG_CACHE_HOME", path, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_toast_alone"),
+                                    "notification_seconds = 30\n");
 
     // The state a DM arriving at the desktop produces: connected, NOT in any
     // voice channel, and one fresh notification.
@@ -156,18 +147,7 @@ int main() {
         return 1;
     }
     const int W = 360, H = 360;
-    XSetWindowAttributes swa;
-    swa.colormap = XCreateColormap(display, RootWindow(display, visual->screen), visual->visual,
-                                   AllocNone);
-    // Override-redirect and parked far off screen: nothing appears on the
-    // desktop and no focus is taken -- the owner may be in a game while this
-    // runs. Composited windows render into their own buffer, so the
-    // front-buffer read-back still sees the overlay.
-    swa.override_redirect = True;
-    Window window = XCreateWindow(display, RootWindow(display, visual->screen), -4000, 0, W, H, 0,
-                                  visual->depth, InputOutput, visual->visual,
-                                  CWColormap | CWOverrideRedirect, &swa);
-    XMapWindow(display, window);
+    Window window = vocem_test::offscreen_window(display, visual, W, H);
     void* context = create(display, visual, nullptr, 1);
     check(context != nullptr, "and a context comes up");
     make_current(display, window, context);

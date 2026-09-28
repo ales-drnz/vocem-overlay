@@ -155,20 +155,10 @@ int main() {
         printf("FAIL mkdtemp\n");
         return 1;
     }
-    char path[600];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // The rule names THIS binary, read off /proc/self/exe: a literal is
     // wrong the day the binary is renamed and wrong at -m32 today
     // (tests/probe_name.h, entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_daemon_gone") + "\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
-    snprintf(path, sizeof(path), "%s/cache", root);
-    mkdir(path, 0700);
-    setenv("XDG_CACHE_HOME", path, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_daemon_gone"));
     char log_path[700];
     snprintf(log_path, sizeof(log_path), "%s/overlay.log", root);
     setenv("VOCEM_DEBUG", "1", 1);

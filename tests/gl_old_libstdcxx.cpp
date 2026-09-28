@@ -48,6 +48,7 @@
 #include "probe_alarm.h"
 #include "probe_name.h"
 #include "vocem_check.h"
+#include "gl_window.h"
 
 using vocem_test::check;
 using vocem_test::failures;
@@ -103,20 +104,7 @@ int main() {
         printf("FAIL mkdtemp\n");
         return 1;
     }
-    char path[600];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
-    const std::string rule =
-        "enabled = true\nshown_apps = " + vocem_test::own_name("vocem_gl_old_libstdcxx") + "\n";
-    if (FILE* file = fopen(path, "w")) {
-        fputs(rule.c_str(), file);
-        fclose(file);
-    }
-    setenv("XDG_CONFIG_HOME", root, 1);
-    snprintf(path, sizeof(path), "%s/cache", root);
-    mkdir(path, 0700);
-    setenv("XDG_CACHE_HOME", path, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_old_libstdcxx"));
     setenv("VOCEM_DEBUG", "1", 1);
 
     // Everything written to stderr from here on -- the shim's lines and the
@@ -147,16 +135,7 @@ int main() {
         return give_up("no double-buffered GLX visual here (a driver that needs the C++ "
                        "runtime itself cannot load under the stub)");
     }
-    XSetWindowAttributes swa;
-    swa.colormap =
-        XCreateColormap(display, RootWindow(display, visual->screen), visual->visual, AllocNone);
-    // Override-redirect and parked off screen: nothing appears, no focus.
-    swa.override_redirect = True;
-    const Window window =
-        XCreateWindow(display, RootWindow(display, visual->screen), -4000, 0, 64, 64, 0,
-                      visual->depth, InputOutput, visual->visual, CWColormap | CWOverrideRedirect,
-                      &swa);
-    XMapWindow(display, window);
+    const Window window = vocem_test::offscreen_window(display, visual, 64, 64);
     GLXContext context = glXCreateContext(display, visual, nullptr, True);
     if (!context || !glXMakeCurrent(display, window, context)) {
         return give_up("no GLX context here");

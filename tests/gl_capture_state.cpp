@@ -43,6 +43,7 @@
 #include "probe_name.h"
 #include "vocem/shm.h"
 #include "vocem_check.h"
+#include "gl_window.h"
 
 using vocem_test::check;
 using vocem_test::failures;
@@ -114,20 +115,7 @@ int main() {
         printf("FAIL mkdtemp\n");
         return 1;
     }
-    char path[600];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
-    const std::string rule =
-        "enabled = true\nshown_apps = " + vocem_test::own_name("vocem_gl_capture_state") + "\n";
-    if (FILE* file = fopen(path, "w")) {
-        fputs(rule.c_str(), file);
-        fclose(file);
-    }
-    setenv("XDG_CONFIG_HOME", root, 1);
-    snprintf(path, sizeof(path), "%s/cache", root);
-    mkdir(path, 0700);
-    setenv("XDG_CACHE_HOME", path, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_capture_state"));
     static char log_path[700];
     snprintf(log_path, sizeof(log_path), "%s/overlay.log", root);
     setenv("VOCEM_DEBUG", "1", 1);
@@ -178,16 +166,7 @@ int main() {
     }
     constexpr int W = 360;
     constexpr int H = 360;
-    XSetWindowAttributes swa;
-    swa.colormap =
-        XCreateColormap(display, RootWindow(display, visual->screen), visual->visual, AllocNone);
-    // Override-redirect and parked off screen: nothing appears, no focus.
-    swa.override_redirect = True;
-    const Window window =
-        XCreateWindow(display, RootWindow(display, visual->screen), -4000, 0, W, H, 0,
-                      visual->depth, InputOutput, visual->visual, CWColormap | CWOverrideRedirect,
-                      &swa);
-    XMapWindow(display, window);
+    const Window window = vocem_test::offscreen_window(display, visual, W, H);
     void* context = create(display, visual, nullptr, 1);
     if (!context || !make_current(display, window, context)) {
         printf("skip no GLX context\n");
