@@ -36,6 +36,10 @@
 #include <unistd.h>
 
 #include "real_dlsym.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
 
@@ -51,15 +55,6 @@ void* bypass_dlsym(void* handle, const char* name) {
         real = reinterpret_cast<PFN_dlsym>(dlvsym(RTLD_DEFAULT, "dlsym", versions[i]));
     }
     return real ? real(handle, name) : nullptr;
-}
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
 }
 
 // Kill the process on any file syscall. SECCOMP_RET_KILL_PROCESS rather than

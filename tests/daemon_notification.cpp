@@ -33,6 +33,9 @@
 // so the real daemon's segment is never touched -- and a private network
 // namespace, so port 6463 is free even while Discord is running. Where bwrap is
 // missing it reports itself skipped rather than passing without having run.
+// With VOCEM_UNIT_FILE it re-executes as a transient unit with that file's
+// confinement instead (unit_confinement.h): daemon_notification_unit, which
+// fails against 0.1.11-1's vocemd and unit, whose peer check refused the stub.
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -50,9 +53,14 @@
 #include <string>
 
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "vocem/note.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
@@ -62,24 +70,7 @@ using vocem_test::monotonic;
 using vocem_test::recv_text;
 using vocem_test::send_text;
 
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
 // ---------------------------------------------------------------------------
-
-void write_file(const std::string& path, const char* contents) {
-    FILE* file = fopen(path.c_str(), "w");
-    if (file) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 // Reads the segment the way a game does, until the predicate holds or time runs
 // out. Returns the last snapshot either way.
@@ -112,9 +103,10 @@ int main(int argc, char** argv) {
         return 77;
     }
 
-    // Re-execute under bwrap: private /dev/shm so the real daemon's segment is
-    // never touched, private network so 6463 is free while Discord runs.
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    // Re-execute under bwrap, or under the unit's confinement: private
+    // /dev/shm so the real daemon's segment is never touched, private network
+    // so 6463 is free while Discord runs.
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
 
@@ -122,15 +114,12 @@ int main(int argc, char** argv) {
 
     // A world for the daemon: a token so it authenticates instead of asking, and
     // no settings file, which is every fresh install.
-    char root[] = "/tmp/vocem-daemon-test-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-daemon-test", {"/state", "/state/vocem", "/config",
+                                                      "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     write_file(base + "/state/vocem/token", "test-token\n");
     // A one-second toast, from the start. It was written after the message
@@ -396,7 +385,7 @@ int main(int argc, char** argv) {
 
     close(fd);
     close(listener);
-    system(("rm -rf " + base).c_str());
+    vocem_test::remove_tree(base);
 
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

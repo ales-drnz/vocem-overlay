@@ -14,6 +14,13 @@
 // serve hand-made directories with nothing behind them, which is exactly the
 // shape that is refused now, so the ones that expect to be served start one of
 // these first.
+//
+// Under the daemon's unit (unit_confinement.h) no bwrap can be built -- the
+// unit's RestrictNamespaces refuses one -- and a /.flatpak-info could not be
+// read from there anyway (entry 285). What the daemon sees of a real Flatpak
+// from its unit is the systemd scope Flatpak starts it in, so there the
+// process is a `sleep` in `app-flatpak-<id>-<n>.scope`, which is what
+// daemon_unit_peer's bridge case measures.
 
 #ifndef VOCEM_TESTS_FAKE_FLATPAK_H
 #define VOCEM_TESTS_FAKE_FLATPAK_H
@@ -35,6 +42,9 @@ struct FakeFlatpak {
 
 // Whether bwrap is there to build one. A test without it skips (77).
 inline bool fake_flatpak_available() {
+    if (getenv("VOCEM_UNIT_CONFINED")) {
+        return system("command -v systemd-run >/dev/null 2>&1") == 0;
+    }
     return system("command -v bwrap >/dev/null 2>&1") == 0;
 }
 
@@ -61,6 +71,14 @@ inline FakeFlatpak start_fake_flatpak(const std::string& scratch, const char* ap
         close(pipe_fds[0]);
         dup2(pipe_fds[1], 1);
         close(pipe_fds[1]);
+        if (getenv("VOCEM_UNIT_CONFINED")) {
+            const std::string scope = std::string("--unit=app-flatpak-") + app_id + "-" +
+                                      std::to_string(getpid()) + ".scope";
+            execlp("systemd-run", "systemd-run", "--user", "--quiet", "--scope", "--collect",
+                   "--slice=app.slice", scope.c_str(), "/usr/bin/sh", "-c",
+                   "echo ready; exec sleep 600", (char*)nullptr);
+            _exit(127);
+        }
         execlp("bwrap", "bwrap", "--unshare-user", "--unshare-pid", "--die-with-parent",
                "--tmpfs", "/", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib",
                "--symlink", "usr/lib", "/lib64", "--symlink", "usr/bin", "/bin", "--proc",

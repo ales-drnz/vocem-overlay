@@ -35,45 +35,14 @@
 #include <string>
 
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "probe_alarm.h"
+#include "vocem_check.h"
 
-namespace {
-
-int failures = 0;
-
-void check(bool condition, const std::string& what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what.c_str());
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const std::string& path, const std::string& body) {
-    FILE* file = fopen(path.c_str(), "wb");
-    if (!file) {
-        return;
-    }
-    fwrite(body.data(), 1, body.size(), file);
-    fclose(file);
-}
-
-std::string read_file(const std::string& path) {
-    FILE* file = fopen(path.c_str(), "rb");
-    if (!file) {
-        return {};
-    }
-    std::string out;
-    char buffer[4096];
-    size_t got = 0;
-    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        out.append(buffer, got);
-    }
-    fclose(file);
-    return out;
-}
-
-}  // namespace
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
+using vocem_test::read_file;
 
 int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);
@@ -83,20 +52,17 @@ int main() {
         printf("skip VOCEM_DAEMON not set: no daemon binary to drive\n");
         return 77;
     }
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
     vocem_test::set_alarm(60, "the peer's words in the daemon's log");
 
-    char root[] = "/tmp/vocem-log-lines-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-log-lines", {"/state", "/state/vocem", "/config",
+                                                    "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     write_file(base + "/state/vocem/token", "test-token\n");
     write_file(base + "/config/vocem/config.ini", "");
@@ -161,7 +127,7 @@ int main() {
     check(said.find("RED LS") != std::string::npos,
           "while the data's words are still logged");
 
-    (void)!system(("rm -rf '" + base + "'").c_str());
+    vocem_test::remove_tree(base);
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }

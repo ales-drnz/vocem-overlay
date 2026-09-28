@@ -43,24 +43,14 @@
 #include <string>
 #include "vocem/avatar_rgba.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+#include "gl_window.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 long lines_saying(const char* path, const char* needle, const char* unless = nullptr) {
     FILE* file = fopen(path, "r");
@@ -117,9 +107,6 @@ int main() {
         return 1;
     }
     char path[800];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // The kernel truncates /proc/self/comm to fifteen characters, so both builds
     // of this probe are called `vocem_gl_avatar` -- and the 32-bit binary's file
     // name is `..._width32`, which the 64-bit spelling would not match. Naming the
@@ -128,14 +115,9 @@ int main() {
     // The rule names THIS binary, read off /proc/self/exe: a literal is
     // wrong the day the binary is renamed and wrong at -m32 today
     // (tests/probe_name.h, entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_avatar") + "\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_avatar"));
     char cache[800];
     snprintf(cache, sizeof(cache), "%s/cache", root);
-    mkdir(cache, 0700);
-    setenv("XDG_CACHE_HOME", cache, 1);
     snprintf(path, sizeof(path), "%s/vocem", cache);
     mkdir(path, 0700);
     snprintf(path, sizeof(path), "%s/vocem/avatars", cache);
@@ -211,14 +193,7 @@ int main() {
         printf("skip no double-buffered visual\n");
         return 77;
     }
-    XSetWindowAttributes swa;
-    swa.colormap =
-        XCreateColormap(display, RootWindow(display, visual->screen), visual->visual, AllocNone);
-    swa.override_redirect = True;  // nothing on the owner's desktop
-    Window window = XCreateWindow(display, RootWindow(display, visual->screen), -4000, 0, 360, 360,
-                                  0, visual->depth, InputOutput, visual->visual,
-                                  CWColormap | CWOverrideRedirect, &swa);
-    XMapWindow(display, window);
+    Window window = vocem_test::offscreen_window(display, visual, 360, 360);
     void* context = create(display, visual, nullptr, 1);
     if (!context) {
         printf("skip no GL context for this width\n");

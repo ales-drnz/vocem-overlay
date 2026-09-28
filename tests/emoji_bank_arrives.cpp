@@ -34,17 +34,12 @@
 #include <vector>
 
 #include "vocem/emoji_bank.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // Where the sandbox's copy would be staged from: bound in by the re-exec below,
 // because the compiled-in directory is covered by a tmpfs inside.

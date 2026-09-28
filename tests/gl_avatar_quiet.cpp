@@ -55,28 +55,18 @@
 #include "vocem/avatar_rgba.h"
 #include "private_shm.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+#include "gl_window.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
 // The overlay asking "has it arrived?". Its own reads are counted elsewhere: see
 // the note at the top of this file.
 volatile long g_stats = 0;
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 using PFN_glXChooseVisual = XVisualInfo* (*)(Display*, int, int*);
 using PFN_glXCreateContext = void* (*)(Display*, XVisualInfo*, void*, int);
@@ -157,21 +147,12 @@ int main() {
         printf("FAIL mkdtemp\n");
         return 1;
     }
-    char path[700];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // The rule names THIS binary, read off /proc/self/exe: a literal is
     // wrong the day the binary is renamed and wrong at -m32 today
     // (tests/probe_name.h, entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_avatar_quiet") + "\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_avatar_quiet"));
     char cache[700];
     snprintf(cache, sizeof(cache), "%s/cache", root);
-    mkdir(cache, 0700);
-    setenv("XDG_CACHE_HOME", cache, 1);
     char avatars[700];
     snprintf(avatars, sizeof(avatars), "%s/vocem", cache);
     mkdir(avatars, 0700);
@@ -240,14 +221,7 @@ int main() {
         return 1;
     }
     const int W = 400, H = 400;
-    XSetWindowAttributes swa;
-    swa.colormap =
-        XCreateColormap(display, RootWindow(display, visual->screen), visual->visual, AllocNone);
-    swa.override_redirect = True;  // nothing on the owner's desktop
-    Window window = XCreateWindow(display, RootWindow(display, visual->screen), -4000, 0, W, H, 0,
-                                  visual->depth, InputOutput, visual->visual,
-                                  CWColormap | CWOverrideRedirect, &swa);
-    XMapWindow(display, window);
+    Window window = vocem_test::offscreen_window(display, visual, W, H);
     void* context = create(display, visual, nullptr, 1);
     make_current(display, window, context);
 

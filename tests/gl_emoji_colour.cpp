@@ -40,27 +40,17 @@
 #include "probe_alarm.h"
 #include "probe_name.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+#include "gl_window.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
 const int W = 360;
 const int H = 360;
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 using PFN_glXChooseVisual = XVisualInfo* (*)(Display*, int, int*);
 using PFN_glXCreateContext = void* (*)(Display*, XVisualInfo*, void*, int);
@@ -115,16 +105,7 @@ int draw_and_dump(const char* bank, const char* out_path) {
     if (!visual) {
         return 1;
     }
-    XSetWindowAttributes swa;
-    swa.colormap =
-        XCreateColormap(display, RootWindow(display, visual->screen), visual->visual, AllocNone);
-    // Override-redirect and parked far off screen: nothing appears on the desktop
-    // and no focus is taken -- the owner may be in a game while this runs.
-    swa.override_redirect = True;
-    Window window = XCreateWindow(display, RootWindow(display, visual->screen), -4000, 0, W, H, 0,
-                                  visual->depth, InputOutput, visual->visual,
-                                  CWColormap | CWOverrideRedirect, &swa);
-    XMapWindow(display, window);
+    Window window = vocem_test::offscreen_window(display, visual, W, H);
     void* context = create(display, visual, nullptr, 1);
     if (!context) {
         return 1;
@@ -213,23 +194,14 @@ int main(int argc, char** argv) {
         return 1;
     }
     char path[600];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // The channel name is shown and carries an emoji of its own: the header is
     // drawn in the heavier weight, and a merged glyph belongs to the font it
     // was merged into (entry 26) -- without this, the strong weight had no
     // frame-level witness and only the atlas test covered it.
     // The rule names THIS binary, read off /proc/self/exe (probe_name.h,
     // entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_emoji_colour") +
-                             "\nshow_channel_name = true\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
-    snprintf(path, sizeof(path), "%s/cache", root);
-    mkdir(path, 0700);
-    setenv("XDG_CACHE_HOME", path, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_emoji_colour"),
+                                    "show_channel_name = true\n");
 
     // Two names carrying emoji the bank has and Inter does not -- sushi and
     // chopsticks. Nobody speaking and no notification: see the header.

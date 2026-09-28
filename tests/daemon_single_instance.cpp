@@ -33,35 +33,16 @@
 #include <string>
 
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "probe_alarm.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::read_file;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const std::string& what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what.c_str());
-    if (!condition) {
-        ++failures;
-    }
-}
-
-std::string read_file(const std::string& path) {
-    FILE* file = fopen(path.c_str(), "rb");
-    if (!file) {
-        return {};
-    }
-    std::string out;
-    char buffer[4096];
-    size_t got = 0;
-    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        out.append(buffer, got);
-    }
-    fclose(file);
-    return out;
-}
 
 bool segment_named() {
     char name[64];
@@ -106,20 +87,17 @@ int main() {
         printf("skip VOCEM_DAEMON not set: no daemon binary to drive\n");
         return 77;
     }
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
     vocem_test::set_alarm(60, "one daemon per user");
 
-    char root[] = "/tmp/vocem-single-daemon-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-single-daemon", {"/state", "/state/vocem", "/config",
+                                                        "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
 
     const pid_t first = start_daemon(daemon_path, base, base + "/first.log");
@@ -152,7 +130,7 @@ int main() {
         waitpid(first, nullptr, 0);
     }
 
-    (void)!system(("rm -rf '" + base + "'").c_str());
+    vocem_test::remove_tree(base);
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }

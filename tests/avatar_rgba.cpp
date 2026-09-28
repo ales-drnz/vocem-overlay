@@ -27,17 +27,12 @@
 #include <unistd.h>
 
 #include "vocem/avatar_rgba.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // A solid colour per quadrant, at any square size: box-filtering it at any
 // ratio must reproduce the quadrant colours exactly, which makes the resample

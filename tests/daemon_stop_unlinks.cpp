@@ -66,27 +66,15 @@
 #include "probe_alarm.h"
 #include "discord_stub.h"
 #include "fake_flatpak.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "vocem/shared_state.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const std::string& path, const char* contents) {
-    FILE* file = fopen(path.c_str(), "w");
-    if (file) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 bool segment_named() {
     char name[64];
@@ -119,7 +107,6 @@ double wait_for(double seconds, Fn ready) {
 }
 
 }  // namespace
-
 
 namespace {
 
@@ -407,7 +394,7 @@ int main() {
         printf("skip VOCEM_DAEMON not set: no daemon binary to drive\n");
         return 77;
     }
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
     vocem_test::set_alarm(120, "the daemon unlinking on a stop");
