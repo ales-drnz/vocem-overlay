@@ -12,6 +12,8 @@ add_executable(vocemd
     src/avatars.cpp
     src/auth.cpp
     src/flatpak_bridge.cpp
+    src/flatpak_policy.cpp
+    src/flatpak_copies.cpp
 )
 
 target_include_directories(vocemd PRIVATE

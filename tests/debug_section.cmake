@@ -99,7 +99,7 @@ endif()
 
 # And the same sentence is not repeated once per crashed row. The dump carries
 # geometry, never text, so this half is read from the source, as the other
-# source-level rules in this suite are (one_dlsym_version, instant_switches).
+# source-level rules in this suite are (one_dlsym_version, for one).
 if(DEFINED QML_DIR)
     file(READ "${QML_DIR}/DebugPage.qml" debug_page)
     if(debug_page MATCHES "Ended without shutting down")

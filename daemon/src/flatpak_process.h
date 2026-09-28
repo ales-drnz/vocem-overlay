@@ -19,7 +19,7 @@
 // holding a socket (peer_identity.h), and the Flatpak bridge, which wants the
 // ids that have any process running at all before it believes a directory
 // under $XDG_RUNTIME_DIR/app is the application its name says
-// (flatpak_bridge.cpp).
+// (flatpak_policy.cpp, check_running).
 //
 // /proc/<pid>/root of a process of this user's is readable from a shell --
 // PTRACE_MODE_READ, which yama ptrace_scope=1 does not restrict -- including

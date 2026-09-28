@@ -26,6 +26,8 @@
 #include <QPixmap>
 #include <QQuickImageProvider>
 #include <QHash>
+#include <QMetaProperty>
+#include <QSet>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QLockFile>
@@ -76,6 +78,30 @@ QString instance_socket_name() {
 // the winner's socket to appear if it has not yet. Beside the socket, for the
 // socket's reasons.
 QString instance_lock_name() { return instance_socket_name() + QStringLiteral(".lock"); }
+
+// What an item is, by the QML type it was declared as: a control by the Qt
+// Quick Controls type it derives from (the desktop style's Switch is a
+// QQuickSwitch underneath), anything else by its own type, the "_QMLTYPE_n"
+// suffix Qt gives a QML-declared type taken off.
+QString type_name(const QObject* object) {
+    static const char* const kControls[][2] = {
+        {"QQuickSwitch", "Switch"},     {"QQuickCheckBox", "CheckBox"},
+        {"QQuickRadioButton", "RadioButton"}, {"QQuickSlider", "Slider"},
+        {"QQuickSpinBox", "SpinBox"},   {"QQuickComboBox", "ComboBox"},
+        {"QQuickTextField", "TextField"}, {"QQuickButton", "Button"},
+    };
+    for (const auto& control : kControls) {
+        if (object->inherits(control[0])) {
+            return QString::fromLatin1(control[1]);
+        }
+    }
+    QString name = QString::fromLatin1(object->metaObject()->className());
+    const int cut = name.indexOf(QStringLiteral("_QMLTYPE_"));
+    if (cut > 0) {
+        name.truncate(cut);
+    }
+    return name;
+}
 
 // The geometry of everything the previews draw, as numbers.
 //
@@ -147,11 +173,171 @@ void dump_item(QQuickItem* item, const QString& path, QHash<QString, int>& seen,
                 out << ", \"" << name << "\": " << value.toReal();
             }
         }
-        out << "}\n";
+        // Last on the line: the checks match "item", "x" ... "visible" in
+        // that order.
+        out << ", \"type\": \"" << type_name(item) << "\"}\n";
     }
     const QList<QQuickItem*> children = item->childItems();
     for (QQuickItem* child : children) {
         dump_item(child, here, seen, out);
+    }
+}
+
+// What each control DOES, for the tests that hold a control to its promise
+// rather than to its spelling in the QML (VOCEM_CONFIG_DRIVE=1, beside the
+// geometry dump; inert without it).
+//
+// Every visible Switch and CheckBox on the page is clicked as a user clicks
+// it -- toggle(), then the toggled() signal the page's handler listens to --
+// and clicked back. Every Slider and SpinBox is moved to its `to` and to its
+// `from` -- the value set, then moved() or valueModified() -- and back to
+// where it was. For each, one line says which of ConfigBridge's writable
+// settings the control changed ("drives"), the setting's value at either end
+// of a slider ("atFrom", "atTo", after the bridge's clamp), and whether
+// config.ini changed on disk before anything else ran ("writesAtOnce"): a
+// switch is for a setting written on the click, anything under an Apply bar
+// waits for it. Each control once per run, on the first section it is
+// visible on; the header's switches are visible on all of them.
+QVariantMap writable_settings(const QObject* bridge) {
+    QVariantMap settings;
+    const QMetaObject* meta = bridge->metaObject();
+    for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
+        const QMetaProperty property = meta->property(i);
+        if (property.isWritable()) {
+            settings.insert(QString::fromLatin1(property.name()), property.read(bridge));
+        }
+    }
+    return settings;
+}
+
+QStringList changed_settings(const QVariantMap& before, const QVariantMap& after) {
+    QStringList names;
+    for (auto it = after.constBegin(); it != after.constEnd(); ++it) {
+        if (before.value(it.key()) != it.value()) {
+            names.append(it.key());
+        }
+    }
+    return names;
+}
+
+QByteArray settings_file_bytes() {
+    QFile file(QString::fromStdString(vocem::Config::path()));
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray("<none>");
+}
+
+// Where a control sits, by the names of the items around it, and what it is
+// called: its own text, a SliderRow's accessibleName, or the label of the
+// SettingRow it sits in.
+QString control_path(QQuickItem* item) {
+    QStringList names;
+    for (QQuickItem* at = item; at; at = at->parentItem()) {
+        if (!at->objectName().isEmpty()) {
+            names.prepend(at->objectName());
+        }
+    }
+    return names.join(QLatin1Char('/'));
+}
+
+QString control_label(QQuickItem* item) {
+    for (QQuickItem* at = item; at; at = at->parentItem()) {
+        const QVariant name = at->property("accessibleName");
+        if (name.isValid() && !name.toString().isEmpty()) {
+            return name.toString();
+        }
+        const QVariant text = at->property("text");
+        if (at == item && text.isValid() && !text.toString().isEmpty()) {
+            return text.toString();
+        }
+        const QVariant label = at->property("label");
+        if (label.isValid() && label.userType() == QMetaType::QString &&
+            !label.toString().isEmpty()) {
+            return label.toString();
+        }
+    }
+    return {};
+}
+
+void collect_controls(QQuickItem* item, QList<QQuickItem*>& controls) {
+    if (!item->isVisible()) {
+        return;
+    }
+    const QString type = type_name(item);
+    if (type == QLatin1String("Switch") || type == QLatin1String("CheckBox") ||
+        type == QLatin1String("Slider") || type == QLatin1String("SpinBox")) {
+        controls.append(item);
+        return;
+    }
+    const QList<QQuickItem*> children = item->childItems();
+    for (QQuickItem* child : children) {
+        collect_controls(child, controls);
+    }
+}
+
+QString json_text(const QString& text) {
+    QString out = text;
+    out.replace(QLatin1Char('\\'), QStringLiteral("\\\\")).replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    return out;
+}
+
+void drive_controls(QQuickWindow* window, int section, QSet<QQuickItem*>& done, QTextStream& out) {
+    auto* bridge = window->findChild<ConfigBridge*>();
+    if (!bridge || !window->contentItem()) {
+        return;
+    }
+    QList<QQuickItem*> controls;
+    collect_controls(window->contentItem(), controls);
+    for (QQuickItem* control : controls) {
+        if (done.contains(control)) {
+            continue;
+        }
+        done.insert(control);
+        const QString type = type_name(control);
+        out << "{\"control\": \"" << type << "\", \"section\": " << section << ", \"path\": \""
+            << json_text(control_path(control)) << "\", \"label\": \""
+            << json_text(control_label(control)) << '"';
+        const QVariantMap before = writable_settings(bridge);
+        const QByteArray file_before = settings_file_bytes();
+        QStringList drives;
+        bool writes = false;
+        if (type == QLatin1String("Switch") || type == QLatin1String("CheckBox")) {
+            QMetaObject::invokeMethod(control, "toggle");
+            QMetaObject::invokeMethod(control, "toggled");
+            writes = settings_file_bytes() != file_before;
+            drives = changed_settings(before, writable_settings(bridge));
+            QMetaObject::invokeMethod(control, "toggle");
+            QMetaObject::invokeMethod(control, "toggled");
+        } else {
+            const bool spin = type == QLatin1String("SpinBox");
+            const char* moved = spin ? "valueModified" : "moved";
+            const QVariant from = control->property("from");
+            const QVariant to = control->property("to");
+            const QVariant was = control->property("value");
+            out << ", \"from\": " << from.toReal() << ", \"to\": " << to.toReal();
+            if (!spin) {
+                out << ", \"stepSize\": " << control->property("stepSize").toReal();
+            }
+            control->setProperty("value", to);
+            QMetaObject::invokeMethod(control, moved);
+            writes = settings_file_bytes() != file_before;
+            const QVariantMap at_to = writable_settings(bridge);
+            control->setProperty("value", from);
+            QMetaObject::invokeMethod(control, moved);
+            const QVariantMap at_from = writable_settings(bridge);
+            drives = changed_settings(before, at_to);
+            for (const QString& name : changed_settings(before, at_from)) {
+                if (!drives.contains(name)) {
+                    drives.append(name);
+                }
+            }
+            if (drives.size() == 1) {
+                out << ", \"atFrom\": " << at_from.value(drives.first()).toReal()
+                    << ", \"atTo\": " << at_to.value(drives.first()).toReal();
+            }
+            control->setProperty("value", was);
+            QMetaObject::invokeMethod(control, moved);
+        }
+        out << ", \"drives\": \"" << drives.join(QLatin1Char(',')) << "\", \"writesAtOnce\": "
+            << (writes ? "true" : "false") << "}\n";
     }
 }
 
@@ -317,7 +503,15 @@ int main(int argc, char* argv[]) {
             }
         }
         if (!instance_lock.isLocked()) {
-            ask_running_instance_to_show(3000);
+            if (!ask_running_instance_to_show(3000)) {
+                // The holder is alive (the lock says so) and did not answer:
+                // still building a window after three seconds, hung, or
+                // running without its socket (below). Said, not swallowed.
+                std::fprintf(stderr,
+                             "vocem-config: another instance holds %s and did not answer on "
+                             "%s; not opening a second window\n",
+                             qPrintable(instance_lock_name()), qPrintable(instance_socket_name()));
+            }
             return 0;
         }
     }
@@ -353,7 +547,22 @@ int main(int argc, char* argv[]) {
         // world-accessible, and where XDG_RUNTIME_DIR is missing it lands in /tmp
         // -- so any local user could make this window appear on the desktop.
         server.setSocketOptions(QLocalServer::UserAccessOption);
-        server.listen(instance_socket_name());
+        if (!server.listen(instance_socket_name())) {
+            // No socket, so no later launch could reach this window: each one
+            // would find the lock held, ask nobody, and exit showing nothing.
+            // The lock is given back instead, so a later launch opens a
+            // window of its own -- two windows is the lesser failure, and
+            // this line says why. The usual cause is a runtime directory
+            // whose path, with the name, is past the 107 bytes a local
+            // socket's address holds.
+            const QByteArray name = instance_socket_name().toLocal8Bit();
+            std::fprintf(stderr,
+                         "vocem-config: cannot listen on %s (%lld bytes; %s); running without "
+                         "the single-instance guard: a later launch opens a second window\n",
+                         name.constData(), static_cast<long long>(name.size()),
+                         qPrintable(server.errorString()));
+            instance_lock.unlock();
+        }
         QObject::connect(&server, &QLocalServer::newConnection, &server, [&server, main_window] {
             QLocalSocket* client = server.nextPendingConnection();
             if (client) {
@@ -462,9 +671,12 @@ int main(int argc, char* argv[]) {
         }
         auto* step = new QTimer(window);
         auto* index = new int(0);
+        // The controls already driven (drive_controls), for the whole walk.
+        const bool drive = std::getenv("VOCEM_CONFIG_DRIVE") != nullptr;
+        auto* driven = new QSet<QQuickItem*>();
         step->setInterval(700);
         QObject::connect(step, &QTimer::timeout, window,
-                         [window, path, geometry_file, index, step, walk, step_ms] {
+                         [window, path, geometry_file, index, step, walk, step_ms, drive, driven] {
             step->setInterval(step_ms);
             if (*index >= walk.size()) {
                 if (geometry_file->isOpen()) {
@@ -506,7 +718,8 @@ int main(int argc, char* argv[]) {
                 open_named_popups(window, QString::fromLocal8Bit(open));
             }
             // Grab on the next tick: the property change has to reach the scene.
-            QTimer::singleShot(400, window, [window, path, geometry_file, index, step, section] {
+            QTimer::singleShot(400, window, [window, path, geometry_file, index, step, section,
+                                             drive, driven] {
                 // Always grabbed, even when no screenshot was asked for: the grab is
                 // what forces a synchronous render, and without a render the section
                 // that has just been switched to is never laid out. Its items then
@@ -559,6 +772,11 @@ int main(int argc, char* argv[]) {
                     }
                     if (window->contentItem()) {
                         dump_item(window->contentItem(), QString(), seen, out);
+                    }
+                    // After the page's own dump, so its geometry is the
+                    // page as it opened.
+                    if (drive) {
+                        drive_controls(window, section, *driven, out);
                     }
                 }
                 ++(*index);

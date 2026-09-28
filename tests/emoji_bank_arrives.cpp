@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
           "with nothing reported yet: a reason during the wait may be untrue by the next look");
 
     // The daemon's tick lands: the table first, then the bank, in the bridge's
-    // own order (flatpak_bridge.cpp says why the order is that one).
+    // own order (flatpak_copies.cpp says why the order is that one).
     const std::string target = app + "/" + vocem::kBridgeEmojiBankName;
     const std::string table_target = app + "/" + vocem::kBridgeEmojiSequencesName;
     struct stat staged_table {};

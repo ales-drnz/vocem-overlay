@@ -4,76 +4,68 @@
 #
 # A switch means the click did something; everything else is a checkbox.
 #
-# The KDE guidelines put it plainly in *Getting input*: "Use a Switch for
-# 'instant apply' controls that take effect immediately; otherwise, use a
-# CheckBox." This window has exactly three settings that take effect
-# immediately -- the overlay, the voice panel and the messages, written straight
-# to the file by ConfigBridge::persistNow() and reaching a running game a couple
-# of seconds later with no Apply in between. Two of them are the switches in the
-# header; the third is the tray's checkable menu entry.
+# The KDE guidelines, *Getting input*: "Use a Switch for 'instant apply'
+# controls that take effect immediately; otherwise, use a CheckBox." Three
+# settings in this window are written on the click (ConfigBridge::persistNow):
+# the overlay, the voice panel and the messages. The last two are the
+# header's switches; the first is the tray's checkable entry, which is not an
+# item of the window and is not reached here. Ten booleans on pages under an
+# Apply bar were switches through 0.1.0-64.
 #
-# Every other boolean in the window sits on a page under an Apply bar and does
-# nothing at all until that button is pressed. Ten of them were switches through
-# 0.1.0-64, promising an immediacy the code does not have -- and the Applications
-# page said so out loud, in a subtitle claiming the row "takes effect in a
-# running game within a couple of seconds".
+# Measured rather than read: every Switch and CheckBox in the running window
+# is clicked (window_controls.cmake) and config.ini is compared before and
+# after the click.
+#   * every Switch wrote config.ini on the click;
+#   * every CheckBox did not;
+#   * the switches are the voice panel's and the messages', and each changes
+#     that one setting.
+# At least seven checkboxes must be clicked: a walk that finds none must fail.
 #
-# A source check rather than a measurement of the built window, because Qt gives
-# a Switch and a CheckBox the same accessible role and the same reported
-# geometry family: what distinguishes them here is which type the QML names.
-# Like one_spelling.cmake, the rule is about code.
-#
-# The list of persistNow() settings is checked too, so that making some future
-# setting instant and leaving this rule behind is a failure rather than a
-# silence.
+# Expects CONFIG_BINARY and CMAKE_CURRENT_BINARY_DIR (a test directory).
 
-file(GLOB qml "${SOURCE_DIR}/gui/qml/*.qml")
+include("${CMAKE_CURRENT_LIST_DIR}/window_controls.cmake")
+vocem_window_controls("${CMAKE_CURRENT_BINARY_DIR}/instant-switches")
 
-set(offenders "")
-foreach(source IN LISTS qml)
-    get_filename_component(name "${source}" NAME)
-    if(name STREQUAL "Main.qml")
+set(problems "")
+set(switched "")
+set(checkboxes 0)
+foreach(line IN LISTS controls)
+    string(JSON type GET "${line}" control)
+    if(NOT type STREQUAL "Switch" AND NOT type STREQUAL "CheckBox")
         continue()
     endif()
-    file(STRINGS "${source}" lines)
-    set(number 0)
-    foreach(line IN LISTS lines)
-        math(EXPR number "${number} + 1")
-        string(REGEX REPLACE "^[ \t]*//.*" "" code "${line}")
-        if(code MATCHES "^[ \t]*Switch[ \t]*\\{")
-            list(APPEND offenders
-                 "${name}:${number}: a Switch on a page under an Apply bar")
+    string(JSON label GET "${line}" label)
+    string(JSON drives GET "${line}" drives)
+    string(JSON writes GET "${line}" writesAtOnce)
+    string(JSON section GET "${line}" section)
+    if(type STREQUAL "Switch")
+        list(APPEND switched "${drives}")
+        if(NOT writes)
+            list(APPEND problems "the Switch '${label}' (section ${section}, ${drives}) did not "
+                                 "write config.ini on the click")
         endif()
-    endforeach()
+    else()
+        math(EXPR checkboxes "${checkboxes} + 1")
+        if(writes)
+            list(APPEND problems "a CheckBox (section ${section}, ${drives}) wrote config.ini on "
+                                 "the click: a setting written at once is a Switch")
+        endif()
+    endif()
 endforeach()
-
-# The header's two, and only those two.
-file(STRINGS "${SOURCE_DIR}/gui/qml/Main.qml" main_lines REGEX "^[ \t]*Switch[ \t]*\\{")
-list(LENGTH main_lines header_switches)
-if(NOT header_switches EQUAL 2)
-    list(APPEND offenders
-         "Main.qml: ${header_switches} switches in the header, expected the two that are "
-         "written immediately (the voice panel and the messages)")
+list(SORT switched)
+string(REPLACE ";" "," switched "${switched}")
+if(NOT switched STREQUAL "notificationsEnabled,panelEnabled")
+    list(APPEND problems "the switches change '${switched}', expected the voice panel's and "
+                         "the messages' (notificationsEnabled,panelEnabled)")
 endif()
-
-# What actually writes without waiting for Apply. Three calls, and the switches
-# above stand for exactly those.
-file(STRINGS "${SOURCE_DIR}/gui/src/config_bridge.cpp" instant REGEX "^[ \t]*persistNow\\(")
-list(LENGTH instant instant_count)
-if(NOT instant_count EQUAL 3)
-    list(APPEND offenders
-         "config_bridge.cpp: ${instant_count} settings write immediately, not 3 -- the "
-         "rule about which controls may be switches was written against three")
+if(checkboxes LESS 7)
+    list(APPEND problems "only ${checkboxes} checkboxes were clicked, of at least 7 -- a walk "
+                         "that stopped reaching the pages is not agreement")
 endif()
-
-if(offenders)
-    message("A boolean promises an immediacy the code does not have:")
-    foreach(offender IN LISTS offenders)
-        message("  ${offender}")
-    endforeach()
-    message(FATAL_ERROR
-        "a Switch is for a setting that takes effect on the click; a setting that "
-        "waits for Apply is a CheckBox (KDE HIG, Getting input)")
+if(problems)
+    string(REPLACE ";" "\n  " problems "${problems}")
+    message(FATAL_ERROR "a boolean promises an immediacy it does not have, or hides one:\n  "
+                        "${problems}")
 endif()
-
-message("ok   the only switches are the ones whose click reaches a running game")
+message(STATUS "ok instant_switches: 2 switches write on the click, ${checkboxes} checkboxes wait "
+               "for Apply")

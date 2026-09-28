@@ -256,7 +256,7 @@ struct Config {
     // the ones whose exported desktop entry says Game. Same list syntax, matched
     // against the id exactly (`org.example.Game`). Read by the daemon alone: a
     // sandbox's own request is its word, and this is the user's
-    // (daemon/src/flatpak_bridge.cpp).
+    // (daemon/src/flatpak_policy.cpp).
     std::string flatpak_apps;
 
     // Which display each map in the window depicts, as the connector's name
@@ -351,44 +351,73 @@ struct Config {
     }
 
     // One of the three switches the window writes the moment it is clicked, put
-    // on top of the file as it stands on disk: loaded fresh, that one key
-    // changed, saved -- so keys edited outside the window since startup, and the
-    // other two switches, are not put back (entries 136, 203). `which` is
+    // on top of the file as it stands on disk: that one key changed and nothing
+    // else, so keys edited outside the window since startup, and the other two
+    // switches, are not put back (entries 136, 203). `which` is
     // &Config::enabled, &Config::panel_enabled or &Config::notifications_enabled;
-    // `written`, when given, receives what was saved.
-    static bool write_switch(bool Config::*which, bool value, Config* written = nullptr) {
-        Config fresh;
-        fresh.load();
-        fresh.*which = value;
-        const bool saved = fresh.save();
-        if (written) {
-            *written = fresh;
-        }
-        return saved;
+    // `written`, when given, receives what the file now says. Through
+    // edit_file(), like every write.
+    static bool write_switch(bool Config::*which, bool value, Config* written = nullptr,
+                             std::string* why = nullptr) {
+        return edit_file([which, value](Config& disk) { disk.*which = value; }, written, why);
     }
 
-    void load() {
-        std::FILE* file = std::fopen(path().c_str(), "r");
-        if (!file) {
-            return;  // defaults are a perfectly good configuration
+    // The window's Apply: the settings the window changed (`mine` against
+    // `followed`, the file as the window last followed it) put on top of the
+    // file as it stands, every other key keeping the file's value
+    // (merged(), entry 272). start_at_login is the window's whatever the file
+    // says: it is read from the autostart entry, not from here.
+    static bool write_edit(const Config& followed, const Config& mine, Config* written = nullptr,
+                           std::string* why = nullptr) {
+        return edit_file(
+            [&followed, &mine](Config& disk) {
+                disk = merged(followed, mine, disk);
+                disk.start_at_login = mine.start_at_login;
+            },
+            written, why);
+    }
+
+    // The settings in the file, over the defaults. False when there is a file
+    // and it could not be read whole: not a regular file (a FIFO would hold
+    // the reader for ever, /dev/zero never ends), not readable, or a read that
+    // failed part way. What was read before the failure has been applied; a
+    // caller that goes on to write must not trust it, and edit_file() does
+    // not. A missing file is not a failure: defaults are a perfectly good
+    // configuration.
+    bool load() {
+        std::FILE* file = nullptr;
+        const int found = open_settings(path(), file, nullptr, nullptr);
+        if (found <= 0) {
+            return found == 0;
         }
         std::string line;
         while (read_line(file, line)) {
-            // `data()` is non-const from C++17; the parsing below writes a
-            // terminator over the '='.
-            char* text = line.data();
-            char* equals = std::strchr(text, '=');
-            if (!equals || text[0] == '#' || text[0] == '[' || text[0] == ';') {
-                continue;
-            }
-            *equals = '\0';
-            assign(trim(text), trim(equals + 1));
+            take_line(line);
         }
+        const bool whole = !std::ferror(file);
         std::fclose(file);
+        return whole;
+    }
+
+    // The settings in `text`, a whole file's bytes, over the current values:
+    // exactly what load() makes of the same bytes (the same lines dropped for
+    // length, the same reading of each). The writer reads the file once and
+    // parses what it read with this.
+    void parse(const std::string& text) {
+        std::string line;
+        for (size_t at = 0; at < text.size();) {
+            size_t end = text.find('\n', at);
+            end = end == std::string::npos ? text.size() : end + 1;  // with its newline
+            if (end - at <= kMaxLineBytes) {
+                line.assign(text, at, end - at);
+                take_line(line);
+            }
+            at = end;
+        }
     }
 
     // One setting, from the text a file line carries for it (already trimmed).
-    // An unknown key changes nothing. load() reads every line through this, and
+    // An unknown key changes nothing. Every line read goes through this, and
     // merged() puts one key of another copy through it.
     void assign(const char* key, const char* value) {
         // The numbers, by the table above.
@@ -549,20 +578,32 @@ struct Config {
         return result;
     }
 
-    // Only the GUI writes; the injected code never touches the file.
+    // ---- The one writer. -------------------------------------------------
     //
-    // The file is the user's and is rewritten IN PLACE (rewritten()): each line
-    // carrying a known key gets that key's value; every other line -- comments,
-    // blank lines, sections, keys from a newer version, a known key's line too
-    // long for load() -- stays; missing known keys are added at the end of their
-    // section.
-    //
-    // Written to a temporary beside the TARGET and renamed over it: a game
-    // reloads on the mtime, which would already be final while it read a
-    // half-written file. A symlink is resolved first (write_target), so the link
-    // stays a link; the temporary takes the target's mode and is fsync'd, so a
-    // crash leaves the old file or the new one.
-    bool save() const {
+    // Only the window writes, and every write it makes -- Apply, the three
+    // instant switches, save() -- goes through edit_file(), which holds the
+    // whole policy in one place:
+    //   * The file is read whole, once, or not written. A file that is there
+    //     and cannot be read (mode 000, a directory, a FIFO, a device, a read
+    //     that fails part way) is not an empty one (entry 273), and a
+    //     read-only file says it is not to be written.
+    //   * `edit` gets the settings that read holds and changes what it means
+    //     to; nothing else is taken from anywhere.
+    //   * The file is rewritten IN PLACE (rewritten()): only the lines of the
+    //     settings whose value changed are touched; comments, blank lines,
+    //     sections, keys of a newer version, bytes that are not UTF-8, a
+    //     known key's line too long for the reader (entry 277), and every
+    //     setting that did not change stay byte for byte.
+    //   * A link stays a link, however it ends (write_target, entry 276); the
+    //     file at its end is what is written.
+    //   * Written to a temporary beside that file and renamed over it: a game
+    //     reloads on the mtime, which would already be final while it read a
+    //     half-written file. The temporary takes the file's mode and is
+    //     fsync'd, so a crash leaves the old file or the new one.
+    // `written` receives the settings the file now holds; `why`, when the
+    // write is refused, says why in words the window can show.
+    template <class Edit>
+    static bool edit_file(Edit edit, Config* written = nullptr, std::string* why = nullptr) {
         const std::string file_path = path();
         const size_t slash = file_path.rfind('/');
         if (slash != std::string::npos) {
@@ -570,17 +611,40 @@ struct Config {
         }
         const std::string target = write_target(file_path);
         if (target.empty()) {
-            return false;  // a loop of links: there is no file to write
+            return refuse(why, "it is a loop of links");
         }
+        std::FILE* file = nullptr;
         struct stat existing{};
-        const bool exists = ::stat(target.c_str(), &existing) == 0;
-        // A file that is there and cannot be read is not an empty one: it would
-        // be replaced by this copy's values (entry 273).
-        std::string current;
-        if (exists && !read_whole(target, current)) {
+        const int found = open_settings(target, file, &existing, why);
+        if (found < 0) {
             return false;
         }
-        const std::string text = rewritten(current);
+        std::string current;
+        if (found > 0) {
+            char chunk[4096];
+            size_t got = 0;
+            while ((got = std::fread(chunk, 1, sizeof(chunk), file)) > 0) {
+                current.append(chunk, got);
+            }
+            const bool whole = !std::ferror(file);
+            std::fclose(file);
+            if (!whole) {
+                return refuse(why, "it could not be read to its end");
+            }
+        }
+        Config result;
+        result.parse(current);
+        edit(result);
+        if (written) {
+            *written = result;
+        }
+        const std::string text = result.rewritten(current);
+        if (found > 0 && text == current) {
+            return true;  // nothing to change: the file already says it
+        }
+        if (found > 0 && ::access(target.c_str(), W_OK) != 0) {
+            return refuse(why, "it is read-only");
+        }
 
         const std::string temporary_path = target + ".tmp";
         int fd = ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
@@ -590,22 +654,22 @@ struct Config {
             fd = ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
         }
         if (fd < 0) {
-            return false;
+            return refuse(why, "no file could be created beside it");
         }
-        bool written = !exists || ::fchmod(fd, existing.st_mode & 07777) == 0;
-        for (size_t done = 0; written && done < text.size();) {
+        bool complete = found == 0 || ::fchmod(fd, existing.st_mode & 07777) == 0;
+        for (size_t done = 0; complete && done < text.size();) {
             const ssize_t wrote = ::write(fd, text.data() + done, text.size() - done);
             if (wrote < 0 && errno == EINTR) {
                 continue;
             }
-            written = wrote > 0;
-            done += written ? static_cast<size_t>(wrote) : 0;
+            complete = wrote > 0;
+            done += complete ? static_cast<size_t>(wrote) : 0;
         }
-        written = written && ::fsync(fd) == 0;
-        written = ::close(fd) == 0 && written;
-        if (!written || std::rename(temporary_path.c_str(), target.c_str()) != 0) {
+        complete = complete && ::fsync(fd) == 0;
+        complete = ::close(fd) == 0 && complete;
+        if (!complete || std::rename(temporary_path.c_str(), target.c_str()) != 0) {
             ::unlink(temporary_path.c_str());
-            return false;
+            return refuse(why, "the new text could not be written");
         }
         const size_t target_slash = target.rfind('/');
         const std::string directory = target_slash == std::string::npos
@@ -619,15 +683,29 @@ struct Config {
         return true;
     }
 
+    // This whole copy, written over the file: every setting takes this copy's
+    // value. Through edit_file(), so the file's own lines stay as they are.
+    bool save(std::string* why = nullptr) const {
+        return edit_file([this](Config& disk) { disk = *this; }, nullptr, why);
+    }
+
     // `current` -- the file as it stands, possibly empty -- with this
-    // configuration written into it: see save(). Public so a test can hold
-    // the merge to its promise without a file.
+    // configuration written into it: see edit_file(). A setting whose value
+    // the file already carries (as the reader takes it) is not touched. One
+    // that changed is written over the LAST line the reader takes for it,
+    // which is the one that decides, keeping that line's CR if it had one;
+    // earlier copies are left, overruled as they already were. A setting with
+    // no line at all is added at the end of its section, or in a section of
+    // its own at the end; one whose only line is too long for the reader gets
+    // this copy's value after that line, and nothing when the value is empty
+    // (entry 277). Public so a test can hold the rewrite to its promise
+    // without a file.
     std::string rewritten(const std::string& current) const {
         static const char* const kHeader = "# Written by vocem-config. Edits are picked up live.";
         const std::vector<Entry> wanted = entries();
-        std::vector<bool> placed(wanted.size(), false);
-        // Keys with a line load() refused (read_line: past kMaxLineBytes).
-        std::vector<bool> refused(wanted.size(), false);
+        Config disk;
+        disk.parse(current);
+        const std::vector<Entry> has = disk.entries();
         const auto index_of = [&wanted](const std::string& key) -> int {
             // `gl_blacklist` is the old name of the same setting.
             const std::string name = key == "gl_blacklist" ? std::string("hidden_apps") : key;
@@ -638,46 +716,47 @@ struct Config {
             }
             return -1;
         };
+        // A value the reader would trim -- a space or tab at either end, or a
+        // pair of quotes around it -- is written inside quotes, which the
+        // reader takes off again (trim()).
         const auto line_for = [](const Entry& entry) {
-            return std::string(entry.key) + " = " + entry.value;
+            const std::string& value = entry.value;
+            const auto edge = [](char c) { return c == ' ' || c == '\t' || c == '\r'; };
+            const bool quoted = !value.empty() &&
+                                (edge(value.front()) || edge(value.back()) ||
+                                 (value.size() >= 2 && value.front() == '"' && value.back() == '"'));
+            return std::string(entry.key) + " = " + (quoted ? "\"" + value + "\"" : value);
         };
 
-        // The lines, with the section each belongs to.
+        // The lines (without their newline), with the section each belongs to.
         std::vector<std::string> lines;
         std::vector<std::string> sections;
+        bool final_newline = true;
+        // Per setting: the last line the reader takes for it, and the last
+        // line it refuses for length.
+        std::vector<int> taken(wanted.size(), -1);
+        std::vector<int> refused(wanted.size(), -1);
         std::string section;
         for (size_t at = 0; at < current.size();) {
             size_t end = current.find('\n', at);
-            if (end == std::string::npos) {
+            final_newline = end != std::string::npos;
+            if (!final_newline) {
                 end = current.size();
             }
             std::string line = current.substr(at, end - at);
             // The bytes read_line() counts: the line and its newline.
-            const size_t read_length = line.size() + (end < current.size() ? 1 : 0);
+            const size_t read_length = line.size() + (final_newline ? 1 : 0);
             at = end + 1;
-            // The same reading load() gives the line: a key is text before an
-            // '=' on a line that does not open with '#', '[' or ';'.
             std::string trimmed = trim_copy(line);
             if (!trimmed.empty() && trimmed.front() == '[' && trimmed.back() == ']') {
                 section = trim_copy(trimmed.substr(1, trimmed.size() - 2));
-            } else if (!line.empty() && line[0] != '#' && line[0] != '[' && line[0] != ';') {
-                const size_t equals = line.find('=');
-                if (equals != std::string::npos) {
-                    const int known = index_of(trim_copy(line.substr(0, equals)));
-                    if (known >= 0 && read_length > kMaxLineBytes) {
-                        // load() dropped this line whole, so this copy's value
-                        // is not the line's. It stays as it is; this copy's
-                        // value, when there is one, goes after it, where the
-                        // reader takes it.
-                        refused[static_cast<size_t>(known)] = true;
-                    } else if (known >= 0) {
-                        if (placed[static_cast<size_t>(known)]) {
-                            // load() takes the LAST of two, so a second copy
-                            // left behind would overrule the value written.
-                            continue;
-                        }
-                        placed[static_cast<size_t>(known)] = true;
-                        line = line_for(wanted[static_cast<size_t>(known)]);
+            } else {
+                std::string key;
+                if (setting_key(line, key)) {
+                    const int known = index_of(key);
+                    if (known >= 0) {
+                        (read_length > kMaxLineBytes ? refused : taken)[static_cast<size_t>(known)] =
+                            static_cast<int>(lines.size());
                     }
                 }
             }
@@ -685,17 +764,30 @@ struct Config {
             sections.push_back(section);
         }
 
-        // The keys the file lacked: after the last line of their section that
-        // is not blank, or in a section of their own at the end.
+        // The changes: a line rewritten, or a line to add after line j
+        // (after[j + 1]) or at the end (tail).
         std::vector<std::vector<std::string>> after(lines.size() + 1);
         std::vector<std::string> tail;
         for (size_t i = 0; i < wanted.size(); ++i) {
-            // A refused line with nothing of this copy's to put after it:
-            // an empty line added there would say nothing the reader does
-            // not already conclude.
-            if (placed[i] || (refused[i] && wanted[i].value.empty())) {
+            const bool same = wanted[i].value == has[i].value;
+            if (taken[i] >= 0) {
+                if (!same) {
+                    std::string& line = lines[static_cast<size_t>(taken[i])];
+                    const bool cr = !line.empty() && line.back() == '\r';
+                    line = line_for(wanted[i]) + (cr ? "\r" : "");
+                }
                 continue;
             }
+            if (refused[i] >= 0) {
+                // The reader takes the default for this key, so a line is
+                // added only when this copy's value is not that.
+                if (!same) {
+                    after[static_cast<size_t>(refused[i]) + 1].push_back(line_for(wanted[i]));
+                }
+                continue;
+            }
+            // No line at all: added, so the file says everything the window
+            // knows.
             size_t anchor = lines.size();
             bool found = false;
             for (size_t j = lines.size(); j-- > 0;) {
@@ -736,7 +828,11 @@ struct Config {
             }
             if (j < lines.size()) {
                 text += lines[j];
-                text += '\n';
+                // The last line keeps its lack of a newline when nothing follows it.
+                const bool last = j + 1 == lines.size() && after[j + 1].empty() && tail.empty();
+                if (!last || final_newline) {
+                    text += '\n';
+                }
             }
         }
         for (const std::string& line : tail) {
@@ -763,32 +859,112 @@ private:
     // inside somebody's game. 64 KiB is about four thousand process names.
     static constexpr size_t kMaxLineBytes = 64 * 1024;
 
-    // Reads one whole line, however long it is. A line past the cap is consumed
-    // to its end and dropped rather than kept in pieces: a truncated value is
-    // worse than none, because the window would save the truncation back (a
-    // short `hidden_apps` gives hidden applications the overlay again).
+    // Reads one whole line, however long it is, NUL bytes included. A line
+    // past the cap is consumed to its end and dropped rather than kept in
+    // pieces: a truncated value is worse than none, because the window would
+    // save the truncation back (a short `hidden_apps` gives hidden
+    // applications the overlay again). Byte by byte rather than fgets():
+    // fgets() cannot say where a line holding a NUL ends, and one did not --
+    // the line after it was read as part of it.
     static bool read_line(std::FILE* file, std::string& line) {
         line.clear();
-        char chunk[256];
         bool any = false;
-        bool dropped = false;
-        while (std::fgets(chunk, sizeof(chunk), file)) {
+        size_t length = 0;
+        for (int c = getc_unlocked(file); c != EOF; c = getc_unlocked(file)) {
             any = true;
-            const size_t length = std::strlen(chunk);
-            if (!dropped && line.size() + length > kMaxLineBytes) {
-                dropped = true;
+            if (++length <= kMaxLineBytes) {
+                line.push_back(static_cast<char>(c));
+            } else if (!line.empty()) {
                 line.clear();
+                line.shrink_to_fit();
             }
-            if (!dropped) {
-                line.append(chunk, length);
-            }
-            // `fgets` stops at the newline or at the buffer; only the newline
-            // ends the line.
-            if (length > 0 && chunk[length - 1] == '\n') {
+            if (c == '\n') {
                 break;
             }
         }
         return any;
+    }
+
+    // One line as the reader takes it: a setting is the text before the first
+    // '=' on a line that does not open with '#', '[' or ';', read as a C
+    // string (a NUL ends it). The one reading of a line, used by the reader
+    // (take_line) and by the rewrite (setting_key), so the two cannot
+    // disagree about which line carries which key.
+    static bool split_setting(char* text, const char** key, const char** value) {
+        char* equals = std::strchr(text, '=');
+        if (!equals || text[0] == '#' || text[0] == '[' || text[0] == ';') {
+            return false;
+        }
+        *equals = '\0';
+        *key = trim(text);
+        *value = trim(equals + 1);
+        return true;
+    }
+
+    void take_line(std::string& line) {
+        // `data()` is non-const from C++17; the split writes terminators.
+        const char* key = nullptr;
+        const char* value = nullptr;
+        if (split_setting(line.data(), &key, &value)) {
+            assign(key, value);
+        }
+    }
+
+    static bool setting_key(std::string line, std::string& key) {
+        const char* name = nullptr;
+        const char* value = nullptr;
+        if (!split_setting(line.data(), &name, &value)) {
+            return false;
+        }
+        key = name;
+        return true;
+    }
+
+    // Opens the settings file for reading, or says why not: 1 and `file` set
+    // when it is a regular file that could be opened; 0 when there is none
+    // (errno ENOENT, `file` null); -1 otherwise, `why` saying what is there.
+    // O_NONBLOCK is load-bearing: the S_ISREG check comes after the open, and
+    // opening a FIFO without it waits for a writer that never comes -- in the
+    // window, in the daemon, and in every game that reads the file.
+    static int open_settings(const std::string& file_path, std::FILE*& file, struct stat* info,
+                             std::string* why) {
+        file = nullptr;
+        const int fd = ::open(file_path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            if (errno == ENOENT) {
+                return 0;
+            }
+            refuse(why, errno == EACCES ? "it cannot be read" : std::strerror(errno));
+            return -1;
+        }
+        struct stat own{};
+        if (::fstat(fd, &own) != 0 || !S_ISREG(own.st_mode)) {
+            ::close(fd);
+            refuse(why, "it is not a regular file");
+            errno = EINVAL;
+            return -1;
+        }
+        const int flags = ::fcntl(fd, F_GETFL);
+        if (flags >= 0) {
+            ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+        file = ::fdopen(fd, "r");
+        if (!file) {
+            ::close(fd);
+            refuse(why, std::strerror(errno));
+            return -1;
+        }
+        if (info) {
+            *info = own;
+        }
+        return 1;
+    }
+
+    static bool refuse(std::string* why, const char* reason) {
+        if (why) {
+            *why = reason;
+        }
+        return false;
     }
 
     // The file a write to `file_path` must land on: the path itself, or the end
@@ -818,26 +994,6 @@ private:
             current = next;
         }
         return std::string();
-    }
-
-    // The whole file, however long its lines: the rewrite keeps every line it
-    // does not own, and read_line's cap is for the reader inside a game. False
-    // when the file cannot be opened or a read fails part way: the caller must
-    // not take that for an empty file.
-    static bool read_whole(const std::string& file_path, std::string& text) {
-        text.clear();
-        std::FILE* file = std::fopen(file_path.c_str(), "r");
-        if (!file) {
-            return false;
-        }
-        char chunk[4096];
-        size_t got = 0;
-        while ((got = std::fread(chunk, 1, sizeof(chunk), file)) > 0) {
-            text.append(chunk, got);
-        }
-        const bool whole = !std::ferror(file);
-        std::fclose(file);
-        return whole;
     }
 
     static std::string trim_copy(const std::string& text) {
@@ -919,7 +1075,14 @@ private:
         for (int i = 0; i < decimals; ++i) {
             divisor *= 10;
         }
-        // Half away from zero, which is what %f does for the values kept here.
+        // To nearest, an exact tie away from zero: 0.125 at two places is
+        // 0.13, where glibc's %.2f gives 0.12 (it rounds the exact binary
+        // value, ties to even). The two differ on exact ties only -- 360 of
+        // the 3.6 million floats 0.0000..120.0000 at one, two and four places
+        // -- and either reads back as the text it wrote, which is what
+        // matters here (tests/config_hostile.cpp holds every setting to it).
+        // A float times at most 10^4 is exact in a double, so no rounding
+        // happens before this one.
         const long scaled = static_cast<long>(value * static_cast<double>(divisor) + 0.5);
         char buffer[64];
         std::snprintf(buffer, sizeof(buffer), "%s%ld.%0*ld", negative ? "-" : "",

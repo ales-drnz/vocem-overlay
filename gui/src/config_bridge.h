@@ -625,8 +625,9 @@ private:
     // One numeric setting, held to config.h's bounds by its key (Config::clamped)
     // rather than by a copy of the numbers here.
     void setNumber(const char* key, float vocem::Config::*member, qreal value);
-    // What save() answered, into saveError. True when it was written.
-    bool reportSave(bool saved);
+    // What the writer answered, into saveError, with the reason it gave for
+    // a refusal (Config::edit_file). True when it was written.
+    bool reportSave(bool saved, const std::string& why);
     // A write that failed, into saveError and the log.
     void reportFailure(const QString& error);
     // The file as it stands, when it moved under this window: an edit made by
