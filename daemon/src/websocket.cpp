@@ -374,6 +374,31 @@ PeerIdentity WebSocket::peer_owner() const {
                         ntohs(ours.sin_port));
 }
 
+PeerCgroup WebSocket::peer_cgroup() const {
+    PeerCgroup none;
+    none.failed = "no connection";
+    if (fd_ < 0) {
+        return none;
+    }
+    sockaddr_in ours{};
+    sockaddr_in theirs{};
+    socklen_t length = sizeof(ours);
+    if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&ours), &length) != 0) {
+        none.failed = "getsockname";
+        none.error = errno;
+        return none;
+    }
+    length = sizeof(theirs);
+    if (::getpeername(fd_, reinterpret_cast<sockaddr*>(&theirs), &length) != 0) {
+        none.failed = "getpeername";
+        none.error = errno;
+        return none;
+    }
+    // The peer's socket: its local endpoint is our remote one.
+    return socket_cgroup(theirs.sin_addr.s_addr, ntohs(theirs.sin_port), ours.sin_addr.s_addr,
+                         ntohs(ours.sin_port));
+}
+
 bool WebSocket::send_frame(uint8_t opcode, const void* data, size_t length,
                            Clock::time_point deadline) {
     if (fd_ < 0) {

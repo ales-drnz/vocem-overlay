@@ -1591,6 +1591,19 @@ vocem_test(flatpak_consent
 if(TARGET vocemd)
     vocem_test(daemon_peer_sandbox INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}" LINK rt
         ENV ${VOCEM_DAEMON_ENV} TIMEOUT 120 SKIP)
+    # The same question asked where the daemon really runs: the real vocemd as
+    # a transient unit of the user's systemd with every [Service] property of
+    # the unit file (private network, /dev/shm and $XDG_RUNTIME_DIR/app on
+    # top, measured before it starts), a listener in a scope named like
+    # Discord's (sent the token) and like a Flatpak's (refused), and a Flatpak
+    # game's scope the bridge must see running. 0.1.11-1 refused the real
+    # Discord from its unit (NEW-hotfix-1); every other daemon test runs it
+    # from a shell or bwrap. VOCEM_UNIT_FILE names another unit file (the
+    # packaged one) to take the confinement from.
+    vocem_test(daemon_unit_peer INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"
+        ENV ${VOCEM_DAEMON_ENV}
+            "VOCEM_UNIT_FILE=${CMAKE_SOURCE_DIR}/packaging/systemd/vocemd.service.in"
+        TIMEOUT 180 SKIP)
 endif()
 # Links and FIFOs at the avatar cache's names: the writer's `.part` and the
 # bridge's copy source. Nothing is written through a link, nothing waits on a

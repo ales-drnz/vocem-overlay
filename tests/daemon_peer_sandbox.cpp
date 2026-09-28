@@ -29,10 +29,15 @@
 //
 // And once more as org.evil.Squatter after prctl(PR_SET_DUMPABLE, 0): the
 // refutation of the first fix showed that one call hid the holder from the
-// scan (its /proc/<pid> becomes root's), the daemon "continued without the
-// sandbox check", and the token went out. A socket of this user's that no
-// visible process holds, while some of this user's processes are hidden, is
-// refused now.
+// scan (its /proc/<pid> becomes root's) and the token went out. The second
+// fix round refused any socket no visible process holds, and that refused
+// the real Discord from the daemon's unit, where no process at all is
+// visible (NEW-hotfix-1). An undumpable squatter in a Flatpak is refused now
+// by the cgroup its socket was made in -- tests/daemon_unit_peer.cpp holds
+// that, with a scope named like a Flatpak's. THIS listener is a bwrap a
+// host process built, in the test's own cgroup, which is the case
+// flatpak_process.h says nothing defends against: it is sent the token, and
+// the check says so, so that the limit is a measurement rather than a gap.
 //
 // And with an app id that hides an ESC behind a UTF-8 lead byte, which must
 // reach the daemon's log without the ESC.
@@ -309,16 +314,16 @@ int main() {
           "the same listener in Discord's own Flatpak is sent AUTHENTICATE with the token");
 
     // The squatter again, after prctl(PR_SET_DUMPABLE, 0). Its /proc entry is
-    // root's now, so no process the daemon can look into holds the socket
-    // whose row says it is this user's -- which a user's own /proc never
-    // hides, so unseen is made unseeable, and that is refused.
+    // root's now, so no process the daemon can look into holds the socket,
+    // and its socket's cgroup is the test's own: nothing names a Flatpak.
+    // "Cannot tell" is not "hostile" (peer_identity.h): the refusal of it is
+    // what refused the real Discord from the unit. The Flatpak-scoped shape
+    // of this squatter is refused in daemon_unit_peer.
     const std::string hidden = scenario(daemon_path, base, "nodump", "org.evil.Squatter", true, &log);
-    printf("--  an undumpable listener in the sandbox of org.evil.Squatter was sent: %s\n",
-           hidden.c_str());
-    check(hidden == "NOTHING" || hidden == "NO-CONNECTION",
-          "a listener that made itself undumpable is not sent AUTHENTICATE");
-    check(log.find("refusing port 6463") != std::string::npos,
-          "and the daemon's log says it refused the port");
+    printf("--  an undumpable listener in a host-built bwrap was sent: %s\n", hidden.c_str());
+    check(hidden == "AUTHENTICATE with-token",
+          "an undumpable listener in a bwrap outside any Flatpak scope is not told apart from "
+          "the host (the documented limit; not a refusal of the unseen)");
 
     // The sandbox's name is the sandbox's to write, and it reaches the log.
     // sanitise_text() took a lead byte's next byte as its continuation

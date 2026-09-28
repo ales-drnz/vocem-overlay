@@ -764,12 +764,14 @@ const std::set<std::string>& FlatpakBridge::running_ids() {
 }
 
 // Whether the directory is the application its name says: a process of this
-// user's is running in a sandbox whose /.flatpak-info names that id. The name
+// user's is running in that id's Flatpak scope, or in a sandbox whose
+// /.flatpak-info names it (flatpak_process.h; from the daemon's unit only the
+// scope can be seen, NEW-hotfix-1). The name
 // alone is not evidence -- `mkdir $XDG_RUNTIME_DIR/app/org.vinegarhq.Sober`
 // from any sandbox holding the xdg-run/app grant, a `request` with drawing=1
 // in it, and until the second fix round of 0.1.11 that sandbox was served as
 // Sober (a Game): channel, names, faces, the words of every message. A
-// process's /.flatpak-info is what a sandbox cannot forge (flatpak_process.h).
+// process's scope and its /.flatpak-info are what a sandbox cannot forge.
 //
 // Asked on every sweep, not once: a directory stays after its application
 // exits, and a mirror whose game has gone is somebody else's to write into
@@ -797,7 +799,8 @@ void FlatpakBridge::check_running(Mirror& mirror) {
     if (!mirror.absence_said) {
         mirror.absence_said = true;
         LOG("%s the voice channel to %s: no process of this user's is running in its sandbox "
-            "(none has a /.flatpak-info naming it), and a directory's name alone is not the "
+            "(none in its Flatpak scope or with a /.flatpak-info naming it), and a "
+            "directory's name alone is not the "
             "application",
             was ? "no longer serving" : "not serving", mirror.id.c_str());
     }

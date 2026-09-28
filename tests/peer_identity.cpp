@@ -37,6 +37,7 @@
 #include <cstring>
 #include <string>
 
+#include "peer_cgroup.h"
 #include "peer_identity.h"
 
 namespace {
@@ -102,6 +103,26 @@ int main() {
         check(identity.uid == static_cast<long>(getuid()),
               "which is this process, since this process is the listener");
 
+        // The socket's cgroup, asked of the kernel (peer_cgroup.h): the
+        // accepted end was cloned from our listener, so it is ours.
+        const vocem::PeerCgroup cgroup =
+            vocem::socket_cgroup(theirs.sin_addr.s_addr, ntohs(theirs.sin_port),
+                                 ours.sin_addr.s_addr, ntohs(ours.sin_port));
+        std::string own;
+        if (std::FILE* file = std::fopen("/proc/self/cgroup", "r")) {
+            char line[1024];
+            while (std::fgets(line, sizeof(line), file)) {
+                if (std::strncmp(line, "0::", 3) == 0) {
+                    own.assign(line + 3, std::strcspn(line + 3, "\n"));
+                }
+            }
+            std::fclose(file);
+        }
+        std::printf("--  the peer's cgroup: %s (%s)\n", cgroup.path.c_str(),
+                    cgroup.failed ? cgroup.failed : "answered");
+        check(cgroup.known && !own.empty() && cgroup.path == own,
+              "sock_diag names the peer socket's cgroup, and it is this process's own");
+
         if (served >= 0) ::close(served);
         ::close(client);
         ::close(listener);
@@ -148,6 +169,26 @@ int main() {
         check(unreadable.outcome == vocem::PeerOwner::Unknown,
               "and /proc that cannot be read is unknown, which the daemon does not treat as "
               "hostile");
+    }
+
+    // ---- the scope a Flatpak starts every sandbox in, read off a path.
+    {
+        const char* base = "/user.slice/user-1000.slice/user@1000.service/app.slice/";
+        check(vocem::flatpak_of_cgroup(std::string(base) +
+                                       "app-flatpak-com.rtosta.zapzap-1403059217.scope") ==
+                  "com.rtosta.zapzap",
+              "app-flatpak-<id>-<n>.scope names the id (the shape measured with ZapZap)");
+        check(vocem::flatpak_of_cgroup(std::string(base) +
+                                       "app-flatpak-com.discordapp.Discord-12.scope") ==
+                  "com.discordapp.Discord",
+              "Discord's own Flatpak scope names Discord's id");
+        check(vocem::flatpak_of_cgroup(std::string(base) + "app-discord-123224.scope").empty(),
+              "the host Discord's scope (measured live) is not a Flatpak");
+        check(vocem::flatpak_of_cgroup(std::string(base) + "app-flatpak-org.x.Y.scope").empty() &&
+                  vocem::flatpak_of_cgroup(std::string(base) + "app-flatpak-org.x.Y-12.service")
+                      .empty() &&
+                  vocem::flatpak_of_cgroup("").empty(),
+              "a scope without its number, a service, and nothing at all are not Flatpaks");
     }
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");

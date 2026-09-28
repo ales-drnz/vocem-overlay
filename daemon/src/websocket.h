@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <string>
 
+#include "peer_cgroup.h"
 #include "peer_identity.h"
 
 namespace vocem {
@@ -49,6 +50,11 @@ public:
     // carries messages.read scope. An answer of Unknown is not a refusal -- see
     // that header for why.
     PeerIdentity peer_owner() const;
+
+    // The cgroup the other end's socket was created in, asked of the kernel
+    // (peer_cgroup.h): the one answer about the peer that the daemon's own
+    // unit can still get, since no process of the session is open to it.
+    PeerCgroup peer_cgroup() const;
 
     void close();
 

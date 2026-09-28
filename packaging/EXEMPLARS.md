@@ -41,6 +41,7 @@ and a package cannot be rebuilt.
 | 0.1.10-5 | `tests/CMakeLists.txt`, `tests/vk_present_draw.cpp`, `tests/gl_draw_local.cpp`, DESIGN 191/192 (the freeze: 7 and 8 rebuilds) | **no** -- built from the working tree five minutes before the commit that carries its recipe (`c35195f`) |
 | 0.1.10-6 | DESIGN 194-205 (the release review: every refutation of it ran against this package, installed) | **no** -- built from the working tree 74 minutes before the commit that carries its recipe (`3f6db50`) |
 | 0.1.10-7 | `tests/installed_runpath.cmake`, `tests/package_depends_needed.cmake` (the window's RUNPATH, the Vulkan loaders in depends), and every refutation of the 2026-09-26 review, which ran against this package installed | its .BUILDINFO recipe hash is `PKGBUILD.local` at `a97cb01`, the commit `v0.1.10` is on (sha256 05101331...) |
+| 0.1.11-1 | `tests/daemon_unit_peer.cpp`, `tests/CMakeLists.txt`, `tests/unit_hardening.cmake`, NEW-hotfix-1 (the daemon under its own unit refused the real Discord; the new test fails against this package's vocemd and unit file, installed) | its .BUILDINFO recipe hash is `PKGBUILD.local` at `642a3c6` (sha256 ac1ed3c8...) |
 
 **So "a tag can be rebuilt" was true of two of the six.** The sentence that
 stood here -- "The packages from 0.1.2 on are rebuilds of tagged releases; a

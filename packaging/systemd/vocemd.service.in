@@ -51,8 +51,12 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
 SystemCallFilter=~@resources
 SystemCallFilter=~@obsolete
-# The RPC is TCP on loopback, the CDN is TCP; nothing here speaks anything else.
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The RPC is TCP on loopback, the CDN is TCP. AF_NETLINK is the kernel's socket
+# table (NETLINK_SOCK_DIAG): the cgroup the RPC listener's socket was made in is
+# the one thing about Discord the daemon can still ask from inside this unit,
+# whose user namespace closes every process of the session to it
+# (daemon/src/peer_cgroup.h). Without it 0.1.11-1 refused the real Discord.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes

@@ -34,7 +34,10 @@ set(required
     "NoNewPrivileges=yes"
     "SystemCallArchitectures=native"
     "SystemCallFilter=@system-service"
-    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"
+    # AF_NETLINK is sock_diag, the peer check's cgroup question: without it the
+    # daemon cannot tell a Flatpak squatter from Discord inside this unit, and
+    # 0.1.11-1 refused the real Discord (daemon/src/peer_cgroup.h).
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"
     "RestrictNamespaces=yes"
     "RestrictRealtime=yes"
     "RestrictSUIDSGID=yes"

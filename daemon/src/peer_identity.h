@@ -51,23 +51,28 @@
 //     namespace of its own sees none of the host's): the caller says so and
 //     goes on.
 //
-// One "cannot tell" is not that, and it was treated as if it were until the
-// second fix round of 0.1.11: the row says the socket is this user's, no
-// process the scan could look into holds it, and some of this user's
-// processes could NOT be looked into. A user's own /proc hides nothing from
-// the user -- hidepid hides other users' processes -- so a process of ours
-// that cannot be looked into made itself so: prctl(PR_SET_DUMPABLE, 0) gives
-// its /proc/<pid> to global root, which a Flatpak's user namespace does not
-// map, and its descriptors and root are closed to us. Measured: the review's
-// refutation added only that call to tests/daemon_peer_sandbox.cpp's squatter
-// and it was sent AUTHENTICATE with the token, because the scan found no
-// holder and the caller "continued without the sandbox check". Such a peer is
-// PeerPlace::Hidden now and refused. What it costs: this user's processes
-// that are closed to the daemon for reasons of their own count too -- four on
-// this machine: (sd-pam), kwin_wayland (it holds capabilities), the polkit
-// agent and a setuid fusermount3 -- so a legitimate listener the scan cannot
-// see would be refused as well; the live Discord's holder is an ordinary
-// dumpable process of this user's, which the scan finds (measured).
+// One "cannot tell" was refused for a while, and that refusal is what broke
+// 0.1.11-1. The second fix round of 0.1.11 refused a socket of this user's
+// that no process the scan could look into holds, while some of this user's
+// processes could not be looked into (PeerPlace::Hidden): the review's
+// refutation had made its squatter undumpable -- prctl(PR_SET_DUMPABLE, 0)
+// gives its /proc/<pid> to global root -- and it was sent the token. Both the
+// fix and its refuter measured the live Discord from a SHELL, where its
+// renderer is an ordinary dumpable process the scan finds. The daemon does not
+// run in a shell: its unit's ProtectClock, ProtectHostname, ProtectKernel* and
+// ProtectControlGroups give it a user namespace of its own, and from there a
+// readlink under /proc/<pid>/fd of ANY process of the session is EACCES
+// (measured on a plain `sleep`: commoncap refuses a ptrace-mode read across
+// user namespaces without CAP_SYS_PTRACE in the target's). No holder is ever
+// found from the unit, four of the user's processes always have fd
+// directories that will not open, so every listener was Hidden and the real
+// Discord was refused every 30 s (NEW-hotfix-1).
+//
+// Hidden is "cannot tell" again, said and allowed. The Flatpak squatter it was
+// meant for, undumpable or not, is refused by the cgroup its socket was made
+// in (peer_cgroup.h), which the kernel reports without looking into any
+// process; this scan is the second source, and still refuses a Flatpak it CAN
+// see (tests/daemon_peer_sandbox.cpp, from a shell).
 
 #ifndef VOCEM_PEER_IDENTITY_H
 #define VOCEM_PEER_IDENTITY_H
@@ -196,7 +201,8 @@ enum class PeerPlace {
     Host,     // a process with no /.flatpak-info at its root
     Flatpak,  // a process in a Flatpak sandbox; `app_id` says whose
     Hidden,   // no process we can look into holds it, and `hidden` of this
-              // user's processes cannot be looked into: one of them may
+              // user's processes cannot be looked into: one of them may.
+              // Another "cannot tell" for the caller, with numbers to say.
 };
 
 struct PeerProcess {
@@ -249,7 +255,7 @@ inline long status_real_uid(const std::string& base) {
 // entries owned by somebody else (root, for an undumpable process) whose
 // status names this user as the real uid -- a second pass, run only then.
 // Any of those could be the holder, so the answer is Hidden; with none of
-// them it is Unknown (see the header).
+// them it is Unknown. Neither is a refusal (see the header).
 inline PeerProcess socket_process(unsigned long inode, const char* proc = "/proc") {
     PeerProcess found;
     if (inode == 0) {

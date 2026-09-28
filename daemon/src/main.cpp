@@ -267,6 +267,9 @@ int main() {
     const std::string path = std::string("/?v=1&client_id=") + vocem::kClientId;
     int backoff_seconds = 1;
     bool warned_about_token = false;
+    // Once per daemon: a kernel without sock_diag, or a unit without
+    // AF_NETLINK, answers the same way on every connection.
+    bool cgroup_unavailable_said = false;
 
     // Escape hatch for exercising the authorisation flow when a token is already
     // stored, which is otherwise unreachable once authorisation succeeded.
@@ -302,7 +305,8 @@ int main() {
             // sandbox that is not Discord's own (same uid, network shared,
             // $XDG_STATE_HOME out of reach), is not Discord and is told so out
             // loud rather than trusted quietly. peer_identity.h says how each is
-            // told apart and what the uid alone could not.
+            // told apart and what the uid alone could not; peer_cgroup.h says
+            // why the socket's cgroup is asked first.
             const vocem::PeerIdentity owner = socket.peer_owner();
             if (owner.outcome == vocem::PeerOwner::Found &&
                 static_cast<uid_t>(owner.uid) != getuid()) {
@@ -312,13 +316,54 @@ int main() {
                 socket.close();
                 continue;
             }
+            // First source: the cgroup the listener's socket was made in, which
+            // the kernel reports without any access to a process. It is the
+            // only one the shipped unit leaves the daemon: its user namespace
+            // closes every process of the session to the /proc walk below, and
+            // 0.1.11-1 refused the owner's real Discord for it (NEW-hotfix-1).
+            const vocem::PeerCgroup cgroup = socket.peer_cgroup();
+            bool cgroup_answered = false;
+            if (!cgroup.known) {
+                if (!cgroup_unavailable_said) {
+                    cgroup_unavailable_said = true;
+                    LOG("cannot ask the kernel which cgroup the listener on port %u was made in "
+                        "(%s: %s); the Flatpak check falls back to /proc alone, which a "
+                        "confined daemon cannot see into",
+                        port, cgroup.failed ? cgroup.failed : "?",
+                        cgroup.error ? std::strerror(cgroup.error) : "no error given");
+                }
+            } else if (cgroup.path.empty()) {
+                LOG("the listener on port %u was made in cgroup %llu, which is nowhere under "
+                    "/sys/fs/cgroup; continuing without the cgroup check",
+                    port, static_cast<unsigned long long>(cgroup.id));
+            } else {
+                cgroup_answered = true;
+                const std::string app = vocem::flatpak_of_cgroup(cgroup.path);
+                if (!app.empty() && !vocem::is_discord_flatpak(app)) {
+                    LOG("refusing port %u: the socket listening there was made in the Flatpak "
+                        "sandbox of %s (cgroup %s), not Discord's -- not sending it the Discord "
+                        "token",
+                        port, vocem::sanitise_text(app).c_str(),
+                        vocem::sanitise_text(cgroup.path).c_str());
+                    socket.close();
+                    continue;
+                }
+                DBG("port %u is answered from cgroup %s", port, cgroup.path.c_str());
+            }
+            // Second source: the process holding the socket and the
+            // /.flatpak-info at its root, which is what a daemon run from a
+            // shell (and the bwrap tests) can still read. Either source
+            // naming a Flatpak that is not Discord's refuses.
             if (owner.outcome != vocem::PeerOwner::Found) {
                 // Not a refusal: a container with /proc restricted cannot answer
                 // the question, and a daemon that will not work there is worse
                 // than one that cannot check. Said out loud, every time, because
                 // a check that quietly does not happen is worth nothing.
-                LOG("could not establish who owns the listener on port %u; continuing without "
-                    "that check", port);
+                if (!cgroup_answered) {
+                    LOG("could not establish who owns the listener on port %u; continuing "
+                        "without that check",
+                        port);
+                }
             } else {
                 const vocem::PeerProcess process = vocem::socket_process(owner.inode);
                 if (process.place == vocem::PeerPlace::Flatpak &&
@@ -329,31 +374,32 @@ int main() {
                     socket.close();
                     continue;
                 }
-                if (process.place == vocem::PeerPlace::Hidden) {
-                    // The socket is this user's and no process the daemon can
-                    // look into holds it, while some of this user's cannot be
-                    // looked into: a user's own /proc hides nothing from the
-                    // user, so the listener made itself unseeable
-                    // (prctl(PR_SET_DUMPABLE, 0) was enough to be sent the
-                    // token until the second fix round of 0.1.11). Refused.
-                    LOG("refusing port %u: the socket listening there is this user's, but no "
-                        "process this daemon can look into holds it, and %d of this user's "
-                        "processes are closed to it (pid %s%s) -- not sending the Discord token "
-                        "to a listener that cannot be seen",
-                        port, process.hidden, process.hidden_pids.c_str(),
-                        process.hidden > 4 ? ", ..." : "");
-                    socket.close();
-                    continue;
-                }
-                if (process.place == vocem::PeerPlace::Unknown) {
-                    // The same rule as above, one question further: /proc could
-                    // not be listed, the holder's root could not be read, or no
-                    // process holds the socket while every process of this
-                    // user's could be looked into -- a /proc this daemon cannot
-                    // see all of, not evidence of anything. Said, every time.
-                    LOG("could not establish which process listens on port %u%s; continuing "
-                        "without the sandbox check",
-                        port, process.pid > 0 ? " (its root cannot be read)" : "");
+                if (process.place == vocem::PeerPlace::Hidden ||
+                    process.place == vocem::PeerPlace::Unknown) {
+                    // Cannot tell, which is not hostile: /proc could not be
+                    // listed, the holder's root could not be read, or no
+                    // process this daemon can look into holds the socket. The
+                    // last one was refused in the second fix round of 0.1.11
+                    // (an undumpable squatter was sent the token), and that
+                    // refusal is what refused the real Discord from the unit,
+                    // where no process of the session can be looked into.
+                    // An undumpable squatter in a Flatpak is refused above, by
+                    // its cgroup. Said, every time, when the cgroup did not
+                    // answer either.
+                    if (!cgroup_answered) {
+                        if (process.place == vocem::PeerPlace::Hidden) {
+                            LOG("could not establish which process listens on port %u: none "
+                                "this daemon can look into holds it, and %d of this user's "
+                                "processes are closed to it (pid %s%s); continuing without "
+                                "the sandbox check",
+                                port, process.hidden, process.hidden_pids.c_str(),
+                                process.hidden > 4 ? ", ..." : "");
+                        } else {
+                            LOG("could not establish which process listens on port %u%s; "
+                                "continuing without the sandbox check",
+                                port, process.pid > 0 ? " (its root cannot be read)" : "");
+                        }
+                    }
                 } else if (process.place == vocem::PeerPlace::Flatpak) {
                     DBG("port %u is answered from Discord's own Flatpak (%s)", port,
                         process.app_id.c_str());
