@@ -14,7 +14,7 @@
 // descriptor directory of the session is closed to it -- Discord's renderer,
 // which holds the RPC socket, among them. Measured on 0.1.11-1: the daemon
 // refused the owner's real Discord every 30 s, while the same code run from a
-// shell found the holder (NEW-hotfix-1).
+// shell found the holder (entry 285).
 //
 // A socket, though, carries the cgroup of the process that created it, and
 // NETLINK_SOCK_DIAG reports it (INET_DIAG_CGROUP_ID) to anyone in the socket's

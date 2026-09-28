@@ -37,7 +37,7 @@
 - A daemon restarting over a leftover segment no longer lets a game read it half cleared.
 - Without HOME, the settings and the token are no longer read from the working directory.
 - The overlay is sized from the resolution the display runs at, not from its preferred mode.
-- The daemon no longer sends the Discord token to a listener inside a Flatpak sandbox or hidden from it.
+- The daemon no longer sends the Discord token to a listener in a Flatpak sandbox other than Discord's.
 - Avatar files are never written through links or blocked on FIFOs, and SIGTERM always ends the daemon promptly.
 - A second vocemd for the same user exits at once instead of sharing the first one's segment.
 - A Flatpak sandbox writes one application record of its own and can no longer flood or overwrite the host's.

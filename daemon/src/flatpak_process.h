@@ -32,7 +32,7 @@
 // CAP_SYS_PTRACE in the target's). Measured on 0.1.11-1: under
 // `systemd-run --user -p ProtectKernelTunables=yes` the root and the
 // descriptors of a plain `sleep` started from a shell read EACCES, and
-// running_flatpak_ids() found no Flatpak with ZapZap running (NEW-hotfix-1).
+// running_flatpak_ids() found no Flatpak with ZapZap running (entry 285).
 //
 // So the process's cgroup is asked first. Flatpak starts every sandbox in a
 // systemd scope named `app-flatpak-<app-id>-<n>.scope`, the sandbox cannot

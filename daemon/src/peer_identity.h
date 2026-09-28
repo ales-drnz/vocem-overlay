@@ -66,7 +66,7 @@
 // user namespaces without CAP_SYS_PTRACE in the target's). No holder is ever
 // found from the unit, four of the user's processes always have fd
 // directories that will not open, so every listener was Hidden and the real
-// Discord was refused every 30 s (NEW-hotfix-1).
+// Discord was refused every 30 s (entry 285).
 //
 // Hidden is "cannot tell" again, said and allowed. The Flatpak squatter it was
 // meant for, undumpable or not, is refused by the cgroup its socket was made

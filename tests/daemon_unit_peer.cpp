@@ -11,7 +11,7 @@
 // unit's ProtectClock/ProtectHostname/ProtectKernel*/ProtectControlGroups give
 // a user unit a user namespace of its own, and from there no process of the
 // session can be looked into at all -- so every listener, Discord's included,
-// was refused (NEW-hotfix-1). Every daemon test ran the daemon from a shell,
+// was refused (entry 285). Every daemon test ran the daemon from a shell,
 // or under bwrap: none under the unit. This one does.
 //
 // The real vocemd runs as a transient unit of the user's own systemd with

@@ -766,7 +766,7 @@ const std::set<std::string>& FlatpakBridge::running_ids() {
 // Whether the directory is the application its name says: a process of this
 // user's is running in that id's Flatpak scope, or in a sandbox whose
 // /.flatpak-info names it (flatpak_process.h; from the daemon's unit only the
-// scope can be seen, NEW-hotfix-1). The name
+// scope can be seen, entry 285). The name
 // alone is not evidence -- `mkdir $XDG_RUNTIME_DIR/app/org.vinegarhq.Sober`
 // from any sandbox holding the xdg-run/app grant, a `request` with drawing=1
 // in it, and until the second fix round of 0.1.11 that sandbox was served as

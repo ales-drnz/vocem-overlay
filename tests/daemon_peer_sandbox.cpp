@@ -32,7 +32,7 @@
 // scan (its /proc/<pid> becomes root's) and the token went out. The second
 // fix round refused any socket no visible process holds, and that refused
 // the real Discord from the daemon's unit, where no process at all is
-// visible (NEW-hotfix-1). An undumpable squatter in a Flatpak is refused now
+// visible (entry 285). An undumpable squatter in a Flatpak is refused now
 // by the cgroup its socket was made in -- tests/daemon_unit_peer.cpp holds
 // that, with a scope named like a Flatpak's. THIS listener is a bwrap a
 // host process built, in the test's own cgroup, which is the case

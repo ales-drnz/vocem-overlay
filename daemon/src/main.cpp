@@ -320,7 +320,7 @@ int main() {
             // the kernel reports without any access to a process. It is the
             // only one the shipped unit leaves the daemon: its user namespace
             // closes every process of the session to the /proc walk below, and
-            // 0.1.11-1 refused the owner's real Discord for it (NEW-hotfix-1).
+            // 0.1.11-1 refused the owner's real Discord for it (entry 285).
             const vocem::PeerCgroup cgroup = socket.peer_cgroup();
             bool cgroup_answered = false;
             if (!cgroup.known) {

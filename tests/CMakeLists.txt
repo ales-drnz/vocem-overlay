@@ -1597,7 +1597,7 @@ if(TARGET vocemd)
     # top, measured before it starts), a listener in a scope named like
     # Discord's (sent the token) and like a Flatpak's (refused), and a Flatpak
     # game's scope the bridge must see running. 0.1.11-1 refused the real
-    # Discord from its unit (NEW-hotfix-1); every other daemon test runs it
+    # Discord from its unit (entry 285); every other daemon test runs it
     # from a shell or bwrap. VOCEM_UNIT_FILE names another unit file (the
     # packaged one) to take the confinement from.
     vocem_test(daemon_unit_peer INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"
