@@ -1024,12 +1024,27 @@ void FlatpakBridge::publish_note(uint64_t serial, const char* body) {
 // config.ini when it moved, and again on every sweep until a copy of that
 // version has arrived. What was copied and what was said are two memories, so
 // that a failure is said once per version and still retried (entry 248).
+//
+// No config.ini on the host (removed, or a link to nothing yet) means none in
+// the sandbox either: the overlay in there reads the defaults a host game
+// reads, not the last copy for ever.
 void FlatpakBridge::mirror_config(Mirror& mirror) {
     const long long mtime = Config::mtime();
     if (mtime == mirror.config_mtime) {
         return;
     }
     const std::string source = Config::path();
+    struct stat host {};
+    if (mtime == 0 && ::stat(source.c_str(), &host) != 0 && (errno == ENOENT || errno == ENOTDIR)) {
+        // unlinkat() removes whatever the sandbox has at that name, a link
+        // included, and never what a link points at.
+        if (::unlinkat(mirror.directory, kBridgeConfigName, 0) == 0 || errno == ENOENT) {
+            mirror.config_mtime = 0;
+            DBG("no %s on the host: none in the Flatpak sandbox of %s", kBridgeConfigName,
+                mirror.id.c_str());
+        }
+        return;
+    }
     if (copy_into(mirror.directory, source.c_str(), kBridgeConfigName, Source::Settings)) {
         mirror.config_mtime = mtime;
         mirror.config_failure_said = 0;

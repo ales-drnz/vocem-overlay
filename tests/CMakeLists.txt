@@ -1512,3 +1512,11 @@ endif()
 # the reader is compiled into every game.
 vocem_test(config_hostile)
 vocem_m32_twin(config_hostile)
+
+# The settings' copy into a Flatpak sandbox against hostile shapes at both
+# ends: links and FIFOs planted by the sandbox, a host file that is a link, a
+# FIFO, unreadable, dangling, too large or removed. Nothing blocks, nothing is
+# written through a link, a failed copy is retried, a removed file is removed.
+vocem_test(flatpak_config_hostile
+    SOURCES flatpak_config_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
