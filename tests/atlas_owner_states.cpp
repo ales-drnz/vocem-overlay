@@ -20,9 +20,10 @@
 //   O      the switch goes off (or the daemon stops), noticed by the next
 //          present, which switches it on again after
 //
-// -- every sequence of them up to six long (the argument, when given), each followed by an epilogue that
-// must end in a drawn frame (a failure or a hand-over never keeps the overlay
-// away for good) and by the death of both contexts (nothing left behind).
+// -- every sequence of them up to six long (the argument, when given), each
+// followed by an epilogue that must end in a drawn frame (a failure or a
+// hand-over never keeps the overlay away for good) and by the death of both
+// contexts (nothing left behind).
 //
 // What runs is the REAL HandOver, UploadRetry and AtlasWorker -- a real
 // pthread per build, whose rasterisation is a stub the test lets finish -- and
@@ -147,7 +148,8 @@ struct Model {
     Place place(int k) const { return Place{k, gen[k]}; }
 
     void destroy_imgui(int id) {
-        require(!g_inside.load(), "I3 an ImGui context destroyed while the worker is inside the build");
+        require(!g_inside.load(),
+                "I3 an ImGui context destroyed while the worker is inside the build");
         imgui_alive[static_cast<size_t>(id)] = false;
     }
 
@@ -226,7 +228,8 @@ struct Model {
             } else {
                 release(owner == current, current);
             }
-            require(!g_inside.load(), "I3 the atlas handed back while the worker is inside the build");
+            require(!g_inside.load(),
+                    "I3 the atlas handed back while the worker is inside the build");
             g_atlas.store(0);
             last_drew = false;
             return;

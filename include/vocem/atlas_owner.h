@@ -171,7 +171,8 @@ public:
 private:
     static void* run(void* self);
 
-    std::mutex lock_;  // starting and joining only: the ELF destructor joins without the path's lock
+    // Starting and joining only: the ELF destructor joins without the path's lock.
+    std::mutex lock_;
     pthread_t thread_{};
     bool running_ = false;
     std::atomic<bool> done_{false};
