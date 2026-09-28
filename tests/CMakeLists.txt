@@ -1835,3 +1835,14 @@ vocem_m32_twin_run(vk_present_alternate_queue TARGET vk_present_alternate_queue
 # scripts/dev-run-gl.sh for a 32-bit child: which_shim built -m32, run through
 # the script, must be answered by a 32-bit shim (dev_run_gl.cmake, PROBE32).
 vocem_m32_twin(which_shim)
+
+# ---- 0.1.11 clean-up config lane ----
+
+# The settings file under generated hostile shapes -- long lines, NUL, CR/LF,
+# bytes that are not UTF-8, links, dangling links, loops, mode 000, read-only,
+# a directory, a FIFO, /dev/zero -- through the one writer the window's Apply
+# and switches use: a file not read whole is never written, nothing blocks,
+# and every line the change did not concern stays byte for byte. Both widths:
+# the reader is compiled into every game.
+vocem_test(config_hostile)
+vocem_m32_twin(config_hostile)

@@ -294,8 +294,9 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
     // and only the switch that moved: Config::write_switch loads the file
     // fresh, sets that one key, and saves.
     vocem::Config written;
-    const bool saved = vocem::Config::write_switch(which, config_.*which, &written);
-    if (reportSave(saved)) {
+    std::string why;
+    const bool saved = vocem::Config::write_switch(which, config_.*which, &written, &why);
+    if (reportSave(saved, why)) {
         const vocem::Config followed = saved_;
         saved_ = written;
         saved_.start_at_login = config_.start_at_login;
@@ -338,14 +339,13 @@ void ConfigBridge::apply() {
     // the window's copy, saved_ the file it last followed, and a key the
     // window did not change takes the file's value now (Config::merged), so
     // a key edited outside the window -- flatpak_apps, which has no control
-    // here -- is not written back to an older value (entry 272).
-    vocem::Config fresh;
-    fresh.load();
-    vocem::Config written = vocem::Config::merged(saved_, config_, fresh);
-    // Not believed from the file (it is read from the autostart entry): the
+    // here -- is not written back to an older value (entry 272). start_at_login
+    // is not believed from the file (it is read from the autostart entry): the
     // window's value is the intent, carried out below whatever saved_ says.
-    written.start_at_login = config_.start_at_login;
-    if (!reportSave(written.save())) {
+    // Config::write_edit reads the file once, whole, or refuses.
+    vocem::Config written;
+    std::string why;
+    if (!reportSave(vocem::Config::write_edit(saved_, config_, &written, &why), why)) {
         return;  // still pending: the button stays live and the message says why
     }
     config_ = written;
@@ -368,13 +368,13 @@ void ConfigBridge::apply() {
     emit configChanged();
 }
 
-bool ConfigBridge::reportSave(bool saved) {
+bool ConfigBridge::reportSave(bool saved, const std::string& why) {
     if (!saved) {
-        // save() also refuses a file it cannot read, rather than write over
-        // it with the window's copy: the sentence names that case too.
-        reportFailure(tr("The settings could not be written to %1. Check that the directory "
-                         "exists and is writable, and that the file can be read.")
-                          .arg(QString::fromStdString(vocem::Config::path())));
+        // The writer refuses a file it cannot read whole, a read-only one and
+        // a loop of links, rather than write over them: `why` is its reason.
+        reportFailure(tr("The settings could not be written to %1: %2.")
+                          .arg(QString::fromStdString(vocem::Config::path()),
+                               QString::fromLocal8Bit(why.empty() ? "unknown reason" : why.c_str())));
         return false;
     }
     if (!save_error_.isEmpty()) {
