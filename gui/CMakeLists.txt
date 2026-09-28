@@ -20,10 +20,10 @@ qt_add_executable(vocem-config
 
 # qt_standard_project_setup() above also sets an install RPATH of
 # $ORIGIN:$ORIGIN/../lib for this directory -- an application-bundle
-# convention that put the packaged /usr/bin/vocem-config's own directory and
-# /usr/lib ahead of the loader's search path, the one shipped binary with a
-# RUNPATH at all (readelf on 0.1.10-7; tests/installed_runpath.cmake). The
-# build tree keeps its own RUNPATH; the installed file carries none.
+# convention that would put the packaged /usr/bin/vocem-config's own directory
+# and /usr/lib ahead of the loader's search path
+# (tests/installed_runpath.cmake). The build tree keeps its own RUNPATH; the
+# installed file carries none.
 set_target_properties(vocem-config PROPERTIES INSTALL_RPATH "")
 
 # Theme is a singleton: one set of spacings and colours, reachable from every
@@ -90,13 +90,10 @@ qt_add_resources(vocem-config "vocem_overlay_fonts"
 # The application's own artwork, carried rather than looked up.
 #
 # These are installed into hicolor and the panel finds them there -- the tray
-# icon is a name over D-Bus and the desktop resolves it. Inside this process it
-# is a different question, and the answer was no: measured, with the desktop
-# style loaded, QIcon::fromTheme resolves every Breeze name the window asks for
-# and none of these six, so the About page has been drawing an empty square
-# where its icon goes and the tray preview would have drawn five of them. What
-# a program draws of itself should not depend on the desktop agreeing to find
-# it, so IconProvider falls back to these.
+# icon is a name over D-Bus and the desktop resolves it. Inside this process,
+# with the desktop style loaded, QIcon::fromTheme may not find them. What a
+# program draws of itself should not depend on the desktop agreeing to find it,
+# so IconProvider falls back to these (see main.cpp).
 qt_add_resources(vocem-config "vocem_application_icons"
     PREFIX "/vocem/icons"
     BASE "${PROJECT_SOURCE_DIR}/packaging/icons"

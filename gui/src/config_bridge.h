@@ -42,10 +42,8 @@ class ConfigBridge : public QObject {
 
 public:
     // What the window switches on. The status sentence is for reading, not for
-    // comparing: three places used to test it against tr("Waiting") and
-    // tr("Not running"), which quietly stopped being true in every language but
-    // this one -- the pulsing halo went still and the state dot went amber where
-    // it should have been red.
+    // comparing: a translated sentence compared against tr("Waiting") holds in
+    // one language only, so anything that decides compares this instead.
     enum State { NotRunning, Waiting, Working, Refused, Connected };
     Q_ENUM(State)
 
@@ -105,8 +103,8 @@ private:
     Q_PROPERTY(int defaultPanelBox READ defaultPanelBox CONSTANT)
     Q_PROPERTY(qreal notificationScale READ notificationScale WRITE setNotificationScale NOTIFY configChanged)
     Q_PROPERTY(qreal screenMargin READ screenMargin WRITE setScreenMargin NOTIFY configChanged)
-    // The message's own distance from the edge: the panel's setting moved a box
-    // whose owner had not asked it to move.
+    // The message's own distance from the edge, separate from the panel's, so
+    // moving one box never moves the other.
     Q_PROPERTY(qreal notificationMargin READ notificationMargin WRITE setNotificationMargin
                    NOTIFY configChanged)
     Q_PROPERTY(qreal boxPaddingX READ boxPaddingX WRITE setBoxPaddingX NOTIFY configChanged)
@@ -121,7 +119,7 @@ private:
                    NOTIFY configChanged)
     // What a reset goes back to, from the same defaults the overlay starts from
     // rather than from a number written twice. Every slider has one: the reset is
-    // part of the row rather than something four of the six rows went without.
+    // part of the row.
     Q_PROPERTY(qreal defaultOpacity READ defaultOpacity CONSTANT)
     Q_PROPERTY(qreal defaultScale READ defaultScale CONSTANT)
     Q_PROPERTY(qreal defaultNotificationScale READ defaultNotificationScale CONSTANT)
@@ -150,9 +148,8 @@ private:
     Q_PROPERTY(qreal defaultAvatarIdleOpacity READ defaultAvatarIdleOpacity CONSTANT)
     Q_PROPERTY(qreal fontSize READ fontSize WRITE setFontSize NOTIFY configChanged)
     Q_PROPERTY(qreal defaultFontSize READ defaultFontSize CONSTANT)
-    // The typeface. Empty is the carried Inter, which is what the overlay drew
-    // before this existed and what it falls back to whenever the chosen file
-    // cannot be used. The list is what this machine has that the overlay can
+    // The typeface. Empty is the carried Inter, which is also what the overlay
+    // falls back to whenever the chosen file cannot be used. The list is what this machine has that the overlay can
     // rasterise -- TrueType outlines only -- so the window never offers a font
     // the game would refuse.
     Q_PROPERTY(QString fontFamily READ fontFamily WRITE setFontFamily NOTIFY configChanged)
@@ -175,12 +172,9 @@ private:
     Q_PROPERTY(bool trayVoiceIcon READ trayVoiceIcon WRITE setTrayVoiceIcon NOTIFY configChanged)
     Q_PROPERTY(bool defaultTrayVoiceIcon READ defaultTrayVoiceIcon CONSTANT)
     // What the tray icon is actually wearing, which is the SAVED answer and not
-    // the edited one. Every other setting may be previewed before Apply because
-    // what it changes is a picture inside this window; this one changes a thing
-    // on the user's panel, and a radio button that reached out and altered the
-    // desktop before Apply -- and left it altered if the window were closed
-    // without applying -- would be the one control here that cannot be tried
-    // out. The page's own preview follows the edit; the panel follows the file.
+    // the edited one: this setting changes something on the user's panel, not a
+    // picture inside this window, so it must not alter the desktop before Apply.
+    // The page's own preview follows the edit; the panel follows the file.
     Q_PROPERTY(bool appliedTrayVoiceIcon READ appliedTrayVoiceIcon NOTIFY configChanged)
     Q_PROPERTY(bool startAtLogin READ startAtLogin WRITE setStartAtLogin NOTIFY configChanged)
     Q_PROPERTY(bool defaultStartAtLogin READ defaultStartAtLogin CONSTANT)
@@ -199,23 +193,20 @@ private:
     // The overlay's live instances: which processes are drawing it *right now*,
     // from the journals the injected code opens at its first drawn frame
     // (vocem/journal.h). The Applications page shows them above everything
-    // else, because a list of every application the overlay has ever been loaded
-    // into could not say which of them has it on screen at this moment -- and that
-    // is the first thing somebody looking at that page wants to know.
+    // else: the registry cannot say which application has it on screen now.
     Q_PROPERTY(QVariantList liveInstances READ liveInstances NOTIFY liveInstancesChanged)
     // What the Debug section reads. The journals whose process ended without
     // unwinding -- a crash, or a forced stop -- each with its full text; the
     // finished sessions the journal keeps as history; and the two halves of
     // the ABI question, because a reader that refuses a segment from another
     // ABI looks exactly like "no daemon" from outside and the difference has
-    // to be SAYABLE somewhere (entry 55 is what that silence costs).
+    // to be SAYABLE somewhere (entry 55).
     Q_PROPERTY(QVariantList crashReports READ crashReports NOTIFY crashReportsChanged)
     Q_PROPERTY(QVariantList journalHistory READ journalHistory NOTIFY journalChanged)
     Q_PROPERTY(int abiVersion READ abiVersion CONSTANT)
     // Asked of the segment on the slow sweep and remembered, not on every read:
-    // as a bare getter behind stateChanged it cost one shm_open and one pread
-    // per binding per tick -- twice a second, for the life of a tray process
-    // nobody was looking at.
+    // a bare getter behind stateChanged would cost one shm_open and one pread
+    // per binding per tick, for the life of a tray process.
     Q_PROPERTY(int segmentAbiVersion READ segmentAbiVersion NOTIFY stateChanged)
     // The daemon's journald lines, filled by refreshDaemonLog(): running
     // journalctl on a half-second timer would be absurd, so the Debug page
@@ -230,16 +221,11 @@ private:
     Q_PROPERTY(qreal notificationOpacity READ notificationOpacity WRITE setNotificationOpacity
                    NOTIFY configChanged)
     // Every colour and proportion the overlay draws with, from the same file the
-    // injected code reads: include/vocem/theme.h. The previews used to carry their
-    // own copy of each of them, written by hand, which meant a colour changed in
-    // the drawing code and left unchanged here produced a preview that was
-    // confidently wrong -- and there is no numeric comparison for a colour the way
-    // there is for a distance, so nothing would have said so.
-    //
-    // A map rather than a set of properties because there are dozens of them and
-    // they are read, never written. The cost is that a mistyped key is `undefined`
-    // rather than an error, which is why the previews assert the key set they
-    // expect when they are created.
+    // injected code reads: include/vocem/theme.h, so no preview carries a copy
+    // that could silently disagree with the drawing code. A map rather than a
+    // set of properties because there are dozens of them and they are read,
+    // never written; a mistyped key is `undefined` rather than an error, which
+    // is why the previews assert the key set they expect when they are created.
     Q_PROPERTY(QVariantMap overlayTheme READ overlayTheme NOTIFY configChanged)
     // The ready-made surfaces on the Appearance page, from kPresets in theme.h --
     // the same table tests/theme_contrast.cpp holds to the contrast floor, so the
@@ -247,12 +233,10 @@ private:
     // {id, colour, opacity}; the words shown beside the swatch are the window's.
     Q_PROPERTY(QVariantList overlayPresets READ overlayPresets CONSTANT)
     // One theme per preset, in overlayPresets' order: the window's edited copy
-    // of the settings with that preset's two writes applied -- the surface and
-    // the opacity, exactly what clicking the preset writes -- passed through
-    // the same theme_for() as overlayTheme. The Appearance page's preset
-    // previews draw from these, so a preset is shown by the arithmetic that
-    // will draw it rather than by a swatch mixed in QML. Not constant: every
-    // other setting passes through, so the previews follow the controls live.
+    // of the settings with that preset's surface and opacity applied, passed
+    // through the same theme_for() as overlayTheme, so a preset preview is drawn
+    // by the arithmetic that will draw it. Not constant: the previews follow
+    // every other control live.
     Q_PROPERTY(QVariantList presetThemes READ presetThemes NOTIFY configChanged)
     // What the previews draw. Fixed, and never anybody real: see the note above
     // participants() for why the live channel was the wrong thing to show. Not
@@ -265,10 +249,9 @@ private:
     // Whether an edit is waiting to be written. What the Apply button is enabled
     // by, and the reason there is one.
     Q_PROPERTY(bool pending READ pending NOTIFY pendingChanged)
-    // Why the last write did not happen, or empty. Apply used to report success
-    // whatever save() answered: with the settings directory unwritable the
-    // button went grey, the previews showed the new values, and the game kept
-    // the old file (entry 136). The edit stays pending until it is written.
+    // Why the last write did not happen, or empty. The edit stays pending until
+    // it is written, so an unwritable settings directory is never reported as
+    // an Apply that worked (entry 136).
     Q_PROPERTY(QString saveError READ saveError NOTIFY saveErrorChanged)
 
     // Live state, refreshed on a timer.
@@ -287,8 +270,8 @@ private:
     // the kernel rather than from Qt -- see the note on the definition. Not
     // constant: a display that is asleep answers nothing, and the next sweep
     // asks again. The four display properties share one signal, emitted from
-    // the four-second sweep and only when the enumeration changed: on
-    // stateChanged they were re-read twice a second, whatever the daemon did.
+    // the four-second sweep and only when the enumeration changed, not from the
+    // twice-a-second stateChanged.
     Q_PROPERTY(QString screenResolution READ screenResolution NOTIFY displaysChanged)
     // Every connected display, as {name, width, height}, from the same kernel
     // enumeration the caption reads (environment.h) -- so the dropdown beside a
@@ -300,13 +283,10 @@ private:
     // larger the overlay will look there. Zero where no mode is readable.
     Q_PROPERTY(int overlayDisplayHeight READ overlayDisplayHeight NOTIFY displaysChanged)
     // The shape of that display, as one number, and zero where no mode can be
-    // read. A map with no display chosen stands for the display the overlay is
-    // sized for, so it takes its shape from here rather than from `Screen` --
-    // the screen this window happens to be sitting on, which is a different
-    // display on any machine with two. One ratio and not the two sides of it:
-    // a number compares equal from one tick to the next, where a map of
-    // {width, height} is a fresh object every time this is read and would
-    // relayout both previews twice a second.
+    // read: what a map with no display chosen takes its shape from, rather than
+    // from `Screen`. One ratio and not the two sides of it, because a number
+    // compares equal from one tick to the next, where a fresh {width, height}
+    // map would relayout both previews twice a second.
     Q_PROPERTY(qreal sizingDisplayAspect READ sizingDisplayAspect NOTIFY displaysChanged)
     // Which display each map depicts, by connector name; empty means automatic
     // (the largest, which is what the overlay is sized for). Persisted like any
@@ -319,29 +299,22 @@ private:
     Q_PROPERTY(QString defaultNotificationPreviewDisplay READ defaultNotificationPreviewDisplay
                    CONSTANT)
     // The shape of the display the maps stand for, when it has been pinned rather
-    // than discovered. Zero -- the normal case -- means the map asks Qt, as it
-    // always has.
+    // than discovered. Zero -- the normal case -- means the map asks Qt.
     //
-    // It exists for the comparison harness. The maps take their aspect from
-    // `Screen`, which is the logical size of whatever screen the window happens to
-    // be on: it is not the same number on two developers' machines, and under a
-    // platform plugin with no real screen it is not a display shape at all. That
-    // makes "the panel's share of the screen" a figure about the machine the check
-    // ran on rather than about the drawing, which is the one thing a numeric
-    // comparison must not be.
+    // It exists for the comparison harness: `Screen` differs from machine to
+    // machine and is no display shape at all under an offscreen platform, and a
+    // numeric comparison must measure the drawing, not the machine it ran on.
     Q_PROPERTY(qreal pinnedScreenAspect READ pinnedScreenAspect CONSTANT)
     Q_PROPERTY(QString version READ version CONSTANT)
-    // Whether the two injection paths are actually in place. The overlay is
-    // invisible when it is not working, so the one thing About can usefully do is
-    // say whether the parts that have to be installed are installed -- rather than
-    // leaving someone to guess why nothing appears in their game.
+    // Whether the two injection paths are actually in place: the overlay is
+    // invisible when it is not working, so About says whether the parts that
+    // have to be installed are installed.
     Q_PROPERTY(bool vulkanLayerInstalled READ vulkanLayerInstalled CONSTANT)
     // Not constant: half of the answer is a `systemctl --user show-environment`,
     // asked asynchronously when the window starts and published when it comes
-    // back. As a CONSTANT property the spawn ran synchronously inside the Debug
-    // page's construction, so the first frame waited on systemctl -- up to its
-    // three-second cap (tests/window_startup.cmake). openglPreloadKnown says
-    // whether the answer is in yet; until it is, the page says it is asking.
+    // back, so the Debug page's construction never waits on systemctl
+    // (tests/window_startup.cmake). openglPreloadKnown says whether the answer
+    // is in yet; until it is, the page says it is asking.
     // Active means THIS session's environment has it; InManager means only the
     // systemd user manager's does, which programs started from the desktop do
     // not inherit until the next login.
@@ -352,13 +325,9 @@ private:
     // size ImGui would. Both previews use these, so what they show is as wide as
     // what the game draws.
     // Not a family name but a whole font, because there are three families and a
-    // QML `font` has room for one. The letters come from Inter, the emoji and the
-    // CJK punctuation from the two fonts merged beside it in the atlas, and
-    // QFont::setFamilies is how Qt is told the same thing: in order, the first one
-    // that has the character wins.
-    // Follows the chosen family: it is a property of the font file, and the file
-    // is a setting now. CONSTANT here would have left every preview laying out
-    // somebody else's letters against Inter's proportion.
+    // QML `font` has room for one: the letters, the emoji and the CJK punctuation,
+    // in the atlas's order, through QFont::setFamilies.
+    // The ratio follows the chosen family: it is a property of the font file.
     Q_PROPERTY(qreal overlayFontRatio READ overlayFontRatio NOTIFY configChanged)
 
 public:
@@ -369,8 +338,8 @@ public:
     qreal scale() const { return config_.scale; }
     qreal opacity() const { return config_.opacity; }
     // Component-wise, not QColor::fromRgb(uint): that overload reads its argument
-    // as 0xAARRGGBB, so a plain 0xRRGGBB arrives with an alpha of zero and every
-    // box came out invisible.
+    // as 0xAARRGGBB, so a plain 0xRRGGBB would arrive with an alpha of zero and
+    // every box would come out invisible.
     static QColor toColour(uint32_t rgb) {
         return QColor::fromRgb((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
     }
@@ -442,19 +411,12 @@ public:
     QString defaultFontFamily() const {
         return QString::fromStdString(vocem::Config{}.font_family);
     }
-    // Every family this machine has that the overlay can rasterise. Defined
-    // beside the rest of the machine-facing code in the .cpp: this header keeps
-    // the settings, and what fonts a machine has is not one.
+    // Every family this machine has that the overlay can rasterise.
     //
-    // A function and not a property, which is a performance contract and not a
-    // style: a QStringList reaching QML as a *property* is wrapped in a
-    // reference sequence, and every indexed read of it calls this getter again
-    // and converts the whole list. `[""].concat(config.fontFamilies)` therefore
-    // asked for the list once per family -- 272 reads of a 272-name list,
-    // measured at 0.95 s of this window's startup on a machine with 271
-    // families, paid before the first frame whether or not anybody ever opens
-    // the Appearance page. Returned from an invokable the same list is
-    // converted once (measured: 1 call).
+    // A function and not a property, which is a performance contract: a
+    // QStringList reaching QML as a *property* is a reference sequence whose
+    // every indexed read calls this getter again and converts the whole list.
+    // Returned from an invokable the same list is converted once (entry 104).
     Q_INVOKABLE QStringList fontFamilies() const;
     QString builtInFontFamily() const;
     bool textShadow() const { return config_.text_shadow; }
@@ -609,7 +571,7 @@ public:
     // machine and a clock is not (tests/apps_cost.cpp's rule).
     Q_INVOKABLE QVariantMap counters() const;
     // The first of these names the session's icon theme actually has, so a window
-    // on Adwaita is not left with holes where Breeze's names were. The last is
+    // on a theme without Breeze's names is not left with holes in it. The last is
     // returned unconditionally, so the caller still gets a name to fall over on.
     Q_INVOKABLE QString icon(const QStringList& names) const;
     // The size is passed in rather than set in QML, because a grouped property
@@ -644,8 +606,8 @@ signals:
     void applicationsChanged();
     // Emitted when what it announces changed -- the state, the sentence, the
     // hint, the button, the segment's ABI -- and not on every tick. Every
-    // binding on it re-evaluates when it fires; unconditionally, twice a second,
-    // that was the whole Debug and header pages re-read for nothing.
+    // binding on it re-evaluates when it fires, so firing it unconditionally
+    // would re-read the whole Debug and header pages twice a second.
     void stateChanged();
     // The machine's displays changed: the enumeration, the caption, the height.
     void displaysChanged();
@@ -661,7 +623,7 @@ private:
     // The one switch that was clicked, written on top of the file (config.h).
     void persistNow(bool vocem::Config::*which);
     // One numeric setting, held to config.h's bounds by its key (Config::clamped)
-    // rather than by a copy of the numbers here -- there were fifteen copies.
+    // rather than by a copy of the numbers here.
     void setNumber(const char* key, float vocem::Config::*member, qreal value);
     // What save() answered, into saveError. True when it was written.
     bool reportSave(bool saved);
@@ -675,8 +637,7 @@ private:
     void refreshApplications();
     void refreshCrashReports();
     void refreshLiveInstances();
-    // The two probes the constructor used to run synchronously: whether a unit
-    // exists (`systemctl --user cat`), and whether the user manager carries the
+    // The two probes, run asynchronously: whether a unit exists (`systemctl --user cat`), and whether the user manager carries the
     // preload (`systemctl --user show-environment`). Each is one spawn, its
     // answer remembered; a start asked for before the first answer waits for it.
     void probeUnit();
@@ -684,10 +645,9 @@ private:
     bool startDaemon();
     // Asynchronous: `done` runs when the stop has finished (or, past a cap of
     // twelve seconds -- the unit's TimeoutStopSec plus two -- when it has not).
-    // As a synchronous QProcess::execute this blocked the window for as long as
-    // the daemon took to leave, which is up to that TimeoutStopSec on Quit.
-    // Asked before the unit question is answered, the stop waits for the
-    // answer, as a start does: the fallback `pkill` is for a machine with no
+    // Never synchronous: the window would block for as long as the daemon takes
+    // to leave. Asked before the unit question is answered, the stop waits for
+    // the answer, as a start does: the fallback `pkill` is for a machine with no
     // unit, not for a question still in flight.
     void stopDaemon(std::function<void()> done);
     // Under the harness (VOCEM_CONFIG_GEOMETRY, _SCREENSHOT, _NO_DAEMON) the
@@ -709,7 +669,7 @@ private:
     QVariantList live_instances_;
     QString daemon_log_;
     // The journalctl ask in flight, if any: this runs asynchronously, because
-    // waiting for it froze the window for as long as journald took.
+    // waiting for it would freeze the window for as long as journald takes.
     QProcess* daemon_log_process_ = nullptr;
     // The desktop entries on the machine, read once and re-read when something
     // turns up that none of them accounts for -- an application installed while
@@ -720,9 +680,7 @@ private:
     bool rescanned_ = false;
 
     // What the window shows and edits (config_), and what is in the file
-    // (saved_). They differ while an edit is waiting for Apply. This sentence
-    // sat twenty lines up, on applications_, whose own comment follows it --
-    // a comment off its subject reads as a comment about the wrong one.
+    // (saved_). They differ while an edit is waiting for Apply.
     vocem::Config config_;
     vocem::Config saved_;
     bool pending_ = false;

@@ -12,9 +12,8 @@
 //   * Entries live in $XDG_DATA_HOME/applications and applications/ under each of
 //     $XDG_DATA_DIRS (default /usr/local/share:/usr/share), user first.
 //   * `TryExec` is a path to the program, absolute or found through PATH.
-//   * `Exec` names the program somewhere in it -- not necessarily first: 44 of
-//     this machine's 53 Game entries start with `steam`, `mangohud`, `env` or a
-//     wrapper script (entry 96), and this file used to take the first word.
+//   * `Exec` names the program somewhere in it -- not necessarily first: most
+//     Game entries start with `steam`, `mangohud`, `env` or a wrapper script.
 //   * `StartupWMClass` is the window class the application will map -- which is
 //     what docks match against, and which is usually the binary's own name.
 //   * `Icon` is a file when it is an absolute path, and otherwise a name to be
@@ -27,19 +26,14 @@
 // systemd one is inherited by children, so an entry it names is only believed when
 // that entry points back at this executable.
 //
-// One parser and one root enumeration for the whole project: the reading is
-// apps.h's `detail::read_entry` and `detail::desktop_roots`, the same the
-// injected code decides with. This file used to carry a second parser with a
-// second roots list beside them, and the two had drifted apart on the one rule
-// that decides whether a game's own icon is found.
+// The parsing and the root enumeration are apps.h's `detail::read_entry` and
+// `detail::desktop_roots`, the same the injected code decides with; a second
+// parser here would drift from them on whether a game's own icon is found.
 //
-// The lookup is indexed. It used to walk every entry for every application on
-// every four-second sweep, with a QFileInfo built per candidate -- O(applications
-// x entries) twice over, on a timer, for a page that is usually not open. The
-// names an entry can be found by are computed once, at refresh(), into hashes;
-// a lookup then examines the handful of entries that carry the name.
-// `entriesExamined()` counts them, so tests/window_cost.cmake can hold the number
-// rather than a clock.
+// The lookup is indexed: the names an entry can be found by are computed once,
+// at refresh(), into hashes, and a lookup examines only the handful of entries
+// that carry the name. `entriesExamined()` counts them, so
+// tests/window_cost.cmake can hold the number rather than a clock.
 //
 // Nothing here knows where Steam, or anything else, is installed.
 

@@ -47,23 +47,17 @@ namespace {
 //
 // Closing the window leaves the process running behind its tray icon, so starting
 // the application again -- from the menu, from the tray's own entry, from anything
-// -- used to add a second process and a second icon to the tray, and then a third.
-// The first instance listens on a socket in the runtime directory; later ones find
-// it, ask it to show itself, and exit.
+// -- must not add a second process and a second icon to the tray. The first
+// instance listens on a socket in the runtime directory; later ones find it, ask
+// it to show itself, and exit.
 //
 // $XDG_RUNTIME_DIR is the right place for the socket: it is per-user, mode 0700,
 // and cleared when the session ends, so a stale socket cannot outlive a reboot.
-//
-// The paragraph above was true about the intention and false about the code for
-// as long as it stood there. A bare name given to QLocalServer is resolved
-// against QDir::tempPath(), so the socket was `/tmp/vocem-config-1000` at mode
-// 0755 -- world-connectable, in a directory anybody on the machine can write to.
-// Nothing secret goes over it; what goes over it is "show yourself", so any
-// local user could make this window appear on somebody's screen. Found by
-// looking for it after a run of my own did exactly that. An absolute path puts
-// it where the comment always said it was; without a runtime directory there is
-// nowhere better than the old behaviour, and it says so rather than inventing
-// one.
+// The path is absolute because a bare name given to QLocalServer is resolved
+// against QDir::tempPath(), where any local user could connect and make this
+// window appear on somebody's screen. Without a runtime directory there is
+// nowhere better than the bare name, and this falls back to it rather than
+// inventing one.
 QString instance_socket_name() {
     const QString name = QStringLiteral("vocem-config-%1").arg(::getuid());
     const QByteArray runtime = qgetenv("XDG_RUNTIME_DIR");
@@ -74,26 +68,22 @@ QString instance_socket_name() {
 }
 
 // The lock that decides which instance is THE instance, taken before anything
-// else is built. The socket alone could not decide it: the ask ran before the
-// window was built and the listen after, and building the window takes a good
-// fraction of a second -- so two launches inside that window (the autostart at
-// login and a menu click, say) each found nobody listening, each built a
-// window, and each ran removeServer(), the second unlinking the first's
-// socket. Two processes, two tray icons, and the first unreachable by the
-// third launch. A QLockFile is taken in microseconds, before the engine
-// loads; the loser asks the winner to show itself, waiting for the winner's
-// socket to appear if it has not yet. Beside the socket, for the socket's
-// reasons.
+// else is built. The socket alone cannot decide it: the listen happens after the
+// window is built, which takes a good fraction of a second, so two launches
+// inside that time (the autostart at login and a menu click, say) would each
+// find nobody listening (entry 140). A QLockFile is taken in microseconds,
+// before the engine loads; the loser asks the winner to show itself, waiting for
+// the winner's socket to appear if it has not yet. Beside the socket, for the
+// socket's reasons.
 QString instance_lock_name() { return instance_socket_name() + QStringLiteral(".lock"); }
 
 // The geometry of everything the previews draw, as numbers.
 //
 // The companion of tests/vocem_panel_geometry, which measures the real overlay the
-// same way. The previews had been corrected three times by looking at screenshots
-// and adjusting figures, and each pass fixed some and broke others; the only way
-// out was to put the two geometries side by side as numbers and compare them. Every
-// item that stands for something the overlay draws carries an objectName, and this
-// walks the scene and prints where each one actually ended up.
+// same way, so the two geometries can be compared as numbers rather than judged
+// from screenshots. Every item that stands for something the overlay draws
+// carries an objectName, and this walks the scene and prints where each one
+// actually ended up.
 //
 // A development aid, like the screenshot path below it, and inert without the
 // environment variable.
@@ -121,58 +111,36 @@ void dump_item(QQuickItem* item, const QString& path, QHash<QString, int>& seen,
                                  "pictureSize", "firstRowY", "overlayScale", "inset",
                                  "implicitWidth", "implicitHeight", "contentWidth", "factor",
                                  // What the preset previews derived, so a check can
-                                 // hold each one to a distinct surface.
-                                 // -- and to a distinct picture, which is not the
-                                 // same claim: two presets can share a surface and
-                                 // an opacity and draw them in two different
-                                 // places.
+                                 // hold each one to a distinct surface -- and to a
+                                 // distinct picture, which is not the same claim:
+                                 // two presets can share a surface and an opacity
+                                 // and draw them in two different places.
                                  "surfaceRgb", "presetOpacity", "presetBox",
                                  // The strength a preview's picture is drawn at,
                                  // which the overlay quiets for whoever is not
                                  // talking: an opacity is invisible to a rectangle.
                                  "pictureOpacity",
-                                 // Whether the keyboard can reach it. A bool converts
-                                 // to a number, and "every control is reachable
-                                 // without a mouse" is otherwise a claim nobody can
-                                 // check without a pair of hands -- the guidelines'
-                                 // accessibility page asks for exactly that test.
-                                 // The org.kde.desktop ToolButton has its focusPolicy
-                                 // commented out with a "KF6 TODO" beside it, which
-                                 // reads like the row resets are out of the chain;
-                                 // measured here they are in it, and this is what
-                                 // will say so if that ever stops being true.
+                                 // Whether the keyboard can reach it: a bool
+                                 // converts to a number, so "every control is
+                                 // reachable without a mouse" can be checked.
                                  "activeFocusOnTab",
                                  // Which display the "Map shows" dropdown is
-                                 // pointing at, and how many it offers. A pin
-                                 // is an index and an index is invisible to a
-                                 // rectangle, so a test could not see the
-                                 // dropdown being dragged back to "Automatic"
-                                 // by an enumeration that merely changed --
-                                 // which is what a live binding on
-                                 // config.displays did (DisplayPicker.qml).
+                                 // pointing at, and how many it offers: an
+                                 // index is invisible to a rectangle.
                                  "pickerIndex", "pickerCount",
                                  // The same for the font box: the row it is
                                  // on, and the row of the family the settings
-                                 // name. They parted when an assignment
-                                 // removed the binding between them.
+                                 // name, which must stay together.
                                  "fontIndex", "fontSetIndex",
                                  // How many of a preview's own pictures actually
                                  // came up. An Image that failed to load keeps the
                                  // size its layout gave it and paints nothing, so
                                  // a rectangle cannot tell a drawn icon from a
-                                 // missing one -- and missing is what six of them
-                                 // were until the artwork was carried in the
-                                 // binary.
+                                 // missing one.
                                  "loadedIcons",
-                                 // Every named item's strength. A switch that
-                                 // takes the overlay off the screen has to be
-                                 // visible in a picture OF the screen, and the
-                                 // only way it shows is an opacity -- which a
-                                 // rectangle cannot carry. It is on the item
-                                 // itself, so this one line covers every map
-                                 // and every preview at once, where
-                                 // pictureOpacity above had to be published by
-                                 // hand.
+                                 // Every named item's strength: a switch that
+                                 // takes the overlay off the screen shows in a
+                                 // map only as an opacity.
                                  "opacity"}) {
             const QVariant value = item->property(name);
             if (value.isValid() && value.canConvert<qreal>()) {
@@ -203,14 +171,10 @@ public:
         const int height = requested.height() > 0 ? requested.height() : width;
         QPixmap pixmap = QIcon::fromTheme(id).pixmap(width, height);
         // The application's own artwork, carried in the binary, for when the
-        // desktop will not find it. Measured with the org.kde.desktop style
-        // loaded: every Breeze name the window asks for resolves and not one of
-        // this application's six does -- `QIcon::hasThemeIcon` answers false and
-        // the pixmap comes back 0x0 -- although they are installed in hicolor
-        // and the panel resolves the very same names for the tray icon. So the
-        // About page drew an empty square where its icon goes, for as long as
-        // that page has existed. A program's picture of itself should not
-        // depend on the desktop agreeing to find it.
+        // desktop will not find it: with the org.kde.desktop style loaded the
+        // theme lookup can miss this application's own names although they are
+        // installed in hicolor. A program's picture of itself should not depend
+        // on the desktop agreeing to find it (entry 67).
         if (pixmap.isNull() && id.startsWith(QStringLiteral("io.github.ales_drnz.vocem_overlay"))) {
             QIcon carried(QStringLiteral(":/vocem/icons/%1.svg").arg(id));
             pixmap = carried.pixmap(width, height);
@@ -222,11 +186,9 @@ public:
     }
 };
 
-// A popup is in no screenshot and in no geometry dump, because nothing in a
-// harness ever clicks one open. The font picker's list is the case that made
-// this necessary: its width, its height, where it opens and which face each row
-// is drawn in were all reasoned about and none of them had ever been measured,
-// so every claim about them rested on reading the source back.
+// A popup is in no screenshot and in no geometry dump unless something clicks it
+// open, and the font picker's list -- its width, its height, where it opens and
+// which face each row is drawn in -- has to be measured like everything else.
 //
 // VOCEM_CONFIG_OPEN is a comma-separated list of objectNames. Anything named
 // that has a `popup` (a ComboBox does) has it opened after the section switch
@@ -429,14 +391,9 @@ int main(int argc, char* argv[]) {
         // The version this binary carries, once, before any section. It is the
         // same string ConfigBridge::version() answers with and AboutPage.qml
         // prints, so a run of the window can be asked what it calls itself.
-        //
-        // Nothing could ask before, and the number was wrong for four releases:
-        // the About page of the installed 0.1.4 package said "Version 0.1.0",
-        // because VOCEM_VERSION comes from CMakeLists.txt's project(VERSION) and
-        // that line had never moved. What this line does not carry is the
-        // rendered label -- the dump holds rectangles and numbers, not text --
-        // so it answers "which version is compiled in", one QML binding short of
-        // "which version the page shows".
+        // What this line does not carry is the rendered label -- the dump holds
+        // rectangles and numbers, not text -- so it answers "which version is
+        // compiled in", one QML binding short of "which version the page shows".
         if (geometry_file->isOpen()) {
             QTextStream out(geometry_file);
             out << "{\"version\": \"" << QStringLiteral(VOCEM_VERSION) << "\"}\n";
@@ -451,24 +408,14 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Every section, numbered, so a change can be judged on all of them rather
-        // than on whichever one happens to open first. Each grab happens after the
-        // section has had a moment to lay out and load its images.
-        // Every section the sidebar has, About included: it is a page like any
-        // other and a screenshot run that stops one short of it is a run that
-        // never looks at it.
+        // Every section the sidebar has, About included, numbered, so a change can
+        // be judged on all of them. Each grab happens after the section has had a
+        // moment to lay out and load its images.
         //
-        // VOCEM_CONFIG_SECTIONS stops earlier. A screenshot run wants all of them;
-        // the geometry comparison reads two, and walking the other six costs it a
-        // second and a half of switching pages for nothing.
-        //
-        // A comma in it is an explicit walk instead: the sections to visit, in
-        // order, repeats allowed. Anything a page only says after a while cannot
-        // be measured by a walk that visits each page once and never comes back
-        // -- the maps of the display are on the first two sections and the
-        // window's slow sweep is four seconds, so "0,1,2,3,0" is how a map is
-        // grabbed, drawn and visible, after something changed underneath it. The
-        // plain number is what it always was.
+        // VOCEM_CONFIG_SECTIONS=N stops after section N. A comma in it is an
+        // explicit walk instead: the sections to visit, in order, repeats allowed,
+        // so a page can be grabbed again after something changed underneath it
+        // (the slow sweep is four seconds: "0,1,2,3,0").
         const int last_section = 9;
         QList<int> walk;
         if (const char* asked = std::getenv("VOCEM_CONFIG_SECTIONS"); asked && *asked) {
@@ -497,12 +444,9 @@ int main(int argc, char* argv[]) {
         // VOCEM_CONFIG_STEP_MS says otherwise. It lays nothing out -- the 400 ms
         // before each grab is the page's moment, and the grab renders
         // synchronously -- so a test that only reads what each page shows can
-        // ask for 0 and spend half the time (DESIGN 193: window_padding was 36 s
-        // of which 21 were this pause). The tests that use the walk as a CLOCK
-        // -- a journal planted two seconds in, a sweep that has to pass, a stub
-        // that has to be outlived -- leave it alone, because shortening it would
-        // change what they measure. The first step always waits the full 700:
-        // that one is the window coming up.
+        // ask for 0. The tests that use the walk as a CLOCK leave it alone,
+        // because shortening it would change what they measure. The first step
+        // always waits the full 700: that one is the window coming up.
         // A value that is not a number keeps the 700 and says so: toInt() reads
         // "abc" or "700ms" as 0, which is the fastest walk and not the default.
         int step_ms = 700;
@@ -546,13 +490,10 @@ int main(int argc, char* argv[]) {
                 return;
             }
             // One section at a time, with the clock stopped while this one is
-            // being taken. Left running, the walk assumed every step costs less
-            // than the 400 ms before its grab -- and the first step that did not
-            // (opening the font menu builds the machine's whole font list) let
-            // the next timeout in on top of it, so the same section was set
-            // twice, grabbed twice and dumped twice while the sections ran out.
-            // A dump of three sections that are all section 0 looks exactly like
-            // a finished measurement.
+            // being taken: a step that costs more than the 400 ms before its grab
+            // (opening the font menu builds the machine's whole font list) would
+            // otherwise let the next timeout in on top of it, and the same section
+            // would be set, grabbed and dumped twice (entry 105).
             step->stop();
             // The section this step visits; the step's own number is what names
             // the file and the dump line, because a walk may visit one section
@@ -579,10 +520,9 @@ int main(int argc, char* argv[]) {
                         file.insert(file.lastIndexOf('.'), QStringLiteral("-%1").arg(*index));
                     }
                     frame.save(file);
-                    // Any other visible window belongs to the run too -- the
-                    // crash report window appears on the desktop by itself, and
-                    // a harness that only ever grabs the main window could
-                    // never look at it.
+                    // Any other visible window belongs to the run too: a
+                    // harness that only ever grabs the main window could never
+                    // look at it.
                     int extra = 0;
                     for (QWindow* other : QGuiApplication::allWindows()) {
                         auto* quick_other = qobject_cast<QQuickWindow*>(other);
@@ -603,12 +543,11 @@ int main(int argc, char* argv[]) {
                         << ", \"window\": {\"w\": " << window->width()
                         << ", \"h\": " << window->height() << "}}\n";
                     // Every visible window and whether it hangs off another one.
-                    // The crash report is supposed to be its own window on the
-                    // desktop; declared inside the settings window it had silently
-                    // become a transient child, which a compositor centres over its
-                    // parent -- indistinguishable, from the outside, from a dialog
-                    // inside the application. A claim about window arrangement needs
-                    // something that can read window arrangement.
+                    // A window declared inside another becomes a transient child,
+                    // which a compositor centres over its parent -- indistinguishable,
+                    // from the outside, from a dialog inside the application. A claim
+                    // about window arrangement needs something that can read window
+                    // arrangement.
                     for (QWindow* other : QGuiApplication::allWindows()) {
                         if (!other->isVisible()) {
                             continue;
