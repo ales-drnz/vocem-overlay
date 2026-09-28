@@ -1634,3 +1634,8 @@ foreach(scene daemon handover)
             "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
             "VOCEM_GL_SCENARIO=${scene}")
 endforeach()
+
+# The systemd-run command of the `_unit` tests keeps the test's environment off
+# its own command line, where every local user reads it (unit_command_env.cpp):
+# --setenv=NAME, the values in systemd-run's environment.
+vocem_test(unit_command_env)
