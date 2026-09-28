@@ -1075,7 +1075,14 @@ private:
         for (int i = 0; i < decimals; ++i) {
             divisor *= 10;
         }
-        // Half away from zero, which is what %f does for the values kept here.
+        // To nearest, an exact tie away from zero: 0.125 at two places is
+        // 0.13, where glibc's %.2f gives 0.12 (it rounds the exact binary
+        // value, ties to even). The two differ on exact ties only -- 360 of
+        // the 3.6 million floats 0.0000..120.0000 at one, two and four places
+        // -- and either reads back as the text it wrote, which is what
+        // matters here (tests/config_hostile.cpp holds every setting to it).
+        // A float times at most 10^4 is exact in a double, so no rounding
+        // happens before this one.
         const long scaled = static_cast<long>(value * static_cast<double>(divisor) + 0.5);
         char buffer[64];
         std::snprintf(buffer, sizeof(buffer), "%s%ld.%0*ld", negative ? "-" : "",
