@@ -40,6 +40,7 @@
 #endif
 #include "real_dlsym.h"
 #include "vocem/apps.h"
+#include "vocem/atlas_owner.h"
 #include "vocem/avatar_file.h"
 #include "vocem/avatar_key.h"
 #include "vocem/avatar_rgba.h"
@@ -362,86 +363,12 @@ private:
     bool was_enabled_ = false;
 };
 
-// The first font atlas of a process, rasterised off the game's thread: built
-// inside glXSwapBuffers it would stall the frame the panel first appears in
-// for well over a tenth of a second. Frames go out without the overlay until
-// it is done. A heap object leaked at exit, as overlay() is, so the ELF
-// destructor can wait for it without constructing the overlay. A pthread, not
-// a std::thread: std::thread reports a refused clone by throwing, and nothing
-// here catches; a refusal is a return code, and the build then happens on the
-// game's thread. Started and joined under g_gl_lock or by the destructor; its
-// own mutex makes the two exclusive.
-struct AtlasWorker {
-    std::mutex lock;
-    pthread_t thread{};
-    bool running = false;
-    std::atomic<bool> done{false};
-    float pixels = 0.0f;
-    float reference = 16.0f;
-    std::string body;
-    std::string strong;
-
-    static void* run(void* self) {
-        auto* worker = static_cast<AtlasWorker*>(self);
-        vocem::ensure_fonts(worker->pixels, worker->reference, worker->body.c_str(),
-                            worker->strong.c_str());
-        unsigned char* rgba = nullptr;
-        int width = 0;
-        int height = 0;
-        vocem::fonts_atlas()->GetTexDataAsRGBA32(&rgba, &width, &height);
-        // Said here, where the rasterisation happened, and not where the game's
-        // thread next looks: a context that dies mid-build joins the worker in
-        // release() and never reaches the draw path's join, and
-        // gl_context_cycle and gl_daemon_gone count this line.
-        VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(worker->pixels));
-        worker->done.store(true, std::memory_order_release);
-        return nullptr;
-    }
-
-    // True when a thread took the job; false means the caller builds.
-    bool start(float wanted_pixels, float wanted_reference, const std::string& wanted_body,
-               const std::string& wanted_strong) {
-        std::lock_guard<std::mutex> guard(lock);
-        pixels = wanted_pixels;
-        reference = wanted_reference;
-        body = wanted_body;
-        strong = wanted_strong;
-        done.store(false, std::memory_order_relaxed);
-        running = pthread_create(&thread, nullptr, &AtlasWorker::run, this) == 0;
-        if (running) {
-            pthread_setname_np(thread, "vocem-atlas");
-        }
-        return running;
-    }
-
-    bool busy() {
-        std::lock_guard<std::mutex> guard(lock);
-        return running;
-    }
-
-    void join() {
-        std::lock_guard<std::mutex> guard(lock);
-        if (running) {
-            pthread_join(thread, nullptr);
-            running = false;
-        }
-    }
-
-    // Until a running build has finished, without joining it: the draw path
-    // joins, and a join is how it learns the atlas came from here and has to
-    // go up whole (atlas_from_worker). After `done` the thread touches nothing.
-    void wait_until_built() {
-        while (busy() && !done.load(std::memory_order_acquire)) {
-            const timespec millisecond{0, 1000000};
-            nanosleep(&millisecond, nullptr);
-        }
-    }
-};
-
-AtlasWorker& atlas_worker() {
-    // Never destroyed, for the reason overlay() gives.
-    static AtlasWorker* worker = new AtlasWorker;
-    return *worker;
+// Said by the atlas worker (vocem/atlas_owner.h) where the rasterisation
+// happened, and not where the game's thread next looks: a context that dies
+// mid-build joins the worker in release() and never reaches the draw path's
+// join, and gl_context_cycle and gl_daemon_gone count this line.
+void say_atlas_built(float pixels) {
+    VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(pixels));
 }
 
 class GlAvatarProvider : public vocem::AvatarProvider {
@@ -825,12 +752,12 @@ public:
         // The backend's objects are names in the context it was built in, and
         // mean something else, or nothing, in another unshared context: a
         // context that is not the owner is drawn nothing into, until the owner
-        // has been silent for kHandOverSeconds and the backend moves to it (a
+        // has been silent for HandOver::kSeconds and the backend moves to it (a
         // game may keep its loading-screen context alive). The old context's
         // objects are deleted the next time it presents (move_away(),
         // reclaim_left()). A context the backend could not be made in holds the
         // overlay the same way (fail_in_this_context).
-        if (backend_ready_ || failed_) {
+        if (hand_over_.held()) {
             switch (whose_present(egl, now)) {
                 case Present::Owner:
                     break;
@@ -838,7 +765,7 @@ public:
                     return;
                 case Present::Abandoned:
                     VOCEM_GLOG("the backend's context has not presented for %.0f s: moving the "
-                               "overlay to the one that does", kHandOverSeconds);
+                               "overlay to the one that does", vocem::HandOver::kSeconds);
                     move_away();
                     break;
             }
@@ -886,27 +813,31 @@ public:
         const PixelStoreGuard unpack = avatars_.pixel_store_guard();
 
         // The FIRST atlas of this process, or the first after fonts_release(),
-        // goes to the worker (AtlasWorker says why). A rebuild for a new size
-        // or typeface stays here: it is rare, and the atlas it replaces is the
-        // one this frame would otherwise draw from.
+        // goes to the worker (vocem/atlas_owner.h says why). A rebuild for a
+        // new size or typeface stays here: it is rare, and the atlas it
+        // replaces is the one this frame would otherwise draw from.
         bool atlas_from_worker = false;
-        if (atlas_worker().busy()) {
-            if (!atlas_worker().done.load(std::memory_order_acquire)) {
-                return;  // still rasterising: this frame goes out without the overlay
-            }
-            atlas_worker().join();
-            atlas_from_worker = true;
-        } else if (vocem::fonts().pixel_size == 0.0f) {
-            const float first_pixels = vocem::font_pixel_size(
-                vocem::sizing_height(snapshot->display_height, height), config.scale,
-                config.font_size);
-            if (atlas_worker().start(first_pixels, config.font_size, config.font_path,
-                                     config.font_path_strong)) {
+        const float first_pixels = vocem::font_pixel_size(
+            vocem::sizing_height(snapshot->display_height, height), config.scale,
+            config.font_size);
+        switch (vocem::atlas_worker().step(vocem::fonts().pixel_size == 0.0f, first_pixels,
+                                           config.font_size, config.font_path,
+                                           config.font_path_strong, &say_atlas_built)) {
+            case vocem::AtlasWorker::Step::Started:
                 VOCEM_GLOG("rasterising the font atlas at %.0f px off the game's thread",
                            static_cast<double>(first_pixels));
                 return;
-            }
-            VOCEM_GLOG("no thread for the font atlas; rasterising it on the game's thread");
+            case vocem::AtlasWorker::Step::Building:
+                return;  // still rasterising: this frame goes out without the overlay
+            case vocem::AtlasWorker::Step::Finished:
+                atlas_from_worker = true;
+                break;
+            case vocem::AtlasWorker::Step::NoThread:
+                // Built below, by the ensure_fonts() every frame asks.
+                VOCEM_GLOG("no thread for the font atlas; rasterising it on the game's thread");
+                break;
+            case vocem::AtlasWorker::Step::Idle:
+                break;
         }
 
         vocem::fonts_note_emoji_in(*snapshot);
@@ -1012,24 +943,21 @@ public:
         // A first atlas still being rasterised reaches the context through
         // ImGui::GetIO() and the atlas that fonts_release() is about to clear:
         // it finishes first (entry 192).
-        atlas_worker().join();
-        if (backend_ready_ && gl_current) {
+        vocem::atlas_worker().join();
+        if (backend_ready() && gl_current) {
             ImGui_ImplOpenGL3_Shutdown();
         }
         avatars_.forget();
-        backend_ready_ = false;
         forget_owner();
         session_.reset_clock();
         // A backend that failed against one context deserves a fresh attempt
         // against the next: the failure was about that context, not about us.
-        failed_ = false;
+        hand_over_.let_go();
         bind_framebuffer_ = nullptr;
         tex_sub_image_ = nullptr;
         bind_texture_ = nullptr;
         get_integer_ = nullptr;
         current_context_ = nullptr;
-        foreign_said_ = nullptr;
-        owner_seen_ = 0.0;
         capture_warmup_frames_ = 0;
 
         // Without a current context ImGui's backend cannot be shut down (that
@@ -1050,10 +978,10 @@ public:
     // that dies first is handed to forget_left() by the teardown hooks
     // (tests/gl_handover.cpp).
     void move_away() {
-        atlas_worker().join();
+        vocem::atlas_worker().join();
         void* context = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
         ImGuiContext* imgui = ImGui::GetCurrentContext();
-        if (backend_ready_ && context && imgui) {
+        if (backend_ready() && context && imgui) {
             LeftBackend left;
             left.context = context;
             left.display = __atomic_load_n(&g_owner_display, __ATOMIC_ACQUIRE);
@@ -1077,7 +1005,7 @@ public:
     // (ImGui::MemAlloc). Waited for, not joined: the live backend's next
     // present joins it and uploads what it built.
     void forget_left(void* display, void* context, bool egl) {
-        atlas_worker().wait_until_built();
+        vocem::atlas_worker().wait_until_built();
         for (size_t i = left_.size(); i-- > 0;) {
             LeftBackend& left = left_[i];
             if (left.egl != egl || (context ? left.context != context : left.display != display)) {
@@ -1093,7 +1021,7 @@ public:
 
     // Whether the backend has GL objects to delete (a context it could not be
     // made in holds none). Under g_gl_lock.
-    bool backend_ready() const { return backend_ready_; }
+    bool backend_ready() const { return hand_over_.holding() == vocem::HandOver::Holding::Ready; }
 
     // Whether a backend was left in this very context (move_away). Under g_gl_lock.
     bool left_in(void* context, bool egl) const {
@@ -1111,7 +1039,7 @@ public:
     // common case -- and a name dropped without GL there is a texture kept
     // for the life of that group, not a name that "dies with the context".
     void release_dying(bool gl_current) {
-        if (gl_current && backend_ready_) {
+        if (gl_current && backend_ready()) {
             std::vector<GLuint> faces;
             avatars_.take_texture_names(faces);
             if (!faces.empty()) {
@@ -1125,30 +1053,26 @@ public:
 
     // Whether the context presenting now is the one the backend lives in,
     // asked with the API it arrived through: one getter call per frame, only
-    // once a backend exists; a getter that could not be resolved answers "the
-    // owner". A foreign context is Abandoned once the owner has been silent
-    // for kHandOverSeconds, and the caller moves the backend to it.
-    enum class Present { Owner, Foreign, Abandoned };
-    static constexpr double kHandOverSeconds = 2.0;
+    // once somebody holds the backend; a getter that could not be resolved
+    // answers "the owner". The transition itself is vocem::HandOver's: a
+    // foreign context is Abandoned once the owner has been silent for
+    // HandOver::kSeconds, and the caller moves the backend to it.
+    using Present = vocem::HandOver::Presenter;
     Present whose_present(bool egl, double now) {
         void* owner = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
         void* current = current_context_ ? current_context_() : owner;
-        if (current == owner && __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == (egl ? 1 : 0)) {
-            owner_seen_ = now;
-            return Present::Owner;
+        const bool from_owner =
+            current == owner && __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == (egl ? 1 : 0);
+        const Present who = hand_over_.present(from_owner, now);
+        if (who == Present::Foreign && hand_over_.first_word_with(current, nullptr)) {
+            VOCEM_GLOG(hand_over_.holding() == vocem::HandOver::Holding::Failed
+                           ? "not drawing in context %p: the overlay is held by context %p, "
+                             "where it could not be made and which presented %.1f s ago"
+                           : "not drawing in context %p: the backend does not live in it (it "
+                             "belongs to context %p, which presented %.1f s ago)",
+                       current, owner, now - hand_over_.seen());
         }
-        if (owner_seen_ > 0.0 && now - owner_seen_ >= kHandOverSeconds) {
-            return Present::Abandoned;
-        }
-        if (current != foreign_said_) {
-            foreign_said_ = current;
-            VOCEM_GLOG(failed_ ? "not drawing in context %p: the overlay is held by context %p, "
-                                 "where it could not be made and which presented %.1f s ago"
-                               : "not drawing in context %p: the backend does not live in it (it "
-                                 "belongs to context %p, which presented %.1f s ago)",
-                       current, owner, now - owner_seen_);
-        }
-        return Present::Foreign;
+        return who;
     }
 
     // Whether the backend lives in `context` on `display` -- or, with a null
@@ -1248,11 +1172,13 @@ private:
     vocem::Snapshot* poll_state() { return state_poll_.poll(); }
 
     bool ensure_backend(bool egl) {
-        if (backend_ready_) {
-            return true;
-        }
-        if (failed_) {
-            return false;
+        switch (hand_over_.holding()) {
+            case vocem::HandOver::Holding::Ready:
+                return true;
+            case vocem::HandOver::Holding::Failed:
+                return false;
+            case vocem::HandOver::Holding::Nobody:
+                break;
         }
 
         if (!ImGui::GetCurrentContext()) {
@@ -1363,8 +1289,7 @@ private:
         get_integer_ = gl_symbol<PFN_glGetIntegerv>("glGetIntegerv");
         // Whose context this backend now lives in, so that the teardown hooks
         // can tell that context's death from any other's (see them below).
-        remember_owner(egl);
-        backend_ready_ = true;
+        remember_owner(egl, vocem::HandOver::Holding::Ready);
         VOCEM_GLOG("OpenGL backend ready");
         vocem::journal_note("OpenGL backend ready");
         return true;
@@ -1408,21 +1333,21 @@ private:
     // The backend could not be made in the context current now. The failure
     // belongs to that context, and it is remembered WITH it: the context is
     // taken as the owner, so every way an owner is given up -- its teardown,
-    // the hand-over once it has been silent for kHandOverSeconds, the switch,
+    // the hand-over once it has been silent for HandOver::kSeconds, the switch,
     // the daemon stopping -- clears the failure and lets the next context try,
     // rather than one splash context taking the overlay from the whole
     // process (tests/gl_failed_context.cpp). Asked every frame in the
     // meantime is one flag.
     bool fail_in_this_context(bool egl) {
-        failed_ = true;
-        remember_owner(egl);
+        remember_owner(egl, vocem::HandOver::Holding::Failed);
         return false;
     }
 
-    // Asked once, when the backend comes up, of the API the present arrived
-    // through: which context is current right now is the one the backend's
-    // objects were just created in.
-    void remember_owner(bool egl) {
+    // Asked once, when the backend comes up or fails to, of the API the present
+    // arrived through: which context is current right now is the one the
+    // backend's objects were just created in, and it holds the backend as
+    // `holding` from now on.
+    void remember_owner(bool egl, vocem::HandOver::Holding holding) {
         using PFN_current = void* (*)();
         void* context = nullptr;
         void* display = nullptr;
@@ -1443,10 +1368,11 @@ private:
         __atomic_store_n(&g_owner_display, display, __ATOMIC_RELEASE);
         __atomic_store_n(&g_owner_egl, egl ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_owner_context, context, __ATOMIC_RELEASE);
-        owner_seen_ = vocem::monotonic_seconds();
-        VOCEM_GLOG(failed_ ? "the overlay stays with %s context %p, where it could not be made, "
-                             "until that context is destroyed or falls silent"
-                           : "backend belongs to %s context %p",
+        hand_over_.take(holding, vocem::monotonic_seconds());
+        VOCEM_GLOG(holding == vocem::HandOver::Holding::Failed
+                       ? "the overlay stays with %s context %p, where it could not be made, "
+                         "until that context is destroyed or falls silent"
+                       : "backend belongs to %s context %p",
                    egl ? "EGL" : "GLX", context);
     }
 
@@ -1487,7 +1413,7 @@ private:
         if (!current) {
             return;
         }
-        if (atlas_worker().busy() && !atlas_worker().done.load(std::memory_order_acquire)) {
+        if (vocem::atlas_worker().building()) {
             return;
         }
         for (size_t i = 0; i < left_.size(); ++i) {
@@ -1542,10 +1468,12 @@ private:
     // What the last frame concluded about whether the overlay belongs here, so the
     // moment it changes can be noticed. -1 until the first frame has asked.
     int drawing_ = -1;
-    bool backend_ready_ = false;
+    // Who holds the backend -- nobody, this context ready, or this context
+    // where it could not be made -- and the clock and words of the hand-over
+    // (vocem/atlas_owner.h). The context itself is in the owner globals above.
+    vocem::HandOver hand_over_;
     bool captured_ = false;
     int capture_warmup_frames_ = 0;
-    bool failed_ = false;
     PFN_glBindFramebuffer bind_framebuffer_ = nullptr;
     PFN_glTexSubImage2D tex_sub_image_ = nullptr;
     PFN_glBindTexture bind_texture_ = nullptr;
@@ -1554,11 +1482,6 @@ private:
     // comes up (remember_owner) so the per-frame ask below is one call into
     // the dispatcher and no lookup.
     void* (*current_context_)() = nullptr;
-    // The last context told it has no overlay, so a game alternating two
-    // windows says so once and not every other frame.
-    void* foreign_said_ = nullptr;
-    // When the owner context last presented (whose_present), on the frame clock.
-    double owner_seen_ = 0.0;
 
     // The squares a fold wrote, uploaded into the font texture the backend
     // already made. Runs under draw()'s PixelStoreGuard; each square is copied
@@ -2132,7 +2055,7 @@ __attribute__((destructor)) void vocem_gl_journal_close() {
     // A first atlas still being rasterised runs this library's code and reads
     // the atlas: it finishes before exit tears the process down (entry 192).
     // The shim never dlcloses this library, so exit is the one way this runs.
-    atlas_worker().join();
+    vocem::atlas_worker().join();
     vocem::journal_end();
     // Last, the exception emergency pool (about 73 KB) of the libstdc++ this
     // library carries inside it (-static-libstdc++, the top-level
