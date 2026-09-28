@@ -626,8 +626,21 @@ int run_case(const Paths& p, int number, Random& random, const std::vector<std::
         saved = vocem::Config::write_switch(kSwitches[which], expected.*kSwitches[which]);
     } else {
         const std::vector<vocem::Config::Entry> before = followed.entries();
+        // Half the time a key the file has a line for (one the reader takes
+        // or one too long for it), where a rewrite has something to get wrong.
+        std::vector<size_t> present;
+        for (const Line& line : split_lines(original)) {
+            std::string key = line.text.substr(0, line.text.find('='));
+            key = setting_key(key + "=", false);
+            key = key == "gl_blacklist" ? std::string("hidden_apps") : key;
+            for (size_t i = 0; i < keys.size(); ++i) {
+                if (keys[i] == key) present.push_back(i);
+            }
+        }
         for (int attempt = 0; attempt < 20; ++attempt) {
-            const size_t k = random.below(static_cast<uint32_t>(keys.size()));
+            const size_t k = !present.empty() && random.chance(50)
+                                 ? present[random.below(static_cast<uint32_t>(present.size()))]
+                                 : random.below(static_cast<uint32_t>(keys.size()));
             vocem::Config mine = followed;
             mine.assign(keys[k].c_str(), window_value(random, keys[k]).c_str());
             if (mine.entries()[k].value != before[k].value) {
