@@ -36,8 +36,14 @@ endif()
 include("${CMAKE_CURRENT_LIST_DIR}/window_status.cmake")
 
 set(scratch "${CMAKE_CURRENT_BINARY_DIR}/single-instance")
-file(REMOVE_RECURSE "${scratch}")
-file(MAKE_DIRECTORY "${scratch}/config/vocem" "${scratch}/cache" "${scratch}/data" "${scratch}/run")
+# The runtime directory is short and outside the build tree: the window's
+# socket is <XDG_RUNTIME_DIR>/vocem-config-<uid>, and a socket path has 107
+# bytes, which a build tree in a deep checkout exceeds on its own.
+string(MD5 run_key "${CMAKE_CURRENT_BINARY_DIR}")
+string(SUBSTRING "${run_key}" 0 12 run_key)
+set(run "/tmp/vocem-si-${run_key}")
+file(REMOVE_RECURSE "${scratch}" "${run}")
+file(MAKE_DIRECTORY "${scratch}/config/vocem" "${scratch}/cache" "${scratch}/data" "${run}")
 file(WRITE "${scratch}/config/vocem/config.ini" "")
 
 # The script: A in the background, B 100 ms later, C once B has answered. B
@@ -74,7 +80,7 @@ alive=0
 kill -0 $a 2>/dev/null && alive=$((alive+1)) && echo 'A alive'
 kill -0 $B_pid 2>/dev/null && alive=$((alive+1)) && echo 'B alive'
 echo \"instances alive: $alive\"
-socket=\"${scratch}/run/vocem-config-$(id -u)\"
+socket=\"${run}/vocem-config-$(id -u)\"
 if [ -S \"$socket\" ]; then echo 'socket present'; else echo 'socket missing'; fi
 bounded C
 kill $a $B_pid $C_pid 2>/dev/null
@@ -90,7 +96,7 @@ execute_process(
     TIMEOUT 120
     ENVIRONMENT_MODIFICATION
         "LD_PRELOAD=unset:"
-        "XDG_RUNTIME_DIR=set:${scratch}/run"
+        "XDG_RUNTIME_DIR=set:${run}"
         "XDG_CONFIG_HOME=set:${scratch}/config"
         "XDG_CACHE_HOME=set:${scratch}/cache"
         "XDG_DATA_HOME=set:${scratch}/data"
@@ -99,10 +105,8 @@ execute_process(
         "VOCEM_CONFIG_NO_DAEMON=set:1")
 message("${report}")
 # The windows are gone (race.sh kills them) and the socket's presence is in the
-# report, so the socket itself is not needed any more -- and it must not stay:
-# the Flatpak manifest copies the checkout as a source, and a socket under
-# build/tests failed 0.1.8's first export: the copy stops at a special file.
-file(REMOVE_RECURSE "${scratch}/run")
+# report, so the runtime directory goes with them.
+file(REMOVE_RECURSE "${run}")
 # What the RESULT_VARIABLE means, in the one place that says it
 # (window_status.cmake, entry 166). race.sh ends `exit 0` whatever the windows
 # did, so a number here is the shell failing to run it and anything that is not
