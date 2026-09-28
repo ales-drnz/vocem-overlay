@@ -1852,3 +1852,19 @@ vocem_test(atlas_owner_states_asan SOURCES atlas_owner_states.cpp
     LINK_OPTIONS -fsanitize=address,undefined
     ENV "LD_PRELOAD=" "ASAN_OPTIONS=detect_leaks=1" "UBSAN_OPTIONS=print_stacktrace=1"
     ARGS 5 TIMEOUT 600)
+
+# The switch turned off, or the daemon stopping, noticed in a present of an
+# unshared context the backend does not live in: the backend's names are that
+# context's own objects there, and the release used to delete them
+# (gl_switch_foreign.cpp). Both causes, both widths.
+vocem_test(gl_switch_foreign LINK EGL GLESv2 rt
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=switch" SKIP TIMEOUT 120)
+vocem_m32_twin(gl_switch_foreign
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=switch"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_test_run(gl_switch_foreign_daemon TARGET gl_switch_foreign
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=daemon" SKIP TIMEOUT 120)
+vocem_m32_twin_run(gl_switch_foreign_daemon TARGET gl_switch_foreign_daemon
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=daemon")

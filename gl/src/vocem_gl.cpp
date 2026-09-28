@@ -690,12 +690,13 @@ public:
                        vocem::process_name().c_str());
             vocem::journal_note(want ? "switched on" : "switched off");
             if (!want) {
-                // A present hook is the one place where the application's
-                // context is guaranteed current, so this is the moment to hand
-                // back what lives in it. Worded as the daemon-stopped case
+                // A present hook is the one place where one of the
+                // application's contexts is guaranteed current, so this is the
+                // moment to hand back what lives in it -- in it, and nowhere
+                // else (give_back_here). Worded as the daemon-stopped case
                 // below and the Vulkan layer word the same release.
                 VOCEM_GLOG("switched off: releasing the backend and the font atlas");
-                release(true);
+                give_back_here(egl);
                 // The atlas belongs to the fonts module and survives release()
                 // on purpose, so that a game cycling its context pays nothing;
                 // being switched off is when its 64 MB of glyphs go back.
@@ -721,7 +722,7 @@ public:
             if (state_poll_.daemon_left()) {
                 VOCEM_GLOG("the daemon stopped: releasing the backend and the font atlas");
                 vocem::journal_note("daemon stopped: released");
-                release(true);
+                give_back_here(egl);
                 vocem::fonts_release();
             }
             return;
@@ -1061,9 +1062,7 @@ public:
     Present whose_present(bool egl, double now) {
         void* owner = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
         void* current = current_context_ ? current_context_() : owner;
-        const bool from_owner =
-            current == owner && __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == (egl ? 1 : 0);
-        const Present who = hand_over_.present(from_owner, now);
+        const Present who = hand_over_.present(present_from_owner(egl), now);
         if (who == Present::Foreign && hand_over_.first_word_with(current, nullptr)) {
             VOCEM_GLOG(hand_over_.holding() == vocem::HandOver::Holding::Failed
                            ? "not drawing in context %p: the overlay is held by context %p, "
@@ -1073,6 +1072,29 @@ public:
                        current, owner, now - hand_over_.seen());
         }
         return who;
+    }
+
+    // Whether the context current in this present is the one the backend lives
+    // in, asked with the API the present arrived through; a getter that could
+    // not be resolved answers yes.
+    bool present_from_owner(bool egl) {
+        void* owner = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
+        void* current = current_context_ ? current_context_() : owner;
+        return current == owner && __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == (egl ? 1 : 0);
+    }
+
+    // The switch or the daemon took the overlay away, noticed in this
+    // present. The backend is shut down with GL calls only where it lives: in
+    // another, unshared context its names are that context's own objects
+    // (entry 237's rule). From there it is left in its own context, as the
+    // hand-over leaves it, and deleted when that context next presents --
+    // reclaim_left() runs before the switch is asked (tests/gl_switch_foreign.cpp).
+    void give_back_here(bool egl) {
+        if (backend_ready() && !present_from_owner(egl)) {
+            move_away();
+        } else {
+            release(true);
+        }
     }
 
     // Whether the backend lives in `context` on `display` -- or, with a null
