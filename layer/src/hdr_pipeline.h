@@ -2,17 +2,14 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// The overlay's colours on swapchains that are not sRGB.
+// The overlay's colours on swapchains that are not plain sRGB-numeric.
 //
 // ImGui's stock pipeline writes sRGB-encoded values, which an HDR10 swapchain
-// reads as PQ -- where 1.0 means ten thousand nits -- and an scRGB swapchain
-// reads as linear. Both produce the oversaturated, blinding panel the open
-// risk in DESIGN promised. The cure is one fragment shader with the encode
-// chosen at pipeline creation (hdr.frag, specialization constants), in a
-// pipeline whose layout is defined identically to ImGui's own, so
-// ImGui_ImplVulkan_RenderDrawData can bind it with the backend's descriptor
-// sets and push constants: Vulkan's pipeline layout compatibility is by
-// definition, not by handle.
+// reads as PQ (1.0 = 10000 nits) and an scRGB one as linear: an oversaturated,
+// blinding panel. One fragment shader (hdr.frag) picks the encode by
+// specialization constant, in a pipeline whose layout is defined identically
+// to ImGui's own, so RenderDrawData binds it with the backend's descriptor
+// sets and push constants: layout compatibility is by definition, not handle.
 
 #ifndef VOCEM_HDR_PIPELINE_H
 #define VOCEM_HDR_PIPELINE_H
@@ -21,14 +18,9 @@
 
 namespace vocem {
 
-// Whether a swapchain's *format* carries the sRGB encoding itself, in which
-// case the hardware applies linear->sRGB to whatever the shader writes and
-// ImGui's already-sRGB colours are encoded twice.
-//
-// The list is Vulkan's: every VK_FORMAT_* whose name ends in _SRGB that a
-// swapchain can plausibly be created with. The block-compressed sRGB formats
-// exist too and are not here -- an image no swapchain has ever been made of is
-// noise in a list somebody has to keep right.
+// Whether a swapchain's format carries the sRGB encoding itself, so the
+// hardware would encode ImGui's already-sRGB colours twice. Vulkan's _SRGB
+// formats a swapchain can plausibly have; block-compressed ones are left out.
 inline bool format_is_srgb(VkFormat format) {
     switch (format) {
         case VK_FORMAT_R8_SRGB:
@@ -44,23 +36,15 @@ inline bool format_is_srgb(VkFormat format) {
     }
 }
 
-// Which conversion a swapchain needs. 0 = none: draw with the stock pipeline,
-// which is every SDR space in a linear-numeric format and every space this file
-// does not implement -- unconverted colours degrade the look, a wrong formula
-// lies about it. HLG in particular is recognised and left at 0 on purpose.
+// Which conversion a swapchain needs. 0 = none, the stock look: every SDR
+// space in a linear-numeric format and every space not implemented here (HLG
+// among them, on purpose) -- unconverted colours degrade the look, a wrong
+// formula lies about it. The colour space is asked first: a space implemented
+// here never comes in an *_SRGB format, and it describes what the display does.
 //
-// The colour space is asked first and the format second, because a colour space
-// this file implements always comes in a format that carries no encoding of its
-// own (an HDR10 swapchain is 10-bit or float, never *_SRGB): where both could
-// speak, the space is the one that describes what the display will do.
-//
-// Mode 3 is not an HDR mode and it is by far the most common answer: `*_SRGB`
-// is what a great many games ask their swapchain for, and until this was here
-// they all got a washed-out panel. It was found by reading MangoHud, which
-// answers the same question on the CPU by linearising its own style colours --
-// a cure that works for a HUD of text and rectangles and would leave our
-// avatars and colour emoji wrong, because those come out of a texture and never
-// touch a style colour.
+// Mode 3, an *_SRGB format, is the most common answer. It is fixed in the
+// shader rather than by linearising style colours on the CPU, because avatars
+// and colour emoji come from textures and never touch a style colour (entry 93).
 inline int hdr_mode_for(VkColorSpaceKHR space, VkFormat format = VK_FORMAT_UNDEFINED) {
     switch (space) {
         case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
@@ -103,18 +87,13 @@ struct HdrPipeline {
 };
 
 // Builds the pipeline for `mode` (0 to 3) against the layer's own render pass.
-//
-// Mode 0 too, since 0.1.8: the shader's mode 0 is the identity, and a
-// pipeline of the swapchain's own is the only one guaranteed compatible with
-// the swapchain's own render pass. ImGui's stock pipeline is built once, for
-// the first swapchain's format, and a swapchain recreated with another format
-// -- HDR switched off in the game's settings, an sRGB attachment replaced by a
-// UNORM one -- would have had that stock pipeline drawn into an incompatible
-// render pass (VUID-vkCmdDrawIndexed-renderPass-02684). Returns false -- with
-// everything released -- on any failure; the caller then draws with the stock
-// pipeline only where its format matches, and passes the frame through
-// otherwise: a game must never lose its stability to a pipeline that would
-// only have corrected its colours (rule 7).
+// Mode 0 too (the identity): a swapchain's own pipeline is the only one
+// guaranteed compatible with its render pass, and ImGui's stock pipeline is
+// built for the first swapchain's format only
+// (VUID-vkCmdDrawIndexed-renderPass-02684 after a format change). Returns
+// false, with everything released, on any failure; the caller then draws with
+// the stock pipeline only where its format matches and passes the frame
+// through otherwise (rule 7).
 bool hdr_pipeline_create(const HdrDeviceFunctions& fn, VkDevice device, VkRenderPass render_pass,
                          int mode, float sdr_nits, HdrPipeline& out);
 

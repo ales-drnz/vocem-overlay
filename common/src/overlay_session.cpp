@@ -2,11 +2,7 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// vocem/overlay_session.h: the injected code's shared bookkeeping, compiled
-// once per width into vocem_common and linked into both injected libraries.
-// Nothing here is reached at frame rate except decide() and delta_time(), and
-// neither of those allocates. The logger it speaks through is its own object
-// (overlay_log.cpp), so a file that only logs pulls none of this in.
+// Only decide() and delta_time() run at frame rate, and neither allocates.
 
 #include "vocem/overlay_session.h"
 
@@ -27,14 +23,10 @@ namespace vocem {
 namespace {
 
 // When a journal that could not be created may be asked for again. The GL hook
-// calls journal_begin_once() on every drawn frame until the journal opens, and
-// each attempt walks the journal directory twice before its open -- measured
-// at 166 us and two opendir() per frame, forever, with a cache the game could
-// not write (the review's journal_retry probe; tests/journal_retry_cadence.cpp
-// counted 200 opendir in 100 frames). A cache that refuses once is almost
-// always refusing for good; one look every half minute still finds one that
-// was only late. Process-wide, as the journal is: plain globals, constant
-// initialisation, nothing the C++ runtime has to guard.
+// calls journal_begin_once() on every drawn frame, and each attempt walks the
+// journal directory twice (entry 217, tests/journal_retry_cadence.cpp). A cache
+// that refuses once almost always refuses for good. Process-wide, as the
+// journal is: plain globals, constant initialisation.
 constexpr double kJournalRetrySeconds = 30.0;
 double g_journal_retry_at = 0.0;
 bool g_journal_refusal_said = false;
@@ -66,9 +58,8 @@ void OverlaySession::enter_flatpak_bridge_once() {
 
 bool OverlaySession::decide(const Config& config) {
     if (decision_.refresh(config)) {
-        // The evidence, not just the verdict. "not drawing in" whole is what
-        // tests/gl_noop_quiet.cpp matches; the first probe matched "drawing in"
-        // inside it and reported the opposite (entry 54).
+        // The evidence, not just the verdict. tests/gl_noop_quiet.cpp matches
+        // "not drawing in" whole.
         if (!decision_.allowed()) {
             VOCEM_OVERLAY_LOG(tag_, "not drawing in '%s': %s (%s)", process_name().c_str(),
                               looks_like_game() ? "on the hidden list"
@@ -78,32 +69,17 @@ bool OverlaySession::decide(const Config& config) {
             VOCEM_OVERLAY_LOG(tag_, "drawing in '%s': %s", process_name().c_str(),
                               game_verdict().reason.c_str());
         } else {
-            // Allowed by the lists and switched off by the user: saying
-            // "drawing in" here would be the log telling the opposite of what
-            // the screen shows, which is the one thing it may not do.
+            // Allowed by the lists, switched off by the user: not "drawing in".
             VOCEM_OVERLAY_LOG(tag_, "not drawing in '%s': the overlay is switched off (%s)",
                               process_name().c_str(), game_verdict().reason.c_str());
         }
     }
-    // Inside a Flatpak, tell the daemon. It adopted this sandbox before the
-    // settings could be read, because the settings arrive across the bridge;
-    // this is where it learns whether the overlay is actually drawing here, and
-    // whether to keep sending the channel and the faces at all. The master
-    // switch is part of that answer: with it off nothing is drawn, and a daemon
-    // told otherwise would mirror the channel into a sandbox showing nothing
-    // (entry 138 -- the Vulkan side left the switch out of this sentence).
+    // Inside a Flatpak, tell the daemon whether the overlay is drawing here, so
+    // it stops mirroring the channel and faces into a sandbox that shows
+    // nothing. The master switch is part of that answer, and returning the
+    // whole answer keeps callers from asking half (entry 152).
     const bool drawing = config.enabled && decision_.allowed();
     flatpak_bridge_drawing(drawing);
-    // The whole answer, not half of it. Entry 138 made the two paths agree on
-    // what the daemon is told and left the two CALL SITES spelling the master
-    // switch themselves -- and the GL one spelled it `config.enabled &&
-    // session_.decide(config)`, which short-circuits: with the overlay switched
-    // off, decide() was never reached, so flatpak_bridge_drawing() was never
-    // told, and it only writes on a change. A Flatpak game on the OpenGL path
-    // therefore went on receiving the channel and every face from a daemon that
-    // believed it was drawing -- entry 138's own defect, surviving on the other
-    // side of entry 138's own fix. Returning the whole answer is what makes the
-    // question unaskable by halves.
     return drawing;
 }
 
@@ -117,8 +93,7 @@ void OverlaySession::journal_begin_once() {
     }
     if (!journal_begin(api_, process_name().c_str())) {
         // Could not be created: asked again on the slow cadence above, and
-        // said once -- a Debug section with no journal for a game that is
-        // plainly drawing needs its reason somewhere.
+        // said once.
         const int error = errno;
         g_journal_retry_at = now + kJournalRetrySeconds;
         if (!g_journal_refusal_said) {
@@ -179,10 +154,6 @@ const char* OverlaySession::note_words(uint64_t serial) {
 }
 
 float OverlaySession::delta_time(double now) {
-    // This used to be a hardcoded 1/60 on the GL side, defensible while nothing
-    // animated and wrong once the panel did: a 144 Hz game ran the motion at
-    // 2.4x and a 30 Hz one at half speed. The first frame has no predecessor,
-    // and a stalled or hitching game must not feed ImGui a zero step.
     const double delta = last_frame_seconds_ > 0.0 ? now - last_frame_seconds_ : 1.0 / 60.0;
     last_frame_seconds_ = now;
     return delta > 0.0001 ? static_cast<float>(delta) : 1.0f / 60.0f;

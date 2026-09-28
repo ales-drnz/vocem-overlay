@@ -46,8 +46,7 @@ Fonts g_fonts;
 
 // The same sets the three TTFs were subset to. Asking ImGui for ranges a font does
 // not contain costs nothing, but asking for less than it contains would silently
-// drop characters -- which is what happened to every symbol between the quotes and
-// the arrows, and to every emoji, for as long as this list was four lines long.
+// drop characters.
 const ImWchar* letter_ranges() {
     static const ImWchar ranges[] = {
         0x0020, 0x00FF,  // Basic Latin, Latin-1 Supplement
@@ -66,14 +65,11 @@ const ImWchar* letter_ranges() {
     return ranges;
 }
 
-// The three symbol fonts (Noto Sans Math, Symbols, Symbols 2), which exist
-// because Discord servers decorate channel and display names from
-// symbol-picker sites: box fragments, circled letters, the arrows Inter does
-// not carry, and the mathematical alphanumerics the "fancy font" alphabets
-// really are. Merged after Inter -- the merge keeps the glyph already there --
-// and rasterised at the emoji ceiling, for the emoji's own reason: ~2000
-// decorations at 64 px is atlas nobody can afford, and a decoration drawn at
-// 32 px in larger text is the trade the emoji already made.
+// The three symbol fonts (Noto Sans Math, Symbols, Symbols 2), for the
+// decorations names are written with: box fragments, circled letters, arrows
+// Inter lacks, and the mathematical alphanumerics "fancy font" alphabets are.
+// Merged after Inter -- the merge keeps the glyph already there -- and
+// rasterised at their own ceiling (kSymbolCeiling below).
 const ImWchar* symbol_ranges() {
     static const ImWchar ranges[] = {
         0x0660, 0x0669,    // Arabic-Indic digits, which shape alone
@@ -93,13 +89,9 @@ const ImWchar* emoji_ranges() {
         // is drawn as one.
         0x200D, 0x200D,
         0xFE0E, 0xFE0F,
-        // Not everything that is an emoji lives above U+1F000. ⭐ is U+2B50 and ✅
-        // is U+2705, both down among the symbols, and both were still question
-        // marks when this range started at U+1F000 -- which is what a game showed.
-        //
-        // The overlap with Inter is deliberate and free: ImGui's merge keeps the
-        // glyph that is already there, so Inter's star, tick, heart and digits
-        // stay Inter's and only what it does not have is filled in from here.
+        // Not everything that is an emoji lives above U+1F000: ⭐ is U+2B50 and
+        // ✅ is U+2705. The overlap with Inter is free: ImGui's merge keeps the
+        // glyph already there, so only what Inter lacks is filled in from here.
         0x2190, 0x2BFF,
         0x3030, 0x303D,
         0x3297, 0x3299,
@@ -123,48 +115,32 @@ const ImWchar* punctuation_ranges() {
     return ranges;
 }
 
-// Emoji are rasterised at this size at most, however large the text is. Every
+// Emoji are rasterised at this size at most, however large the text is: every
 // glyph in the atlas costs its area, and 1500 emoji at 64 pixels is eight
-// megabytes of texture in somebody's game -- measured, not guessed. Above this
-// they are drawn a little smaller than the text around them, which is what a
-// typeface does with them anyway.
+// megabytes of texture. Above this they are drawn a little smaller than the
+// text around them, which is what a typeface does with them anyway.
 constexpr float kEmojiCeiling = 32.0f;
 
 // The symbol fonts' own ceiling, lower than the emoji's: they carry about
-// 2400 glyphs between them (the mathematical alphanumerics alone are 1024),
-// and at the emoji's 32 px the whole atlas doubled at 4K -- measured,
-// 2048x4096 to 4096x4096, 64 MB of RGBA in somebody's game. At 24 px it
-// stays within the pre-symbol footprint's next step. A name decoration drawn
-// at 24 px inside larger text is the same trade the emoji made at 32.
+// 2400 glyphs between them, and at 32 px they would double a 4K atlas to
+// 4096x4096. A decoration drawn at 24 px inside larger text is the emoji's trade.
 constexpr float kSymbolCeiling = 24.0f;
 
 // The ceiling is also the size of the buffer the bank's pixels are resampled
-// into, and `emoji_bank_resample` writes size*size*4 bytes -- so a ceiling above
-// the bank's own size would overflow a stack buffer inside somebody's game, and
-// would ask the resample to scale *up*, which its own comment says it never
-// does. One constant away from a crash is close enough to say so in the
-// compiler.
+// into, and `emoji_bank_resample` writes size*size*4 bytes: a ceiling above the
+// bank's own size would overflow a stack buffer and ask the resample to scale up.
 static_assert(kEmojiCeiling <= static_cast<float>(kEmojiBankPixels),
               "the emoji ceiling may not exceed the bank's own pixel size");
 
 // Every codepoint the session's text has shown us, in codepoint order, with
-// bit 31 carrying "the bank has it". The rejected ones are remembered too, on
-// purpose: a name with a typographic apostrophe shows the same codepoint every
-// frame, and forgetting the rejection would put a bank lookup -- file reads --
-// on the per-frame path. A fixed array, because everything here can run inside
-// a game.
+// bit 31 carrying "the bank has it". The rejected ones are remembered too, so a
+// codepoint shown every frame costs one bank lookup, not one per frame. A fixed
+// array, because everything here can run inside a game.
 //
-// **Two budgets, because they are two different things.** This array is the
-// remembered verdict, and its size is only about not asking the bank twice; the
-// atlas budget below is about how many coloured rectangles a rebuild can carry.
-// They were one number, ninety-six, and the array counted every codepoint from
-// U+2000 up whether the bank had it or not -- so a channel of decorated and CJK
-// names filled it with characters that were never going to be coloured, and
-// from then on every emoji that arrived stayed monochrome for the life of the
-// process. Measured: ninety-eight ideographs seen in names, then
-// `fonts_emoji_status()` reporting the table full and a fire arriving
-// afterwards drawn by the monochrome font. Which reads, from a chair, as
-// "sometimes they are coloured and sometimes they are not".
+// Two budgets: this array is the remembered verdict, and counts every codepoint
+// from U+2000 up, bank or not -- CJK and decorated names fill it; the atlas
+// budget below is how many coloured rectangles a build carries. One shared
+// number would let names that are never coloured exhaust the emoji's room.
 constexpr uint32_t kMaxSeenCodepoints = 512;
 // How many bank glyphs one atlas carries. This is the number with a cost behind
 // it: one custom rectangle per weight per emoji, each the emoji's own square of
@@ -172,7 +148,7 @@ constexpr uint32_t kMaxSeenCodepoints = 512;
 constexpr uint32_t kMaxBankGlyphs = 96;
 constexpr uint32_t kSeenInBank = 0x80000000u;
 // Whether this codepoint's pixels are already in the atlas. A codepoint is at
-// most U+10FFFF, so the two flags and the value share a word without arithmetic.
+// most U+10FFFF, so the flags and the value share a word without arithmetic.
 constexpr uint32_t kSeenFolded = 0x40000000u;
 // Whether the fold actually PLACED its glyph -- in at least one weight, which
 // in practice is both. kSeenFolded is set before the work, so a bank read that
@@ -188,11 +164,9 @@ uint32_t g_seen_count = 0;
 uint32_t g_wanted_count = 0;
 uint32_t g_built_count = 0;
 
-// One rect per weight per bank emoji, ALL of them reserved by every build
-// whether or not an emoji has been seen yet -- which is what lets a new one be
-// folded into the atlas in place instead of rasterising the whole atlas again.
-// The number of weights is named and the sizes follow it, so a third weight
-// fails to compile instead of writing past an array inside a game.
+// One rect per weight per bank emoji, all reserved by every build (see
+// build_atlas()). The weights are named so a third one fails to compile
+// instead of writing past an array inside a game.
 constexpr uint32_t kAtlasWeights = 2;
 constexpr uint32_t kMaxRects = kMaxBankGlyphs * kAtlasWeights;
 static_assert(kAtlasWeights == 2, "one rect per weight, and there are two");
@@ -213,10 +187,8 @@ static_assert(static_cast<float>(kMaxFoldedSide) >= kEmojiCeiling,
               "a folded square is an emoji square, at most the ceiling on a side");
 AtlasRegion g_folded[kMaxRects];
 uint32_t g_folded_count = 0;
-// Every run of the rasteriser, counted (fonts.h says why a count and not a
-// clock). Both of build_atlas()'s calls are in it, including the second one a
-// refused typeface forces: that IS a rasterisation, and a count that hid it
-// would be measuring what it wished for.
+// Every run of the rasteriser, counted -- including the second build a refused
+// typeface forces, which is a rasterisation too.
 uint32_t g_build_count = 0;
 // Set once fonts_atlas() has made the atlas object (fonts_atlas_made()).
 std::atomic<bool> g_atlas_made{false};
@@ -232,32 +204,20 @@ bool g_capped = false;
 constexpr size_t kMaxFontPath = 512;
 // What the caller last ASKED for, which is what the dead band compares against,
 // and what the last build actually USED, which is empty whenever the chosen face
-// was refused. They were one pair of arrays, and the difference is a frame's
-// whole budget: a face that gets past looks_like_a_font() and still cannot be
-// rasterised makes ensure_fonts() forget the paths, so on the next call the
-// remembered path no longer matched the settings' and every frame rebuilt the
-// atlas from scratch -- measured at 61 ms per call on this machine, once per
-// frame, in somebody's game, with a font-texture upload behind it (and a
-// vkQueueWaitIdle behind that on the Vulkan side).
+// was refused. Kept apart so a refused face is not retried with a full rebuild
+// on every frame.
 char g_asked_body[kMaxFontPath] = {};
 char g_asked_strong[kMaxFontPath] = {};
 char g_body_path[kMaxFontPath] = {};
 char g_strong_path[kMaxFontPath] = {};
 const char* g_font_reason = nullptr;
 
-// A font a game may be handed. The rules are the ones every other read in this
-// project follows (entries 47, 82, 86): a regular file, opened once, capped, and
-// refused out loud rather than half-read.
-//
-// A cap, because ImGui's own AddFontFromFileTTF has none and the path comes out
-// of a text file: a "font" of three hundred megabytes would be read whole into
-// somebody's game. Sixteen is past every real face -- Noto Sans CJK, the
-// largest thing a desktop is likely to carry, is under nine.
-//
-// Deliberately not O_NOFOLLOW, unlike the daemon's reads of a sandbox's
-// directory: a font under /usr/share/fonts is very often reached through a
-// symlink, and this path was written by the user's own settings window rather
-// than by an untrusted peer. What is guarded here is size and kind.
+// A font a game may be handed: a regular file, opened once, capped, and refused
+// out loud rather than half-read (entry 47). The cap, because ImGui's
+// AddFontFromFileTTF has none and the path comes out of a text file; sixteen MB
+// is past every real face (Noto Sans CJK is under nine). Not O_NOFOLLOW: fonts
+// are often reached through symlinks, and the path comes from the user's own
+// settings, not an untrusted peer. What is guarded is size and kind.
 constexpr size_t kMaxFontBytes = 16u * 1024u * 1024u;
 
 void* read_font_file(const char* path, size_t* size_out) {
@@ -304,24 +264,16 @@ void* read_font_file(const char* path, size_t* size_out) {
 }
 
 // Whether those bytes are a font at all, asked before the rasteriser is handed
-// them.
-//
-// stb_truetype trusts its input. Given a file that is not a font,
+// them. stb_truetype trusts its input: given a file that is not a font,
 // stbtt_GetFontOffsetForIndex returns -1, ImGui's IM_ASSERT on that is compiled
-// out of every release build (this project's are RelWithDebInfo, so NDEBUG), and
-// stbtt_InitFont then parses from `data - 1` with a table count read out of
-// whatever happened to be there: measured as a SIGSEGV inside ensure_fonts,
-// which is to say inside somebody's game, at imstb_truetype.h:1313 with
-// fontstart 4294967295. A path is a line in a text file, so this is reachable
-// from a hand-edited settings file, from a font uninstalled and its name reused,
-// and from anything that writes the key without asking fontconfig.
+// out, and stbtt_InitFont parses from `data - 1` -- a SIGSEGV inside the game
+// (entry 92).
 //
 // The signatures are the ones stbtt__isfont accepts (imstb_truetype.h:1299),
-// plus the collection tag stbtt_GetFontOffsetForIndex follows -- so nothing this
+// plus the collection tag stbtt_GetFontOffsetForIndex follows, so nothing this
 // accepts is refused later for its header. The extra question is the one stb
-// does not ask: that the table directory the count describes is inside the file
-// that was actually read. Everything past that is the rasteriser's job, and its
-// answer is Build()'s return value.
+// does not ask: that the table directory is inside the bytes that were read.
+// Everything past that is the rasteriser's job, answered by Build().
 bool looks_like_a_font(const unsigned char* data, size_t size) {
     // Every bound is written as a subtraction from the size rather than as an
     // addition to an offset: the offset comes out of the file, and at 32 bits
@@ -339,24 +291,13 @@ bool looks_like_a_font(const unsigned char* data, size_t size) {
     };
     // An offset table: the tag, then a count of tables, then that many 16-byte
     // records, each naming a table's offset and length. Anything shorter than
-    // the directory it claims is truncated, and so is anything whose tables
-    // reach past the bytes that were actually read.
+    // the directory it claims, or whose tables reach past the bytes that were
+    // read, is truncated -- an interrupted copy, a file still being written --
+    // and stb_truetype, which does no bounds checking, would read past the end.
     //
-    // The second question is the one a truncated file fails, and it had to be
-    // asked: stb_truetype does no bounds checking of its own, so a real font
-    // cut short -- an interrupted copy, a file still being written, a partly
-    // synced home directory -- passed the header check and then read past the
-    // end of the buffer. Measured against the code that shipped 0.1.3, at four
-    // truncation lengths of one installed DejaVu (400, 1024, 4096 and 65536
-    // bytes): SIGSEGV every time, inside ensure_fonts, which is inside
-    // somebody's game.
-    //
-    // What this bounds is a font that was cut off, not a font that was built to
-    // do harm: with every table inside the file, stb can still be sent past the
-    // end by a `loca` entry that lies about where a glyph is. That is worth
-    // saying plainly rather than implying otherwise -- the threat model here is
-    // accident, because this path is named by the user's own settings file and
-    // not by an untrusted peer (which is also why the read is not O_NOFOLLOW).
+    // This bounds a font that was cut off, not one built to do harm: stb can
+    // still be sent past the end by a `loca` entry that lies. The threat model
+    // is accident, because the path comes from the user's own settings file.
     const auto directory_fits = [&](size_t start) {
         static const unsigned char kTrueType1[4] = {'1', 0, 0, 0};
         static const unsigned char kOpenType[4] = {0, 1, 0, 0};
@@ -393,15 +334,10 @@ bool looks_like_a_font(const unsigned char* data, size_t size) {
     static const unsigned char kCollection[4] = {'t', 't', 'c', 'f'};
     if (tag_at(0, kCollection)) {
         // A collection: the parser is sent to the first face's offset table, so
-        // that is the one that has to be there.
-        //
-        // The version is asked because stb asks it: stbtt_GetFontOffsetForIndex
-        // follows a `ttcf` only at header version 1.0 or 2.0
-        // (imstb_truetype.h:1333) and answers -1 for anything else -- which is
-        // the -1 entry 92 is about, reached through a collection instead of
-        // through a file that is not a font at all. The count is read as the
-        // signed value stb reads (`ttLONG`), because a negative one fails its
-        // `index >= n` test and returns -1 by the same door.
+        // that is the one that has to be there. The version and the count are
+        // asked because stb asks them (imstb_truetype.h:1333): anything but
+        // 1.0/2.0, or a count negative as the signed `ttLONG` stb reads, gets
+        // -1 back, the same -1 as a file that is not a font.
         if (size < 16) {
             return false;
         }
@@ -453,11 +389,9 @@ uint32_t bank_codepoint(uint32_t codepoint) {
                                   : codepoint;
 }
 
-// Whether this codepoint draws from the bank: the remembered verdict, or the
-// one lookup that decides it. Every caller that only wants the noting ignores
-// the answer; the sequence collapse below rewrites a name on it, which is why
-// it is an answer and not only a side effect. False during a sandbox's wait
-// for the bank, and nothing remembered then.
+// Whether this codepoint draws from the bank, by the remembered verdict; a
+// codepoint not seen yet is queued for lookup and answers false until then.
+// The sequence collapse below rewrites a name on the answer.
 //
 // `key` says the codepoint is a text key the collapse below produced. Nothing
 // else may ask about one: a codepoint of that area anywhere else came from a
@@ -466,20 +400,16 @@ uint32_t bank_codepoint(uint32_t codepoint) {
 bool bank_verdict(uint32_t codepoint, bool key = false) {
     // Below the symbols there are no emoji, and Inter's own glyphs win anyway.
     //
-    // The floor is deliberate and it is not going up: the bank *does* carry the
-    // fourteen codepoints under it -- the digits, `#`, `*`, `©` and `®` -- but
-    // they are the bases of keycap sequences, and colouring U+0032 would draw
-    // "User 2" with a keycap in it. (A keycap as a whole -- digit, box -- is a
-    // sequence, and draws as one coloured glyph through its key since 0.1.9.)
+    // The bank does carry fourteen codepoints under the floor -- the digits,
+    // `#`, `*`, `©` and `®` -- but they are keycap bases, and colouring U+0032
+    // would draw "User 2" with a keycap in it. A whole keycap draws through
+    // its sequence key.
     if (codepoint < 0x2000 || codepoint > 0x10FFFF) {
         return false;
     }
-    // And the other half of the same decision, which was missing: U+20E3 is the
-    // box a keycap sequence draws *around* its digit, it is above the floor, and
-    // the bank has it -- so `1` came out of the monochrome font and the box
-    // around it came out of the bank, and the user saw a grey digit inside a
-    // blue tile. Half an emoji coloured is worse than none: refused here, so a
-    // keycap is drawn by one font throughout.
+    // U+20E3, the box a keycap draws around its digit, is above the floor and
+    // in the bank: refused, so a keycap's parts come from one font throughout
+    // rather than a grey digit inside a coloured tile.
     if (codepoint == 0x20E3) {
         return false;
     }
@@ -500,22 +430,9 @@ bool bank_verdict(uint32_t codepoint, bool key = false) {
             high = middle - 1;
         }
     }
-    // Not seen yet. The verdict is a file read -- the bank's open and its
-    // table the first time, a binary search of preads after that -- and this
-    // runs inside the present on the Vulkan path, whose renderer said it took
-    // no file work there while it did (39-139 us the first time, 6-8 us each
-    // new codepoint after, measured by the 0.1.10 review; 82 bank calls on the
-    // present path of vk_present_draw's arrivals scene). So nothing is read
-    // here: the codepoint is queued, and fonts_look_up_noted() -- the first
-    // thing ensure_fonts() does, after the present -- reads. Until then it is
-    // "not from the bank", which draws it from the monochrome font for a frame.
-    //
-    // The bank itself is opened by the first ensure_fonts() (the first build,
-    // fonts_look_up_noted), which on the Vulkan path is on the atlas worker
-    // and before anything can be drawn -- so a noting there always finds it
-    // asked. What can find it not asked yet is the OpenGL path's first frame,
-    // which notes before its first build, inside the swap call where the
-    // build happens too: it opens the bank here, as it always did.
+    // Not seen yet. The verdict is a file read and this can run inside the
+    // present, so the codepoint is queued for fonts_look_up_noted() instead.
+    // Only the OpenGL path's first frame reaches the bank's open here (fonts.h).
     if (!g_emoji_bank.asked()) {
         g_emoji_bank.open();
     }
@@ -552,13 +469,10 @@ void look_up(uint32_t codepoint) {
     }
     // The one bank lookup this codepoint will ever cost.
     bool in_bank = g_emoji_bank.contains(bank_codepoint(codepoint));
-    // Unless the bank has not arrived yet, which only happens inside a Flatpak:
-    // the daemon copies it in on its own tick and the game's first frame beats
-    // it. Writing "no colour glyph" down now would outlive the wait -- the
-    // verdict here is remembered for the life of the process -- so nothing is
-    // written down at all until the bank has either opened or given up: the
-    // text notes it again next frame, and it is looked up again. The open
-    // behind it is rate-limited to two a second.
+    // Unless the bank has not arrived yet (inside a Flatpak the daemon copies
+    // it in on its own tick): the verdict is remembered for the life of the
+    // process, so nothing is written down until the bank has opened or given
+    // up, and the text notes it again next frame. The reopen is rate-limited.
     if (!in_bank && g_emoji_bank.still_arriving()) {
         return;
     }
@@ -602,11 +516,9 @@ uint32_t seen_flags(uint32_t codepoint) {
 }  // namespace
 
 void fonts_look_up_noted() {
-    // The bank itself, the first time this runs: its open and its sequence
-    // table's read, here -- in the first build, which on the Vulkan path is the
-    // atlas worker's -- rather than inside a present. Asked whether or not any
-    // text has shown an emoji yet: the table has to be there before the text
-    // is read, or a sequence's parts are noted as emoji of their own.
+    // The bank itself, the first time this runs, whether or not any text has
+    // shown an emoji yet: the table has to be there before the text is read,
+    // or a sequence's parts are noted as emoji of their own.
     if (!g_emoji_bank.asked()) {
         g_emoji_bank.open();
     }
@@ -628,18 +540,15 @@ void fonts_prepare_text(char* text, size_t capacity) {
         return;
     }
     // A codepoint of the keys' area arriving in the text becomes U+FFFD, in
-    // place -- both are three bytes -- before anything reads the text. It drew
-    // as '?' before (no font in the atlas covers the area) and U+FFFD draws
-    // the same; left alone, it would be looked up in the bank as the key of
-    // that number and folded as that sequence's picture.
+    // place -- both are three bytes -- before anything reads the text. No font
+    // covers the area, so it draws as '?' either way; left alone, it would be
+    // looked up as the key of that number and folded as that picture.
     //
     // Except a key whose glyph is placed, which passes: a text prepared twice
-    // must come out the same (the state poll hands back the snapshot it gave
-    // the previous frame when a publish outlasts its read, already collapsed),
-    // and a key this function wrote cannot be told from the same number
-    // spelled in a name. So a name that spells, exactly, the number of a key
-    // already folded draws that key's picture where it drew '?' -- the same
-    // class of collision the keys had at U+F0000, in an area names use more.
+    // must come out the same (the state poll can hand back last frame's
+    // snapshot, already collapsed), and a key this function wrote cannot be
+    // told from the same number spelled in a name. So a name that spells a
+    // folded key's exact number draws that key's picture instead of '?'.
     utf8_each_span(text, [text](uint32_t codepoint, size_t begin, size_t) {
         if (is_text_key(codepoint) && (seen_flags(codepoint) & kSeenPlaced) == 0) {
             text[begin] = static_cast<char>(0xEF);
@@ -648,11 +557,9 @@ void fonts_prepare_text(char* text, size_t capacity) {
         }
     });
     // The table comes with the bank, which the first ensure_fonts() opened --
-    // or, on the OpenGL path's first frame, before its first build, this does:
-    // the table has to be there before the text is read, or a sequence's
-    // parts are noted as emoji of their own. With no table at all (none beside
-    // the bank, or no bank) the plain noting is the whole of it, exactly the
-    // pre-0.1.9 cost.
+    // or, on the OpenGL path's first frame, this does: it has to be there
+    // before the text is read, or a sequence's parts are noted as emoji of
+    // their own. With no table the plain noting is the whole of it.
     if (!g_emoji_bank.asked()) {
         g_emoji_bank.open();
     }
@@ -686,10 +593,9 @@ void fonts_prepare_text(char* text, size_t capacity) {
         return;
     }
     // Every byte that is not part of a collapsed sequence is copied as it was,
-    // malformed ones included: the walk skips them and the spans step around
-    // them. A key is three bytes and a sequence is never fewer than four (its
-    // shortest, a keycap without a selector), so the result is never longer
-    // than the text; the check below is belt to that brace.
+    // malformed ones included. A key is three bytes and a sequence never fewer
+    // than four, so the result is never longer than the text; the bound checks
+    // below hold it anyway.
     char out[kMaxCodepoints];
     size_t written = 0;
     size_t copied_to = 0;
@@ -717,15 +623,10 @@ void fonts_prepare_text(char* text, size_t capacity) {
         // is refused and the sequence stays its parts -- coloured parts, as
         // before -- rather than becoming a key no glyph answers to.
         if (key != 0 && used >= 2 && bank_verdict(key, true)) {
-            // And rewritten only once the atlas HAS the key's glyph. It was
-            // rewritten as soon as the bank said yes, which is before the fold
-            // that puts the glyph in the atlas: the Vulkan layer notes and
-            // draws in one draw() and folds after the present, so a sequence
-            // nobody had shown yet drew as ImGui's fallback, a '?', for its
-            // first frame (measured: the lime's key absent from the atlas
-            // after the rewrite, FindGlyph answering U+003F). Noted now,
-            // collapsed on the first frame after the fold; until then the
-            // sequence draws as its parts, from the monochrome font.
+            // Rewritten only once the atlas HAS the key's glyph: the Vulkan
+            // layer notes and draws before it folds, so a key rewritten on the
+            // bank's yes alone would draw as ImGui's '?'. Until the fold the
+            // sequence draws as its parts.
             const uint32_t flags = seen_flags(key);
             if ((flags & kSeenPlaced) != 0) {
                 if (!copy_raw(begins[i]) || written + 4 >= sizeof(out)) {
@@ -800,27 +701,12 @@ const char* fonts_emoji_status() {
 const Fonts& fonts() { return g_fonts; }
 
 ImFontAtlas* fonts_atlas() {
-    // Leaked on purpose, and the `new` is the whole point.
-    //
-    // A function-local static object would also have the compiler register
-    // ~ImFontAtlas with __cxa_atexit, and that destructor deletes every ImFont
-    // and frees the 16 MB + 64 MB of pixels -- at exit(), from whichever thread
-    // called it, while a render thread may still be inside draw() holding the
-    // lock and dereferencing g.Font. The atexit list runs LIFO, so it would also
-    // run BEFORE the ELF destructor that closes the journal, leaving a `.running`
-    // behind: the overlay reporting, in the window's Debug section, a crash it
-    // caused itself. IM_ASSERT is compiled out of both injected targets, so
-    // there would not even be an abort to read.
-    //
-    // This is the decision gl/src/vocem_gl.cpp makes for overlay() in the same
-    // words and for the same reason (entry 132), and a function-local static
-    // here quietly took it back for the one object that matters most. A pointer
-    // still costs a guard variable and nothing else: no destructor is registered
-    // because there is none to run.
-    //
-    // And said, before it is handed to anybody: fonts_atlas_made() is how a
-    // teardown on another thread learns that there is something to release
-    // without making it.
+    // Leaked on purpose: a function-local static OBJECT would register
+    // ~ImFontAtlas with __cxa_atexit, which at exit() frees every ImFont while
+    // a render thread may still be drawing, and runs before the ELF destructor
+    // that closes the journal. A pointer registers no destructor, as
+    // gl/src/vocem_gl.cpp's overlay() does (entry 132). Marked made before it is
+    // handed to anybody, for fonts_atlas_made().
     static ImFontAtlas* atlas = [] {
         ImFontAtlas* made = new ImFontAtlas;
         g_atlas_made.store(true, std::memory_order_release);
@@ -845,10 +731,8 @@ void fonts_release() {
     g_fonts.pixel_size = 0.0f;
     // What is in the atlas, not what the session has seen: the emoji the text
     // asked for are still wanted, and the next build carries them again. Clear()
-    // took the reserved rectangles with everything else, so nothing is folded
-    // any more either -- said here as well as in build_atlas(), because a module
-    // whose state describes an atlas that no longer exists is how a pointer into
-    // a dead atlas gets used (entry 37).
+    // took the reserved rectangles too, and state describing a dead atlas is how
+    // a pointer into one gets used (entry 37).
     g_built_count = 0;
     g_folded_count = 0;
     g_emoji_reserved = false;
@@ -869,9 +753,8 @@ void fonts_release() {
 float font_pixel_size(uint32_t height, float user_scale, float reference) {
     // Whole pixels. The size is what every distance in the panel is a multiple of,
     // and ImGui truncates the content extent it fits a window to: with a fractional
-    // line height the accumulated fraction came off the bottom padding and the last
-    // avatar in the list was clipped by the box's own edge. It is also the size the
-    // glyphs are rasterised at, and a whole number is the crisper of the two.
+    // line height the accumulated fraction comes off the bottom padding and clips
+    // the last avatar. A whole rasterisation size is also the crisper.
     const float proportional = std::round(
         reference * (static_cast<float>(height) / kReferenceHeight) * user_scale);
     // Below about 11 pixels an interface font stops being readable at all, and
@@ -893,16 +776,11 @@ float ui_scale() {
 namespace {
 
 // The one lookup entry a folded glyph needs, written in place: what
-// BuildLookupTable() would set for it, and nothing else. BuildLookupTable itself
-// clears and re-grows both index arrays to the highest codepoint in the font
-// and walks every glyph, twice per fold -- and with a sequence key at its
-// on-disk number (U+F0000 up, entry 142) in the font that was 984,119 entries
-// a weight: measured at 1.6 to 4.2 ms a fold against 0.24 to 0.50 with none,
-// three runs each, on the path the fold runs on (entry 209). The keys are
-// numbered inside the index the atlas already has now (kSequenceKeyFirst,
-// fonts.h), so this grows nothing for them; the growth below is for a
-// codepoint above the index, with the fallback advance BuildLookupTable gives
-// an empty entry.
+// BuildLookupTable() would set for it, and nothing else. BuildLookupTable
+// itself re-grows both index arrays and walks every glyph, a cost paid on every
+// fold (entry 209). The growth below is for a codepoint above the index, with
+// the fallback advance BuildLookupTable gives an empty entry; sequence keys sit
+// inside the existing index (kSequenceKeyFirst, fonts.h) and grow nothing.
 void index_folded_glyph(ImFont* font, uint32_t codepoint) {
     const int index = font->Glyphs.Size - 1;
     const int at = static_cast<int>(codepoint);
@@ -927,23 +805,15 @@ void index_folded_glyph(ImFont* font, uint32_t codepoint) {
 // custom rectangle glyphs"). Returns whether anything was folded, which is the
 // caller's signal that the font texture on the GPU no longer matches the atlas.
 //
-// This is the whole point of reserving the rects. Adding one emoji used to mean
-// atlas->Clear() and atlas->Build(): 14,954 glyphs in two weights rasterised
-// again to make room for one 32x32 square -- measured at 125 to 145 ms, six
-// times over, on the machine DESIGN's numbers come from. The same emoji folded
-// in here is 0.3 to 0.9 ms, three runs (entry 191). A person joining a channel
-// with an emoji in their name, or a message arriving with one in it, is exactly
-// when that used to be spent, which is why the owner felt it as a freeze.
-//
-// Still not free: a bank read, a resample, two memcpys and a lookup table per
-// weight. It runs where the rebuild ran -- after the present on the Vulkan path,
-// inside the swap call on the OpenGL one.
+// A fold is a bank read, a resample and a few copies per weight, against a full
+// rasterisation of both weights for a rebuild (entry 191). It runs where a
+// rebuild would: after the present on Vulkan, inside the swap call on OpenGL.
 bool fold_wanted_emoji(ImFontAtlas* atlas) {
     if (!g_emoji_reserved || g_built_count >= g_wanted_count) {
         return false;
     }
     // The RGBA the fold writes into. Built by the first caller to ask; after
-    // that this is the cached pointer and costs nothing (measured at 0.0 ms).
+    // that this is the cached pointer and costs nothing.
     unsigned char* pixels = nullptr;
     int atlas_width = 0;
     int atlas_height = 0;
@@ -964,9 +834,7 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
         // Whatever happens below, this codepoint is not asked about again: a
         // bank read that fails now fails the same way next frame, and a rect
         // that did not pack will not pack later either. Marked before the work
-        // so no path out of here leaves it to be retried every frame -- that is
-        // the shape the font-path bug of entry 129's neighbourhood had, 61 ms a
-        // frame forever because a failure did not settle.
+        // so no path out of here leaves it to be retried every frame.
         g_seen[i] |= kSeenFolded;
         ++g_built_count;
 
@@ -1015,9 +883,8 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
     }
 
     // Once, after all of them: Glyphs may have reallocated under AddGlyph, and
-    // FallbackGlyph is a pointer into it -- entry 37's hazard in a new place.
-    // The index entries were written glyph by glyph above; only the pointer is
-    // left to put back on a live glyph.
+    // FallbackGlyph is a pointer into it. The index entries were written above;
+    // only the pointer is left to put back on a live glyph.
     if (lookup_dirty) {
         for (ImFont* font : {g_fonts.body, g_fonts.strong}) {
             if (!font) {
@@ -1034,16 +901,10 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
 
 // One whole build of the atlas, from the two paths already recorded in
 // g_body_path / g_strong_path, answering whether the rasteriser accepted what it
-// was given.
-//
-// A function rather than a stretch of ensure_fonts() because it has to be
-// runnable twice: a chosen face that gets past looks_like_a_font() and still
-// cannot be rasterised leaves ImGui with an atlas of no pixels at all -- measured
-// at 0x0, with every font pointer unloaded, against a variable OpenType
-// (Cantarell-VF.otf: CFF2, which stb_truetype does not implement) -- and an
-// overlay that draws no text while reporting nothing is the silence entry 38 is
-// about. The second run is the carried Inter alone, which is the one build this
-// project knows always works.
+// was given. A function because it may run twice: a chosen face that passes
+// looks_like_a_font() and still cannot be rasterised (a CFF2 variable font, for
+// one) leaves an atlas of no pixels, and the second run is the carried Inter
+// alone, which always builds.
 bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     // See fonts_release(): nobody else unlocks an atlas this module owns.
     atlas->Locked = false;
@@ -1061,10 +922,8 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     const float emoji_size = pixel_size < kEmojiCeiling ? pixel_size : kEmojiCeiling;
     // The user's own face first, with Inter merged straight underneath it as the
     // fallback: ImGui's merge keeps the glyph that is already there, so the
-    // chosen font wins everywhere it has an opinion and Inter fills in the
-    // scripts and symbols it does not carry. Without that fallback, picking a
-    // Latin-only display face would turn every Cyrillic name into question
-    // marks -- a font choice is not a decision to stop drawing people's names.
+    // chosen font wins where it has a glyph and Inter fills in the rest -- a
+    // Latin-only face must not turn Cyrillic names into question marks.
     auto add_weight = [&](const unsigned char* data, unsigned int size, const char* path) {
         ImFont* font = nullptr;
         if (path[0]) {
@@ -1077,13 +936,10 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
                     g_font_reason = "the chosen font is not a font file";
                 } else {
                     ImFontConfig chosen = config;
-                    // The atlas owns this copy and frees it -- at its next
-                    // Clear(), or with the context if the game destroys it. The
-                    // carried fonts are static and stay owned by nobody.
-                    // AddFontFromMemoryTTF cannot answer null (it returns
-                    // AddFont's DstFont, imgui_draw.cpp:2612), so there is no
-                    // failure to test for here: whether the bytes rasterise is
-                    // Build()'s answer, taken at the bottom of this function.
+                    // The atlas owns this copy and frees it at its next Clear();
+                    // the carried fonts are static and owned by nobody.
+                    // AddFontFromMemoryTTF cannot answer null: whether the
+                    // bytes rasterise is Build()'s answer, taken below.
                     chosen.FontDataOwnedByAtlas = true;
                     font = atlas->AddFontFromMemoryTTF(file, static_cast<int>(bytes), pixel_size,
                                                        &chosen, letter_ranges());
@@ -1143,13 +999,10 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
 
     // The space the colour emoji will occupy, reserved now and bound to a
     // codepoint later. Each weight gets its own rect (a merged glyph belongs to
-    // the font it was merged into -- the same lesson the monochrome emoji
-    // taught), and EVERY rect the session's cap allows is reserved here, seen or
-    // not: 96 emoji in two weights at 32 px is 1.2% of a 4096x4096 atlas, and it
-    // is what buys fold_wanted_emoji() a place to put a new emoji without
-    // rasterising the other fourteen thousand glyphs again. The monochrome font
-    // stays merged underneath: a codepoint past the seen-cap, or a session with
-    // no bank on disk, draws exactly as it did before this existed.
+    // the font it was merged into), and EVERY rect the cap allows is reserved,
+    // seen or not -- about 1% of a 4096x4096 atlas -- so fold_wanted_emoji() has
+    // a place for a new emoji without a rebuild. The monochrome font stays
+    // merged underneath for a codepoint past the cap or a session with no bank.
     //
     // Reserved as REGULAR rects, with no font and no glyph id, so Build() packs
     // them and registers nothing; the binding is fold_wanted_emoji()'s, and it
@@ -1176,9 +1029,9 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     g_built_count = 0;
     g_folded_count = 0;
 
-    // The rasteriser's own answer, which nothing used to ask for. False means it
-    // could not parse one of the sources: the atlas has no pixels, every font in
-    // it is unloaded, and the caller has to build something else.
+    // The rasteriser's own answer. False means it could not parse one of the
+    // sources: the atlas has no pixels, every font in it is unloaded, and the
+    // caller has to build something else.
     const bool built = atlas->Build();
     ++g_build_count;
 
@@ -1188,16 +1041,9 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
         // whole atlas after a build, so these are already in it.
         g_folded_count = 0;
         // The RGBA32 copy is the atlas from here on: both backends upload it,
-        // and a fold writes its colour glyph into it. The alpha8 image the
-        // rasteriser drew is read once, by the widening (in a fold above or the call below), and was then
-        // kept for the life of the atlas -- 16 MB at a 4K display's text size,
-        // in every process that draws, which is a fifth of what this module
-        // holds. Measured on gl_daemon_gone: 83,452 kB handed back at a quit
-        // before this and 67,064 after, three runs each to the kB (entry 207). ImGui rebuilds the whole atlas if
-        // anything asks it for alpha8 afterwards (GetTexDataAsAlpha8 calls
-        // Build() on a null image); nothing in the injected code does, and the
-        // widening only asks for it while the RGBA copy does not exist, which
-        // after a Clear() is a rebuild anyway.
+        // and a fold writes into it. The alpha8 image (16 MB at 4K) is read only
+        // by the widening, so it is freed; asking for alpha8 afterwards would
+        // rebuild the whole atlas, and nothing in the injected code does.
         unsigned char* rgba = nullptr;
         atlas->GetTexDataAsRGBA32(&rgba, nullptr, nullptr);
         if (rgba && atlas->TexPixelsAlpha8) {
@@ -1241,28 +1087,17 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
 
     ImFontAtlas* atlas = ImGui::GetIO().Fonts;
 
-    // Half a pixel of difference is not worth throwing an atlas away for -- and
-    // without a dead band, a size derived from a continuous slider would rebuild
-    // on every frame the user is dragging it.
-    //
-    // It is a promise that the ImFont pointers below still point at live glyphs,
-    // so it is made about the atlas this module owns and about no other. Both
-    // injected paths destroy their ImGui context and create another in the same
-    // process -- the GL overlay when the user switches it off and back on or the
-    // game replaces its context, the Vulkan layer when a game replaces its
-    // device -- and they create the new one with fonts_atlas(), which therefore
-    // survives. A context created with an atlas of its own gets that atlas
-    // filled and nothing promised: it can die under this module at any time, and
-    // the two ways of noticing from outside both fail (fonts.h says how).
+    // Half a pixel of difference is not worth throwing an atlas away for, and a
+    // size following a slider would otherwise rebuild on every frame of a drag.
+    // The dead band promises that the ImFont pointers still point at live
+    // glyphs, so it holds for the atlas this module owns and no other (fonts.h,
+    // fonts_atlas()).
     if (atlas == fonts_atlas() && g_fonts.pixel_size > 0.0f &&
         pixel_size > g_fonts.pixel_size - 0.5f && pixel_size < g_fonts.pixel_size + 0.5f &&
         same_font) {
         // The size and the typeface are the ones in the atlas, so the only thing
         // that can be missing is a colour emoji nobody had seen when it was
-        // built -- and that is the one change this module can make without
-        // building anything. It used to fall through to the full rebuild below,
-        // which is the 125-145 ms a new person's name or an arriving message
-        // spent in somebody's game (fold_wanted_emoji says the rest).
+        // built, which is folded in without building anything.
         if (g_built_count == g_wanted_count) {
             return false;
         }
@@ -1286,9 +1121,7 @@ bool ensure_fonts(float pixel_size, float reference, const char* body_path,
 
     // A chosen face the rasteriser cannot parse is refused the way an unreadable
     // file is: the paths are forgotten, the reason is said, and the atlas is
-    // built again from the carried Inter alone. Without the second build the
-    // game keeps an atlas of no pixels -- no names, no channel, no message, and
-    // nothing in the log to say why.
+    // built again from the carried Inter alone.
     if (!build_atlas(atlas, pixel_size) && (g_body_path[0] || g_strong_path[0])) {
         g_font_reason = "the chosen font could not be rasterised";
         g_body_path[0] = '\0';

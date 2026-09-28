@@ -2,49 +2,30 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// The one place that knows a Flatpak sandbox is in the way, and where the way
-// through it is.
+// The one place that knows a Flatpak sandbox is in the way, and the way through.
 //
-// A game that is itself a Flatpak sees none of what this overlay stands on: its
-// /dev/shm is a private tmpfs, so the daemon's POSIX segment is not there; its
-// XDG directories are the application's own under ~/.var/app, so neither
-// config.ini nor the avatar cache is there either. Measured on Flatpak 1.18
-// inside org.vinegarhq.Sober, which is restricted (no filesystem=host).
+// A game that is itself a Flatpak has a private /dev/shm (no daemon segment) and
+// its own XDG directories under ~/.var/app (no config.ini, no avatar cache). One
+// directory crosses with no permission asked or removable:
+// $XDG_RUNTIME_DIR/app/<application id>, bind-mounted host<->sandbox at the same
+// path. Both sides map the same pages, so the shared state's layout and
+// kAbiVersion cross unchanged. The seqlock's counter does not: the daemon writes
+// the mirror rather than mapping it (a truncated mapping would SIGBUS the process
+// holding the Discord connection), so the sequence a sandbox reads is the daemon's
+// own count, spelled in four pwrite()s (flatpak_bridge.cpp); two daemons would lie.
 //
-// One directory does cross, with no permission asked for and none that could be
-// taken away: $XDG_RUNTIME_DIR/app/<application id>. Flatpak bind-mounts the
-// host's copy of it into the sandbox at the same path. Measured: a file created
-// there by the host and a file created there by the sandbox each appear on the
-// other side, and a MAP_SHARED mapping of the same file reports the same st_dev
-// and st_ino on both sides and sees the other side's writes live. So the pages
-// are the same pages, and the shared state's fixed layout and its kAbiVersion
-// cross the boundary unchanged. What does NOT cross unchanged is the seqlock's
-// counter: the daemon writes the mirror rather than mapping it (a truncated
-// mapping is SIGBUS in the one process holding the Discord connection), so the
-// sequence a sandbox reads is the daemon's own count for that mirror, spelled
-// in four pwrite()s (flatpak_bridge.cpp), and a second daemon would lie where
-// the canonical segment's shared atomic would not. Entry 86 corrected this
-// paragraph's earlier claim; the paragraph took until 0.1.8 to follow.
+// It is a bridge, not a broadcast: the overlay creates `vocem/request` in its own
+// directory and the daemon adopts the directories that asked. Asking hands over
+// nothing by itself, since anything in the sandbox can write `drawing=1`. The
+// channel, the faces and the words go only to an id whose exported desktop entry
+// says Game or that `flatpak_apps` lists, only while a process of the user's runs
+// in a sandbox whose /.flatpak-info names that id, and only while its overlay says
+// it is drawing. The directory's name alone proves nothing: a sandbox with the
+// xdg-run/app grant can create one under any name. Everyone else that asks gets
+// config.ini and a cleared state.
 //
-// It is a bridge and not a broadcast. The daemon does not write into every
-// sandbox on the machine: the overlay inside a game creates `vocem/request` in
-// its own directory first, and the daemon adopts the directories that asked.
-// Asking is not what hands over the voice channel, though. `request` is a file
-// inside the sandbox, and anything running there can write `drawing=1` into it
-// -- through 0.1.10 that alone was enough, for any Flatpak at all. The daemon
-// decides on the host, by application id: the channel, the faces and the words
-// go only to an id whose exported desktop entry says Game or that the user
-// listed in `flatpak_apps`, only while a process of the user's runs in a
-// sandbox whose /.flatpak-info names that id, and only while its overlay says
-// it is drawing. The id is the directory's name, and the name alone proves
-// nothing: a sandbox holding the xdg-run/app grant can make a directory there
-// under any name (entries 134, 164). Everyone else that asks is given
-// config.ini and a cleared state (flatpak_bridge.cpp).
-//
-// What crosses is therefore under the sandbox's control, and the daemon is not:
-// it runs as the user with the user's whole home reachable. Everything it opens
-// under that directory is opened O_NOFOLLOW, because the application on the far
-// side can replace any of those names with a symbolic link.
+// The daemon runs as the user and the far side controls every name under that
+// directory, so everything the daemon opens there is opened O_NOFOLLOW.
 
 #ifndef VOCEM_FLATPAK_H
 #define VOCEM_FLATPAK_H
@@ -63,26 +44,20 @@ namespace vocem {
 // daemon writes them and code inside somebody's game reads them.
 inline constexpr const char* kBridgeDirName = "vocem";
 inline constexpr const char* kBridgeStateName = "state";
-// The words of one message, while its toast is on screen and not a moment
-// longer. A file of its own for the same reason it is a segment of its own on
-// the host (vocem/note.h): it exists only while there is something to draw.
+// The words of one message, present only while its toast is on screen
+// (vocem/note.h).
 inline constexpr const char* kBridgeNoteName = "note";
 inline constexpr const char* kBridgeConfigName = "config.ini";
 inline constexpr const char* kBridgeAvatarsName = "avatars";
 inline constexpr const char* kBridgeRequestName = "request";
-// The colour emoji bank. Inside a sandbox the host's /usr is not mounted, so
-// the compiled-in path names the runtime's own /usr and finds nothing -- the
-// same shape as the note being the fourth thing to carry and nothing carrying
-// it. Sixteen megabytes and it never changes, so it is copied once per sandbox
-// (and again only when the host's copy changed) and only into one that is
-// given the voice channel.
+// The colour emoji bank. Inside a sandbox the host's /usr is not mounted, so the
+// compiled-in path finds nothing. It is ~16 MB and never changes, so it is copied
+// once per sandbox (again only when the host's copy changed), and only into one
+// that is given the voice channel.
 inline constexpr const char* kBridgeEmojiBankName = "emoji_bank.rgba";
-// The sequence table that belongs to that bank (vocem/emoji_bank.h): which
-// codepoint sequences its keys from U+F0000 up stand for. The reader looks
-// for it BESIDE the bank under this exact name, wherever the bank was found,
-// so the bridge and the package both put it there, and the bridge copies it
-// before the bank: the bank's arrival is what the reader waits on, and a table
-// arriving after it would never be read.
+// The bank's sequence table (vocem/emoji_bank.h). The reader looks for it beside
+// the bank under this exact name, so the bridge copies it BEFORE the bank: the
+// bank's arrival is what the reader waits on, and a later table is never read.
 inline constexpr const char* kBridgeEmojiSequencesName = "emoji_sequences.bin";
 
 namespace detail {
@@ -94,16 +69,13 @@ inline bool bridge_enabled = false;
 // What was last written into `request`, so that saying the same thing again
 // costs nothing. -1 until the first answer.
 inline int bridge_drawing_written = -1;
-// The record of this application, in the lines the daemon will find: `name=`,
-// `exe=`, `api=`, `game=`, `why=`. It goes in the same file as the request
-// because the request is rewritten whole whenever `drawing` changes, and a
-// second file would be a second thing for the daemon to find, bound and refuse.
+// The record of this application as request lines (`name=`, `exe=`, `api=`,
+// `game=`, `why=`), in the request itself so the daemon bounds one file, not two.
 // Empty until the overlay writes its record (vocem/apps.h).
 inline char bridge_record[1024] = {};
 
-// An id, if it fits whole. Nothing is truncated into a path: half an application
-// id names another application's directory, and a Flatpak id is at most 255
-// characters by Flathub's own rule, so anything longer is not one.
+// An id, if it fits whole: half an id names another application's directory,
+// and a Flatpak id is at most 255 characters, so anything longer is not one.
 inline bool remember_flatpak_id(const char* value) {
     const size_t length = value ? std::strlen(value) : 0;
     if (length == 0 || length >= sizeof(flatpak_id_storage)) {
@@ -116,17 +88,10 @@ inline bool remember_flatpak_id(const char* value) {
 
 // Which application's sandbox this process is in, or nullptr on the host.
 //
-// /.flatpak-info is asked first, and FLATPAK_ID only if that is not there.
-// Flatpak places the file in the sandbox root and nothing running inside can
-// remove it or make one appear on the host, where the environment variable is
-// simply whatever somebody exported. The order was the other way round at first,
-// with a comment saying the file was there for the case the environment could
-// not be trusted -- which the order then did not deliver. Measured inside
-// org.vinegarhq.Sober: `[Application]` then `name=org.vinegarhq.Sober` on the
-// following line.
-//
-// One `fopen` per process, at the first frame of a GL process and at
-// `vkCreateInstance` in a Vulkan one, and never again: the answer is remembered.
+// /.flatpak-info (`name=` under `[Application]`) is asked first and FLATPAK_ID
+// only when it is absent: nothing inside the sandbox can remove the file or make
+// one appear on the host, while the variable is whatever somebody exported.
+// One `fopen` per process; the answer is remembered.
 inline const char* flatpak_app_id() {
     if (detail::flatpak_id_storage[0] != '\0') {
         return detail::flatpak_id_storage;
@@ -184,10 +149,9 @@ inline bool bridge_path(char* out, size_t capacity, const char* leaf) {
 
 namespace detail {
 
-// The whole of `request`, rewritten. One writer, because the file says two
-// things -- whether this sandbox is asking and what the overlay decided about
-// the application -- and they arrive at different moments: rewriting it for one
-// of them must not take the other away.
+// The whole of `request`, rewritten by this one writer: it carries `drawing`
+// and the application's record, which arrive at different moments, and
+// rewriting it for one must not drop the other.
 inline bool write_bridge_request(int drawing) {
     char path[512];
     if (!bridge_path(path, sizeof(path), kBridgeRequestName)) {
@@ -210,14 +174,9 @@ inline bool write_bridge_request(int drawing) {
 
 }  // namespace detail
 
-// Whether the paths this project derives -- the state, config.ini, the avatar
-// cache -- should be taken from the bridge rather than from the host's own
-// locations.
-//
-// Off unless something turns it on, and the only things that turn it on are the
-// two pieces of injected code. The daemon, the CLI and the settings window run
-// as themselves and must keep reading their own files even when they are
-// sandboxed, which a Flatpak of the settings window is.
+// Whether the state, config.ini and the avatar cache are taken from the bridge
+// rather than the host's locations. Only the injected code turns it on: the
+// daemon, the CLI and the settings window read their own files even sandboxed.
 inline bool bridge_in_use() { return detail::bridge_enabled; }
 
 // Called once by the overlay inside a game, off any hot path. Creates the
@@ -229,20 +188,16 @@ inline const char* enter_flatpak_bridge() {
     if (!bridge_root(root, sizeof(root))) {
         return nullptr;
     }
-    // The parent, $XDG_RUNTIME_DIR/app/<id>, is Flatpak's and already there; only
-    // the last component is ours. mkdir on something that exists is the success
-    // case, so its result is not the answer -- the open below is.
+    // The parent is Flatpak's and already there. mkdir failing with EEXIST is
+    // success, so its result is not the answer -- the open below is.
     ::mkdir(root, 0700);
 
     char request[512];
     if (!bridge_path(request, sizeof(request), kBridgeRequestName)) {
         return nullptr;
     }
-    // What is in it is for the daemon and for a person reading it. The ABI is
-    // deliberately not stated: it lives in the mirrored segment, where the
-    // reader compares it, and a second copy of a version number is a second
-    // thing to forget to move. `drawing` starts at 0, because at this point
-    // nothing has read the settings yet -- the settings are on the other side of
+    // The ABI is deliberately not stated here: the mirrored segment carries it.
+    // `drawing` starts at 0 because the settings that decide it arrive across
     // this very bridge.
     if (!detail::write_bridge_request(0)) {
         return nullptr;
@@ -254,17 +209,10 @@ inline const char* enter_flatpak_bridge() {
 
 // Whether the overlay in this process is actually drawing, told to the daemon.
 //
-// The bridge has to be entered before the decision can be made at all, because
-// the settings the decision reads only arrive across it -- so a sandbox is
-// adopted first and asked afterwards. This is the afterwards. A daemon that is
-// told 0 serves that sandbox its settings and nothing else: no channel, no
-// names, no faces. Told 1, it serves the channel only if the host consents to
-// this application id as well (the paragraph above). It matters because the user's per-application switch is what
-// says whether the overlay belongs in a given game, and a switch that stops the
-// drawing but not the sending would not be the switch it looks like.
-//
-// One `open` and one `write`, and only when the answer changed -- so nothing
-// here happens per frame.
+// Told 0, the daemon serves the sandbox its settings and nothing else; told 1,
+// it serves the channel too if the host consents to the id (file top). The
+// per-application switch must stop the sending as well as the drawing. One
+// `open` and one `write`, only when the answer changed.
 inline void flatpak_bridge_drawing(bool drawing) {
     if (!detail::bridge_enabled || detail::bridge_drawing_written == (drawing ? 1 : 0)) {
         return;
@@ -272,27 +220,17 @@ inline void flatpak_bridge_drawing(bool drawing) {
     detail::write_bridge_request(drawing ? 1 : 0);
 }
 
-// What this application is, told to the daemon so that it can be written down on
-// the host's side.
-//
-// Every process writes a record of itself under $XDG_CACHE_HOME/vocem/apps, and
-// inside a sandbox that directory is the sandbox's own: the record is written, is
-// correct, and cannot be read by the window that exists to show it. That was
-// listed as a limit of the design for as long as there was no way across. There
-// is one now -- the same bridge the settings arrive by -- so the record goes over
-// it as five more lines of the request, and the daemon writes the file.
-//
-// Once per process, off any hot path, right after the local record is written.
-// The daemon bounds and refuses what it finds here: this is a file inside
-// somebody's game, and the daemon is not sandboxed.
+// What this application is, told to the daemon so it can write the record on
+// the host's side: inside a sandbox $XDG_CACHE_HOME/vocem/apps is the sandbox's
+// own and the window cannot read it. Once per process, off any hot path. The
+// daemon bounds and refuses what it finds here, since the file is the game's.
 inline void flatpak_bridge_record(const char* name, const char* executable, const char* api,
                                   bool game, const char* why) {
     if (!detail::bridge_enabled || !name || !*name) {
         return;
     }
-    // A process name is whatever the process called itself and a path is whatever
-    // it is: a newline in either would forge a line of this file, so each value is
-    // put on one line before it is written rather than after.
+    // A newline in a process name or path would forge a line of this file, so
+    // each value is flattened to one line before it is written.
     const auto one_line = [](char* out, size_t capacity, const char* value) {
         size_t at = 0;
         for (; value && value[at] && at + 1 < capacity; ++at) {

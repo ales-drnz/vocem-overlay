@@ -4,27 +4,18 @@
 //
 // The avatar cache format, whole, in one file.
 //
-// Avatars used to be cached as the PNG the CDN served, and decoded with
-// stb_image *inside the game's process* -- a single-header parser with a history
-// of memory-safety fixes, fed bytes from the internet, on the wrong side of the
-// trust boundary. The daemon is the right side: it already owns the download, it
-// runs as an ordinary unprivileged process of its own, and a fault there kills a
-// voice overlay rather than somebody's game.
+// The daemon decodes: the image parser stays on its side of the
+// trust boundary, and what reaches disk is raw RGBA at one fixed size. The
+// reader in the game parses nothing -- it checks that the file is exactly the
+// one size the format allows and copies bytes. No header, no dimensions to
+// trust: a file of any other length is not a picture. If the format changes,
+// the extension changes with it and old files stop being found, which the
+// retry policy treats as "not there yet" and, after thirty seconds, as a grey
+// disc.
 //
-// So the daemon now decodes, and what reaches disk is the least interpretable
-// thing there is: raw RGBA at one fixed size. The reader in the game does not
-// parse anything -- it checks that the file is exactly the one size the format
-// allows and copies bytes. There is no header to version and no dimensions to
-// trust: a file of any other length is not a picture, end of story. If the
-// format ever has to change, the extension changes with it and old files simply
-// stop being found, which the retry policy already treats as "not there yet"
-// and, after thirty seconds, as a grey disc -- never as garbage interpreted.
-//
-// Everything about the format lives in this one header -- the size, the path,
-// the reader, the writer -- because the last cache format kept its knowledge in
-// three files and entry 33 is what that cost. The daemon is 64-bit and the games
-// are both widths, so the path formatting here is held by tests/widths.cpp at
-// both, like every other string both halves must agree on.
+// Size, path, reader and writer all live here so the format cannot drift
+// across files. The daemon is 64-bit and the games are both widths,
+// so the path formatting is held by tests/widths.cpp at both.
 
 #ifndef VOCEM_AVATAR_RGBA_H
 #define VOCEM_AVATAR_RGBA_H
@@ -40,14 +31,13 @@
 
 namespace vocem {
 
-// 64 pixels is what the download asked the CDN for all along: enough for a 40px
-// panel avatar on a 4K display. Fixed, so the file size is the whole validation.
+// 64 pixels is what the download asks the CDN for: enough for a 40px panel
+// avatar on a 4K display. Fixed, so the file size is the whole validation.
 constexpr uint32_t kAvatarPixels = 64;
 constexpr uint32_t kAvatarRgbaBytes = kAvatarPixels * kAvatarPixels * 4;
 
-// The same two spellings avatar_cache_path() had, with the format's own
-// extension. `%llu` and not `%lu`, for the reason entry 34 paid for: a Discord
-// id needs all sixty-four bits and `unsigned long` has thirty-two on i386.
+// `%llu` and not `%lu`: a Discord id needs all sixty-four bits and
+// `unsigned long` has thirty-two on i386 (entry 34).
 inline void avatar_rgba_path(char* out, size_t capacity, uint64_t user_id,
                              const char* avatar_hash) {
     char dir[512];
@@ -61,9 +51,9 @@ inline void avatar_rgba_path(char* out, size_t capacity, uint64_t user_id,
     }
 }
 
-// The game's whole decoder. Exactly kAvatarRgbaBytes or nothing: a short file, a
-// long file and a half-written file are all refused the same way -- though the
-// last cannot occur, because the writer renames into place.
+// The game's whole decoder (entry 51). Exactly kAvatarRgbaBytes or nothing: a short file, a
+// long file and a half-written file are all refused the same way (the last
+// cannot occur: the writer renames into place).
 inline bool avatar_rgba_load(const char* path, unsigned char* out) {
     struct stat info {};
     if (::stat(path, &info) != 0 || info.st_size != static_cast<off_t>(kAvatarRgbaBytes)) {
@@ -79,14 +69,11 @@ inline bool avatar_rgba_load(const char* path, unsigned char* out) {
 }
 
 // The daemon's half: normalise whatever the decode produced to the format's one
-// size and rename it into place. Only the daemon calls this; it is in the same
-// header so the format cannot drift apart the way the dlsym version did.
+// size and rename it into place. Only the daemon calls this.
 //
-// The resample is a box filter with integer accumulation: every source pixel
-// inside the destination pixel's footprint contributes once, which is right for
-// scaling down (the CDN honours ?size=64, but nothing forces it to keep doing
-// so) and degrades to nearest-neighbour for scaling up, which for a picture
-// this small is not worth more code.
+// The resample is a box filter with integer accumulation: right for scaling
+// down (nothing forces the CDN to keep honouring ?size=64), nearest-neighbour
+// for scaling up, which for a picture this small is enough.
 inline bool avatar_rgba_write(const char* path, const unsigned char* rgba, uint32_t width,
                               uint32_t height) {
     if (!rgba || width == 0 || height == 0) {
@@ -130,17 +117,11 @@ inline bool avatar_rgba_write(const char* path, const unsigned char* rgba, uint3
         pixels = scaled;
     }
 
-    // Temporary-and-rename, like every other file the daemon writes: the game
-    // must never observe a partial file, and the size check above is only a
-    // guarantee because of this.
-    //
-    // The temporary is created, never opened: whatever is at the name goes
-    // first, and O_CREAT|O_EXCL|O_NOFOLLOW makes a fresh regular file or
-    // fails -- the shape save_token() has (auth.cpp). This was a
-    // `fopen(temporary, "wb")`, which followed a link planted at the name --
-    // measured, a link to a file outside the cache had the face written
-    // into it, and a dangling one created its target -- and waited for ever
-    // on a FIFO there for a reader that never came.
+    // Temporary-and-rename: the game must never observe a partial file, and
+    // the reader's size check relies on it. The temporary is created, never
+    // opened: whatever is at the name goes first, and O_CREAT|O_EXCL|O_NOFOLLOW
+    // makes a fresh regular file or fails, so a planted link or FIFO is never
+    // followed or waited on (entry 245).
     char temporary[832];
     std::snprintf(temporary, sizeof(temporary), "%s.part", path);
     ::unlink(temporary);

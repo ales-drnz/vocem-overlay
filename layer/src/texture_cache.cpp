@@ -15,12 +15,9 @@
 #include "vocem/overlay_log.h"
 #include "vocem/shared_state.h"
 
-// No image parser in here, on purpose. The cache is raw RGBA at one fixed size
-// (vocem/avatar_rgba.h); the daemon is the only process that ever decodes a PNG.
-// This file carried stb_image for four packages, parsing internet-supplied bytes
-// inside every Vulkan game the layer drew in.
+// No image parser in here, on purpose: the cache is raw RGBA at one fixed size
+// (vocem/avatar_rgba.h), and the daemon is the only process that decodes a PNG.
 
-// The one logger both paths share (vocem/overlay_log.h), under this file's tag.
 #define VOCEM_TLOG(...) VOCEM_OVERLAY_LOG("vocem/texture", __VA_ARGS__)
 
 namespace vocem {
@@ -124,8 +121,7 @@ ImTextureID TextureCache::get(uint64_t user_id, const char* avatar_hash) {
     if (!ready_) {
         return 0;
     }
-    // A POD key on the stack: the formatted std::string this used to be was a
-    // malloc and free per visible face, per frame (vocem/avatar_key.h).
+    // A POD key on the stack: no allocation per visible face per frame.
     const AvatarKey key = AvatarKey::make(user_id, avatar_hash);
 
     auto it = textures_.find(key);
@@ -185,12 +181,8 @@ void TextureCache::process_pending() {
     const Pending request = pending_[index];
     pending_.erase(pending_.begin() + static_cast<long>(index));
 
-    // The budget, before anything touches the pool. AddTexture on an exhausted
-    // pool does not fail: it updates an uninitialised descriptor set and the
-    // driver dereferences it -- the Minecraft crash of entry 46, five times in
-    // four minutes, the eighth face of a call. A face beyond the budget is the
-    // grey placeholder, said loudly, which is a defect somebody can report
-    // rather than a game that dies.
+    // The budget, before anything touches the pool (kMaxAvatarDescriptors, entry
+    // 46): a face beyond it is the placeholder, said loudly, not a dead game.
     if (descriptor_count_ >= kMaxAvatarDescriptors) {
         VOCEM_TLOG("descriptor budget exhausted (%u live): %s stays the placeholder",
                    descriptor_count_, request.path.c_str());
@@ -199,11 +191,9 @@ void TextureCache::process_pending() {
         return;
     }
 
-    // Not there yet is not the same as broken. Somebody who joins the channel is
-    // drawn on the next frame, while the daemon is still downloading their
-    // picture; giving up then is what left them a grey disc for the rest of the
-    // session. The policy is vocem/avatar_file.h's, one spelling with the GL
-    // provider.
+    // Not there yet is not broken: somebody who just joined is drawn while the
+    // daemon still downloads their picture. The retry policy is
+    // vocem/avatar_file.h's, shared with the GL provider.
     if (!avatar_file_exists(request.path.c_str())) {
         Pending again = request;
         if (again.wait.missed(now)) {
@@ -215,10 +205,8 @@ void TextureCache::process_pending() {
         return;
     }
 
-    // Noted before the work and after the exists check: entry 46's crash was
-    // an avatar upload and nothing said so -- but the note used to fire before
-    // the check above too, and a journal that says "uploading" about a file
-    // that was not there yet is a journal telling a small lie.
+    // Noted before the work and after the exists check, so the journal names
+    // an avatar upload that crashes and never claims a file that was not there.
     {
         char note[840];
         std::snprintf(note, sizeof(note), "uploading avatar %s", request.path.c_str());
@@ -335,9 +323,8 @@ bool TextureCache::upload(const AvatarKey& key, const std::string& path) {
             break;
         }
         // A dispatchable object this layer created: registered with the loader
-        // before anything dispatches on it, or a layer below ours keying its
-        // bookkeeping on the handle's dispatch pointer misses (rule 5). This
-        // comment used to say the renderer had done it, and nothing had.
+        // before anything dispatches on it, or a layer below keying its
+        // bookkeeping on the dispatch pointer misses it (rule 5).
         if (set_loader_data_) {
             set_loader_data_(device_, command_buffer);
         }
@@ -397,9 +384,9 @@ bool TextureCache::upload(const AvatarKey& key, const std::string& path) {
         if (fn_.QueueSubmit(queue_, 1, &submit, fence) != VK_SUCCESS) {
             break;
         }
-        // Not waited for (InFlight says why): the temporaries and the texture
-        // go to in_flight_, and finish_in_flight hands the face over once the
-        // fence has signalled. This used to be WaitForFences(UINT64_MAX) here.
+        // Not waited for (see InFlight): the temporaries and the texture go to
+        // in_flight_, and finish_in_flight hands the face over once the fence
+        // has signalled.
         in_flight_.active = true;
         in_flight_.key = key;
         in_flight_.path = path;
@@ -599,9 +586,7 @@ ImTextureID TextureCache::upload_font_atlas(const unsigned char* rgba, uint32_t 
         // Not waited for (entry 192): the first draw that samples this image is
         // submitted later to the same queue and ordered after the copy by the
         // barrier above; the descriptor does not depend on the pixels. The
-        // staging buffer is freed once the fence says the copy is done, which
-        // is what the wait here used to buy at the price of the game's thread
-        // standing still for a 64 MB transfer.
+        // staging buffer is freed once the fence says the copy is done.
         FontCopy& copy = take_font_copy();
         copy.fence = fence;
         copy.command = command_buffer;
@@ -670,8 +655,7 @@ bool TextureCache::update_font_atlas(const unsigned char* rgba, uint32_t atlas_w
         size += static_cast<VkDeviceSize>(r.width) * r.height * 4;
     }
     // A slot of its own: the copies before it may still be on the GPU, and
-    // nothing here waits for them (the header says what the one slot this
-    // used to be cost).
+    // nothing here waits for them.
     FontCopy& slot = take_font_copy();
 
     VkBufferImageCopy copies[kMaxFoldedRegions];

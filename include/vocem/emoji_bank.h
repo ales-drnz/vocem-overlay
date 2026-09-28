@@ -4,47 +4,34 @@
 //
 // The colour emoji bank: the whole format in one file, both ends.
 //
-// Discord names are full of colour emoji and the atlas drew them as white
-// monochrome glyphs -- the honest best available while decoding colour emoji
-// at runtime meant FreeType and libpng inside somebody's game, which is the
-// same fight the avatar cache already won by moving the parser out (the PNG
-// bitmaps in Noto Color Emoji are exactly that: PNGs). So the decoding happens
-// offline, in scripts/make-emoji-bank.py, and what ships is raw RGBA at one
-// fixed size: records of u32 little-endian codepoint + 32*32*4 bytes,
-// sorted by codepoint, binary-searched here with one pread per glyph. A file
-// whose size is not a whole number of records is not a bank, end of story --
-// the strictness of the reader is the format, as with vocem/avatar_rgba.h.
+// Decoding colour emoji at runtime would mean FreeType and libpng inside
+// somebody's game, so the decoding happens offline (scripts/make-emoji-bank.py)
+// and what ships is raw RGBA at one fixed size: records of u32 little-endian
+// codepoint + 32*32*4 bytes, sorted by codepoint, binary-searched here with one
+// pread per glyph. A file whose size is not a whole number of records is not a
+// bank: the strictness of the reader is the format, as in vocem/avatar_rgba.h.
 //
-// The reader also depends on the records being *sorted*, which the size check
-// cannot see, and the honest bound on that is worth writing down rather than
-// leaving to be assumed: an unsorted or garbage file of the right length makes
-// the search miss, never return the wrong glyph, because an index is returned
-// only when the key read at it equals the codepoint asked for. A miss draws the
-// monochrome fallback. That is why this file has no magic number: the failure
-// mode it would guard against is already "no colour emoji", and unlike the
-// avatar cache this file is not input from the internet -- it is installed by
-// the package beside the libraries that read it.
+// An unsorted or garbage file of the right length makes the search miss, never
+// return the wrong glyph, because an index is returned only when the key read
+// at it equals the codepoint asked for; a miss draws the monochrome fallback.
+// That is why there is no magic number: the file is installed by the package,
+// not input from the internet.
 //
-// Two kinds of key. Below U+F0000 a key is the codepoint it draws. From
-// U+F0000 up it is a SEQUENCE key: the glyph of a ZWJ sequence, a flag, a keycap
-// or a tag sequence, which the font reaches only through a GSUB ligature that
-// ImGui cannot shape -- so until 0.1.9 the lime (🍋 + ZWJ + 🟩) drew as a lemon
-// beside a green square, each constituent its own colour glyph, the joiner a
-// blank (entry 142). Which sequence each key stands for is in a second file
-// beside the bank, `emoji_sequences.bin`, in fixed-size records of its own:
-// u32 length, u32 key, kEmojiSequenceMaxLength x u32 codepoints zero-padded,
-// sorted by the codepoint sequence. The table is read whole into static
-// storage when the bank opens, so matching costs no syscall; the text is
-// rewritten -- a known sequence into its key -- before it reaches the atlas
-// (fonts.cpp), where the key is a codepoint like any other bank codepoint.
+// Two kinds of key. Below U+F0000 a key is the codepoint it draws. From U+F0000
+// up it is a SEQUENCE key: the glyph of a ZWJ sequence, a flag, a keycap or a tag
+// sequence, which the font reaches only through a GSUB ligature ImGui cannot
+// shape. Which sequence each key stands for is in a second file beside the
+// bank, `emoji_sequences.bin`: fixed-size records of u32 length,
+// u32 key, kEmojiSequenceMaxLength x u32 codepoints zero-padded, sorted by the
+// codepoint sequence. The table is read whole into static storage when the bank
+// opens, so matching costs no syscall; fonts.cpp rewrites a known sequence into
+// its key before the text reaches the atlas.
 //
-// The keys are assigned by the script and mean nothing outside the pair of
-// files written together, which is why the table is a file beside the bank and
-// not a table compiled into the libraries: the layer inside the Flatpak
-// extension and the bank the host package installs are updated separately,
-// and a compiled-in table meeting a bank of another version would draw the
-// wrong picture, silently. A bank without its table still draws every single
-// codepoint in colour and every sequence as its parts, and says so.
+// The keys are assigned by the script and mean nothing outside the pair of files
+// written together, so the table is never compiled into the libraries: the
+// Flatpak extension's layer and the host's bank are updated separately. A bank
+// without its table still draws every single codepoint in colour and every
+// sequence as its parts, and says so.
 
 #ifndef VOCEM_EMOJI_BANK_H
 #define VOCEM_EMOJI_BANK_H
@@ -64,14 +51,9 @@
 namespace vocem {
 
 // How often to look again for a bank that is not there *yet*, and how long to
-// keep looking. Deliberately the same policy, and the same two numbers, as
-// vocem/avatar_file.h: inside a Flatpak the daemon copies the bank in on its
-// own one-second tick, and the overlay's first frame happens before that. A
-// single refused open remembered for the life of the process therefore left a
-// sandboxed game monochrome for ever even though the file appeared a moment
-// later -- measured, twice, with the host path hidden the way a sandbox hides
-// it. "A picture that has not arrived yet is not a picture that failed" is the
-// same sentence, one file along.
+// keep looking: the policy and numbers of vocem/avatar_file.h. Inside a Flatpak
+// the daemon copies the bank in on its one-second tick, after the overlay's
+// first frame, so a refusal must not be remembered for the life of the process.
 constexpr double kBankRetrySeconds = 0.5;
 constexpr double kBankGiveUpSeconds = 30.0;
 
@@ -79,18 +61,16 @@ constexpr uint32_t kEmojiBankPixels = 32;
 constexpr uint32_t kEmojiBankRgbaBytes = kEmojiBankPixels * kEmojiBankPixels * 4;
 constexpr uint32_t kEmojiBankRecordBytes = 4 + kEmojiBankRgbaBytes;
 
-// The sequence table's format. The longest sequence in the font is nine
-// codepoints (a kiss with two skin tones, measured by the script); twelve is
-// the record's room, and a record claiming more is a malformed table. Keys
-// start at U+F0000 (plane 15, private use) because no text from Discord
-// carries a codepoint there, so a key can never collide with a character a
-// name spells out; the script leaves the font's own private-use cmap entries
-// out of the bank for the same invariant.
+// The sequence table's format. The font's longest sequence is nine codepoints;
+// twelve is the record's room, and a record claiming more is malformed. Keys
+// start at U+F0000 (plane 15, private use) so a key can never collide with a
+// character a name spells out; the script leaves the font's own private-use
+// cmap entries out of the bank for the same invariant.
 constexpr uint32_t kEmojiSequenceMaxLength = 12;
 constexpr uint32_t kEmojiSequenceRecordBytes = 4 * (2 + kEmojiSequenceMaxLength);
 constexpr uint32_t kEmojiSequenceKeyFirst = 0xF0000;
-// The table is 4166 records today; a file past this many is refused whole, so
-// the storage below is the bound on what a process spends on it.
+// A table past this many records (it holds a few thousand) is refused whole, so
+// the storage below bounds what a process spends on it.
 constexpr uint32_t kMaxEmojiSequences = 8192;
 
 struct EmojiSequence {
@@ -101,15 +81,15 @@ struct EmojiSequence {
 static_assert(sizeof(EmojiSequence) == kEmojiSequenceRecordBytes,
               "the sequence record is read straight into this struct");
 
-// The table's storage: one per process, zero-initialised, never allocated.
-// Every EmojiBank in a process shares it, and fonts.cpp holds exactly one bank;
-// a test that opened two banks with different tables would see the last one's.
+// The table's storage: one per process, zero-initialised, never allocated,
+// shared by every EmojiBank (fonts.cpp holds exactly one; two banks with
+// different tables would see the last one's).
 inline EmojiSequence g_emoji_sequence_storage[kMaxEmojiSequences];
 
-// U+FE0E and U+FE0F, the presentation selectors. The font's cmap has neither:
-// a shaper drops them before its ligatures apply, so the table never carries
-// one and the matcher skips them in the text (❤️‍🔥 is 2764 FE0F 200D 1F525 in a
-// name and 2764 200D 1F525 in the table).
+// U+FE0E and U+FE0F, the presentation selectors. A shaper drops them before
+// its ligatures apply, so the table never carries one and the matcher skips
+// them in the text (❤️‍🔥 is 2764 FE0F 200D 1F525 in a name, 2764 200D 1F525 in
+// the table).
 inline bool is_variation_selector(uint32_t codepoint) {
     return codepoint == 0xFE0E || codepoint == 0xFE0F;
 }
@@ -118,29 +98,15 @@ inline bool is_variation_selector(uint32_t codepoint) {
 #define VOCEM_EMOJI_BANK_PATH "/usr/share/vocem/emoji_bank.rgba"
 #endif
 
-// The bank on disk, opened lazily and kept open: one fd per process that draws
-// colour emoji. The open happens on the first codepoint the session's text shows
-// that could be in it -- so once per process, never per frame, but *not* on the
-// rebuild path as an earlier version of this comment claimed.
+// The bank on disk, opened lazily on the first codepoint the session's text
+// shows that could be in it, and kept open: one fd per process, never per frame.
+// A failed open is remembered (`attempted_`), so a missing bank costs one
+// refused open per process; `reason()` lets the caller say why colour emoji
+// are absent, since this class holds no log.
 //
-// A bank that fails to open is remembered as failed (`attempted_`), so a missing
-// bank costs one refused open for the life of the process. `reason()` is how the
-// caller can say why colour emoji are absent instead of leaving it to be
-// guessed: the honesty rule wants a component that declines to act to say so,
-// and this class is not the one holding a log.
-//
-// **The bank is looked for in more than one place, and it has to be.** For a
-// long time this was one hardcoded absolute path, in a project where every other
-// thing the injected code reads has a list of candidates -- the shim tries the
-// soname, then `/run/host` + VOCEM_LIBDIR, then VOCEM_LIBDIR (entry 31); the
-// state, the settings, the avatars and the note each have a POSIX name and a
-// Flatpak mirror. The bank had one, and the one was wrong wherever `/usr` is not
-// the host's. Measured inside the Steam Linux Runtime with no game launched:
-// `/usr/share/vocem/emoji_bank.rgba` is ABSENT and
-// `/run/host/usr/share/vocem/emoji_bank.rgba` is PRESENT -- so every Steam title
-// under pressure-vessel drew the overlay with monochrome emoji while the same
-// game outside it drew them in colour. From the outside that is "sometimes
-// coloured, sometimes not", which is exactly how it was reported.
+// Candidates, in order: VOCEM_EMOJI_BANK, the Flatpak bridge copy, the installed
+// path, then /run/host + the installed path -- inside pressure-vessel, where
+// every Steam title runs, `/usr` is not the host's and only /run/host has it.
 class EmojiBank {
 public:
     // True when the bank is present and well-formed; the monochrome fallback
@@ -152,13 +118,10 @@ public:
         if (attempted_) {
             return false;
         }
-        // Not there *yet* is not the same as not there. On the host every
-        // candidate is a file that either exists or does not, and one look
-        // settles it; inside a Flatpak the only reachable candidate is the copy
-        // the daemon makes on its own tick, and the game's first frame beats it.
-        // So a sandbox gets the avatar cache's policy -- looked at again twice a
-        // second, given up on after thirty -- and the host gets exactly the one
-        // attempt it always had.
+        // Not there *yet* is not the same as not there. On the host one look
+        // settles it; inside a Flatpak the daemon copies the bank in on its own
+        // tick, after the game's first frame, so a sandbox looks again every
+        // kBankRetrySeconds until kBankGiveUpSeconds.
         if (bridge_in_use()) {
             const double now = monotonic_seconds();
             if (first_asked_ == 0.0) {
@@ -175,10 +138,9 @@ public:
             attempted_ = true;
         }
 
-        // Named explicitly: that answer is the whole answer. An override that
-        // points at nothing must NOT fall through to the installed bank -- the
-        // differential test drives its no-bank leg exactly this way, and a
-        // fallback here would give it a bank and make both its frames identical.
+        // Named explicitly: that answer is the whole answer. An override pointing
+        // at nothing must NOT fall through to the installed bank (the
+        // differential test's no-bank leg relies on it).
         if (const char* named = std::getenv("VOCEM_EMOJI_BANK"); named && named[0]) {
             std::snprintf(path_, sizeof(path_), "%s", named);
             if (try_open()) {
@@ -188,10 +150,9 @@ public:
             return false;
         }
 
-        // Inside a Flatpak game the host's /usr is not mounted at all, so the
-        // copy the daemon puts in the bridge directory is the only reachable
-        // one (vocem/flatpak.h). Asked before the installed path, because in a
-        // sandbox that path may exist and belong to the runtime.
+        // Inside a Flatpak the daemon's copy in the bridge directory is the only
+        // reachable one; asked before the installed path, which in a sandbox may
+        // exist and belong to the runtime.
         if (bridge_in_use() && bridge_path(path_, sizeof(path_), kBridgeEmojiBankName)) {
             if (try_open()) {
                 return true;
@@ -208,19 +169,16 @@ public:
         if (reason_) {
             return false;
         }
-        // And inside a container that mounts the host there -- pressure-vessel
-        // does, which is where every Steam title runs. The same fallback, and
-        // for the same reason, as the shim's second dlopen candidate.
+        // Inside a container that mounts the host at /run/host, as
+        // pressure-vessel does for every Steam title (same as the shim's second
+        // dlopen candidate).
         std::snprintf(path_, sizeof(path_), "/run/host%s", VOCEM_EMOJI_BANK_PATH);
         if (try_open()) {
             return true;
         }
         std::snprintf(path_, sizeof(path_), "%s", VOCEM_EMOJI_BANK_PATH);
-        // While a sandbox is still being waited on there is nothing to report:
-        // saying "no bank on disk" during the wait would put a reason in the log
-        // that the next half-second may make untrue, and this project's rule is
-        // that a component which declines to act says why -- not that it guesses
-        // early.
+        // While a sandbox is still being waited on there is no reason yet: the
+        // next half-second may make "no bank on disk" untrue.
         if (!reason_ && !still_arriving()) {
             reason_ = "no colour emoji bank on disk";
         }
@@ -231,17 +189,15 @@ public:
     // (working, or never asked). The string is a literal, so a caller can log it
     // once by comparing the pointer.
     const char* reason() const { return reason_; }
-    // Whether the bank may still turn up. True only inside a Flatpak, only
-    // while nothing has opened and the thirty seconds have not run out: the
-    // caller must not write down "this codepoint has no colour glyph" during
-    // that window, because the answer is not in yet.
+    // Whether the bank may still turn up: only inside a Flatpak, while nothing
+    // has opened and the thirty seconds have not run out. The caller must not
+    // record "this codepoint has no colour glyph" during that window.
     bool still_arriving() const {
         return fd_ < 0 && !attempted_ && first_asked_ != 0.0;
     }
-    // Whether open() has ever been called: opened, given up on, or being
-    // waited for inside a sandbox. Asking costs nothing. fonts.cpp opens the
-    // bank after a present, and until then notes nothing it would have to
-    // take back (vocem/fonts.h, fonts_look_up_noted).
+    // Whether open() has ever been called: opened, given up on, or being waited
+    // for in a sandbox. fonts.cpp opens the bank after a present and notes
+    // nothing it would have to take back until then (fonts_look_up_noted).
     bool asked() const { return fd_ >= 0 || attempted_ || first_asked_ != 0.0; }
     // The path the answer above is about: the candidate that opened, or the
     // installed one when none did.
@@ -254,9 +210,8 @@ public:
     }
 
     // How many sequences the table beside the bank has, and why it has none
-    // when it has none (a literal, or nullptr while the bank is not open or the
-    // table is fine). Zero with the bank open means every sequence draws as its
-    // parts, which is the pre-0.1.9 picture and is said out loud.
+    // (a literal, or nullptr while the bank is not open or the table is fine).
+    // Zero with the bank open means every sequence draws as its parts.
     uint32_t sequence_count() const { return sequence_count_; }
     const char* sequences_reason() const { return sequences_reason_; }
 
@@ -331,10 +286,9 @@ public:
     }
 
 private:
-    // One candidate, already in path_. Opens it, checks it is a whole number of
-    // records, and takes it. A candidate that opens and is malformed stops the
-    // search rather than falling through: a bank of the wrong length is a fault
-    // worth naming, and the next candidate would hide it.
+    // One candidate, already in path_: opened and checked to be a whole number
+    // of records. A malformed candidate stops the search rather than falling
+    // through, so the fault is named instead of hidden by the next candidate.
     bool try_open() {
         const int fd = ::open(path_, O_RDONLY | O_CLOEXEC);
         if (fd < 0) {
@@ -353,14 +307,12 @@ private:
         return true;
     }
 
-    // The table beside the bank that just opened: the same directory, the one
-    // name (kBridgeEmojiSequencesName). Read whole, once, into the static
-    // storage, and checked before it is believed -- a record's length, its key
-    // being a sequence key, no zero or selector among its codepoints, and the
-    // order the search depends on, strictly ascending with no duplicates. A
-    // table that fails any of it is refused whole, with the reason said; the
-    // bank is kept, and sequences draw as their parts, which is what they did
-    // before there was a table. Missing is a reason too, not a silence.
+    // The table beside the bank that just opened (same directory,
+    // kBridgeEmojiSequencesName), read whole once into the static storage and
+    // checked before it is believed: record length, a sequence key, no zero or
+    // selector among the codepoints, strictly ascending order. A table failing
+    // any of it is refused whole with the reason said; the bank is kept and
+    // sequences draw as their parts. Missing is a reason too.
     void load_sequences() {
         sequence_count_ = 0;
         sequences_reason_ = nullptr;
@@ -399,9 +351,8 @@ private:
             sequences_reason_ = "the emoji sequence table could not be read whole";
             return;
         }
-        // The struct is read from little-endian bytes; the machines this runs
-        // on are little-endian at both widths, and the bank's own keys are read
-        // the same way in index_of.
+        // Read straight from little-endian bytes: every target is little-endian
+        // at both widths, as index_of also assumes.
         for (uint32_t i = 0; i < count; ++i) {
             const EmojiSequence& sequence = g_emoji_sequence_storage[i];
             if (sequence.length < 2 || sequence.length > kEmojiSequenceMaxLength ||
@@ -466,22 +417,19 @@ private:
     uint32_t sequence_count_ = 0;
     const char* sequences_reason_ = nullptr;
     bool attempted_ = false;
-    // The Flatpak retry window: when the first look happened and when the next
-    // one is due. Zero until the first look, which is what tells still_arriving()
-    // that a sandbox is being waited on at all.
+    // The Flatpak retry window. first_asked_ is zero until the first look, which
+    // is how still_arriving() knows a sandbox is being waited on.
     double first_asked_ = 0.0;
     double next_attempt_ = 0.0;
-    // The candidate being tried, and afterwards the one that answered. A buffer
-    // rather than a pointer because two of the four candidates are composed
-    // rather than named, and this is read back by the log.
+    // The candidate being tried, and afterwards the one that answered; a buffer
+    // because some candidates are composed, and the log reads it back.
     char path_[512] = VOCEM_EMOJI_BANK_PATH;
     const char* reason_ = nullptr;
 };
 
 // Box-resample a bank glyph to `size` pixels (straight RGBA in and out). The
-// bank is 32 and the atlas asks for the text size capped at 32, so this only
-// ever scales down -- the same integer accumulation avatar_rgba_write uses,
-// for the same reason: exact, dependency-free, and cheap at these sizes.
+// atlas asks for at most 32, so this only scales down; integer accumulation as
+// in avatar_rgba_write: exact, dependency-free, cheap at these sizes.
 inline void emoji_bank_resample(const unsigned char* rgba32, unsigned char* out, uint32_t size) {
     if (size == kEmojiBankPixels) {
         std::memcpy(out, rgba32, kEmojiBankRgbaBytes);
@@ -515,28 +463,17 @@ inline void emoji_bank_resample(const unsigned char* rgba32, unsigned char* out,
     }
 }
 
-// Walks a UTF-8 string and calls `visit(codepoint)` for every decoded scalar.
-// Twenty lines instead of a library, because the two callers run inside other
-// people's games; malformed bytes are skipped a byte at a time rather than
-// trusted.
+// Walks a UTF-8 string and calls `visit(codepoint)` for every decoded scalar;
+// no library, because the callers run inside other people's games. Ill-formed
+// input is skipped a byte at a time: overlong forms, surrogates and values past
+// U+10FFFF are refused, never decoded into characters the string does not
+// contain (one caller hands the value to ImGui as an `ImWchar`). A truncated
+// sequence stops at the NUL, which is refused like any non-continuation byte.
 //
-// What "malformed" covers is spelled out, because the first version decoded
-// three families of ill-formed sequence into perfectly ordinary codepoints:
-// overlong forms (`C0 80` came out as U+0000, and a four-byte spelling of a
-// three-byte character came out as that character), the surrogate range, and
-// values past U+10FFFF. None of them could reach a wrong *glyph* -- the bank
-// carries none of those codepoints -- but a decoder that reports characters a
-// string does not contain is a decoder whose callers cannot reason about it,
-// and one of those callers hands the value to ImGui as an `ImWchar`. A
-// truncated sequence stops at the NUL, which is read and refused like any other
-// non-continuation byte: the walk never steps past the terminator.
-//
-// utf8_each_span is the same walk telling the visitor WHERE each scalar sits --
-// `visit(codepoint, begin, end)` as byte offsets into `text` -- which is what a
-// caller that rewrites the string in place needs (fonts.cpp collapses a known
-// emoji sequence into its key and copies every other byte, malformed ones
-// included, exactly as it found them). utf8_each is that walk without the
-// offsets, so there is one decoder here and not two.
+// utf8_each_span also tells the visitor where each scalar sits,
+// `visit(codepoint, begin, end)` as byte offsets into `text`, for a caller that
+// rewrites the string in place (fonts.cpp); utf8_each is the same walk without
+// the offsets, so there is one decoder.
 template <typename Visit>
 inline void utf8_each_span(const char* text, Visit visit) {
     const unsigned char* start = reinterpret_cast<const unsigned char*>(text);

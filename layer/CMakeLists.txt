@@ -33,16 +33,11 @@ else()
 endif()
 
 # The two things a Flatpak extension needs that a distribution package does not.
-#
-# An extension is mounted at /usr/lib/extensions/vulkan/VocemOverlay, and that
-# directory is on no loader search path -- the extension point declares no
-# add-ld-path -- so the bare soname below resolves to nothing there and the
-# library_path has to be absolute. And once the two architectures' manifests
-# carry *different* library paths they must also carry different layer NAMES:
-# on the host both manifests are byte-identical and the loader collapses them
-# into one entry, which is exactly what must not happen when only one of the two
-# is the right ABI. This is what MangoHud's VK_LAYER_MANGOHUD_overlay_x86_64 and
-# _x86 are for.
+# Its mount point, /usr/lib/extensions/vulkan/VocemOverlay, is on no loader search
+# path (the extension point has no add-ld-path), so library_path is absolute. And
+# the two architectures' manifests then need different layer NAMES: the loader
+# collapses same-named layers into one entry, and only one of the two is the
+# right ABI (MangoHud's _x86_64 and _x86 names do the same).
 option(VOCEM_LAYER_FLATPAK_EXTENSION
     "Build the layer manifest for a Flatpak VulkanLayer extension: absolute \
 library_path, and a layer name carrying the architecture" OFF)
@@ -64,9 +59,8 @@ target_include_directories(vocem_vk PRIVATE
     "${IMGUI_DIR}"
     "${IMGUI_DIR}/backends"
 )
-# common/CMakeLists.txt: the panel, the fonts, the registry and the palette,
-# built once per width with the visibility and the ImGui definitions this
-# target needs them to have.
+# common/CMakeLists.txt: the panel, fonts, registry and palette, built once per
+# width with the visibility and ImGui definitions this target needs.
 target_link_libraries(vocem_vk PRIVATE vocem_common Threads::Threads)
 # The export list, stated: hidden visibility does not reach the libstdc++
 # templates this library instantiates (vocem_vk.map says which escaped).

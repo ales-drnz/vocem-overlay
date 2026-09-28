@@ -2,9 +2,8 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// vocem/overlay_log.h: the injected code's one debug logger. An object of its
-// own in vocem_common, so a consumer that only logs (the layer's texture cache,
-// and the tests that compile it alone) pulls this and nothing of the session.
+// An object of its own in vocem_common, so a consumer that only logs pulls in
+// nothing of the session.
 
 #include "vocem/overlay_log.h"
 
@@ -29,14 +28,11 @@ bool debug_enabled() {
     return enabled;
 }
 
-// All of one line, in one write(2), or as few as the kernel allows. A line
-// is formatted whole into the caller's stack first: the logger used to spend
-// three stdio calls per line (prefix, message, newline) with nothing between
-// two threads, and stderr being unbuffered each was a write of its own --
-// 56-58 thousand of 200000 lines malformed with two threads logging, and the
-// file tore too (tests/overlay_log_lines.cpp). One write per line to an
-// O_APPEND file is also what keeps two PROCESSES sharing the file from
-// interleaving inside a line; to a pipe, a line under PIPE_BUF is atomic.
+// All of one line, in one write(2), or as few as the kernel allows: separate
+// writes for prefix, message and newline tear lines between threads (entry
+// 216, tests/overlay_log_lines.cpp). One write per line to an O_APPEND file
+// also keeps two PROCESSES sharing it from interleaving inside a line; to a
+// pipe, a line under PIPE_BUF is atomic.
 void write_whole(int fd, const char* text, size_t length) {
     while (length > 0) {
         const ssize_t written = ::write(fd, text, length);
@@ -51,17 +47,12 @@ void write_whole(int fd, const char* text, size_t length) {
     }
 }
 
-// Where the debug log can actually be read. stderr is the natural home, but a
-// launcher that pipes its child's stderr into an internal pane swallows it --
-// the Minecraft launcher does, measured: the game's fd 2 is a pipe the launcher
-// never writes anywhere readable. With VOCEM_LOG_FILE set the same lines are
+// Where the debug log can be read when a launcher swallows the game's stderr
+// (the Minecraft launcher does). With VOCEM_LOG_FILE set the same lines are
 // appended there too, one open per process, pid on every line because every
-// drawing process in the session shares the one file. A descriptor, not a
-// FILE: O_APPEND for the sharing above, O_CLOEXEC so it does not ride into
-// everything the game execs (entry 98's reason for the journal's). A path
-// that cannot be opened is said once, on stderr, whether or not VOCEM_DEBUG
-// is set: the variable is set precisely when stderr is the only other place
-// anything can be read, and silence there is the defect entry 38 describes.
+// drawing process in the session shares the file. O_APPEND for that sharing,
+// O_CLOEXEC so it does not ride into everything the game execs. A path that
+// cannot be opened is said once on stderr whether or not VOCEM_DEBUG is set.
 int debug_file() {
     static const int fd = []() -> int {
         const char* path = std::getenv("VOCEM_LOG_FILE");

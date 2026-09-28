@@ -21,18 +21,16 @@
 #include "vocem/overlay_log.h"
 #include "vocem/panel.h"
 
-// Failures in here are silent by design in release builds -- the overlay simply
-// does not appear -- so they must be traceable when VOCEM_DEBUG is set. The
-// one logger both paths share (vocem/overlay_log.h), under this file's tag.
+// Failures in here are silent in release builds -- the overlay simply does not
+// appear -- so they are traced under VOCEM_DEBUG, through the shared logger.
 #define VOCEM_RLOG(...) VOCEM_OVERLAY_LOG("vocem/render", __VA_ARGS__)
 
 namespace vocem {
 namespace {
 
-// Passed to ImGui's Vulkan backend so it resolves every entry point through our
-// dispatch chain instead of the loader's exported symbols. Inside a layer this is
-// not optional: the global symbols would re-enter the loader from the top and
-// bypass the layers below us.
+// Passed to ImGui's Vulkan backend so every entry point resolves through our
+// dispatch chain: the loader's exported symbols would re-enter the chain from
+// the top and bypass the layers below us.
 struct FunctionLoaderContext {
     VkInstance instance = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -51,14 +49,11 @@ PFN_vkVoidFunction resolve_function(const char* name, void* user_data) {
     if (!context) {
         return nullptr;
     }
-    // Device-level functions first: they are the hot ones and the dispatch is
-    // cheaper. Instance-level ones go straight to the instance chain: asking
-    // vkGetDeviceProcAddr for a physical-device or surface function is outside
-    // what it promises, and the validation layer says so once per name the
-    // first time it sits below the overlay (entry 192). The test is by name
-    // because the caller (ImGui's loader, the texture cache) only has names;
-    // vkGetInstanceProcAddr answers device functions correctly too, so a name
-    // this sends the long way round costs a trampoline and nothing else.
+    // Device-level functions through the device chain; instance-level ones
+    // (told by name, all the callers have) go to the instance chain, because
+    // vkGetDeviceProcAddr does not promise them and the validation layer says
+    // so. vkGetInstanceProcAddr answers device functions too, so a
+    // misclassified name costs a trampoline and nothing else.
     const bool instance_level = std::strstr(name, "PhysicalDevice") != nullptr ||
                                 std::strstr(name, "SurfaceKHR") != nullptr;
     if (!instance_level && context->gdpa && context->device) {
@@ -74,8 +69,6 @@ PFN_vkVoidFunction resolve_function(const char* name, void* user_data) {
 
 }  // namespace
 
-// The panel talks to AvatarProvider; the Vulkan cache has its own signature, so
-// this bridges the two without leaking either into the other.
 class OverlayRenderer::Adapter : public AvatarProvider {
 public:
     explicit Adapter(TextureCache& cache) : cache_(cache) {}
@@ -98,11 +91,9 @@ OverlaySession& session() {
 }
 
 bool OverlayRenderer::load_vulkan_functions(const RendererTarget& target) {
-    // The context is refreshed on every call, ahead of the early return below.
-    // resolve_function reads it at call time, so a stale device here is not a
-    // stale cache: it is vkGetDeviceProcAddr on a destroyed handle. A device lost
-    // to a GPU hang is destroyed and recreated -- the standard recovery -- and
-    // this used to keep answering with the dead one for the rest of the session.
+    // Refreshed on every call, ahead of the early return: resolve_function
+    // reads it at call time, and a device recreated after a GPU hang must not be
+    // resolved against the destroyed handle.
     g_loader_context.instance = target.instance;
     g_loader_context.device = target.device;
     g_loader_context.gipa = target.gipa;
@@ -112,11 +103,9 @@ bool OverlayRenderer::load_vulkan_functions(const RendererTarget& target) {
         return true;
     }
 
-    // ImGui stores these globally, so there is one backend per process and it
-    // lives on one device. A second device that presents is passed through by
-    // the layer while the first presents, and the backend moves to it -- a
-    // shutdown() and a fresh prepare(), which loads these again -- once the
-    // first has been silent for the hand-over interval (vocem_layer.cpp).
+    // ImGui stores these globally: one backend per process, on one device. A
+    // hand-over to another device is a shutdown() and a fresh prepare(), which
+    // loads them again (vocem_layer.cpp).
     if (!ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_1, resolve_function,
                                        &g_loader_context)) {
         VOCEM_RLOG("ImGui_ImplVulkan_LoadFunctions failed");
@@ -150,9 +139,8 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
     if (!context_ready_) {
         if (!context_created_) {
             IMGUI_CHECKVERSION();
-            // With the fonts module's atlas: this context dies with the device and
-            // another takes its place in the same process, and the ImFont pointers
-            // the module caches have to survive that (vocem/fonts.h).
+            // With the fonts module's atlas, so the ImFont pointers it caches
+            // survive this context dying with its device (vocem/fonts.h).
             ImGui::CreateContext(fonts_atlas());
             ImGuiIO& io = ImGui::GetIO();
             io.IniFilename = nullptr;   // never write files from inside a game
@@ -161,16 +149,12 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
             io.DisplaySize = ImVec2(1.0f, 1.0f);
             context_created_ = true;
 
-            // Built before the backend exists, so the upload below sends the
-            // atlas we want rather than the default bitmap. The size comes from
-            // the target, which is why this cannot happen at library load time.
-            //
-            // OFF the game's thread (entry 192). The context is created first
+            // Built before the backend exists, at the target's size, so the
+            // upload sends the atlas we want -- and off the game's thread,
+            // RGBA widening included. The context comes first
             // because ensure_fonts() reaches the atlas through ImGui::GetIO(),
-            // and GImGui is a plain global the new thread sees from its start.
-            // The RGBA widening goes with it: 11 ms more that the upload would
-            // otherwise pay on the game's thread. Everything the worker reads is
-            // copied into it here.
+            // and GImGui is a plain global the worker sees. Everything the
+            // worker reads is copied into atlas_job_ here.
             const Config& config = config_.current();
             atlas_job_.pixels = font_pixel_size(target.height, config.scale, config.font_size);
             atlas_job_.reference = config.font_size;
@@ -191,7 +175,7 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
                 return false;  // asked again on the next frame with something on it
             }
             // No thread to be had (a sandbox that refuses clone, resources): the
-            // build happens here, as it always used to.
+            // build happens here.
             VOCEM_RLOG("no thread for the font atlas; rasterising it on the game's thread");
             rasterise_atlas(this);
         }
@@ -203,18 +187,12 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         context_ready_ = true;
     }
 
-    // No re-initialise branch here, and that is a fact worth stating: the one
-    // caller only reaches prepare() when ready() is false, so a "target
-    // changed" comparison in here could never run -- one lived here for months,
-    // dead, under a comment promising swapchain-recreate handling. A new device
-    // arrives through vocem_DestroyDevice -> shutdown(). A recreated swapchain
-    // does NOT come back here, and its render pass is compatible with the
-    // stock pipeline built below only while its format is the one recorded in
-    // format_: the layer builds a pipeline of its own per swapchain and asks
-    // format() before ever drawing with the stock one (a comment here used to
-    // say "compatible by Vulkan's own rules", which is true of a resize and
-    // false of a format change -- HDR switched off in a game's settings, an
-    // sRGB swapchain replaced by a UNORM one).
+    // No re-initialise branch: the one caller reaches prepare() only while
+    // ready() is false, and a new device arrives through vocem_DestroyDevice ->
+    // shutdown(). A recreated swapchain does not come back here; its render
+    // pass is compatible with the stock pipeline below only while its format
+    // is format_, so the layer builds a pipeline per swapchain and asks
+    // format() before drawing with the stock one.
     {
         ImGui_ImplVulkan_InitInfo info{};
         info.ApiVersion = VK_API_VERSION_1_1;
@@ -224,25 +202,18 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         info.QueueFamily = target.queue_family;
         info.Queue = target.queue;
         info.RenderPass = target.render_pass;
-        // The ring, sized once for more images than any swapchain has rather
-        // than for this swapchain's count (kRingSlots says why).
+        // Sized for more images than any swapchain has (kRingSlots).
         info.MinImageCount = 2;
         info.ImageCount = kRingSlots;
         info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-        // Let the backend own its descriptor pool: one less thing for the layer
-        // to allocate and destroy alongside the swapchain. Sized from the avatar
-        // cache's budget, NOT a small constant: every avatar holds one set, the
-        // pool held 8, and the eighth face of a call was a dead game (entry 46)
-        // -- AddTexture on an exhausted pool updates an uninitialised set
-        // instead of failing.
+        // The backend owns its descriptor pool, sized from the avatar cache's
+        // budget: AddTexture on an exhausted pool updates an uninitialised set
+        // instead of failing, and kills the game (entry 46).
         info.DescriptorPoolSize = TextureCache::kDescriptorPoolSets;
 
-        // Without this the backend's every VkResult is discarded: its
-        // check_vk_result() is a no-op when the callback is null, so
-        // ImGui_ImplVulkan_Init returns true whatever happened inside it and
-        // AddTexture returns an uninitialised descriptor set when the allocation
-        // fails. Entry 46 closed the pool-exhaustion door; this is the same
-        // crash through OUT_OF_HOST_MEMORY and FRAGMENTED_POOL.
+        // Without this callback the backend discards every VkResult: Init
+        // returns true whatever happened and AddTexture hands back an
+        // uninitialised set when allocation fails.
         g_backend_failed = false;
         info.CheckVkResultFn = [](VkResult result) {
             if (result != VK_SUCCESS) {
@@ -257,34 +228,19 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
             failed_ = true;
             return false;
         }
-        // The font atlas, uploaded HERE, in the post-present phase, and not
-        // left to the backend's NewFrame. ImGui 1.90.1 moved the upload out of
-        // Init and into the first NewFrame ("automatically called by NewFrame()
-        // the first time"), and NewFrame runs inside draw() -- inside
-        // vkQueuePresentKHR, under the layer's lock -- where the upload's
-        // vkQueueSubmit and vkQueueWaitIdle are exactly what rule 10 keeps out
-        // of the present. The comment at the top of draw_overlay() went on
-        // saying initialisation happens after the present while the atlas was
-        // being uploaded inside it; tests/vk_witness_layer.cpp is what sees a
-        // queue wait inside a present now.
+        // The font atlas is uploaded here, post-present, by the texture cache,
+        // and never left to the backend's first NewFrame: that runs inside
+        // draw(), inside the present, where its vkQueueSubmit and
+        // vkQueueWaitIdle are what rule 10 keeps out (tests/vk_witness_layer.cpp
+        // sees a queue wait inside a present). The cache owns the font texture
+        // so a new colour emoji is copied in as a 32x32 square rather than
+        // replacing 64 MB, so it is initialised before the atlas.
         //
-        // By the texture cache (entry 192): it owns the font texture so that a
-        // new colour emoji can be copied into it as a 32x32 square instead of
-        // replacing 64 MB between two vkQueueWaitIdle. The cache is initialised
-        // here, before the atlas, for that reason; it used to come after, as
-        // the avatars' alone.
-        //
-        // And without it there is no backend. The fallback that stood here --
-        // plain circles for the faces, and the font texture left to ImGui's
-        // stock ImGui_ImplVulkan_CreateFontsTexture -- allocated that upload's
-        // command buffer through the chain and never registered it with the
-        // loader (rule 5, entry 42): measured with the witness refusing the
-        // cache's sampler and the validation layer below the overlay, "The
-        // VkDevice dispatch handle was not found and Validation will crash",
-        // and the process ended on SIGABRT. The cache fails only where the
-        // device refuses a sampler, a command pool or a memory type -- a
-        // device the overlay has no business drawing on -- so this declines,
-        // says so once, and remembers it until another device arrives.
+        // Without the cache there is no backend: ImGui's stock font upload
+        // allocates a command buffer the loader never registers, which crashes
+        // under the validation layer (rule 5). The cache fails only where the
+        // device refuses a sampler, a command pool or a memory type, so this
+        // declines, says so once, and remembers it until another device.
         if (!avatar_adapter_) {
             static Adapter adapter(textures_);
             avatar_adapter_ = &adapter;
@@ -309,9 +265,8 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         VOCEM_RLOG("backend ready (%u ring slots, queue family %u)", info.ImageCount,
                    target.queue_family);
         // The session's journal (vocem/journal.h): opened at the first frame
-        // the overlay draws in this process, closed into history on a clean
-        // exit by the layer's destructor -- and left behind, still `.running`,
-        // by a crash, which is the detection.
+        // drawn in this process, closed into history by the layer's destructor
+        // on a clean exit, left `.running` by a crash.
         session().journal_begin_once();
         vocem::journal_note("Vulkan backend ready");
         backend_ready_ = true;
@@ -336,13 +291,12 @@ bool OverlayRenderer::upload_font_texture(bool whole) {
         const uint32_t count = fonts_take_folded(regions, kMaxFoldedRegions);
         if (textures_.update_font_atlas(pixels, static_cast<uint32_t>(width),
                                         static_cast<uint32_t>(height), regions, count)) {
-            // Said, so the arrivals scene can count it: a fold that went up
-            // whole would pass every other check (entry 192).
+            // Said, so the arrivals scene can count folds (entry 192).
             VOCEM_RLOG("font texture: %u folded square(s) copied in place", count);
             return true;
         }
         // The image does not match the atlas: replace it whole, which is
-        // always correct and is what every fold cost before.
+        // always correct.
     } else {
         fonts_take_folded(nullptr, 0);  // already in the whole atlas
     }
@@ -371,37 +325,31 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
     // The measured time since the previous frame, one spelling with the GL side.
     io.DeltaTime = session().delta_time(now);
 
-    // What the atlas should be built at for this output. The rebuild itself cannot
-    // happen here -- it destroys the texture the previous frames are still using --
-    // so it is only recorded, and process_uploads() acts on it after the present.
+    // The atlas size this output wants, only recorded: rebuilding here would
+    // destroy the texture earlier frames still use, so process_uploads() does it
+    // after the present.
     const Config& config = config_.current();
-    // Sized by the display, not by the swapchain: a resize recreates the
-    // swapchain and used to rebuild the atlas at the new size, rubber-banding
-    // every distance in the panel with the window's edge. The daemon publishes
-    // the display's mode height; sizing_height() says when the drawable wins
-    // instead (zero display, or a supersampled drawable taller than the
-    // display and headed for a downscale).
+    // Sized by the display the daemon publishes, not the swapchain, so a window
+    // resize does not rubber-band the panel; sizing_height() says when the
+    // drawable wins instead.
     wanted_font_size_ = font_pixel_size(
         sizing_height(snapshot.display_height, height), config.scale,
         config.font_size);
     wanted_reference_ = config.font_size;
     wanted_font_path_ = config.font_path;
     wanted_font_path_strong_ = config.font_path_strong;
-    // Spacing is configurable, and it lives in the style rather than in the draw
-    // calls, so the style has to follow an edited settings file even when the font
-    // size has not moved.
+    // Spacing lives in the style, so the style follows an edited settings file
+    // even when the font size has not moved.
     configure_style(config);
 
     if (!config.enabled) {
         return;
     }
 
-    // The message's words, from the note segment the daemon writes them to --
-    // read in the post-present phase and handed to the next frame, because
-    // this one is inside vkQueuePresentKHR and the layer takes no file work
-    // there (rule 8). A toast lasts seconds, so arriving one frame later is
-    // invisible; what it buys is that a process that never draws a toast
-    // never opens that segment at all (vocem/note.h).
+    // The message's words, read post-present into note_body_ and handed to the
+    // next frame: this one is inside vkQueuePresentKHR, where the layer does no
+    // file work (rule 8). One frame late is invisible for a toast, and a process
+    // that never draws one never opens the note segment (vocem/note.h).
     if (notification_wanted(snapshot, config, now)) {
         wanted_note_serial_ = snapshot.notification.serial;
         std::snprintf(const_cast<Snapshot&>(snapshot).notification.body,
@@ -410,27 +358,22 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
         wanted_note_serial_ = 0;
     }
 
-    // Which colour emoji this frame's text needs -- asked AFTER the words are
-    // in the snapshot, because the segment's copy of the body is empty by
-    // design and an emoji that appears only in a message would otherwise
-    // never be noted at all. Only noted here, with no file read -- a codepoint
-    // never seen is queued, and the bank is asked in process_uploads(), after
-    // the present, where the fold happens too, like every other atlas change.
-    // The snapshot is this frame's own copy (the same const_cast the body
-    // above makes), and the noting rewrites an emoji sequence into its key --
-    // once the atlas has that key's glyph, which is from the frame after the
-    // fold on this path: a sequence rewritten earlier drew as '?'.
+    // Which colour emoji this frame's text needs -- after the words are in the
+    // snapshot, since the segment's copy of the body is left empty. Only
+    // noted here, with no file read; the bank is asked and the fold happens in
+    // process_uploads(). The snapshot is this frame's own copy, and noting
+    // rewrites a sequence into its key only once the atlas has that key's
+    // glyph, or it would draw as '?'.
     fonts_note_emoji_in(const_cast<Snapshot&>(snapshot));
 
-    // The backend's NewFrame is never called: it does one thing, create its
-    // own font texture if it has none, and with the cache owning that texture
-    // (entry 192) it has none by design -- calling it would build a second,
-    // stock one here, inside the present, 64 MB and a queue wait, which is
-    // rule 10's whole subject.
+    // The backend's NewFrame is never called: its only job is creating a font
+    // texture when it has none, and with the cache owning that texture it
+    // never has one -- calling it would upload 64 MB with a queue wait inside
+    // the present (rule 10).
     ImGui::NewFrame();
     AvatarProvider* avatars = textures_.ready() ? avatar_adapter_ : nullptr;
-    // A frame can be for the toast alone -- a message arriving outside a voice
-    // channel -- and the panel must not be handed a snapshot with nobody in it.
+    // A frame can be for the toast alone (a message outside a voice channel),
+    // and the panel must not be handed a snapshot with nobody in it.
     if (panel_wanted(snapshot, config)) {
         build_panel(snapshot, config, width, height, avatars, now);
     }
@@ -447,20 +390,15 @@ void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
         return;
     }
 
-    // The Debug section's frame and draw counters. This is the post-present
-    // phase, where file work is allowed; the write itself happens at most once
-    // every few seconds.
+    // The Debug section's frame counters; the file write is at most once every
+    // few seconds.
     session().frame_seen();
 
-    // Resolution changed, or the user moved the size slider: rasterise the atlas
-    // again at the new size instead of stretching the old one. Safe here and only
-    // here -- replacing the font texture waits on the queue first (the cache's
-    // upload_font_atlas), which is legal after the present has returned and
-    // would deadlock inside it.
-    // A new colour emoji answers true too, FOLDED into space the build
-    // reserved rather than rasterised (entry 191), and only its squares go up,
-    // with no wait (entry 192). The line says which of the two it was, because
-    // a log that called a fold a rebuild would be counting the cost that is gone.
+    // The size or scale changed: rasterise the atlas again rather than stretch
+    // it. Only here, after the present: replacing the font texture waits on the
+    // queue, which would deadlock inside it. A new colour emoji answers true
+    // too, folded into reserved space and uploaded as its squares with no
+    // wait; the log line says which of the two it was.
     if (font_retry_at_ > 0.0 && monotonic_seconds() >= font_retry_at_) {
         if (upload_font_texture(true)) {
             font_retry_at_ = 0.0;
@@ -478,10 +416,9 @@ void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
         // While a whole upload is owed, a fold would copy its squares into the
         // old image and call that success: it goes up whole instead.
         if (!upload_font_texture(rebuilt || font_retry_at_ > 0.0)) {
-            // The image the GPU holds no longer matches the atlas, whether the
-            // cache kept the old one alive or had nothing left to keep: nothing
-            // is drawn with it until an upload works (draw() asks), rather than
-            // text drawn from the wrong squares or a descriptor that is gone.
+            // The GPU's image no longer matches the atlas: nothing is drawn
+            // with it until an upload works (draw() asks), rather than text from
+            // the wrong squares or a descriptor that is gone.
             font_retry_at_ = monotonic_seconds() + 1.0;
             VOCEM_RLOG("font texture upload failed at %.1f px: not drawing until it goes up, "
                        "tried again every second", wanted_font_size_);
@@ -493,13 +430,12 @@ void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
         }
     }
 
-    // Why there are no colour emoji, and why the text is not in the font the
-    // settings name: said once per change, the same way on both paths.
+    // Why there are no colour emoji, or why the text is not in the configured
+    // font: said once per change, the same way on both paths.
     session().say_font_statuses();
 
-    // The words for the toast the next frame will draw. Here rather than in
-    // draw(): this is the phase where file work is allowed. A message that
-    // arrived without them is said once, in the session.
+    // The words for the toast the next frame will draw, here where file work is
+    // allowed. A message that arrived without them is said once, in the session.
     if (wanted_note_serial_ != 0) {
         std::snprintf(note_body_, sizeof(note_body_), "%s",
                       session().note_words(wanted_note_serial_));
@@ -537,40 +473,22 @@ void OverlayRenderer::shutdown() {
 }
 
 void OverlayRenderer::shutdown_locked() {
-    // Nothing below may run while the GPU is still reading what it destroys.
+    // Nothing below may run while the GPU still reads what it destroys:
+    // textures_.shutdown() frees the images (the font atlas's among them) and
+    // the command pool, ImGui_ImplVulkan_Shutdown() the vertex ring, the
+    // pipeline and the descriptor pool, and neither waits for the overlay's
+    // submissions. This is called from arbitrary presents (the daemon
+    // stopping, a hand-over from another device's present), so
+    // vkDeviceWaitIdle is not an option: it needs every queue externally
+    // synchronised. The overlay's per-image fences are waited for by the
+    // caller (release_renderer_locked, the only way in), the cache's uploads by
+    // textures_.shutdown(); vkWaitForFences needs no queue's synchronisation.
     //
-    // This used to be a property of *who could call this*: vocem_DestroyDevice,
-    // where the application has already had to finish everything, and nothing
-    // else. Then a second caller arrived -- the daemon stopping, which fires on
-    // an arbitrary present of a live, presenting device -- and the property went
-    // with it. The overlay's submit for the previous image is at most one
-    // present old; textures_.shutdown() frees the images -- the font atlas's
-    // among them (entry 192) -- and the command pool it reads, and
-    // ImGui_ImplVulkan_Shutdown() frees the vertex ring, its own font image
-    // where it made one, the pipeline and the descriptor pool
-    // (imgui_impl_vulkan.cpp has no wait of its own -- checked). Entry 131
-    // fixed exactly this shape for the second-device case and it came back
-    // through a door nobody had yet.
-    //
-    // The wait was a vkDeviceWaitIdle here, under a comment saying its
-    // external synchronisation was had. It was not: vkDeviceWaitIdle wants
-    // every queue of the device externally synchronised, and a present holds
-    // only the queue it was made on -- and the hand-over to a second device
-    // (entry 210 on this side) calls this from ANOTHER device's present, which
-    // holds none of this one's. What reads these objects on the GPU is two
-    // things, each with fences of its own: the overlay's submissions, one per
-    // swapchain image, which the layer waits for before calling this
-    // (release_renderer_locked, the only way it is called), and the texture
-    // cache's uploads, which textures_.shutdown() waits for below.
-    // vkWaitForFences needs no queue's synchronisation at all.
-    //
-    // The next device's first frame must not measure the gap between devices as
-    // one animation step.
+    // The next device's first frame must not measure the gap between devices
+    // as one animation step.
     session().reset_clock();
-    // A rasterisation still running uses the context and the atlas that are
-    // about to go: it finishes first. At most the ~113 ms the build takes, and
-    // only when the overlay is released, the renderer's device dies, or the
-    // last instance goes inside that window.
+    // A rasterisation still running uses the context and atlas about to go: it
+    // finishes first (at most one atlas build, and only at teardown).
     join_atlas_worker();
     textures_.shutdown();
     if (backend_ready_) {
@@ -582,9 +500,9 @@ void OverlayRenderer::shutdown_locked() {
         context_created_ = false;
         context_ready_ = false;
     }
-    // The next prepare() belongs to a different device, so the backend's function
-    // table is loaded again rather than kept from the destroyed one -- and a
-    // failure against the old device says nothing about the new one.
+    // The next prepare() belongs to a different device: the function table is
+    // loaded again, and a failure against the old device says nothing about
+    // the new one.
     functions_loaded_ = false;
     failed_ = false;
     font_retry_at_ = 0.0;

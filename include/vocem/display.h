@@ -6,33 +6,20 @@
 //
 // "Actually" is the kernel's CRTC, asked with read-only mode ioctls on
 // /dev/dri/card<N> (GETCONNECTOR without a probe, GETENCODER, GETCRTC; no DRM
-// master needed -- measured at both widths on this machine: 47-59 us for a
-// connector). sysfs cannot answer it: /sys/class/drm/*/modes lists the modes a
-// display CAN run, the preferred one first, and nothing marks the one being
-// scanned out -- this machine runs 3840x2160 at 143.99 Hz while sysfs's first
-// line is the same size at 60. Where the ioctls cannot answer (no access to the
-// device, a fabricated tree under VOCEM_DRM_ROOT, a connector with no CRTC),
-// the preferred mode stands in and `current` says so.
+// master needed). sysfs cannot answer it: /sys/class/drm/*/modes lists the
+// modes a display CAN run, preferred first, and does not mark the one scanned
+// out. Where the ioctls cannot answer (no access to the device, a
+// fabricated tree under VOCEM_DRM_ROOT, a connector with no CRTC), the
+// preferred mode stands in and `current` says so.
 //
-// The overlay's size used to be derived from the drawable it was drawing into,
-// which is the right answer for a fullscreen game and the wrong one for a
-// window: every resize rebuilt the atlas at a new size and every distance in
-// the panel -- text, pictures, spacing -- rubber-banded with the window's edge.
-// The size the overlay should keep is the *display's*, and the display's mode
-// is the kernel's -- /sys/class/drm names the connectors, the device says what
-// each runs -- which is also where the configuration window reads its caption
-// from, for the same reason: on a fractionally scaled Wayland session every
-// toolkit answer is logical and rounded, and the kernel's mode is what a game
-// renders at.
-//
-// The daemon reads this and publishes it in the shared state; the injected code
-// never touches /sys or /dev/dri (a file syscall per connector has no place
-// near a present hook, and sandboxes have opinions about both). With several displays the
-// largest mode height wins -- there is no way to know from here which output a
-// game will land on, and an overlay sized for the largest display is slightly
-// large on a smaller one, which beats illegibly small on the larger. A machine
-// with no readable mode (a VM, a headless run) answers zero and the reader
-// falls back to sizing from the drawable, which is the old behaviour.
+// The overlay keeps the display's size, not the drawable's, so a windowed
+// game's panel does not follow the window's edge; the kernel's mode is what a
+// game renders at, where a fractionally scaled toolkit answers logical and
+// rounded sizes. The daemon reads this and publishes it; the
+// injected code never touches /sys or /dev/dri. With several displays the
+// largest mode height wins: the game's output is unknown here, and slightly
+// large beats illegibly small. No readable mode (a VM, headless) answers zero
+// and the reader sizes from the drawable.
 
 #ifndef VOCEM_DISPLAY_H
 #define VOCEM_DISPLAY_H
@@ -72,8 +59,8 @@ inline constexpr const char* kSysDrmRoot = "/sys/class/drm";
 // out, into `mode`; false when there is none to ask or it drives nothing.
 // Read-only ioctls, a descriptor opened and closed here. GETCONNECTOR is asked
 // with room for one mode: with none (count_modes == 0) the kernel PROBES the
-// connector -- an EDID read, tens of milliseconds, on a display somebody is
-// using -- which is what libdrm's drmModeGetConnectorCurrent avoids the same way.
+// connector (an EDID read, tens of milliseconds), which libdrm's
+// drmModeGetConnectorCurrent avoids the same way.
 inline bool read_running_mode(const char* card, uint32_t connector_id, DisplayModeInfo& mode) {
     char device[64];
     std::snprintf(device, sizeof(device), "/dev/dri/%s", card);
@@ -124,11 +111,8 @@ inline bool read_running_mode(const char* card, uint32_t connector_id, DisplayMo
 // directory order, at most `capacity` of them; returns how many. Under the
 // machine's own /sys/class/drm each carries the mode its CRTC runs; under any
 // other root, and where the device cannot be asked, sysfs's preferred mode
-// with `current` false. The one
-// reader of the tree: the daemon takes its height from it and the settings
-// window its list of displays -- the window carried a second reader in Qt
-// (gui/src/environment.h), which asked `enabled` while this one did not,
-// until entry 135 made the two agree by hand; one spelling now.
+// with `current` false. The one reader of the tree: the daemon takes its
+// height from it and the settings window its list of displays.
 inline int read_display_modes(const char* drm_root, DisplayModeInfo* out, int capacity) {
     DIR* drm = ::opendir(drm_root);
     if (!drm) {
@@ -157,10 +141,9 @@ inline int read_display_modes(const char* drm_root, DisplayModeInfo* out, int ca
         if (!connected) {
             continue;
         }
-        // Connected is not switched on: a display disabled in the desktop's
-        // own settings still says `connected`, and only `enabled` says whether
-        // anything is scanned out to it. Absent -- an old kernel, a fabricated
-        // tree -- reads as enabled.
+        // A display disabled in the desktop's settings still says `connected`;
+        // only `enabled` says whether anything is scanned out to it. Absent (an
+        // old kernel, a fabricated tree) reads as enabled.
         std::snprintf(path, sizeof(path), "%s/%s/enabled", drm_root, entry->d_name);
         if (FILE* enabled = ::fopen(path, "r")) {
             char answer[16] = {0};
@@ -176,9 +159,8 @@ inline int read_display_modes(const char* drm_root, DisplayModeInfo* out, int ca
         if (!modes) {
             continue;
         }
-        // The first line is the PREFERRED mode, "3840x2160" -- sysfs does not
-        // mark the mode actually scanned out. It is what stands in when the
-        // CRTC cannot be asked below, and only then.
+        // The first line is the PREFERRED mode, "3840x2160"; it stands in only
+        // when the CRTC cannot be asked below.
         unsigned width = 0;
         unsigned height = 0;
         const bool read = std::fscanf(modes, "%ux%u", &width, &height) == 2;
@@ -223,7 +205,8 @@ inline constexpr int kMaxDisplayModes = 16;
 
 // The largest connected output's mode height under `drm_root` -- the running
 // mode where it can be asked, the preferred one otherwise -- or 0 when none
-// can be read. Parameterised for the tests; callers use display_height().
+// can be read (entry 39). Parameterised for the tests; callers use
+// display_height().
 inline uint32_t display_height_under(const char* drm_root) {
     DisplayModeInfo modes[kMaxDisplayModes];
     const int count = read_display_modes(drm_root, modes, kMaxDisplayModes);

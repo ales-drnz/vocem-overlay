@@ -24,9 +24,7 @@
 namespace vocem {
 
 // One pause in a spin: tells the core this is a wait, so a sibling hyperthread
-// -- quite possibly the daemon's publish -- gets the pipeline. Not a syscall,
-// not a yield to the scheduler; `pause` is `rep; nop` and exists on every x86
-// both widths build for.
+// (perhaps the daemon's publish) gets the pipeline. Not a syscall.
 inline void cpu_relax() {
 #if defined(__x86_64__) || defined(__i386__)
     __builtin_ia32_pause();
@@ -39,18 +37,13 @@ inline void cpu_relax() {
 // from its fstat: nullptr when it is this user's own and nobody else can open
 // it, otherwise the reason, for the log.
 //
-// /dev/shm is a directory every local user can create names in, and the names
-// are predictable (`/vocem-<uid>`, `/vocem-note-<uid>`). Another user who made
-// the name first would have had every game of ours read a channel of their
-// choosing, and a daemon that opened it with O_CREAT would have published the
-// user's voice channel and messages into an object that user can read. The
-// kernel's fs.protected_regular=1 (this machine's setting) refuses the
-// daemon's O_CREAT open of such an object but not a reader's plain one, and
-// it is a sysctl, not a promise. So every opener asks: the owner must be this
-// uid, and the mode must give group and others nothing. Nothing is lost by
-// the second half: the daemon creates the segment at 0600 and the bridge its
-// copies at 0600 (measured: `-rw------- 1000 1000 /dev/shm/vocem-1000`), so a
-// wider mode is an object this project did not make.
+// /dev/shm names are predictable (`/vocem-<uid>`, `/vocem-note-<uid>`) and any
+// local user can create them: another user's object at the name would feed our
+// games a channel of their choosing, or receive the user's channel and messages
+// from the daemon. fs.protected_regular refuses the daemon's O_CREAT open of
+// such an object but not a reader's plain one, and is a sysctl, not a promise.
+// So every opener asks: owner this uid, and no group or other permission bits
+// (the daemon and the bridge create everything 0600).
 inline const char* segment_trust_problem(const struct stat& info, uid_t uid) {
     if (info.st_uid != uid) {
         return "it belongs to another user";
@@ -96,10 +89,9 @@ public:
             close();
             return false;
         }
-        // A creation that fails takes the name with it. shm_open creates the
-        // object at zero bytes and ftruncate gives it its size; leaving the name
-        // behind after a failure here publishes a segment every reader in the
-        // session would map and then die touching.
+        // A creation that fails takes the name with it: shm_open creates the
+        // object at zero bytes, and a name left unsized is a segment every
+        // reader would map and die touching.
         if (ftruncate(fd_, sizeof(SharedState)) != 0) {
             close();
             shm_unlink(name);
@@ -114,21 +106,14 @@ public:
         }
         state_ = static_cast<SharedState*>(mapped);
 
-        // A fresh segment is zeroed; a reused one -- a daemon that died
-        // without its unlink -- may hold stale data, and may already be mapped
-        // by every running game, which go on reading the same inode. So the
-        // clear is a write like any other, under the seqlock: odd before the
-        // first field, even after the last, and the count carried on rather
-        // than reset. It used to leave the sequence alone during the clear and
-        // store 0 at the end, which let a copy that began before the clear and
-        // ended inside it pass the check (the same sequence both times), and
-        // made the counter run 0, 2, 0, 2 across restarts -- a reader's
-        // "before" of one life equal to its "after" of the next.
-        // tests/shm_reopen_clear.cpp accepted 9291 half-cleared snapshots in
-        // three seconds of that. An odd count left by a daemon that died
-        // mid-publish is already "writing" and stays so until the clear ends.
-        // Fields are cleared individually because the struct holds an atomic
-        // and is not trivially copyable as a whole.
+        // A fresh segment is zeroed; a reused one (a daemon that died without its
+        // unlink) may hold stale data and already be mapped by every running game.
+        // So the clear is a write like any other, under the seqlock: odd before
+        // the first field, even after the last, and the count carried on rather
+        // than reset, so a read spanning the clear or a restart cannot see the
+        // same sequence twice (tests/shm_reopen_clear.cpp). An odd count left by a
+        // daemon that died mid-publish already says "writing". Fields are cleared
+        // one by one because the struct holds an atomic.
         uint32_t seq = state_->sequence.load(std::memory_order_acquire);
         if ((seq & 1u) == 0) {
             seq = state_->sequence.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -176,12 +161,10 @@ public:
     // everything but publish().
     const SharedState* state() const { return state_; }
 
-    // Called with the segment as it stands, after every publish. The daemon
-    // hangs its Flatpak mirrors here (daemon/src/flatpak_bridge.h) so that a
-    // sandboxed game is never served a staler state than a host one, and so that
-    // there is one publish path rather than two to keep in step. A plain
-    // function pointer: this header is compiled into games, and nothing in it
-    // may allocate.
+    // Called with the segment as it stands, after every publish: the daemon's
+    // Flatpak mirrors hang here (daemon/src/flatpak_bridge.h), so a sandboxed
+    // game is never staler than a host one and there is one publish path. A plain
+    // function pointer: this header is compiled into games and may not allocate.
     void (*on_publish)(const SharedState&, void*) = nullptr;
     void* on_publish_context = nullptr;
 
@@ -192,12 +175,9 @@ public:
         if (!state_) {
             return;
         }
-        // Odd: writing. A read-modify-write with acquire semantics on this
-        // side, not a release store: a release store lets the writes that
-        // follow it be hoisted above it, and the data of a seqlock hoisted
-        // above the odd count is a torn read no reader can detect. Harmless on
-        // x86, where stores are not reordered with stores; written for the
-        // model rather than the machine.
+        // Odd: writing. An acq_rel read-modify-write, not a release store: a
+        // release store lets the writes that follow be hoisted above it, a torn
+        // read no reader can detect. Harmless on x86; written for the model.
         const uint32_t seq = state_->sequence.fetch_add(1, std::memory_order_acq_rel);
         std::atomic_thread_fence(std::memory_order_release);
 
@@ -207,8 +187,7 @@ public:
         state_->sequence.store(seq + 2, std::memory_order_release);  // even: stable
 
         // After the segment is stable, never during: a mirror copied from a
-        // half-written source would carry the tear across the boundary with a
-        // sequence that says it did not.
+        // half-written source would carry the tear across with a clean sequence.
         if (on_publish) {
             on_publish(*state_, on_publish_context);
         }
@@ -222,10 +201,9 @@ private:
     const char* refusal_ = nullptr;
 };
 
-// The segment's version field, read raw and without attaching. A reader that
-// meets a segment from another ABI refuses it -- correctly -- but the refusal
-// looks exactly like "no daemon" from outside, so the Debug section needs to
-// SAY which version it met. Returns 0 when there is no segment at all.
+// The segment's version field, read raw without attaching. A refusal of a
+// foreign ABI looks exactly like "no daemon" from outside, so the Debug section
+// needs to SAY which version it met. 0 when there is no segment at all.
 inline uint32_t peek_abi_version() {
     char name[64];
     shm_name(name, sizeof(name), getuid());
@@ -267,13 +245,9 @@ public:
             return false;
         }
         // How long the object actually is, before mapping a page that may not be
-        // backed. mmap past the end of a shared memory object succeeds and the
-        // first touch raises SIGBUS -- and the writer creates the name with
-        // shm_open and sizes it with ftruncate afterwards, so a daemon killed
-        // between those two calls leaves a name at zero bytes. Measured: a
-        // zero-length segment killed the reading process outright, which here
-        // means every game in the session dying at once because a daemon died at
-        // the wrong microsecond.
+        // backed: mmap past the end succeeds and the first touch raises SIGBUS,
+        // and a daemon killed between shm_open and ftruncate leaves the name at
+        // zero bytes -- which would kill every game in the session at once.
         struct stat info {};
         if (fstat(fd_, &info) != 0 || static_cast<size_t>(info.st_size) < sizeof(SharedState)) {
             ::close(fd_);
@@ -311,22 +285,12 @@ public:
     // What the name says about the object this mapping came from.
     //
     // Unlinking removes the name and not the pages, so a reader that mapped once
-    // keeps reading its private copy of history: a daemon that stopped leaves it
-    // a cleared state forever, and a daemon that started *again* creates a new
-    // object this mapping will never see. Only a look at the name can tell --
-    // one shm_open and two fstats, compared by inode -- so a game that outlives
-    // a daemon restart can notice, drop the orphaned pages, and attach to the
-    // living segment. Not free: callers keep it off the per-frame path and ask
-    // on the same cadence as the reopen retries.
-    //
-    // Three answers, not two. The distinction was always computed here and
-    // thrown away at the return, and the caller then had to treat a daemon that
-    // had been REPLACED exactly as it treats one that is GONE -- so a
-    // `systemctl --user restart vocemd`, which CLAUDE.md's own delivery rule
-    // asks the owner to run, made every running game hand back its font atlas
-    // and rasterise it again: 133 ms and a fresh 64 MB upload, per game, per
-    // restart. Measured on tests/gl_daemon_gone.cpp, twice: two "font atlas
-    // built" lines across one stop-and-return where one is correct.
+    // keeps its private copy: a stopped daemon leaves it a cleared state forever,
+    // and a restarted one creates an object this mapping never sees. One
+    // shm_open and two fstats, compared by inode, let a game drop the orphaned
+    // pages and attach to the living segment; callers ask on the reopen cadence,
+    // never per frame. Replaced is kept apart from Gone so a daemon restart does
+    // not make every game rebuild and re-upload its font atlas.
     enum class Segment {
         Current,   // the name still stands behind these pages
         Replaced,  // a different object is at the name: a daemon came back
@@ -349,15 +313,13 @@ public:
         return same ? Segment::Current : Segment::Replaced;
     }
 
-    // The old question, kept because the CLI and the settings window ask exactly
-    // it and neither has anything to hand back.
+    // For the CLI and the settings window, which have nothing to hand back.
     bool still_current() const { return segment_state() == Segment::Current; }
 
-    // What a read found. Three ways not to have a snapshot, and they mean
-    // different things to a caller: no segment is "no daemon"; a foreign ABI
-    // is a daemon this reader must refuse, and the refusal has to be SAID
-    // (entry 55's silence); a busy writer is a daemon mid-publish, and the
-    // right answer to that is the previous snapshot, not a blank frame.
+    // What a read found. No segment is "no daemon"; a foreign ABI is a daemon
+    // this reader must refuse, and the refusal has to be SAID; a busy writer is
+    // a daemon mid-publish, answered with the previous snapshot, not a blank
+    // frame.
     enum class Read {
         Ok,
         NotAttached,
@@ -365,17 +327,11 @@ public:
         Busy,
     };
 
-    // How long a read waits for a publish to finish before it answers Busy.
-    // A publish holds the sequence odd for a few microseconds (2.6 us measured
-    // for twelve participants, the review's seqlock_contention probe); the
-    // old bound was eight bare loads, a few nanoseconds, so a frame whose read
-    // landed inside a publish simply failed -- 7555 failed reads in 144.7
-    // million at 20 publishes a second, a blank frame every three to seven
-    // minutes at 144 fps. Twenty microseconds covers a publish several times
-    // over and is still nothing against a frame. The clock is the vDSO's, not
-    // a syscall, and it is asked once per 64 pauses. A writer that died or
-    // was descheduled mid-publish is still bounded: this answers Busy and the
-    // caller keeps what it had.
+    // How long a read waits for a publish to finish before it answers Busy. A
+    // publish holds the sequence odd for a few microseconds; twenty covers it
+    // several times over and is nothing against a frame. The clock is the vDSO's,
+    // asked once per 64 pauses. A writer that died mid-publish still ends in
+    // Busy, and the caller keeps what it had.
     static constexpr double kBusyBudgetSeconds = 20e-6;
     static constexpr int kMaxCopies = 16;
 
@@ -383,20 +339,13 @@ public:
     // a torn copy and must not be used -- which is why StatePoll reads into a
     // scratch snapshot and keeps its last good one apart.
     //
-    // A word on what this is in the C++ memory model, so nobody "fixes" it: the
-    // copies below read plain fields another process may be writing at that
-    // moment, which is a data race by the letter of the standard. It is the
-    // seqlock's own shape -- the copy is allowed to be torn, and the sequence
-    // compared across it (acquire load before, acquire fence and load after,
-    // against a writer that fetch_adds with acq_rel and fences its stores) is
-    // what says whether it was; a torn copy is retried, never trusted. Making
-    // the fields atomic would buy nothing the check does not already give and
-    // would put a relaxed atomic load per byte on the present path. Measured
-    // rather than argued (tests/shared_state_layout.cpp at both widths, the
-    // segment crossed between them; shm_reattach and shm_short_segment for the
-    // lifecycle; state_poll_contention for a writer publishing beside the
-    // reader), and the writer's side of the same contract is StateWriter::
-    // publish above.
+    // By the letter of the C++ standard the copies below are a data race: they
+    // read plain fields another process may be writing. That is the seqlock's
+    // shape -- the copy may be torn, and the sequence compared across it (acquire
+    // load before, acquire fence and load after, against StateWriter::publish's
+    // acq_rel fetch_add and fences) says whether it was; a torn copy is retried,
+    // never trusted. Atomic fields would add nothing but a relaxed load per byte
+    // on the present path (tests/shared_state_layout.cpp, state_poll_contention).
     Read read_state(Snapshot& out) const {
         if (!state_) {
             return Read::NotAttached;
@@ -436,11 +385,8 @@ public:
             std::memcpy(out.users, state_->users, sizeof(out.users));
             std::memcpy(&out.notification, &state_->notification, sizeof(out.notification));
 
-            // Every text field ends here, whatever the segment holds. The writer
-            // terminates, but this is a reader of memory another process wrote and
-            // the whole panel walks these to a NUL -- the hash already had this
-            // guard (avatar_hash_is_sane) and the note segment already forces a
-            // terminator; the state reader was the one that trusted its writer.
+            // Every text field ends here, whatever the segment holds: this is
+            // memory another process wrote, and the panel walks these to a NUL.
             out.channel_name[kChannelCapacity - 1] = '\0';
             out.notification.title[kNotificationTitleCapacity - 1] = '\0';
             out.notification.body[kNotificationBodyCapacity - 1] = '\0';
@@ -468,15 +414,10 @@ public:
     ~StateReader() { close(); }
 
 private:
-    // The segment, by whichever of its two names this process can reach.
-    //
-    // A game inside a Flatpak has a private /dev/shm, so shm_open() there opens
-    // nothing however healthy the daemon is; what it can reach is the mirror the
-    // daemon wrote into the one directory that crosses the sandbox
-    // (vocem/flatpak.h). The mapping is MAP_SHARED over the same inode on both
-    // sides, so everything below this line -- the size check, the seqlock, the
-    // exact comparison of abi_version -- is the same code answering the same
-    // question. Only the name differs.
+    // The segment, by whichever of its two names this process can reach: inside
+    // a Flatpak /dev/shm is private, so the reader opens the daemon's mirror in
+    // the bridge directory (vocem/flatpak.h). Everything after the open is the
+    // same code; only the name differs.
     static int open_segment() {
         char path[512];
         if (bridge_in_use() && bridge_path(path, sizeof(path), kBridgeStateName)) {

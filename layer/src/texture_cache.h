@@ -2,17 +2,10 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// Avatar textures for the in-game panel.
-//
-// The daemon has already put raw RGBA files in the cache directory
-// (vocem/avatar_rgba.h is the whole format); this only turns them into Vulkan
-// images. Two rules shape the design:
-//
-//   * Uploading needs a command buffer submit, so it happens in the
-//     post-present phase, never inside vkQueuePresentKHR (layer rule 10). The
-//     fence is not waited for: a later call frees what it says is done.
-//   * One upload per frame at most. A busy channel filling up must not cost a
-//     visible hitch; a few frames without an avatar is invisible.
+// Avatar textures for the in-game panel, and the font atlas's texture. The
+// daemon has already written raw RGBA files (vocem/avatar_rgba.h); this turns
+// them into Vulkan images, post-present only (rule 10), at most one upload per
+// call, and never waits for a fence: a later call frees what is done.
 
 #ifndef VOCEM_TEXTURE_CACHE_H
 #define VOCEM_TEXTURE_CACHE_H
@@ -38,29 +31,22 @@ using FunctionResolver = PFN_vkVoidFunction (*)(const char* name, void* user_dat
 
 class TextureCache {
 public:
-    // The cache's descriptor budget. Every live avatar texture holds one
-    // descriptor set from the backend's pool, and ImGui_ImplVulkan_AddTexture
-    // on an exhausted pool does not fail -- it ignores the allocation error
-    // and updates an uninitialised set, which the NVIDIA driver dies on
-    // (entry 46: the Minecraft crash, the eighth face in a call). So the pool
-    // is sized from here (see OverlayRenderer's DescriptorPoolSize) and the
-    // cache stops at the budget: a face beyond it is the grey placeholder,
-    // logged, never a crash. 48 covers the 24 panel slots plus toast authors
-    // and avatar changes within one session.
+    // Every live avatar texture holds one descriptor set from the backend's
+    // pool, and AddTexture on an exhausted pool updates an uninitialised set
+    // instead of failing, which the driver dies on (entry 46). So the pool is
+    // sized from here and the cache stops at the budget: a face beyond it stays
+    // the placeholder, logged.
     static constexpr uint32_t kMaxAvatarDescriptors = 48;
-    // "48 covers the 24 panel slots" is the sentence above as a fact rather
-    // than prose: raising kMaxUsers without room here would put mid-session
-    // placeholders on faces the panel is entitled to.
+    // A full panel with headroom for toast authors and avatar changes: raising
+    // kMaxUsers without room here would put placeholders on the panel's faces.
     static_assert(kMaxAvatarDescriptors >= 2 * vocem::kMaxUsers,
                   "the descriptor budget must cover a full panel with headroom");
-    // What the backend's pool must hold: the budget, the font atlas set, and
-    // headroom so a rebuild or a future fixed texture cannot land exactly on
-    // the edge.
+    // The backend's pool: the budget, the font atlas's set, and headroom so
+    // nothing lands exactly on the edge.
     static constexpr uint32_t kDescriptorPoolSets = kMaxAvatarDescriptors + 8;
 
     // set_loader_data is the loader's pfnSetDeviceLoaderData for this device:
-    // the upload allocates a command buffer, a dispatchable object, and layer
-    // rule 5 says every one of those is registered or dispatch on it crashes.
+    // every command buffer allocated here is registered through it (rule 5).
     bool init(VkDevice device, VkPhysicalDevice physical_device, VkQueue queue,
               uint32_t queue_family, FunctionResolver resolver, void* resolver_data,
               PFN_vkSetDeviceLoaderData set_loader_data);
@@ -72,33 +58,24 @@ public:
     // Called after the present returns. Uploads at most one pending avatar.
     void process_pending();
 
-    // The font atlas's texture, owned here rather than by imgui_impl_vulkan
-    // (entry 192). The stock ImGui_ImplVulkan_CreateFontsTexture replaces the
-    // whole 64 MB image between two vkQueueWaitIdle on the game's queue --
-    // 36 to 43 ms of every arrival once the rebuild was gone -- and a new
-    // colour emoji changes a 32x32 square of it. The backend cannot update a
-    // part of its image and is a submodule, not ours to patch; its NewFrame
-    // does nothing but create that texture lazily, so the renderer does not
-    // call it and hands ImGui this one through SetTexID instead.
+    // The font atlas's texture is owned here rather than by imgui_impl_vulkan:
+    // the stock upload replaces the whole 64 MB image between two
+    // vkQueueWaitIdle, while a new colour emoji changes a 32x32 square. The
+    // backend cannot update part of its image, so the renderer never calls its
+    // NewFrame and hands ImGui this texture through SetTexID.
     //
-    // upload_font_atlas: the whole atlas into a new image, after a real
-    // build. The new image and its staging buffer are made FIRST, and only
-    // then is the old one retired -- after a queue idle, exactly as the stock
-    // upload waits, because the frames in flight may still sample it -- so a
-    // replacement that fails (64 MB twice, the moment memory is short) leaves
-    // the descriptor handed out before it alive rather than freed under
-    // ImGui's TexID. The copy itself is not waited for: its staging buffer is
-    // retired like a region update's. Returns the descriptor for SetTexID, or
-    // 0 on failure. Post-present only.
+    // upload_font_atlas: the whole atlas into a new image, after a real build.
+    // The new image and staging buffer are made FIRST, and only then is the old
+    // one retired after a queue idle (frames in flight may sample it), so a
+    // failed replacement leaves ImGui's TexID alive. The copy itself is not
+    // waited for. Returns the descriptor for SetTexID, or 0. Post-present only.
     ImTextureID upload_font_atlas(const unsigned char* rgba, uint32_t width, uint32_t height);
-    // update_font_atlas: only the squares a fold wrote, copied into the image
-    // that is already live, with no CPU wait: the copy is ordered after the
-    // frames that sample it by a barrier on the same queue, and before the
-    // next one by queue order. Up to kFontCopiesInFlight copies are in flight
-    // at once, each freed on a later call once its fence has signalled; only
-    // when all of them are still copying does the oldest get waited for. False
-    // when the image does not match the atlas -- the caller then uploads it
-    // whole.
+    // update_font_atlas: only the squares a fold wrote, into the live image,
+    // with no CPU wait: a barrier on the same queue orders the copy after the
+    // frames that sample it, queue order before the next. Up to
+    // kFontCopiesInFlight copies in flight; the oldest is waited for only when
+    // all are still copying. False when the image does not match the atlas --
+    // the caller then uploads it whole.
     bool update_font_atlas(const unsigned char* rgba, uint32_t atlas_width,
                            uint32_t atlas_height, const AtlasRegion* regions, uint32_t count);
 
@@ -173,20 +150,14 @@ private:
         PFN_vkQueueWaitIdle QueueWaitIdle = nullptr;
     } fn_;
 
-    // The font atlas's texture (upload_font_atlas), outside textures_ and
-    // outside the avatar budget: kDescriptorPoolSets already counts "the font
-    // atlas set", which the stock upload took from the same pool.
+    // The font atlas's texture, outside textures_ and the avatar budget
+    // (kDescriptorPoolSets counts its set).
     Texture font_;
     uint32_t font_width_ = 0;
     uint32_t font_height_ = 0;
-    // The copies into it still in flight. One used to be all, and the next
-    // update waited for it with WaitForFences(UINT64_MAX) -- a fence that
-    // covers everything submitted before it on the game's queue, so a fold one
-    // frame after the whole atlas went up (the panel appearing in a channel
-    // that already has an emoji in it) or after another fold stood the game's
-    // thread still for the frames the GPU was behind. Measured with a GPU
-    // held behind in tests/texture_font_copies.cpp: one wait per such fold
-    // before, none now.
+    // The copies into it still in flight. More than one, because a single slot
+    // made a fold right after another upload wait on the game's thread for
+    // everything it had submitted (tests/texture_font_copies.cpp).
     static constexpr uint32_t kFontCopiesInFlight = 4;
     FontCopy font_copies_[kFontCopiesInFlight];
     uint64_t font_copy_order_ = 0;
@@ -202,13 +173,11 @@ private:
     bool ready_ = false;
 
     // Keyed by the fixed-size POD key, so the per-frame lookup in get() never
-    // allocates -- the formatted string this used to be was a malloc and free
-    // per visible face per frame (vocem/avatar_key.h says why).
+    // allocates (vocem/avatar_key.h).
     std::unordered_map<AvatarKey, Texture, AvatarKeyHash> textures_;
-    // A file that has been asked for and is not on disk yet. The daemon is
-    // probably still downloading it, so it is looked at again rather than written
-    // off -- see vocem/avatar_file.h. The path std::string is built once when
-    // the request is queued, never on the steady per-frame path.
+    // A file asked for and not on disk yet: the daemon is probably still
+    // downloading it, so it is looked at again (vocem/avatar_file.h). The path
+    // is built once when queued, never on the per-frame path.
     struct Pending {
         AvatarKey key;
         std::string path;
@@ -217,14 +186,10 @@ private:
 
     std::vector<Pending> pending_;
 
-    // The one face whose copy is on the GPU and not yet known to be finished
-    // (entry 192). upload() used to end in WaitForFences on the game's queue,
-    // after the present: the game's thread standing still until everything
-    // it had just submitted was done, once per new face. Now the copy is
-    // submitted and left; process_pending() asks the fence on a later call and
-    // only then hands the face to ImGui, so a face appears a frame or two
-    // later and the game never waits for it. One at a time, which is the
-    // one-face-per-call budget the cache already had.
+    // The one face whose copy is on the GPU and not yet known finished:
+    // submitted and left, and handed to ImGui by process_pending()
+    // once its fence has signalled, so a face appears a frame or two later and
+    // the game never waits. One at a time, the one-face-per-call budget.
     struct InFlight {
         bool active = false;
         AvatarKey key;
