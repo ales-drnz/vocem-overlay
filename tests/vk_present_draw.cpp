@@ -129,6 +129,12 @@
 //     back when it is destroyed. Against the layer before this scene existed
 //     the second device's frames were drawn with the first device's buffers:
 //     VUID-vkCmdBindVertexBuffers-commonparent, then SIGSEGV.
+//   * VOCEM_VK_SCENARIO=failed-presenter: second-presenter with the first
+//     device's texture cache refused by the witness, so the renderer cannot be
+//     made there. The first device holds the overlay all the same, the second
+//     gets it once the first falls silent, and the first gets it back when the
+//     second is gone. Against the layer before this scene existed the failure
+//     was the whole process's and nothing was drawn on either device.
 //   * VOCEM_VK_SCENARIO=no-texture-cache: the witness refuses the texture
 //     cache's sampler, so the cache does not come up. The renderer used to
 //     fall back to ImGui's stock font upload, whose command buffer is
@@ -792,7 +798,11 @@ int main() {
     const bool arrivals = strcmp(scenario, "arrivals") == 0;
     const bool early_exit = strcmp(scenario, "early-exit") == 0;
     const bool deferred = strcmp(scenario, "deferred") == 0;
-    const bool second_presenter = strcmp(scenario, "second-presenter") == 0;
+    // failed-presenter is second-presenter with the first device's renderer
+    // refused (the no-texture-cache scene's witness), see its checks below.
+    const bool failed_presenter = strcmp(scenario, "failed-presenter") == 0;
+    const bool second_presenter =
+        strcmp(scenario, "second-presenter") == 0 || failed_presenter;
     const bool second_queue = strcmp(scenario, "second-queue") == 0;
     const bool alternate_queue = strcmp(scenario, "alternate-queue") == 0;
     const bool no_cache = strcmp(scenario, "no-texture-cache") == 0;
@@ -987,9 +997,10 @@ int main() {
             printf("     below the overlay: %s\n", below);
         }
     }
-    if (no_cache) {
+    if (no_cache || failed_presenter) {
         if (!have_witness) {
-            skip("the no-texture-cache scene needs the witness layer, which refuses the sampler");
+            skip("the no-texture-cache and failed-presenter scenes need the witness layer, "
+                 "which refuses the sampler");
         }
         // The overlay's backend makes the process's first sampler (ImGui's
         // own) and its texture cache the second; the witness refuses that one.
@@ -2574,6 +2585,31 @@ int main() {
               "each queue was passed through, said once, while the other owned the renderer");
         check(moved == 2, "the overlay moved to the second queue and back");
         check(ready == 3, "built on the first queue, on the second, and on the first again");
+    } else if (failed_presenter) {
+        // The renderer could not be made on the first device (its texture
+        // cache's sampler refused). That failure belongs to the first device:
+        // it holds the overlay as a working renderer would, so the second is
+        // passed through while both present, and gives it up when it falls
+        // silent or is destroyed. It used to be the whole process's: no other
+        // device was ever built for, nothing moved, nothing was drawn anywhere
+        // (entry 263's defect, on this side).
+        const long refused = count_events(witness_report, "sampler-refused", nullptr, nullptr);
+        const long declined = lines_containing(layer_log, "texture cache did not come up");
+        const long moved = lines_containing(layer_log, "moving the overlay");
+        const long ready = lines_containing(layer_log, "backend ready");
+        printf("     the witness refused %ld sampler(s); the layer declined %ld time(s), said "
+               "\"moving the overlay\" %ld time(s) and \"backend ready\" %ld time(s)\n",
+               refused, declined, moved, ready);
+        check(refused == 1, "the first device's texture cache was refused (the precondition)");
+        check(declined == 1, "the layer declined on the first device, said once");
+        check(second_idle_foreign == 0,
+              "while both present, the second device's frame is its own: the first holds the "
+              "overlay where it could not be made");
+        check(second_drawn_foreign > 500,
+              "once the first fell silent, the overlay moved to the second device and drew there");
+        check(foreign > 500, "and was built on the first again once the second was gone");
+        check(moved == 1, "moved once, after the first device fell silent");
+        check(ready == 2, "built on the second device, then on the first");
     } else if (second_presenter) {
         check(second_idle_foreign == 0,
               "while both devices present, the second's frame is its own: the renderer lives on "

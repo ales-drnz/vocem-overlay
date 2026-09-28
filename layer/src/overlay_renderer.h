@@ -111,6 +111,14 @@ public:
 
     bool ready() const { return backend_ready_; }
 
+    // Whether prepare() failed on the device it was last given, until
+    // shutdown(). The layer then holds the overlay on that device and queue,
+    // as it would a renderer that came up (vocem/atlas_owner.h).
+    bool failed() {
+        std::lock_guard<std::mutex> guard(lock_);
+        return failed_;
+    }
+
     // The settings as this process sees them: the same LiveConfig draw() reads,
     // one stat() every couple of seconds. A copy, because the reparse happens
     // under lock_ and a reference would outlive it.

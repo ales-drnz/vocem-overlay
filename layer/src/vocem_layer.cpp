@@ -234,24 +234,45 @@ DeviceData* find_device(void* dispatchable) {
 
 // Who holds the renderer, when it last presented and who was told it has no
 // overlay (vocem/atlas_owner.h): the transition is one spelling with the GL
-// path's. Its clock starts when a renderer comes up (vocem_QueuePresentKHR,
-// after prepare()); until then nothing is Abandoned.
+// path's. Its clock starts when a renderer comes up, or fails to
+// (vocem_QueuePresentKHR, after prepare()); until then nothing is Abandoned.
 vocem::HandOver g_hand_over;
+// The device and queue a renderer could not be made on, while they hold the
+// overlay (HandOver::Holding::Failed): a failure is that device's, not the
+// process's, and goes when it falls silent or is destroyed (entry 263's rule,
+// tests/vk_present_draw.cpp's failed-presenter scene).
+VkDevice g_failed_device = VK_NULL_HANDLE;
+VkQueue g_failed_queue = VK_NULL_HANDLE;
 
 using Presenter = vocem::HandOver::Presenter;
 
+bool failed_here(VkDevice device, VkQueue queue) {
+    return g_hand_over.holding() == vocem::HandOver::Holding::Failed &&
+           device == g_failed_device && queue == g_failed_queue;
+}
+
 Presenter whose_present(VkDevice device, VkQueue queue) {
-    // Nobody owns a renderer that is not up: whoever presents next builds it.
-    if (!vocem::renderer().ready()) {
+    const bool failed = g_hand_over.holding() == vocem::HandOver::Holding::Failed;
+    // Nobody owns a renderer that is neither up nor refused: whoever presents
+    // next builds it.
+    if (!failed && !vocem::renderer().ready()) {
         return Presenter::Owner;
     }
     const double now = vocem::monotonic_seconds();
-    const Presenter who = g_hand_over.present(vocem::renderer().owns(device, queue), now);
+    const Presenter who = g_hand_over.present(
+        failed ? failed_here(device, queue) : vocem::renderer().owns(device, queue), now);
     if (who == Presenter::Foreign && g_hand_over.first_word_with(device, queue)) {
-        VOCEM_LOG("not drawing on device %p queue %p: the overlay's renderer lives on device %p "
-                  "and its queue, which presented %.1f s ago", static_cast<void*>(device),
-                  static_cast<void*>(queue), static_cast<void*>(vocem::renderer().device()),
-                  g_hand_over.seen() > 0.0 ? now - g_hand_over.seen() : 0.0);
+        if (failed) {
+            VOCEM_LOG("not drawing on device %p queue %p: the overlay is held by device %p, "
+                      "where it could not be made and which presented %.1f s ago",
+                      static_cast<void*>(device), static_cast<void*>(queue),
+                      static_cast<void*>(g_failed_device), now - g_hand_over.seen());
+        } else {
+            VOCEM_LOG("not drawing on device %p queue %p: the overlay's renderer lives on device "
+                      "%p and its queue, which presented %.1f s ago", static_cast<void*>(device),
+                      static_cast<void*>(queue), static_cast<void*>(vocem::renderer().device()),
+                      g_hand_over.seen() > 0.0 ? now - g_hand_over.seen() : 0.0);
+        }
     }
     return who;
 }
@@ -290,6 +311,8 @@ void release_renderer_locked() {
     }
     vocem::renderer().shutdown();
     g_hand_over.let_go();
+    g_failed_device = VK_NULL_HANDLE;
+    g_failed_queue = VK_NULL_HANDLE;
 }
 
 // ---------------------------------------------------------------------------
@@ -553,8 +576,11 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
         }
         // Only the renderer's OWN device takes the renderer down: a helper
         // device (video decoder, probe, second adapter) must not tear down
-        // what the presenting device's command buffers still read.
-        if (vocem::renderer().device() == device) {
+        // what the presenting device's command buffers still read. A device
+        // the renderer could not be made on gives the overlay up the same way.
+        if (vocem::renderer().device() == device ||
+            (g_hand_over.holding() == vocem::HandOver::Holding::Failed &&
+             g_failed_device == device)) {
             vocem::journal_note("device destroyed; renderer shutting down");
             release_renderer_locked();
         }
@@ -1330,7 +1356,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         // device and queue. The atlas stays. Asked again under the
         // lock: another thread may have moved it already.
         std::lock_guard<std::mutex> guard(g_lock);
-        if (vocem::renderer().ready() && !vocem::renderer().owns(present_device, queue)) {
+        const bool failed_elsewhere =
+            g_hand_over.holding() == vocem::HandOver::Holding::Failed &&
+            !failed_here(present_device, queue);
+        if ((vocem::renderer().ready() && !vocem::renderer().owns(present_device, queue)) ||
+            failed_elsewhere) {
             VOCEM_LOG("the renderer's device has not presented for %.0f s: moving the overlay "
                       "to device %p",
                       vocem::HandOver::kSeconds, static_cast<void*>(present_device));
@@ -1358,6 +1388,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
             std::lock_guard<std::mutex> guard(g_lock);
             if (vocem::renderer().ready()) {
                 g_hand_over.take(vocem::HandOver::Holding::Ready, vocem::monotonic_seconds());
+            }
+        } else if (vocem::renderer().failed()) {
+            // Refused here: this device and queue hold the overlay as a
+            // renderer that came up would, so the failure goes with them
+            // rather than staying the whole process's.
+            // Asked again under the lock: a release on another thread may
+            // have cleared the failure in between.
+            std::lock_guard<std::mutex> guard(g_lock);
+            if (!g_hand_over.held() && vocem::renderer().failed()) {
+                g_hand_over.take(vocem::HandOver::Holding::Failed, vocem::monotonic_seconds());
+                g_failed_device = pending_target.device;
+                g_failed_queue = pending_target.queue;
+                VOCEM_LOG("the overlay stays with device %p, where its renderer could not be "
+                          "made, until that device is destroyed or falls silent",
+                          static_cast<void*>(pending_target.device));
             }
         }
     } else if (vocem::renderer().ready()) {

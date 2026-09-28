@@ -1868,3 +1868,11 @@ vocem_test_run(gl_switch_foreign_daemon TARGET gl_switch_foreign
 vocem_m32_twin_run(gl_switch_foreign_daemon TARGET gl_switch_foreign_daemon
     ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
         "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=daemon")
+
+# The renderer refused on the first of two presenting devices (the witness fails
+# its texture cache's sampler): the failure belongs to that device, which holds
+# the overlay as a working renderer would until it falls silent or goes, and the
+# second device gets it then (vk_present_draw.cpp, failed-presenter). 64-bit
+# only: the refusal needs the witness layer, which is built at one width.
+vocem_test_run(vk_present_failed_presenter TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=failed-presenter" SKIP TIMEOUT 120)
