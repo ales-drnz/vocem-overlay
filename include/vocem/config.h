@@ -8,18 +8,13 @@
 // GUI and read by the injected code. Header-only and dependency-free, because the
 // in-game side must not pull in a parser library.
 //
-// Reading happens at initialisation and, at most, once every couple of seconds
-// afterwards to pick up edits -- never per frame. Unknown keys are ignored and
-// missing ones fall back to the defaults below, so a config written by a newer
-// version never breaks an older overlay.
+// Read at initialisation and at most every couple of seconds afterwards, never
+// per frame. Unknown keys are ignored and missing ones take the defaults below,
+// so a file written by a newer version never breaks an older overlay.
 //
-// Numbers are written and parsed without going through LC_NUMERIC. That is not a
-// theoretical concern: Qt6 leaves LC_NUMERIC at the user's locale once
-// QGuiApplication exists, while the injected code and the daemon run in the C
-// locale, so on an Italian system the GUI wrote "opacity = 0,82" and the game
-// process read it as 0 -- an invisible panel background with no error anywhere.
-// The reverse direction corrupts just as quietly: a file written with a full stop
-// comes back as 0 in the GUI, which then saves the zero. Both were observed.
+// Numbers are written and parsed without LC_NUMERIC: Qt6 leaves it at the
+// user's locale while the injected code and the daemon run in the C locale, so
+// "0,82" and "0.82" would each read as 0 on the other side.
 
 #ifndef VOCEM_CONFIG_H
 #define VOCEM_CONFIG_H
@@ -43,50 +38,36 @@
 namespace vocem {
 
 struct Config {
-    // The panel's top-left corner, as a fraction of the output, so it means the same
-    // thing at any resolution. Values are clamped at draw time so the panel always
-    // stays fully on screen whatever its height: 1.0 therefore reads as "against the
-    // far edge" rather than "off the edge", which is what the corner presets use.
-    // Left side, half way down: the owner's chosen default. A fraction is a place
-    // between the margins (vocem/placement.h), so 0.5 centres the panel on that
-    // side rather than putting its top edge at the middle.
+    // The panel's top-left corner, as a fraction of the output, so it means the
+    // same thing at any resolution. A fraction is a place between the margins
+    // (vocem/placement.h), clamped at draw time so the panel stays on screen:
+    // 1.0 is "against the far edge", and 0.5 centres the panel on that side.
+    // Left side, half way down, is the owner's chosen default.
     float position_x = 0.0f;
     float position_y = 0.5f;
 
     // Appearance
     float scale = 1.0f;           // user scale on top of the automatic DPI scale
 
-    // Which way the people are laid out inside the panel: one under the next,
-    // or one beside the next. A column is the default because that is what a
-    // participant list is, and because it stays the same width whoever joins;
-    // a row is for a player who wants the overlay along an edge of the screen,
-    // out of the middle of the picture. It is a layout, not a second panel:
-    // the same rows, the same settings, the same box -- only the direction the
-    // cells advance in, and the direction the panel runs out of room in.
-    //
-    // Written as a word rather than a number, unlike notification_corner: this
-    // one has an obvious spelling in the file and a number would have to be
-    // looked up. A file from a version that had no layouts has no key and gets
-    // the column, which is what it was drawing.
+    // Which way the people are laid out inside the panel: one under the next
+    // (the default: a participant list, the same width whoever joins), or one
+    // beside the next, for an overlay along an edge of the screen. Only the
+    // direction the cells advance and the panel runs out of room in changes.
+    // Written as a word; a file without the key gets the column.
     static constexpr int kLayoutVertical = 0;
     static constexpr int kLayoutHorizontal = 1;
     int panel_layout = kLayoutVertical;
 
-    // The layout, by its name. A number is accepted on the way in too, because
-    // that is what a file written by a script is likely to carry, and anything
-    // else keeps the current value rather than turning somebody's panel sideways
-    // over a typo. Public because everything that names this setting -- the
-    // file, the window's bridge, the geometry measurement's own labels -- must
-    // spell it the same way.
+    // The layout, by its name, or a number as a script is likely to write it;
+    // anything else keeps the current value rather than turning a panel
+    // sideways over a typo. Public so the file, the window's bridge and the
+    // geometry measurement's labels spell it the same way.
     static int to_layout(const char* text, int fallback) {
         while (*text == ' ' || *text == '\t') {
             ++text;
         }
-        // The whole word, not a prefix: the sentence above promises that a typo
-        // keeps the current value, and a prefix match turns "horizontalq" -- and
-        // "vertical panel" -- into a layout the user did not ask for. The
-        // trailing side is already clean by the time this is called (trim()
-        // takes it off), so a plain comparison is the strict reading.
+        // The whole word, not a prefix, so a typo ("horizontalq") keeps the
+        // current value. trim() has already taken the trailing side off.
         if (std::strcmp(text, "horizontal") == 0 || std::strcmp(text, "1") == 0) {
             return kLayoutHorizontal;
         }
@@ -101,29 +82,21 @@ struct Config {
     }
 
     // Where the panel's surface is drawn: around everything, or behind each name
-    // and nothing else -- a pill under the text, the pictures straight on the
-    // game. It is the same surface and the same opacity either way; what changes
-    // is the shape they are put on, which is why this is one setting beside the
-    // colour rather than a second colour of its own.
+    // only -- a pill under the text, the pictures straight on the game. Same
+    // surface and opacity either way; only the shape changes, hence one setting
+    // beside the colour.
     //
-    // "Behind the names" is the default, and the preset the defaults are built
-    // on (kPresets in theme.h): it carries the measured floor where the text
-    // actually is -- 88% of #17181c under the glyphs, the composite
-    // tests/theme_contrast.cpp holds to 4.5:1 -- while leaving the rest of the
-    // picture the player's. The whole-panel box is one chip away and is what
-    // every release up to 0.1.6 drew.
-    //
-    // A word rather than a number, for panel_layout's reason: it has an obvious
-    // spelling in the file. A file from a version that had no such setting has
-    // no key, and gets the pill -- the same answer a fresh install gets, so the
-    // default is one look and not two.
+    // "Behind the names" is the default and the preset the defaults are built on
+    // (kPresets in theme.h): it keeps the contrast floor where the text is (88%
+    // of #17181c under the glyphs, held to 4.5:1 by tests/theme_contrast.cpp)
+    // and leaves the rest of the picture to the player. Written as a word; a
+    // file without the key gets the pill, as a fresh install does.
     static constexpr int kBoxPanel = 0;
     static constexpr int kBoxNames = 1;
     int panel_box = kBoxNames;
 
-    // The same reading as to_layout(): the whole word, a number for a file
-    // written by a script, and anything else keeps the current value rather than
-    // moving somebody's box over a typo.
+    // The same reading as to_layout(): the whole word, or a number, and anything
+    // else keeps the current value.
     static int to_box(const char* text, int fallback) {
         while (*text == ' ' || *text == '\t') {
             ++text;
@@ -139,154 +112,104 @@ struct Config {
 
     static const char* box_text(int box) { return box == kBoxNames ? "names" : "panel"; }
 
-    // The two boxes are configured independently, in colour and in transparency,
-    // because they are not the same thing: the voice panel sits there for the whole
-    // session and can afford to be quiet, while a message arrives, has to be read
-    // once, and leaves. Tying them together -- which an earlier version did, with a
-    // single opacity and one switch choosing between two hardcoded colours -- meant
-    // that making the panel discreet made the messages unreadable.
+    // The two boxes have their own colour and opacity: the voice panel stays for
+    // the whole session and can be quiet, while a message has to be read once,
+    // quickly. 0xRRGGBB; transparency is the separate opacity, so a colour never
+    // carries an alpha.
     //
-    // 0xRRGGBB. Transparency is the separate opacity below, so a colour never
-    // carries an alpha and the two can be changed without disturbing each other.
-    //
-    // A neutral dark surface, not Discord's blurple, which it was. The blurple is
-    // what Discord paints *on* its near-black surfaces, never under this text: on
-    // it the palette's dimmest name measured 1.02:1 -- invisible -- and the best
-    // of the four roles 3.70:1, all under the 4.5:1 floor (WCAG 2.2, measured in
-    // tests/theme_contrast.cpp, which holds every boxed preset to it). #17181c
-    // sits in the family of Discord's own chat surfaces, so the overlay still
-    // reads as a piece of that conversation; the blurple is demoted to an accent,
-    // which is also what the application's own icon had been claiming all along.
-    // The default *opacity* below is zero, so out of the box this colour decides
-    // the text ramp and nothing else -- it is what the opacity slider raises.
+    // A neutral dark surface in the family of Discord's chat surfaces, not its
+    // blurple: on the blurple the palette's names fall below the 4.5:1 floor
+    // (tests/theme_contrast.cpp holds every boxed preset to it). The blurple is an
+    // accent here, like the bar down the message box's edge.
     uint32_t panel_colour = 0x17181c;
-    // The same surface as the panel's: the two boxes are one hand's work, and
-    // the blurple the message box used to be is demoted to the bar down its left
-    // edge. Unlike the panel this box *draws* its surface by default -- a
-    // message arrives, is read once and leaves, and text that has to be read on
-    // the first glance gets a box behind it.
+    // The same surface as the panel's. Unlike the panel's, this box's surface is
+    // drawn at full opacity by default: a message has to be read at first glance.
     uint32_t notification_colour = 0x17181c;
     // The ring drawn around whoever is speaking.
     uint32_t speaking_colour = 0x23a55a;     // Discord's green
 
     // The three text colours a user may pin: an idle name, the speaking name,
-    // and the message's text. kColourAuto -- the default -- keeps theme.h's
-    // automatism, where the ramp is chosen by the box's own lightness; a picked
-    // value overrides that one role on whatever box is set. Asked for by the
-    // owner against a real scene: at the preview's true-to-display scale the
-    // toast body's grey renders under 50% pixel coverage on the dark box and
-    // reads as nothing, and the user has the last word about legibility.
+    // and the message's text. kColourAuto, the default, keeps theme.h's ramp,
+    // chosen by the box's own lightness; a picked value overrides that one role
+    // on any box, because the user has the last word about legibility.
     static constexpr uint32_t kColourAuto = 0xffffffffu;
     uint32_t text_idle_colour = kColourAuto;
     uint32_t text_speaking_colour = kColourAuto;
     uint32_t notification_text_colour = kColourAuto;
 
-    // 88%, and it is the pill behind each name that is drawn at it, not a box
-    // around the whole panel (panel_box above). It was zero -- names straight on
-    // the game, the lightest possible presence -- and that traded the measured
-    // floor away everywhere: the composite tables in tests/theme_contrast.cpp
-    // are about this surface at this opacity, and now they are about what the
-    // default actually draws under its text. The whole picture stays the
-    // player's, because the surface only goes where the words are.
+    // Drawn on the pill behind each name, not on a box around the whole panel
+    // (panel_box above); the composite tables in tests/theme_contrast.cpp are
+    // about this surface at this opacity.
     float opacity = 0.88f;        // voice panel background opacity
 
-    // Below this the background is effectively gone and only the text is left. A
-    // legitimate choice, but one the interface has to say out loud: an opacity that
-    // reached zero by accident used to look exactly like a broken overlay.
+    // Below this the background is effectively gone and only the text is left.
+    // A legitimate choice, but one the interface says out loud: a zero opacity
+    // looks exactly like a broken overlay.
     static constexpr float kFaintBackground = 0.15f;
 
-    // Half again as large as the text line. At 1.0 the picture is the height of a
-    // line of text, which is small enough that a face is not recognisable at a
-    // glance -- which is the only thing an avatar is there for.
+    // Half again as large as the text line: at 1.0 a face is too small to
+    // recognise at a glance, which is the only thing an avatar is there for.
     float avatar_size = 1.5f;     // multiplier on the avatar diameter
 
-    // How strongly the picture of somebody who is not talking shows. Their name
-    // has always been greyed (theme.h's text_idle) while their face stayed at
-    // full strength, which is not what Discord's own overlay does: it quiets
-    // the picture with the name. 55% because that is the step the name takes
-    // on the default palette -- the idle grey #b5bac1 carries 0.488 of the
-    // light the speaking #f2f3f5 carries (0.896), 54%, and over a dark scene a
-    // picture at alpha a carries a of its own. 1.0 is every picture lit, which
-    // is what every version up to 0.1.9 drew. Not below 10%: a picture at zero
-    // is not drawn at all (ImGui culls alpha 0), a row whose face has gone
-    // reads as a broken avatar, and hiding whoever is quiet is only_speaking.
+    // How strongly the picture of somebody who is not talking shows, quieted
+    // with the name as Discord's own overlay does. 55% is the step the name
+    // takes on the default palette: idle #b5bac1 carries 54% of the light of
+    // speaking #f2f3f5. 1.0 lights every picture. Not below 10%: ImGui culls
+    // alpha 0, a missing face reads as a broken avatar, and hiding whoever is
+    // quiet is only_speaking.
     float avatar_idle_opacity = 0.55f;
 
-    // Whether the text carries its outline -- permanent while on, not a remedy
-    // that fades in when the background thins (see kTextOutlineStrength in
-    // theme.h). Off by default on the owner's judgement: the default overlay is
-    // as light as it can be, clean glyphs straight on the game, and whoever
-    // finds their scene washing the names out has this switch and the preset
-    // row. The INI key keeps its old name so files written before the outline
-    // existed keep their answer.
+    // Whether the text carries its outline, permanently while on (see
+    // kTextOutlineStrength in theme.h). Off by default on the owner's judgement:
+    // clean glyphs straight on the game, with this switch and the presets for a
+    // scene that washes the names out. The INI key keeps its old name, so older
+    // files keep their answer.
     bool text_shadow = false;
     // Off by default, same judgement: out of the box the overlay is the people,
-    // not the room they are in. The channel name remains one switch away.
+    // not the room they are in.
     bool show_channel_name = false;
 
-    // Notifications. Direct messages and mentions appear as a toast in one of the
-    // four corners -- corners rather than free placement because a toast comes and
-    // goes, and something that appears in an unexpected spot is worse than something
-    // that always appears in the same one.
+    // Notifications. Direct messages and mentions appear as a toast in one of
+    // the four corners: something that comes and goes should always appear in
+    // the same place.
     bool notifications_enabled = true;
     int notification_corner = 1;      // 0 TL, 1 TR, 2 BL, 3 BR
     float notification_seconds = 5.0f;
-    // Its own opacity, separate from the panel's, and solid by default. The two
-    // boxes are read differently: the voice panel is furniture and the default
-    // draws none of it, while a message is there to be read once, quickly, over
-    // whatever happens to be behind it. Still adjustable, because someone who
-    // wants it to sit lighter should be able to say so. (This said 94% for as
-    // long as it took somebody to change the value and not the sentence.)
+    // Its own opacity, solid by default: a message is there to be read once,
+    // quickly, over whatever is behind it. Still adjustable.
     float notification_opacity = 1.0f;
     // The message's own size, so it can be readable without making the voice panel
     // large as well.
     float notification_scale = 1.0f;
-    // The message's text has no setting: it is always drawn. What used to be a
-    // switch (off by default, so the feature was off) is a transport instead --
-    // the words live in their own segment, created when a message arrives,
-    // opened only by a process that is about to draw that toast, and removed
-    // when the toast ends (vocem/note.h). A file written by a version that had
-    // the switch still parses: unknown keys are ignored, which is the rule this
-    // format has always had.
+    // The message's text has no setting: it is always drawn. The words travel in
+    // their own segment, created when a message arrives and removed when the
+    // toast ends (vocem/note.h).
 
     // Spacing, in pixels at the reference text size of 16, scaled with everything
-    // else at draw time. These are the numbers that were constants in the drawing
-    // code: they are settings now because "a bit further from the edge" and "the
-    // names are too close to the pictures" are real complaints with no other
-    // answer.
+    // else at draw time.
     float screen_margin = 16.0f;    // the panel, from the edge of the display
-    // The message's own distance from the edge, with exactly the panel's
-    // behaviour: the anchor marks in the window move with it, and the box is
-    // placed by the same arithmetic (vocem/placement.h). One setting each, because
-    // the two boxes are positioned independently and a slider that moved both was
-    // the shape of entry 17 in reverse.
+    // The message's own distance from the edge, placed by the same arithmetic as
+    // the panel's (vocem/placement.h). One setting each, because the two boxes
+    // are positioned independently (entry 17).
     float notification_margin = 16.0f;
     float box_padding_x = 4.0f;     // inside either box, left and right
     float box_padding_y = 4.0f;     // inside either box, top and bottom
     float avatar_gap = 4.0f;        // between a picture and the name beside it
     float row_spacing = 0.0f;       // between one person and the next
 
-    // The height of a line of text, in the same units. Separate from the panel's
-    // size, which scales the whole box: this changes the text against the pictures
-    // and the padding rather than with them, and is the setting for a panel whose
-    // names are too small to read at a glance without everything else growing too.
-    //
-    // It is the reference the rest of the layout is expressed in, so the overlay
-    // divides by it rather than by a constant -- see ui_scale() in fonts.h.
+    // The height of a line of text, in the same units. Separate from `scale`,
+    // which scales the whole box: this changes the text against the pictures and
+    // the padding. It is the reference the layout is expressed in, so the overlay
+    // divides by it rather than by a constant (ui_scale() in fonts.h).
     float font_size = 16.0f;
 
-    // The typeface. Empty -- the default -- is the carried Inter, which is what
-    // every version before this one drew and the only thing that needs no
-    // machine to be true of it.
+    // The typeface. Empty, the default, is the carried Inter.
     //
     // The *window* resolves a family to files and writes both here; the injected
-    // code only ever opens a path. That split is the whole design: a game's
-    // process may not ask fontconfig anything (a library, a cache, a config
-    // parse and a handful of file syscalls, inside somebody else's renderer),
-    // while the window already has Qt and the desktop's font machinery loaded.
-    // `font_family` is the name the window shows; the two paths are what the
-    // overlay reads, and a file that has gone away since it was chosen falls
-    // back to Inter and says so in the log.
+    // code only ever opens a path, because a game's process may not ask
+    // fontconfig anything (a library, a cache, a config parse and file syscalls
+    // inside somebody else's renderer). `font_family` is the name the window
+    // shows; a path that has gone away falls back to Inter and says so in the log.
     std::string font_family;
     std::string font_path;
     std::string font_path_strong;
@@ -297,79 +220,50 @@ struct Config {
     bool show_muted_state = true;
 
     // Behaviour. Two switches rather than one master: the voice panel and the
-    // messages are separate features, and wanting one without the other is the
-    // common case rather than an edge case.
+    // messages are separate features.
     bool panel_enabled = true;
     bool enabled = true;          // master switch, honoured by the injected code
 
-    // What the configuration window does with itself. Neither is read by the
-    // injected code -- they are here because this is where the user's answers
-    // live, and a second settings file for two switches would be one too many.
-    //
-    // Closing the window puts it away behind the tray icon by default: the overlay
-    // is set up once and left running, and quitting it from the window is not
-    // usually what a close button means. Somebody who wants the close button to
-    // mean quit can say so.
+    // What the configuration window does with itself; not read by the injected
+    // code. Closing the window puts it away behind the tray icon by default: the
+    // overlay is set up once and left running.
     bool keep_running = true;
-    // Whether the window starts with the session, hidden, so the tray icon is there
-    // from login. Written out as a desktop entry under $XDG_CONFIG_HOME/autostart,
-    // which is the freedesktop mechanism for it; this is the intent, that file is
-    // the effect.
+    // Whether the window starts hidden with the session, through a desktop entry
+    // under $XDG_CONFIG_HOME/autostart; this is the intent, that file the effect.
     bool start_at_login = false;
 
-    // Whether the tray icon is the user's own voice state -- speaking, muted,
-    // deafened, in a channel saying nothing, not in one -- or simply the
-    // application's own picture.
-    //
-    // On by default, because the state is the reason there is an icon at all: a
-    // glance at the panel answers "am I still muted" without opening anything.
-    // The other answer is for somebody who wants their tray to look like every
-    // other application in it, or who does not want their voice state legible
-    // over their shoulder or on a stream.
+    // Whether the tray icon shows the user's own voice state (speaking, muted,
+    // deafened, silent in a channel, not in one) or the application's picture.
+    // On by default: "am I still muted" answered at a glance. Off is for a tray
+    // that looks like every other, or a voice state not legible on a stream.
     bool tray_voice_icon = true;
 
-    // Applications the user has asked for the overlay in even though the detection
-    // cannot tell they are games: something launched from a script or a terminal, an
-    // emulator started by hand, a binary that came from nowhere in particular.
+    // Applications the user wants the overlay in although the detection cannot
+    // tell they are games: launched from a script or a terminal, an emulator
+    // started by hand.
     std::string shown_apps;
 
-    // Applications the overlay must stay out of although it can tell they are games.
-    // Comma separated, matched against the process name or the executable's --
-    // whichever the window showed.
+    // Applications the overlay must stay out of although they look like games.
     //
-    // Both are empty by default, because the default is the detection, and a
-    // settings file should be a record of decisions rather than a census of the
-    // machine.
-    //
-    // It began as `gl_blacklist`, an OpenGL-only list carrying a dozen names --
-    // `steam`, `minecraft-launcher`, `discord`, the browsers, plasmashell, kwin --
-    // because the overlay drew everywhere except that list, and preloading a
-    // launcher is often the only way to reach the game it starts. Those names are
-    // gone from the default twice over: the detection leaves anything that is not a
-    // game alone without being told (of that list only Steam and the two Minecraft
-    // launchers have a `Categories=Game` entry at all), and the ones that do need
-    // taking back are in `is_launcher()` in `apps.h`, in code, where a default that
-    // can be edited away would have been a guarantee that is not one.
-    //
-    // Files written by the version that called this `gl_blacklist` are still read,
-    // so a list somebody added to survives.
+    // Both lists: comma separated, matched against the process name or the
+    // executable's (whichever the window showed), empty by default so the file
+    // records decisions rather than the machine. Launchers that need taking
+    // back are in is_launcher() in apps.h, in code. The old key `gl_blacklist`
+    // is still read as this one.
     std::string hidden_apps;
 
     // Flatpak application ids the daemon may serve the voice channel to, beside
-    // the ones whose exported desktop entry says Game. Comma separated, the same
-    // list syntax as the two above, matched against the id exactly
-    // (`org.example.Game`). Read by the daemon alone: a sandbox's own request
-    // is its word, and this is the user's (daemon/src/flatpak_bridge.cpp).
+    // the ones whose exported desktop entry says Game. Same list syntax, matched
+    // against the id exactly (`org.example.Game`). Read by the daemon alone: a
+    // sandbox's own request is its word, and this is the user's
+    // (daemon/src/flatpak_bridge.cpp).
     std::string flatpak_apps;
 
     // Which display each map in the window depicts, as the connector's name
-    // ("DP-2", "HDMI-A-1" -- the card<N>- prefix stripped, as the window lists
-    // them). Empty -- the default -- means automatic: the largest connected
-    // display, which is the one the overlay is sized for. Only the window reads
-    // these; the injected code sizes from the daemon's published height and has
-    // no use for a preview preference. One key per map, because the panel and
-    // the messages are positioned independently and may live on different
-    // screens.
+    // ("DP-2", the card<N>- prefix stripped). Empty, the default, is the largest
+    // connected display, the one the overlay is sized for. Read by the window
+    // only; one key per map, because the panel and the messages may live on
+    // different screens.
     std::string preview_display_panel;
     std::string preview_display_notification;
 
@@ -395,13 +289,10 @@ struct Config {
         return std::string(home) + "/.config/vocem/config.ini";
     }
 
-    // Returns the file's modification time in nanoseconds, or 0 when it does not
-    // exist. Used to decide whether a reload is worth doing. Nanoseconds because
-    // whole seconds let two writes inside one second look like one: a poll landing
-    // between them adopted the second write's stamp without reading it, and the
-    // edit stayed invisible until the file moved again. `long long` and not
-    // `long`, because this header is compiled into 32-bit games where `long` is
-    // thirty-two bits (entries 30/33/34's width lesson).
+    // The file's modification time in nanoseconds, or 0 when it does not exist;
+    // decides whether a reload is worth doing. Nanoseconds, because two writes in
+    // one second must not look like one; `long long`, because `long` is 32 bits
+    // in the 32-bit games this header is compiled into (entry 59).
     static long long mtime() {
         struct stat info{};
         if (stat(path().c_str(), &info) != 0) {
@@ -412,12 +303,9 @@ struct Config {
     }
 
     // Every numeric setting, with its bounds and the precision it is written at:
-    // the one place the file's bounds are stated. load() clamps by this table,
-    // the window's setters clamp by it (Config::clamped), and
-    // tests/slider_bounds.cmake holds every slider on every page to it -- the
-    // setters used to carry their own copies of these numbers, three of them
-    // with no bound at all, which is the drift entry 121 found in the sliders
-    // one file over (entry 136).
+    // the one place the bounds are stated. load() and the window's setters
+    // (Config::clamped) clamp by it, and tests/slider_bounds.cmake holds every
+    // slider to it (entry 136).
     struct Number {
         const char* key;
         float Config::*member;
@@ -462,18 +350,12 @@ struct Config {
         return value;
     }
 
-    // One of the three switches the window writes the moment it is clicked,
-    // put on top of the file AS IT STANDS ON DISK: loaded fresh, that one key
-    // changed, saved. The window used to write them over the copy it had
-    // loaded at startup -- for a tray application started at login, a copy
-    // from the morning -- so every key edited by hand or by a script since then
-    // was silently put back the next time the overlay was switched off and on
-    // (entry 136). And it used to write all THREE, the two nobody clicked
-    // taken from the window's copy, so a switch turned off outside the window
-    // was turned back on by a click on another one (entry 203). `which` is the
-    // member (&Config::enabled, &Config::panel_enabled or
-    // &Config::notifications_enabled); `written`, when given, receives what was
-    // saved.
+    // One of the three switches the window writes the moment it is clicked, put
+    // on top of the file as it stands on disk: loaded fresh, that one key
+    // changed, saved -- so keys edited outside the window since startup, and the
+    // other two switches, are not put back (entries 136, 203). `which` is
+    // &Config::enabled, &Config::panel_enabled or &Config::notifications_enabled;
+    // `written`, when given, receives what was saved.
     static bool write_switch(bool Config::*which, bool value, Config* written = nullptr) {
         Config fresh;
         fresh.load();
@@ -492,8 +374,8 @@ struct Config {
         }
         std::string line;
         while (read_line(file, line)) {
-            // `data()` is non-const from C++17, and the parsing below writes a
-            // terminator over the '=' exactly as it did to a char array.
+            // `data()` is non-const from C++17; the parsing below writes a
+            // terminator over the '='.
             char* text = line.data();
             char* equals = std::strchr(text, '=');
             if (!equals || text[0] == '#' || text[0] == '[' || text[0] == ';') {
@@ -534,12 +416,8 @@ struct Config {
         } else if (std::strcmp(key, "speaking_colour") == 0) {
             speaking_colour = to_colour(value, speaking_colour);
         } else if (std::strcmp(key, "accent_background") == 0) {
-            // Retired, and deliberately not migrated. It was a switch between
-            // two fixed colours, and both boxes now have a colour of their own;
-            // carrying its "off" value across would start people on the
-            // near-black without their having chosen it, in a version where the
-            // choice is finally visible. Anyone who wants that colour can pick
-            // it, and the default stays what the Discord client looks like.
+            // Retired and deliberately not migrated: it switched between two
+            // fixed colours, and both boxes now have a colour of their own.
         } else if (std::strcmp(key, "panel_layout") == 0) {
             panel_layout = to_layout(value, panel_layout);
         } else if (std::strcmp(key, "panel_box") == 0) {
@@ -557,10 +435,8 @@ struct Config {
         } else if (std::strcmp(key, "notifications_enabled") == 0) {
             notifications_enabled = as_bool(value);
         } else if (std::strcmp(key, "notification_corner") == 0) {
-            // A number 0-3, or the current value kept: atoi() answers 0 for
-            // a word, and 0 is top-left, so a typo used to move the box to
-            // a corner nobody chose -- unlike panel_layout and panel_box,
-            // whose readers keep the value on a typo. Same rule now.
+            // A number 0-3, or the current value kept: atoi() would read a word
+            // as 0, top-left.
             notification_corner = to_corner(value, notification_corner);
         } else if (std::strcmp(key, "font_family") == 0) {
             font_family = value;
@@ -654,15 +530,12 @@ struct Config {
     }
 
     // The window's copy with the file brought in under it: `mine` is what the
-    // window shows, `base` is the file as it was when that copy last followed
-    // it, `disk` is the file now. A setting the window changed (its text in
-    // `mine` is not its text in `base`) keeps the window's value; every other
-    // one takes the file's. The window saves this on Apply rather than
-    // `mine`: `mine` does not follow the file while an edit waits for Apply,
-    // so saving it put back every key changed outside the window since then --
-    // flatpak_apps, which the README says to edit by hand and the window has
-    // no control for, among them. Compared as the text the file would carry,
-    // which is the precision a value has once written.
+    // window shows, `base` the file as it was when that copy last followed it,
+    // `disk` the file now. A setting the window changed (its text in `mine` is
+    // not its text in `base`) keeps the window's value; every other takes the
+    // file's, so keys changed outside the window while an edit waits for Apply
+    // (flatpak_apps has no control at all) are not put back. Compared as the
+    // text the file would carry, the precision a value has once written.
     static Config merged(const Config& base, const Config& mine, const Config& disk) {
         Config result = mine;
         const std::vector<Entry> before = base.entries();
@@ -678,27 +551,17 @@ struct Config {
 
     // Only the GUI writes; the injected code never touches the file.
     //
-    // The file is the user's, and the window rewrites it IN PLACE: each line
-    // carrying a key the window knows gets that key's value, every other line
-    // -- comments, blank lines, sections, keys from a newer version, and a
-    // known key's line too long for load() to have read -- stays where it
-    // was, and the known keys the file lacked are added at the end of their
-    // section. It used to print a fresh file of its own and rename it over
-    // config.ini, which, measured on 0.1.10 with one click on a switch, turned a
-    // symlinked config.ini into a regular file (the target kept the old values
-    // and stopped reaching the overlay), deleted every comment and an unknown
-    // `future_key = 42` -- a newer version's setting, which DESIGN "Settings"
-    // promises survives an older reader -- and put a 0600 file back at 0644.
+    // The file is the user's and is rewritten IN PLACE (rewritten()): each line
+    // carrying a known key gets that key's value; every other line -- comments,
+    // blank lines, sections, keys from a newer version, a known key's line too
+    // long for load() -- stays; missing known keys are added at the end of their
+    // section.
     //
-    // Written to a temporary file beside the TARGET and renamed over it: a game
-    // reloads on the file's modification time, and truncating the real file
-    // would let it read a half-written one -- which is worse than it sounds,
-    // because the mtime would already be its final value and the bad read
-    // would stick until the next save. A symlink is resolved first, so the
-    // rename replaces the file it points at and the link stays a link -- one
-    // whose target does not exist yet too (write_target); the
-    // temporary takes the target's mode before it is renamed, and it is
-    // fsync'd, so a crash leaves the old file or the new one.
+    // Written to a temporary beside the TARGET and renamed over it: a game
+    // reloads on the mtime, which would already be final while it read a
+    // half-written file. A symlink is resolved first (write_target), so the link
+    // stays a link; the temporary takes the target's mode and is fsync'd, so a
+    // crash leaves the old file or the new one.
     bool save() const {
         const std::string file_path = path();
         const size_t slash = file_path.rfind('/');
@@ -711,9 +574,8 @@ struct Config {
         }
         struct stat existing{};
         const bool exists = ::stat(target.c_str(), &existing) == 0;
-        // A file that is there and cannot be read is not an empty one: taken
-        // for "no file", its contents were replaced by a fresh file of this
-        // copy's values and its mode (0200, the case measured) carried over.
+        // A file that is there and cannot be read is not an empty one: it would
+        // be replaced by this copy's values (entry 273).
         std::string current;
         if (exists && !read_whole(target, current)) {
             return false;
@@ -767,7 +629,7 @@ struct Config {
         // Keys with a line load() refused (read_line: past kMaxLineBytes).
         std::vector<bool> refused(wanted.size(), false);
         const auto index_of = [&wanted](const std::string& key) -> int {
-            // The name this setting had before 0.1.0 is the same setting.
+            // `gl_blacklist` is the old name of the same setting.
             const std::string name = key == "gl_blacklist" ? std::string("hidden_apps") : key;
             for (size_t i = 0; i < wanted.size(); ++i) {
                 if (name == wanted[i].key) {
@@ -803,11 +665,9 @@ struct Config {
                 if (equals != std::string::npos) {
                     const int known = index_of(trim_copy(line.substr(0, equals)));
                     if (known >= 0 && read_length > kMaxLineBytes) {
-                        // load() dropped this line whole, so the value in
-                        // this copy is not the line's: rewriting it wiped an
-                        // 8000-entry hidden_apps with one click on a switch.
-                        // It stays as it is; this copy's value, when there
-                        // is one, goes after it (see below), where the
+                        // load() dropped this line whole, so this copy's value
+                        // is not the line's. It stays as it is; this copy's
+                        // value, when there is one, goes after it, where the
                         // reader takes it.
                         refused[static_cast<size_t>(known)] = true;
                     } else if (known >= 0) {
@@ -891,44 +751,22 @@ struct Config {
     // user with a panel that looks broken.
     bool background_is_faint() const { return opacity < kFaintBackground; }
 
-    // The same question about the message box, which carries an opacity of its
-    // own: the two boxes are set independently, so the sentence the window puts
-    // under each slider has to come from that box's own value. Its slider used
-    // to stop at 20%, which meant the message box was the one surface in the
-    // overlay a user could not turn off -- the answer to "I want the words and
-    // nothing else" was a setting that refused to go there.
+    // The same question about the message box, which has an opacity of its own:
+    // the sentence under each slider comes from that box's value.
     bool notification_background_is_faint() const {
         return notification_opacity < kFaintBackground;
     }
 
 private:
-    // The longest single line this reader will keep. A settings file is the
-    // user's own, so this is not a defence against a hostile one; it is the
-    // bound that stops a line of any length turning into memory inside
-    // somebody's game, which is where this header is compiled. 64 KiB is about
-    // four thousand process names, and the lists are one entry per application
-    // the user has decided about.
+    // The longest single line this reader keeps: not a defence against a hostile
+    // file (it is the user's own) but a bound on the memory a line can take
+    // inside somebody's game. 64 KiB is about four thousand process names.
     static constexpr size_t kMaxLineBytes = 64 * 1024;
 
-    // Reads one whole line, however long it is.
-    //
-    // This used to be `char line[256]` and a bare `fgets`, which takes 255
-    // bytes and stops. The rest of a long line came back on the next iteration,
-    // had no '=' in it, and was skipped -- so nothing errored, nothing was
-    // logged, and the value was simply short. Two consequences, and the second
-    // is the one that cost something: the injected code got a truncated
-    // `hidden_apps`, so the applications the user hid last were given the
-    // overlay again; and the settings window reads this same header, so the
-    // next Apply wrote the truncation back and those entries were gone from the
-    // file for good, without anyone touching that page. The last surviving name
-    // was cut mid-word, so the list also gained an entry that is no
-    // application. Measured on a 330-byte list: 241 bytes came back, ending
-    // "...SomeGameBinary14,SomeGameBina", and the round trip kept them.
-    // `font_path`, `font_path_strong` and `shown_apps` share the same road.
-    //
-    // A line past the cap is consumed to its end and dropped rather than kept
-    // in pieces: half a value is not a value, and a caller reading a truncated
-    // list would act on it.
+    // Reads one whole line, however long it is. A line past the cap is consumed
+    // to its end and dropped rather than kept in pieces: a truncated value is
+    // worse than none, because the window would save the truncation back (a
+    // short `hidden_apps` gives hidden applications the overlay again).
     static bool read_line(std::FILE* file, std::string& line) {
         line.clear();
         char chunk[256];
@@ -953,15 +791,11 @@ private:
         return any;
     }
 
-    // The whole file, however long its lines: the rewrite keeps every line
-    // it does not own, and read_line's cap is for the reader inside a game.
-    // The file a write to `file_path` must land on: the path itself, or the
-    // end of the links it is. realpath() answers that for a link whose target
-    // exists and fails for one whose target does not -- dotfiles linked in
-    // before the file was first written -- and the rename then put a regular
-    // file where the link was. So a link realpath() cannot resolve is followed
-    // here, a relative target against the link's own directory; empty for a
-    // chain that does not end (a loop), which save() refuses.
+    // The file a write to `file_path` must land on: the path itself, or the end
+    // of the links it is. realpath() fails for a link whose target does not
+    // exist yet (dotfiles linked before the first write), so such a link is
+    // followed here, a relative target against the link's own directory. Empty
+    // for a chain that does not end (a loop), which save() refuses.
     static std::string write_target(const std::string& file_path) {
         if (char* resolved = ::realpath(file_path.c_str(), nullptr)) {
             std::string target = resolved;
@@ -986,8 +820,10 @@ private:
         return std::string();
     }
 
-    // False when the file cannot be opened or a read fails part way: the
-    // caller must not take that for an empty file.
+    // The whole file, however long its lines: the rewrite keeps every line it
+    // does not own, and read_line's cap is for the reader inside a game. False
+    // when the file cannot be opened or a read fails part way: the caller must
+    // not take that for an empty file.
     static bool read_whole(const std::string& file_path, std::string& text) {
         text.clear();
         std::FILE* file = std::fopen(file_path.c_str(), "r");
@@ -1022,9 +858,7 @@ private:
                               end[-1] == '\t')) {
             --end;
         }
-        // A quoted value loses both quotes, not only the closing one: a
-        // `font_path = "/a b/x.ttf"` written by hand used to come back as
-        // `"/a b/x.ttf` and the font quietly fell back to Inter.
+        // A quoted value loses both quotes, not only the closing one.
         if (end - text >= 2 && text[0] == '"' && end[-1] == '"') {
             ++text;
             --end;
@@ -1044,11 +878,9 @@ private:
         return fallback;
     }
 
-    // Decimal parsing that ignores LC_NUMERIC entirely, rather than trusting every
-    // process that reads this file to be in the same locale as the one that wrote it.
-    // Both separators are accepted on the way in: files already written with a comma
-    // keep their values instead of quietly resetting to zero. Exponents are not
-    // recognised, because no setting here is ever written in that form.
+    // Decimal parsing that ignores LC_NUMERIC (entry 15). Both separators are accepted on
+    // the way in, so files written with a comma keep their values. No exponents:
+    // no setting is ever written in that form.
     static double to_number(const char* text) {
         while (*text == ' ' || *text == '\t') {
             ++text;
@@ -1145,8 +977,8 @@ private:
         return colour == kColourAuto ? "auto" : colour_text(colour);
     }
 
-    // true/yes/on/1, in any case: `enabled = True` -- which a hand or a script
-    // plausibly writes -- switched the overlay OFF.
+    // true/yes/on/1, in any case: `enabled = True` is written by hand and by
+    // scripts, and must not switch the overlay off.
     static bool as_bool(const char* value) {
         char lowered[8] = {0};
         for (size_t i = 0; i < sizeof(lowered) - 1 && value[i]; ++i) {

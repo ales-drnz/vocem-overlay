@@ -4,13 +4,10 @@
 //
 // The key both avatar caches index by, as a fixed-size POD.
 //
-// It used to be "%llu_%s" formatted into a std::string, spelled independently
-// in the GL provider and the Vulkan TextureCache -- the entry-33 shape -- and,
-// at ~50 characters, past the small-string optimisation: one malloc and one
-// free per visible face, per frame, in both injected libraries, on the path
-// the project's own rules say must not allocate. C++17's unordered_map has no
-// heterogeneous lookup to hand a stack buffer to, so the key is a POD the map
-// hashes and compares without ever allocating.
+// A formatted std::string key would be past the small-string optimisation and
+// allocate per visible face, per frame, on the present path; C++17's
+// unordered_map has no heterogeneous lookup, so the key is a POD the map hashes
+// and compares without allocating.
 
 #ifndef VOCEM_AVATAR_KEY_H
 #define VOCEM_AVATAR_KEY_H
@@ -31,14 +28,10 @@ struct AvatarKey {
 
     // Somebody with no avatar -- or one whose hash is not sane -- is drawn from
     // default_<(id >> 22) % 6>.rgba, and the key says so: one of six keys for
-    // the six pictures, whoever wears them. It used to be the user's own id,
-    // which made a channel of 24 people without avatars 24 textures of one
-    // file, 24 uploads and, on the Vulkan side, 24 images, views and
-    // descriptor sets (entry 184, measured and left; closed by entry 192). The
-    // test is avatar_hash_is_sane, the same one avatar_rgba_path decides the
-    // file with, so the key and the file cannot disagree about what a picture
-    // is. Both caches derive the path from the arguments, never from the key,
-    // which is why collapsing it costs the loader nothing.
+    // the six pictures, whoever wears them, not one texture per user. The
+    // test is avatar_hash_is_sane, the one avatar_rgba_path decides the file
+    // with, so the key and the file cannot disagree. Both caches derive the
+    // path from the arguments, never from the key.
     //
     // The six ids sit at the top of the 64-bit range. A Discord snowflake is a
     // millisecond timestamp shifted left 22 bits and stays below 2^63 until

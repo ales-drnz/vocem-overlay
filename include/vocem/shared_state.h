@@ -33,11 +33,8 @@
 namespace vocem {
 
 // Bump on any layout change. Readers compare exactly, never "greater than".
-// v2 added User::avatar_hash; v3 added SharedState::status; v4 added the
-// notification slot; v5 added display_height, so the overlay's size comes from
-// the display rather than from whatever window it happens to be drawn in. v6
-// pins the layout so that it is the same at 32 and 64 bits, which it had never
-// been -- see the padding below, and the static_asserts under the struct.
+// v2 User::avatar_hash, v3 SharedState::status, v4 the notification slot,
+// v5 display_height, v6 the same layout at 32 and 64 bits (_layout_padding).
 constexpr uint32_t kAbiVersion = 6;
 
 constexpr uint32_t kMaxUsers = 24;
@@ -109,36 +106,26 @@ struct SharedState {
     uint32_t status;      // DaemonStatus
 
     // The largest connected display's mode height, read from /sys/class/drm by
-    // the daemon (vocem/display.h). What the overlay sizes its atlas by: a
-    // window is where the overlay is drawn, not how large it should be. Zero
-    // when no mode could be read, in which case the reader sizes from the
-    // drawable as it always had.
+    // the daemon (vocem/display.h): the overlay sizes its atlas by the display,
+    // not the window it is drawn in. Zero when no mode could be read, and the
+    // reader then sizes from the drawable.
     uint32_t display_height;
 
     char channel_name[kChannelCapacity];
 
-    // Explicit, and load-bearing: `User` begins with a `uint64_t`, whose
-    // *alignment* is eight bytes on x86-64 and **four** on i386. Without this
-    // field the compiler inserted four bytes of padding here at 64 bits and none
-    // at 32, so `users` began at offset 96 in the daemon and at 92 in every
-    // 32-bit game -- the same bytes, read four early. A 32-bit overlay therefore
-    // saw an id built from padding and half the real one, flags that were the
-    // other half, a name starting with four NUL bytes (so: empty), and a hash
-    // shifted out of alignment -- which reads as "this user has no custom
-    // avatar", sending it to a default face whose index was computed from the
-    // broken id. Measured against the running daemon's own segment: the same
-    // 2728 bytes gave `Fazen` with his hash at 64 bits and `id=8413850390381985792
-    // name='' hash=''` at 32. The channel name is *before* this point, which is
-    // why the panel looked almost right and only the rows were wrong.
+    // Explicit, and load-bearing: `User` begins with a `uint64_t`, aligned to 8
+    // bytes on x86-64 and to **4** on i386. Without this field the compiler pads
+    // four bytes here at 64 bits and none at 32, so `users` would begin at 96 in
+    // the daemon and at 92 in a 32-bit game, which then reads every row four
+    // bytes early (entry 55).
     uint32_t _layout_padding;
 
     User users[kMaxUsers];
     Notification notification;
 };
 
-// The layout is the ABI, so it is asserted rather than trusted. These numbers are
-// the same at both widths by construction now; a change that moves any of them is
-// a change every reader must be rebuilt for, which is what kAbiVersion is for.
+// The layout is the ABI, so it is asserted rather than trusted, and these
+// numbers are the same at both widths; moving any of them is a kAbiVersion bump.
 static_assert(sizeof(User) == 96, "User's layout is part of the ABI");
 static_assert(offsetof(User, id) == 0, "User::id moved");
 static_assert(offsetof(User, flags) == 8, "User::flags moved");
@@ -163,15 +150,11 @@ struct Snapshot {
     User users[kMaxUsers] = {};
 };
 
-// Text into a fixed-capacity field, cut on a character and never mid-character.
-//
-// The one spelling of this in the project: everything that lands in the segment
-// or in the note goes through it. A cut on the byte leaves half a UTF-8 sequence,
-// which the overlay draws as a question mark -- names are full of emoji and a
-// message body is full of accents, so the cut lands inside a sequence often. The
-// note's body was the one field that still used snprintf and had that defect.
-// Continuation bytes are 0b10xxxxxx: step back over them, and over the lead byte
-// they belong to when it could not fit whole.
+// Text into a fixed-capacity field, cut on a character and never mid-character:
+// half a UTF-8 sequence draws as a question mark, and names and messages are
+// full of emoji and accents. Everything that lands in the segment or the note
+// goes through it. Continuation bytes are 0b10xxxxxx: step back over them, and
+// over the lead byte they belong to when it could not fit whole.
 inline void copy_string(char* dest, size_t capacity, const char* source, size_t source_length) {
     if (capacity == 0) {
         return;
@@ -200,13 +183,10 @@ inline void shm_name(char* out, size_t capacity, unsigned int uid) {
     std::snprintf(out, capacity, "/vocem-%u", uid);
 }
 
-// Where the daemon caches avatar images and the layer reads them from. Both sides
-// derive it the same way so the path never has to travel through the ABI.
-//
-// Inside a Flatpak game the cache the daemon wrote is not reachable at all --
-// XDG_CACHE_HOME there is the application's own ~/.var/app directory -- so the
-// overlay reads the copies the daemon mirrored across the bridge instead. Only
-// the injected code turns that on; see vocem/flatpak.h.
+// Where the daemon caches avatar images and the layer reads them from, derived
+// the same way on both sides so the path never travels through the ABI. Inside a
+// Flatpak game the overlay reads the daemon's copies across the bridge instead
+// (vocem/flatpak.h).
 inline void avatar_cache_dir(char* out, size_t capacity) {
     if (bridge_in_use() && bridge_path(out, capacity, kBridgeAvatarsName)) {
         return;
@@ -219,11 +199,10 @@ inline void avatar_cache_dir(char* out, size_t capacity) {
     std::snprintf(out, capacity, "%s/.cache/vocem/avatars", home ? home : "/tmp");
 }
 
-// Discord documents avatar hashes as hexadecimal, optionally prefixed with "a_",
-// but this value arrives over the wire and is then pasted into a file path and a
-// URL. Anything outside that alphabet -- a slash, a dot, a NUL-free surprise --
-// is treated as "no hash", which falls back to a default avatar. Cheap, and it
-// means no remote value can ever steer a write outside the cache directory.
+// Discord avatar hashes are hexadecimal, optionally prefixed with "a_", but this
+// value arrives over the wire and is pasted into a file path and a URL. Anything
+// outside that alphabet is treated as "no hash" (a default avatar), so no remote
+// value can steer a write outside the cache directory.
 inline bool avatar_hash_is_sane(const char* hash) {
     if (!hash || hash[0] == '\0') {
         return false;
@@ -243,24 +222,18 @@ inline bool avatar_hash_is_sane(const char* hash) {
 }
 
 // The OLD cache's path: PNG, from before the format became raw RGBA
-// (vocem/avatar_rgba.h owns the living format and its own path). Kept solely
-// so the daemon can migrate a cache written by an earlier release
-// (avatars.cpp reads and unlinks these); no reader looks here any more, and
-// this function's name predates the change -- the comment is the warning.
-// A user with no custom avatar gets one of Discord's defaults; the index is
-// derived from the account id, matching what the client itself shows.
+// (vocem/avatar_rgba.h owns the living format and its path). Kept only so the
+// daemon can migrate an old cache (avatars.cpp reads and unlinks these); no
+// reader looks here. A user with no custom avatar gets one of Discord's
+// defaults, indexed from the account id as the client does.
 inline void avatar_cache_path(char* out, size_t capacity, uint64_t user_id,
                               const char* avatar_hash) {
     char dir[512];
     avatar_cache_dir(dir, sizeof(dir));
     if (avatar_hash_is_sane(avatar_hash)) {
-        // `%llu` and not `%lu`. A Discord id is a snowflake and needs all sixty-four
-        // bits; `unsigned long` is sixty-four of them on x86-64 and **thirty-two on
-        // i386**, so a 32-bit game asked for a file whose name was the id with its
-        // top half cut off -- 310503940594860049 became 1485045777 -- and the daemon
-        // that wrote the file is 64-bit and had written the whole thing. The file was
-        // never found, nothing failed, and every face in the panel was a grey circle.
-        // Held at both widths by tests/widths.cpp.
+        // `%llu`, not `%lu`: a snowflake id needs all 64 bits, and `unsigned long`
+        // is 32 on i386, where the file name would lose the id's top half
+        // (tests/widths.cpp holds both widths).
         std::snprintf(out, capacity, "%s/%llu_%s.png", dir,
                       static_cast<unsigned long long>(user_id), avatar_hash);
     } else {

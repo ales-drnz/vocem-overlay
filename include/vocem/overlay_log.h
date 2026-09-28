@@ -2,20 +2,8 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// The injected code's debug log, in one place.
-//
-// Four macros used to do this -- VOCEM_GLOG in the heavy GL library, VOCEM_LOG
-// in the layer, VOCEM_RLOG in its renderer and VOCEM_TLOG in its texture cache
-// -- each with a getenv-once static of its own for VOCEM_DEBUG, and only the GL
-// one knew VOCEM_LOG_FILE, which exists because a launcher can swallow a game's
-// stderr (the Minecraft launcher does: the game's fd 2 is a pipe the launcher
-// never writes anywhere readable). A Vulkan game under the same launcher had
-// no way to be read at all. One logger now: the tag is the caller's, the two
-// variables are read once, and the file half is the same for both paths --
-// appended (O_APPEND, O_CLOEXEC), one write(2) per whole line to each sink so
-// threads and processes sharing it never tear a line, pid on every line
-// because every process in the session that draws shares the one file. A
-// VOCEM_LOG_FILE that cannot be opened is said once on stderr.
+// The injected code's debug log, for both paths: the tag is the caller's, and
+// VOCEM_DEBUG and VOCEM_LOG_FILE are read once per process.
 //
 // Off unless VOCEM_DEBUG=1 or VOCEM_LOG_FILE is set; the macro asks before
 // evaluating its arguments, so a line that is not wanted costs a load and a

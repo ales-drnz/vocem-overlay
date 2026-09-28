@@ -5,41 +5,25 @@
 // The text of a message, and the only piece of this project that is deliberately
 // hard to reach.
 //
-// The overlay draws the message in the game's own frame, which means the game's
-// process holds those words at the moment they are drawn. That much is not
-// negotiable and is written down rather than glossed: **a game the user allows
-// the overlay into can read the message the overlay draws there.** What IS
-// negotiable -- and what this file exists for -- is everything around that
-// moment, because the first design put the text in the shared state segment,
-// and that segment is mapped by *every* Vulkan and OpenGL process on the
-// machine, for the whole session, whether or not it ever draws anything. The
-// text of every message the user received sat in the address space of the
-// browser, the compositor, the launcher and every game that had merely started.
-// The answer then was a switch defaulting to off, which meant the feature was
-// off; the owner's answer now is that the message must always be shown, and
-// that a game must never have that text lying around.
+// The overlay draws the message in the game's own frame, so **a game the user
+// allows the overlay into can read the message the overlay draws there**;
+// nothing prevents that. What this file bounds is everything around that moment:
+// the state segment is mapped by every Vulkan and OpenGL process in the session,
+// so the words must not live there. They live in a segment of their own:
 //
-// So the words live here instead, in a segment of their own:
+//   * it exists only while a toast is on screen: the daemon creates it when a
+//     message arrives and unlinks it when the toast has outlived its seconds;
+//   * nothing maps it as a matter of course: the injected code opens it only
+//     once it has decided to draw that toast in that process, so an excluded
+//     game or a non-game never touches it;
+//   * a reader copies and closes at once: a few syscalls per message, none per
+//     frame, no mapping left behind;
+//   * the copy is wiped when the toast ends.
 //
-//   * it exists only while a toast is on screen. The daemon creates it when a
-//     message arrives and unlinks it once the toast has outlived its seconds,
-//     so between messages there is nothing to read anywhere;
-//   * nothing maps it as a matter of course. The injected code opens it only
-//     when it has already decided to draw that toast in that process -- a game
-//     the user excluded, and every non-game, never touch it;
-//   * a reader takes its copy and closes immediately: three syscalls per
-//     message, none per frame, and no mapping left behind;
-//   * the copy is wiped when the toast ends, so the words are in the game's
-//     memory for the seconds they are on its screen and not a minute longer.
-//
-// What that buys, exactly: the exposure goes from "every graphical process,
-// always" to "the process that is drawing it, while it is drawing it". What it
-// does not buy is secrecy from the game being played, which no design can
-// while the drawing happens inside it.
-//
-// Both halves live in this one file so the format cannot drift (entry 33), and
-// the reader is written to the injected code's rules: no allocation, no parser,
-// a size the reader fixes rather than trusts, and a seqlock rather than a lock.
+// The exposure is "the process drawing it, while it draws it", not "every
+// graphical process, always". Both halves live here so the format cannot drift;
+// the reader follows the injected code's rules: no allocation, no parser, a size
+// it fixes rather than trusts, and a seqlock rather than a lock.
 
 #ifndef VOCEM_NOTE_H
 #define VOCEM_NOTE_H
@@ -87,11 +71,10 @@ inline void note_shm_name(char* out, size_t capacity, unsigned int uid) {
 
 class NoteWriter {
 public:
-    // Called after every publish and every clear, with the words or with
-    // nullptr. The daemon hangs its Flatpak mirrors here so a sandboxed game
-    // gets the message at the same moment a host game does, through one publish
-    // path rather than two. A plain function pointer: this header is compiled
-    // into games and nothing in it may allocate.
+    // Called after every publish and every clear, with the words or nullptr:
+    // the daemon's Flatpak mirrors hang here, so there is one publish path. A
+    // plain function pointer, because this header is compiled into games and
+    // nothing in it may allocate.
     void (*on_publish)(uint64_t serial, const char* body, void*) = nullptr;
     void* on_publish_context = nullptr;
 
@@ -209,10 +192,9 @@ private:
 // in this process. Not a cache in the usual sense: forgetting is the point.
 class NoteReader {
 public:
-    // The text for this toast, or an empty string. Opens the segment at most
-    // once per message -- a repeated frame costs nothing at all, which is the
-    // property the present path needs -- and closes it before returning, so a
-    // process holds no mapping of the words it is not currently drawing.
+    // The text for this toast, or an empty string. Opens the segment at most once
+    // per message (a repeated frame costs nothing) and closes it before
+    // returning, so no mapping of the words outlives the read.
     const char* body_for(uint64_t serial) {
         if (serial == 0) {
             forget();
@@ -237,10 +219,9 @@ public:
             ::close(fd);
             return body_;
         }
-        // The same guard the state reader has: an object shorter than the struct
-        // maps fine and raises SIGBUS on the first touch, and this name is
-        // unlinked and recreated for every message, so the window in which it
-        // exists at zero bytes opens once per notification.
+        // An object shorter than the struct maps fine and raises SIGBUS on the
+        // first touch; this name is recreated for every message, so the
+        // zero-byte window opens once per notification.
         struct stat info {};
         if (fstat(fd, &info) != 0 || static_cast<size_t>(info.st_size) < sizeof(NoteShared)) {
             ::close(fd);
@@ -291,12 +272,9 @@ public:
     ~NoteReader() { forget(); }
 
 private:
-    // The words, by whichever of their two names this process can reach. Inside
-    // a Flatpak game shm_open() opens nothing however healthy the daemon is --
-    // /dev/shm there is a private tmpfs -- so what it reaches is the copy the
-    // daemon writes across the bridge, which the daemon removes at the same
-    // moment it unlinks the segment. Everything after this point is the same
-    // code answering the same question; only the name differs.
+    // The words, by whichever of their two names this process can reach: inside
+    // a Flatpak /dev/shm is a private tmpfs, so the reader opens the bridge copy,
+    // which the daemon removes when it unlinks the segment.
     static int open_note() {
         char path[512];
         if (bridge_in_use() && bridge_path(path, sizeof(path), kBridgeNoteName)) {

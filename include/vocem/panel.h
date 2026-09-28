@@ -36,12 +36,8 @@ public:
 void configure_style(const Config& config);
 
 // Whether each feature has anything to put on screen this frame. Both injection
-// paths ask this before spending a frame on ImGui -- and they must ask for BOTH
-// features: the guard used to be "in a voice channel with somebody", written
-// once per path, which made a toast outside a voice channel unreachable in
-// exactly the situation a toast is for. One spelling here, so the two paths and
-// the build functions below cannot drift apart about what "something to draw"
-// means.
+// paths ask this before spending a frame on ImGui, and for BOTH features: a
+// toast must be reachable outside a voice channel.
 inline bool panel_wanted(const Snapshot& snapshot, const Config& config) {
     return config.panel_enabled && snapshot.in_channel && snapshot.user_count > 0;
 }
@@ -58,12 +54,11 @@ inline bool notification_wanted(const Snapshot& snapshot, const Config& config,
 // Emits the voice panel. Must be called between ImGui::NewFrame() and
 // ImGui::Render().
 //
-// `now_seconds` is the same monotonic clock build_notification has always taken:
-// the panel's few animations -- the ring's rise and fall, a joining row's fade,
-// the crossfade when a picture arrives -- are functions of it, and their state
-// between frames lives in a fixed array inside panel.cpp, never allocated on the
-// present path. When every animation has settled the geometry is identical to
-// the resting one, which tests/panel_geometry.cpp measures twice to hold.
+// `now_seconds` is the monotonic clock build_notification takes too: the panel's
+// animations (the ring, a joining row's fade, a picture's crossfade) are functions
+// of it, and their state lives in a fixed array inside panel.cpp, never allocated
+// on the present path. Once every animation has settled the geometry is the
+// resting one (tests/panel_geometry.cpp).
 void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width, uint32_t height,
                  AvatarProvider* avatars, double now_seconds);
 

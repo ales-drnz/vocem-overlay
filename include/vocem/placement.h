@@ -7,21 +7,9 @@
 //
 // **A position fraction is a place between the margins, not a coordinate.** Zero
 // puts the box against the near edge -- at the distance-from-edge setting -- one
-// puts it against the far edge, and **0.5 centres it**. That is what an anchor
-// point means to somebody clicking one, and it is not what the arithmetic used to
-// do: the fraction was multiplied by the display's size and used as the box's
-// *top-left corner*, then clamped into the margins. So the middle-of-a-side
-// anchors put the panel's top edge at half the display and the whole box hung
-// below the middle -- reported by the owner as the snap "counting from the top".
-// The corners were right, which is why it took a while to be seen: three of the
-// four extremes agree under both readings, and 0.5 is the only fraction where the
-// two differ.
-//
-// The same function serves the message box, which now has a distance-from-edge of
-// its own and anchor marks that move with it exactly as the panel's do. Two boxes,
-// two settings, one arithmetic -- because the previews have to reproduce this to
-// the pixel and the last time a distance lived in two places the slider moved one
-// box and not the other (entry 17).
+// against the far edge, and **0.5 centres it**. The panel and the message box
+// each have their own distance-from-edge and share this arithmetic, because the
+// previews must reproduce it to the pixel.
 
 #ifndef VOCEM_PLACEMENT_H
 #define VOCEM_PLACEMENT_H
@@ -29,13 +17,12 @@
 namespace vocem {
 
 // The near-edge coordinate of a box of `box` units placed at `fraction` along an
-// axis of `extent` units, keeping `inset` units clear of both ends.
+// axis of `extent` units, keeping `inset` units clear of both ends (entry 56).
 //
-// When the box cannot fit between the margins the margins are what give: the box
-// is centred in whatever room the display has, which keeps it on screen and keeps
-// the answer one a preview can reproduce. A box larger than the display itself
-// starts at zero -- there is nothing better to do, and clipping from the far edge
-// beats clipping from the near one, where the names are.
+// When the box cannot fit between the margins the margins give: the box is
+// centred in whatever room the display has. A box larger than the display starts
+// at zero -- clipping from the far edge beats clipping the near one, where the
+// names are.
 inline float place_within(float fraction, float box, float extent, float inset) {
     const float travel = extent - box - inset * 2.0f;
     if (travel > 0.0f) {
@@ -46,11 +33,8 @@ inline float place_within(float fraction, float box, float extent, float inset) 
 }
 
 // The fraction that `place_within` turns back into `position` -- its exact
-// inverse, and it has to be, or a drag fights the placement that draws it. The
-// window used to divide the box's coordinate by the display's size, which is the
-// inverse of the arithmetic this file replaced: while a drag was live the two
-// disagreed by a whole inset plus a fraction of the box, and the panel jumped
-// under the pointer.
+// inverse, and it has to be, or a drag fights the placement that draws it and
+// the panel jumps under the pointer.
 inline float fraction_within(float position, float box, float extent, float inset) {
     const float travel = extent - box - inset * 2.0f;
     if (travel <= 0.0f) {
@@ -60,16 +44,11 @@ inline float fraction_within(float position, float box, float extent, float inse
     return f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
 }
 
-// What is deliberately NOT here: the anchor tables. This header used to carry
-// kPanelAnchors and kNotificationAnchors and claimed the window walked them;
-// nothing anywhere referenced either -- the window's six anchor points live in
-// ScreenMap.qml (in ITS order, left column then right, so the Tab order never
-// depends on where the panel is) and the toast's corners in
-// NotificationScreen.qml, because QML cannot read a C++ header. The arithmetic
-// above is what the two sides genuinely share, and one_placement_inverse.cmake
-// plus tests/panel_geometry.cpp's corner and placement checks are what hold
-// them together. A table that claims to be the one spelling while the real
-// copies live elsewhere is worse than no table.
+// The anchor tables are deliberately NOT here: QML cannot read a C++ header, so
+// the window's six anchor points live in ScreenMap.qml (left column then right,
+// so the Tab order never depends on where the panel is) and the toast's corners
+// in NotificationScreen.qml. one_placement_inverse.cmake and
+// tests/panel_geometry.cpp hold the two sides together.
 
 }  // namespace vocem
 

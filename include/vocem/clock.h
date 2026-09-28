@@ -5,11 +5,8 @@
 // The one monotonic clock, spelled once.
 //
 // The daemon stamps Notification::received with CLOCK_MONOTONIC and the games
-// decide a toast's age against the same clock -- shared_state.h relies on the
-// two sides reading the *same* clock, which makes this exactly the kind of
-// value entry 33 is about: it existed in five hand-written copies across the
-// daemon, both injected paths and two headers, identical but free to drift.
-// One spelling here; everything else includes it.
+// decide a toast's age against the same clock: shared_state.h relies on both
+// sides reading the *same* clock.
 
 #ifndef VOCEM_CLOCK_H
 #define VOCEM_CLOCK_H

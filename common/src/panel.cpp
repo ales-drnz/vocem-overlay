@@ -42,8 +42,7 @@ ImU32 outline_ink(const Theme& theme, float strength) {
 
 // One offset per cardinal direction. Four and not eight: at one unit of offset a
 // diagonal gap is at most 1 - 1/sqrt(2) of a pixel, which antialiasing owns, and
-// eight directions measured exactly twice the cost of four for that subpixel
-// (the numbers are in theme.h, at kTextOutlineStrength).
+// eight would double the cost (theme.h, at kTextOutlineStrength).
 constexpr float kOutlineDirections[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
 // Draws the text five times: four offset copies in the outline's ink, then the
@@ -96,27 +95,20 @@ struct NameBox {
     bool drawn = false;
     float pad_x = 0.0f;
     float pad_y = 0.0f;
-    // The surface, carrying the panel's opacity as its alpha: the box moved, the
-    // two settings that describe it did not.
+    // The surface, carrying the panel's opacity as its alpha.
     Colour fill;
 };
 
 // --- motion -----------------------------------------------------------------
 //
 // Little and aimed: an in-game overlay that moves is an overlay that distracts.
-// Everything here animates alpha, never geometry -- state arrives as colour on
-// shapes that were always there (the rule the ring already lives by), so when
-// every phase has settled the measured geometry is identical to the resting one,
-// and tests/panel_geometry.cpp measures twice to hold it there.
+// Everything here animates alpha, never geometry, so when every phase has
+// settled the geometry is identical to the resting one (tests/panel_geometry.cpp).
 //
-// Durations from Material 3's table, not invented: 150-200 ms for a state
-// change, 250-300 ms for an entrance or an exit. One easing map serves both
-// directions: a phase advances linearly with time and the drawn value is
-// 1-(1-phase)^3 -- rising, that is the decelerate curve M3 asks of an entrance;
-// falling, the same map traversed backwards is exactly the accelerate curve it
-// asks of an exit; and because the phase itself is continuous, somebody who
-// starts talking mid-fade rises from where the fade had got to instead of
-// snapping to zero.
+// Durations from Material 3's table: 150-200 ms for a state change, 250-300 ms
+// for an entrance or an exit. A phase advances linearly with time and the drawn
+// value is 1-(1-phase)^3: rising, M3's decelerate curve; falling, its accelerate
+// curve; and a reversal mid-fade continues from where the fade had got to.
 constexpr float kRingRiseSeconds = 0.15f;
 constexpr float kRingFallSeconds = 0.20f;
 // Speech arrives broken -- pauses inside a sentence -- and a ring that fell at
@@ -131,8 +123,7 @@ float eased(float phase) {
 }
 
 // An alpha multiplied by an animation's value, exact at 1: a settled animation
-// must reproduce the resting byte, or the geometry test's colour searches would
-// be looking for a colour the drawing has stopped using.
+// must reproduce the resting byte the geometry test's colour searches look for.
 uint8_t scaled(uint8_t alpha, float multiplier) {
     return multiplier >= 1.0f
                ? alpha
@@ -147,16 +138,11 @@ ImU32 col_scaled(Colour colour, float multiplier) {
 // One line of text, with its own box behind it where the panel puts one there
 // and as plain text where it does not.
 //
-// The cursor is the *box's* top-left, not the text's -- a caller that centres a
-// name in its row centres the pill, and the padding is added here -- and the
-// padding is claimed from the layout as well as drawn: a window clips its own
-// draw list, so at box_padding 0 (a real setting, and one panel_geometry
-// measures) a pill drawn outside the items it belongs to loses its edges. The
-// trailing item is the right-hand pad wide and reaches the pill's own bottom,
-// which claims both at once.
-//
-// The radius is half the box's height: a pill at every text size, rather than a
-// rectangle with rounded corners at one of them.
+// The cursor is the *box's* top-left, not the text's, and the padding is claimed
+// from the layout as well as drawn: a window clips its own draw list, so at
+// box_padding 0 a pill outside its items would lose its edges. The trailing item
+// is the right-hand pad wide and reaches the pill's bottom, claiming both.
+// The radius is half the box's height: a pill at every text size.
 void text_boxed(const Theme& theme, const NameBox& box, const char* text, ImU32 colour,
                 float outline, float scale, float alpha) {
     if (!box.drawn) {
@@ -178,17 +164,10 @@ void text_boxed(const Theme& theme, const NameBox& box, const char* text, ImU32 
     ImGui::Dummy(ImVec2(box.pad_x, line + box.pad_y));
 }
 
-// The picture of somebody whose picture has not arrived.
-//
-// A flat disc says nothing. At a glance it reads as an empty slot rather than as
-// a person the overlay is still fetching, and for an account with no picture at
-// all it never becomes anything else. This draws the silhouette every interface
-// uses for the same job, a head above a pair of shoulders, so a row that is
-// waiting looks like a row with somebody in it.
-//
-// The shoulders are the lens where a larger circle below overlaps the disc, built
-// as a path rather than clipped. ImGui clips to rectangles only, and a rectangle
-// clip would leave square corners exactly where the disc is roundest.
+// The picture of somebody whose picture has not arrived (or who has none): a
+// head above a pair of shoulders, so a waiting row reads as a person rather than
+// an empty slot. The shoulders are the lens where a larger circle below overlaps
+// the disc, built as a path because ImGui clips to rectangles only.
 void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius, Colour disc,
                              Colour mark_colour, float alpha) {
     draw_list->AddCircleFilled(centre, radius, col_scaled(disc, alpha), 0);
@@ -196,9 +175,8 @@ void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius,
         return;  // below this the mark is one pixel of mud
     }
 
-    // The mark's colour is a token now (theme.h, avatar_mark_for): it was blended
-    // here and again in the window's QML, and a colour this file draws a shape in
-    // is a colour the geometry measurement identifies that shape by.
+    // The mark's colour is a theme token (theme.h, avatar_mark_for), shared with
+    // the window's QML; the geometry test identifies the shape by it.
     const ImU32 mark = col_scaled(mark_colour, alpha);
 
     // The head.
@@ -209,15 +187,12 @@ void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius,
     // disc's crosses the disc at y = 0.712r, x = +-0.702r; the two arcs between
     // those points bound a convex lens, which is what ImGui can fill in one go.
     //
-    // Which way round each arc runs is the whole shape -- ImGui walks an arc
-    // linearly from a_min to a_max (imgui_draw.cpp, _PathArcToN), so a pair
-    // handed over decreasing is traversed decreasing. Both pairs here increase
-    // and each passes the pole the lens needs: the shoulders' -2.92 -> -0.22
-    // through -pi/2, the top of that circle, and the disc's 0.79 -> 2.35 through
-    // +pi/2, its bottom. Measured rather than reasoned about, because the sign
-    // of atan2 for a point above the centre is exactly the sort of thing a
-    // reading gets backwards: tests/panel_geometry.cpp's placeholder_inside_disc
-    // holds the mark inside the picture at three avatar sizes.
+    // Which way round each arc runs is the whole shape: ImGui walks an arc
+    // linearly from a_min to a_max (_PathArcToN). Both pairs here increase and
+    // each passes the pole the lens needs: the shoulders' -2.92 -> -0.22 through
+    // -pi/2, the disc's 0.79 -> 2.35 through +pi/2.
+    // tests/panel_geometry.cpp's placeholder_inside_disc holds the mark inside
+    // the picture at three avatar sizes.
     const float shoulder_radius = radius * 0.72f;
     const float shoulder_drop = radius * 0.87f;
     const float meet_y = radius * 0.712f;
@@ -226,17 +201,10 @@ void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius,
     const float from = std::atan2(meet_y - shoulder_drop, -meet_x);
     const float to = std::atan2(meet_y - shoulder_drop, meet_x);
     draw_list->PathArcTo(shoulder_centre, shoulder_radius, from, to, 24);
-    // Half a pixel past the disc's edge, and that half pixel is the whole point.
-    // The lens's lower boundary IS the disc's edge, and two antialiased fills
-    // that share an edge do not add up to a solid one: ImGui fades each of them
-    // out across the same pixel, so where the shoulders meet the picture both
-    // coverages are partial and the game shows through between them. Measured on
-    // a captured frame (VOCEM_CAPTURE_FRAME, the column under the left shoulder):
-    // the pixel read 0x3e4953 against a 0x4f545c disc and a 0x192633 scene --
-    // darker than the disc it sits in, which is the dark rim under the figure
-    // the owner reported. Overlapping by half a device pixel puts the mark's own
-    // fade where the disc has already faded, which is what the disc's edge looks
-    // like everywhere else.
+    // Half a pixel past the disc's edge: two antialiased fills that share an
+    // edge do not add up to a solid one, and the game would show through as a
+    // dark rim under the figure. The overlap puts the mark's own fade where the
+    // disc has already faded.
     draw_list->PathArcTo(centre, radius + 0.5f, std::atan2(meet_y, meet_x),
                          std::atan2(meet_y, -meet_x), 24);
     draw_list->PathFillConvex(mark);
@@ -246,12 +214,9 @@ void draw_avatar_placeholder(ImDrawList* draw_list, ImVec2 centre, float radius,
 // snapshot's 24 users, matched by id: no allocation on the present path, and a
 // slot whose id has left the channel is simply claimed by whoever needs one.
 //
-// There is deliberately no fade *out* for a row: the plan asked for one, and it
-// is not here on judgement. A leaving row would have to be drawn from a kept
-// copy of somebody the snapshot no longer contains -- a ghost, holding a dead
-// name on the screen and the box open for a fifth of a second, every frame of
-// it a small lie about who is in the channel. The leave is the one transition
-// where the honest answer is disappearance.
+// There is deliberately no fade *out* for a row: it would draw a kept copy of
+// somebody the snapshot no longer contains, a small lie about who is in the
+// channel.
 struct RowMotion {
     uint64_t id = 0;
     bool speaking = false;
@@ -291,15 +256,10 @@ RowMotion& motion_slot(uint64_t id, const Snapshot& snapshot) {
 // Discord marks these states with an icon rather than a colour, and so does this:
 // a red dot says "something", a crossed-out microphone says which something.
 //
-// The shapes are drawn rather than loaded, because an icon font would be another
-// atlas to build and upload inside somebody else's process for two glyphs.
-//
-// Every measure below is a multiple of a sixteenth of the badge's radius. The
-// old values -- 0.46, 0.34, 0.12, 0.26 -- were each tuned by eye in isolation
-// and sat a hundredth or two off any step for no reason anybody could name; the
-// grid is what lets the glyph be checked at avatar_size 0.5 the same way as at
-// 2.0, because a stroke that lands between pixels at one size lands between
-// them at every size.
+// The shapes are drawn rather than loaded: an icon font would be another atlas
+// to build and upload inside somebody else's process for two glyphs. Every
+// measure is a multiple of a sixteenth of the badge's radius, so the glyph
+// lands on the same grid at every avatar size.
 void draw_state_badge(ImDrawList* draw_list, const Theme& theme, ImVec2 centre, float radius,
                       bool deafened, float alpha) {
     const ImU32 glyph = col_scaled(theme.badge_glyph, alpha);
@@ -347,29 +307,22 @@ void draw_state_badge(ImDrawList* draw_list, const Theme& theme, ImVec2 centre, 
 }
 
 // Whole pixels, for every distance that adds up into the size of a box. ImGui
-// truncates the content extent it fits a window to, so a spacing with a fraction in
-// it is a fraction the bottom or right padding loses -- and a preview cannot
-// reproduce a figure the drawing then rounds off differently. Rounding here puts
-// the whole layout on pixel boundaries, which the preview can follow exactly.
+// truncates the content extent it fits a window to, so a fraction would come off
+// the bottom or right padding; on pixel boundaries the preview can follow exactly.
 float pixels(float value) { return std::round(value); }
 
 }  // namespace
 
 // Idempotent: the values below are the look at the reference font size, and the
 // current scale is applied on top of them, so this can be called again after every
-// atlas rebuild without the sizes compounding.
-//
-// Takes the config because the paddings are settings now. ScaleAllSizes is not used
-// -- it would multiply the values a second time.
+// atlas rebuild without the sizes compounding (ScaleAllSizes would compound them).
 void configure_style(const Config& config) {
     const float scale = ui_scale();
     const Theme theme = theme_for(config);
     ImGuiStyle& style = ImGui::GetStyle();
     style = ImGuiStyle();
-    // ImGuiCol_Separator is deliberately not set any more: the line under the
-    // channel name is drawn by hand in build_panel(), because it has two
-    // segments now and ImGui::Separator() can only draw one colour. Setting a
-    // style colour nothing reads would be configuration that lies.
+    // ImGuiCol_Separator is not set: the line under the channel name is drawn
+    // by hand in build_panel().
     style.WindowRounding = theme.box_radius * scale;
     style.WindowBorderSize = 0.0f;
     style.WindowPadding =
@@ -383,11 +336,7 @@ void configure_style(const Config& config) {
 
 void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width, uint32_t height,
                  AvatarProvider* avatars, double now_seconds) {
-    // The "Voice panel" switch in the window's header, honoured here at last. It
-    // was read, saved and toggled -- and no drawing code ever looked at it, so
-    // the switch did nothing: the inert control, the worst defect a window can
-    // carry. The message box has always had this exact guard on its own switch,
-    // two lines into build_notification().
+    // The "Voice panel" switch in the window's header.
     if (!config.panel_enabled) {
         return;
     }
@@ -405,20 +354,13 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     const float outline = theme.panel_text_outline;
     const float line_height = ImGui::GetTextLineHeight();
 
-    // The picture is a multiple of the bare line of text -- GetTextLineHeight(),
-    // deliberately not GetTextLineHeightWithSpacing(). The with-spacing figure
-    // includes ItemSpacing.y, which configure_style() sets from the row_spacing
-    // setting, so a radius derived from it made the pictures follow the spacing
-    // slider: dragging "how far apart the rows sit" resized every avatar on the
-    // way past, which is two settings in one slider and neither of them asked
-    // for it.
+    // The picture is a multiple of the bare line of text, not
+    // GetTextLineHeightWithSpacing(): that includes ItemSpacing.y, the
+    // row_spacing setting, and would make the spacing slider resize avatars.
     //
-    // The row is at least a line of text tall, and taller when the picture is:
-    // an avatar large enough to outgrow the line, drawn centred on a row that
-    // had not grown to hold it, put it through the padding above and through the
-    // row below. The spacing is *not* part of the row: rows are laid out as
-    // items, ImGui puts ItemSpacing.y between items, and a row that carried the
-    // spacing inside its own height as well counted it twice in the pitch.
+    // The row is at least a line of text tall, and taller when the picture is.
+    // The spacing is *not* part of the row: ImGui puts ItemSpacing.y between
+    // items, and counting it inside the row too would count it twice.
     const float radius = line_height * theme.avatar_radius_factor * config.avatar_size;
     const float picture = (radius + decoration_allowance(theme, radius, scale)) * 2.0f;
 
@@ -439,48 +381,31 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     const float text_block = line_height + name_box.pad_y * 2.0f;
 
     // Rounded up to a whole pixel, because ImGui truncates the content extent it
-    // fits the window to: a row whose height ended in a fraction left the last one
-    // hanging a pixel below the box, which is visible as a clipped avatar wherever
-    // the padding is small.
+    // fits the window to: a fractional row would clip the last avatar at small
+    // paddings.
     const float row = std::ceil(text_block > picture ? text_block : picture);
 
-    // The stored fraction is the panel's top-left, and it is clamped here so the
-    // panel cannot leave the screen as its height changes with the number of
-    // participants. Clamping rather than switching anchor corners is deliberate: an
-    // anchor that flips at the middle of the screen makes the panel jump by its own
-    // width while the user is dragging it.
-    //
-    // The size is last frame's, because ImGui only knows this frame's after layout.
-    // One frame of lag on a panel that moves when a human drags it is invisible.
+    // The panel is clamped so it cannot leave the screen as its height changes;
+    // anchors do not flip at the middle, which would make it jump while dragged.
+    // The size is last frame's, because ImGui only knows this frame's after
+    // layout; one frame of lag on a dragged panel is invisible.
     static float last_width = 200.0f;
     static float last_height = 80.0f;
-    // The distance from the edge of the display is a setting, and it is the same
-    // setting for both boxes. This was a hardcoded 12 while the message box used
-    // screen_margin, so the two sat at different distances from the edge and the
-    // slider moved only one of them -- which is also why no preview could agree
-    // with both.
+    // The distance from the edge of the display, a setting.
     const float inset = config.screen_margin * scale;
 
-    // A position fraction is a place between the margins, not a coordinate:
-    // vocem/placement.h says why, and the middle-of-a-side anchors are the reason
-    // it had to change -- they used to put the panel's top edge at half the display
-    // and hang the box below the middle.
+    // A position fraction is a place between the margins, not a coordinate
+    // (vocem/placement.h).
     ImVec2 position(place_within(config.position_x, last_width, static_cast<float>(width), inset),
                     place_within(config.position_y, last_height, static_cast<float>(height), inset));
 
     // First, how many people the settings ask for at all (the filters), and
-    // the distances a row is built from. The clamp-and-truncate story belongs
-    // to the budget below -- the same paragraph used to stand here too, thirty
-    // lines from the arithmetic it describes, and a reader went looking for
-    // the clamp under the wrong copy.
+    // the distances a row is built from.
     const ImGuiStyle& style = ImGui::GetStyle();
     const bool horizontal = config.panel_layout == Config::kLayoutHorizontal;
-    // The distance between one person and the next. It is `row_spacing` in both
-    // layouts, because that is what the setting says it is: turned sideways, the
-    // gap between two rows of a list is the gap between two cells of a line.
-    // ItemSpacing.x is `avatar_gap` and stays what it is -- the distance from a
-    // picture to the name beside it -- which is why a horizontal panel asks for
-    // its spacing explicitly at the SameLine rather than through the style.
+    // The distance between one person and the next: `row_spacing` in both
+    // layouts. ItemSpacing.x is `avatar_gap`, picture to name, which is why a
+    // horizontal panel passes this explicitly at the SameLine.
     const float cell_gap = pixels(config.row_spacing * scale);
     const float channel_block =
         config.show_channel_name ? text_block + style.ItemSpacing.y * 2.0f : 0.0f;
@@ -495,26 +420,17 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
     }
 
     // What the display can actually hold. Left to itself, ImGui clamps an
-    // auto-sized window to the viewport and clips whatever does not fit, which
-    // ends the panel on a face cut in half -- and at a size the configuration
-    // window has no way to predict, since the clamp is ImGui's rather than ours.
-    // Deciding here means the panel always ends on a whole person, says how many
-    // it left out, and does something the preview can reproduce.
-    //
-    // The two layouts run out of room in different directions: a column against
-    // the display's height, a row against its width. A column's people are all
-    // the same height, so its budget is one division; a row's are each as wide
-    // as their own name, so its budget is an accumulation.
+    // auto-sized window to the viewport and clips a face in half; deciding here
+    // ends the panel on a whole person, says how many it left out, and is
+    // something the preview can reproduce. A column's budget is one division by
+    // the row pitch; a row's is an accumulation, each cell as wide as its name.
     bool truncated = false;
     int row_budget = 0;
     if (horizontal) {
         const float room =
             static_cast<float>(width) - inset * 2.0f - style.WindowPadding.x * 2.0f;
-        // The remark is measured at its widest plausible spelling rather than
-        // the exact one, which is not known until it is known how many are
-        // missing: two digits covers a channel of 24, which is all the snapshot
-        // can carry. Asserted rather than remembered -- a wider channel would
-        // leave the line reserving less room than the remark takes.
+        // The remark is measured at its widest spelling, since the count is
+        // not known yet: two digits covers every channel the snapshot carries.
         static_assert(kMaxUsers < 100, "the overflow remark is measured at two digits");
         const float remark =
             cell_gap + ImGui::CalcTextSize("+99 more").x + name_box.pad_x * 2.0f;
@@ -534,10 +450,8 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             ++fitted;
         }
         truncated = fitted < static_cast<int>(wanted_rows);
-        // The remark takes the end of the line, so it is taken out of the budget
-        // rather than pushed off the edge with the people it is about. At least
-        // one person is always drawn: a panel of nothing but "+8 more" would say
-        // less than the panel it replaced.
+        // The remark takes the end of the line, so it comes out of the budget.
+        // At least one person is always drawn.
         while (truncated && fitted > 1 && used + remark > room) {
             const User* last = nullptr;
             int seen = 0;
@@ -574,16 +488,9 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
 
     ImGui::SetNextWindowPos(position, ImGuiCond_Always);
     // No fixed width: with AlwaysAutoResize the box ends where its longest name
-    // ends, which is what it should have done from the start -- a panel padded out
-    // to 280 units looked like a bug in every screenshot of it. The constraint
-    // stops a pathological display name from crossing the screen, and never lets
-    // the box be wider than the display itself: at three times the size on a small
-    // output, 520 units is wider than the screen.
-    //
-    // A horizontal panel is as wide as the people in it, so the 520-unit cap is
-    // not its cap: what stops it is the display, which is also what its own
-    // budget above counted against. Capping it at 520 would have cut the line
-    // off at the third person and left the box claiming there was no room.
+    // ends. The constraint stops a pathological name from crossing the screen and
+    // never lets the box be wider than the display. A horizontal panel is capped
+    // by the display alone, which is what its budget above counted against.
     const float widest_panel = static_cast<float>(width) - inset * 2.0f;
     const float wanted_limit = horizontal ? widest_panel : 520.0f * scale;
     const float panel_limit = wanted_limit < widest_panel ? wanted_limit
@@ -594,11 +501,9 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                                         ImVec2(panel_limit, FLT_MAX));
 
     ImVec4 background = ImGui::ColorConvertU32ToFloat4(opaque(theme.panel_surface));
-    // Nothing at all where the surface is drawn behind the names instead: the
-    // opacity has not gone anywhere, it is on the pills. ImGui culls a fill whose
-    // alpha is exactly zero before emitting a vertex, so this is a box that is
-    // not drawn rather than a box drawn invisibly -- which is what lets the
-    // geometry measurement find the pills by the surface's own colour.
+    // Nothing at all where the surface is drawn behind the names instead: ImGui
+    // culls a fill whose alpha is exactly zero, so the geometry test finds the
+    // pills by the surface's own colour.
     background.w = name_box.drawn ? 0.0f : config.opacity;
     ImGui::PushStyleColor(ImGuiCol_WindowBg, background);
 
@@ -611,18 +516,14 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
 
     if (ImGui::Begin("##vocem", nullptr, flags)) {
         // The window's rectangle, read here because only inside Begin is it this
-        // frame's. There used to be a drop shadow drawn off it as well, into the
-        // background draw list; removed on the owner's judgement -- the hairline
-        // alone says where the box ends.
+        // frame's.
         const ImVec2 window_pos = ImGui::GetWindowPos();
         const ImVec2 window_size = ImGui::GetWindowSize();
 
         // The hairline, just inside the edge and drawn by hand. Not ImGui's
         // WindowBorderSize: the content origin is ImMax(WindowPadding.x,
-        // WindowBorderSize) (imgui.cpp:7598), so with box_padding_x at 0 -- a real
-        // setting, and a tested extreme -- a 1-pixel border would shift the
-        // contents by a unit the QML preview does not know about. This draws at
-        // the same place at every padding and moves nothing.
+        // WindowBorderSize) (imgui.cpp:7598), so at box_padding_x 0 a border
+        // would shift the contents by a unit the QML preview does not know about.
         if (theme.panel_hairline.a > 0) {
             const float nominal = pixels(1.0f * scale);
             const float thickness = nominal < 1.0f ? 1.0f : nominal;
@@ -635,9 +536,7 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
         }
 
         if (config.show_channel_name) {
-            // The heavier weight is what separates the channel from the names under
-            // it; before there was one font and the distinction had to be made with
-            // colour alone.
+            // The heavier weight separates the channel from the names under it.
             if (fonts().strong) {
                 ImGui::PushFont(fonts().strong);
             }
@@ -648,14 +547,11 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             }
 
             // The line under the channel name, by hand instead of
-            // ImGui::Separator(): it is two segments now -- the blurple accent
-            // bar, then the hairline to the edge -- and Separator can only draw
-            // one colour. The layout is Separator's exactly: an item one
-            // thickness tall that claims no width of its own (claiming the
-            // available width would stop an auto-resized window from ever
-            // shrinking, since this frame's width would become next frame's
-            // content), drawn across the content region the window had this
-            // frame.
+            // ImGui::Separator(), which draws one colour: the accent bar, then
+            // the hairline to the edge. The layout is Separator's: an item one
+            // thickness tall that claims no width (claiming it would stop an
+            // auto-resized window from ever shrinking), drawn across this
+            // frame's content region.
             {
                 const ImVec2 at = ImGui::GetCursorScreenPos();
                 const float span = ImGui::GetContentRegionAvail().x;
@@ -693,10 +589,8 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                 continue;
             }
 
-            // Sideways, one person follows the last on the same line, at the
-            // distance the row spacing asks for. Upright, ImGui's own newline
-            // does it and ItemSpacing.y is that distance -- which is why this is
-            // the only line the two layouts do not share.
+            // Sideways, one person follows the last on the same line; upright,
+            // ImGui's own newline does it with ItemSpacing.y.
             if (horizontal && drawn > 0) {
                 ImGui::SameLine(0.0f, cell_gap);
             }
@@ -725,23 +619,17 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             motion.row_phase += dt / kRowFadeSeconds;
             motion.row_phase = motion.row_phase > 1.0f ? 1.0f : motion.row_phase;
             const float row_alpha = eased(motion.row_phase);
-            // The picture of somebody who is not talking is quieter, as their
-            // name is (avatar_idle_opacity in config.h). It rides the ring's
-            // phase rather than the flag the name follows: the face and its ring
-            // are one object, so the picture lights as the ring rises, stays lit
-            // through the hold -- Discord's speaking flag drops between two
-            // words, and a face that dimmed at every breath would flicker -- and
-            // falls with it. Everything that IS the picture takes it, the
-            // placeholder, the image and the muted scrim over them; the badge
-            // does not, because it names a state and a quiet one is still true.
+            // The picture of somebody who is not talking is quieter
+            // (avatar_idle_opacity in config.h). It rides the ring's phase, hold
+            // included, rather than the speaking flag, which drops between words.
+            // The placeholder, the image and the muted scrim take it; the badge
+            // does not, because the state it names is still true.
             const float picture_alpha =
                 config.avatar_idle_opacity +
                 (1.0f - config.avatar_idle_opacity) * eased(motion.ring_phase);
 
-            // Round avatars come from rounding the image corners to half its size,
-            // the same trick the client's CSS uses. The picture crossfades in over
-            // the placeholder when it arrives from the cache, so a face appears
-            // rather than pops.
+            // Round avatars come from rounding the image corners to half its size.
+            // The picture crossfades in over the placeholder when it arrives.
             const ImTextureID avatar = avatars ? avatars->texture(user.id, user.avatar_hash) : 0;
             if (avatar) {
                 motion.avatar_phase += dt / kAvatarFadeSeconds;
@@ -766,28 +654,16 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             }
 
             {
-                // Always drawn, transparent at rest -- StreamKit's trick: the
-                // ring is a border of the picture that goes from clear to green,
-                // never a shape that appears, so the row cannot reflow when
-                // somebody starts talking and the motion phase can animate the
-                // alpha without adding anything. Drawn outside the avatar rather
-                // than on its edge, and with enough segments to be a circle
-                // rather than a polygon: at the sizes this runs at, ImGui's
-                // automatic segment count showed the avatar's corners through
-                // the ring.
-                //
-                // The stroke follows the radius (see ring_width_factor), floored
-                // at a device pixel like every other stroke here.
+                // Always drawn, nearly transparent at rest: the ring is a border
+                // that goes from clear to green, never a shape that appears, so
+                // the row cannot reflow. Drawn outside the avatar with 48
+                // segments, so the avatar's corners do not show through. The
+                // stroke follows the radius, floored at a device pixel.
                 //
                 // At rest the alpha is 1, not 0: ImGui culls a primitive whose
-                // alpha is exactly zero before emitting a vertex
-                // (imgui_draw.cpp:768), so a ring "drawn at alpha 0" is a ring
-                // not drawn at all -- indistinguishable from the conditional
-                // this replaced, and invisible to the geometry test, which
-                // asserts one ring per picture and caught exactly that. One
-                // part in 255 of green is beneath what antialiasing already
-                // does to these edges; the animation therefore runs over the
-                // other 254.
+                // alpha is exactly zero (imgui_draw.cpp:768), and the geometry
+                // test asserts one ring per picture. The animation runs over
+                // the other 254.
                 Colour ring = theme.speaking_ring;
                 ring.a = static_cast<uint8_t>(
                     1.0f + 254.0f * eased(motion.ring_phase) * row_alpha + 0.5f);
@@ -797,9 +673,8 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
                                      col(ring), 48, ring_stroke);
             }
 
-            // Someone who cannot hear you, or cannot talk to you, is worth seeing
-            // at a glance. The picture is dimmed and the state is named by an icon
-            // on it -- dimming alone is ambiguous, and the icon alone gets lost
+            // Muted or deafened: the picture is dimmed and the state named by an
+            // icon -- dimming alone is ambiguous, and the icon alone gets lost
             // against a busy avatar.
             if ((muted || deafened) && config.show_muted_state) {
                 draw_list->AddCircleFilled(centre, radius,
@@ -812,56 +687,36 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
             }
 
             // The picture occupies its own box and nothing more: the gap to the
-            // name is ItemSpacing.x, which is the avatar_gap setting, so that
-            // setting is the distance it says it is. There used to be a further
-            // 10 units added here, which meant a gap of zero still left ten.
+            // name is ItemSpacing.x, the avatar_gap setting.
             ImGui::Dummy(ImVec2(picture, row));
             ImGui::SameLine();
-            // Centred against the picture rather than sitting at the top of the
-            // row. ImGui puts an item at the line's top, and with a large avatar
-            // the name was visibly high against the face beside it.
-            // Centred against the picture rather than sitting at the top of the
-            // row -- and what is centred is the text's own block, which is the
-            // line plus its box where there is one, so the pill sits in the
-            // middle of the row and the glyphs sit in the middle of the pill.
+            // Centred against the picture rather than at the top of the row --
+            // the text's own block, line plus box, so the pill sits in the
+            // middle of the row and the glyphs in the middle of the pill.
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row - text_block) * 0.5f);
 
-            // Who is talking, said twice: the ring around the picture, and the
-            // name at full strength while everybody else's is greyed. The ring
-            // alone is a thin circle a few pixels wide, read against whatever the
-            // game happens to be drawing behind it, and in a channel of eight it
-            // was work to find. Weight is easier to see than a stroke.
-            //
-            // A muted participant is dimmer still, which is what Discord does --
-            // it dims them rather than colouring the name.
-            // Deafened as well as muted: somebody who cannot hear is no more
-            // present in the conversation than somebody who cannot speak, and the
-            // picture already marks both.
+            // Who is talking, said twice: the ring, and the name at full strength
+            // while everybody else's is greyed -- a thin ring alone is hard to
+            // find over a busy game. Muted or deafened participants are dimmer
+            // still, as Discord does it.
             const bool dim = (muted || deafened) && config.show_muted_state;
             const Colour name_colour = dim        ? theme.text_muted
                                        : speaking ? theme.text_speaking
                                                   : theme.text_idle;
-            // The joining fade rides on the alpha and on the outline's strength,
-            // so the name and its ink arrive together.
-            // The joining fade carries the box as well: it is a raw colour in the
-            // draw list, like the placeholder disc and the outline's ink, so it
-            // is multiplied at the call rather than left to a style alpha that
-            // cannot reach it.
+            // The joining fade rides on the alpha, the outline's strength and the
+            // box, which are raw draw-list colours a style alpha cannot reach.
             text_boxed(theme, name_box, user.name, col_scaled(name_colour, row_alpha),
                        outline * row_alpha, scale, row_alpha);
             ++drawn;
         }
 
-        // Whoever did not fit, counted rather than dropped in silence: a list that
-        // simply stops looks like an overlay that has lost track of the channel.
+        // Whoever did not fit, counted rather than dropped in silence.
         if (truncated) {
             char remainder[32];
             std::snprintf(remainder, sizeof(remainder), "+%d more",
                           static_cast<int>(wanted_rows) - drawn);
             if (horizontal) {
-                // At the end of the line, in line with the names it is about,
-                // rather than under a picture that is not there: sideways there
-                // is no column of pictures for it to align with.
+                // At the end of the line, in line with the names.
                 ImGui::SameLine(0.0f, cell_gap);
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (row - text_block) * 0.5f);
             } else {
@@ -884,43 +739,31 @@ void build_panel(const Snapshot& snapshot, const Config& config, uint32_t width,
 void build_notification(const Snapshot& snapshot, const Config& config, uint32_t width,
                         uint32_t height, AvatarProvider* avatars, double now_seconds) {
     // The predicate, not a copy of it: panel.h promises one spelling of
-    // "something to draw" for the paths AND the build functions, and this
-    // function carried a negated duplicate of the whole condition -- including
-    // both boundary comparisons on the age -- that nothing compared.
+    // "something to draw" for the paths AND the build functions.
     if (!notification_wanted(snapshot, config, now_seconds)) {
         return;
     }
 
     const double age = now_seconds - snapshot.notification.received;
 
-    // In over a quarter of a second, out over three tenths: M3's entrance and
-    // exit pair, through the one easing map (see the motion block) -- the
-    // entrance decelerates, and the same map on the shrinking remainder is the
-    // accelerating exit that replaced the linear ramp this used to be. Both are
-    // functions of the notification's own timestamps, so the toast needs no
-    // state of its own between frames.
+    // In over a quarter of a second, out over three tenths, through the one
+    // easing map (see the motion block). Both are functions of the
+    // notification's own timestamps, so the toast keeps no state between frames.
     constexpr float kToastEntrySeconds = 0.25f;
     constexpr float kToastExitSeconds = 0.30f;
     const double remaining = config.notification_seconds - age;
     const float entry = eased(static_cast<float>(age) / kToastEntrySeconds);
     const float fade = entry * eased(static_cast<float>(remaining) / kToastExitSeconds);
 
-    // The message has a size of its own on top of the shared one, so it can be
-    // legible without the voice panel having to grow with it. That size applies to
-    // the whole box -- text, picture, padding and corners -- and not only to its
-    // width: a box that grew while its text stayed put is what the setting used to
-    // do, and it is neither what the setting says nor what the preview showed.
+    // The message has a size of its own on top of the shared one, applied to the
+    // whole box -- text, picture, padding and corners -- not only its width.
     const float scale = ui_scale() * config.notification_scale;
     const Theme theme = theme_for(config);
-    // The distance from the edge of the display belongs to the display, not to the
-    // message, so it is not multiplied by the message's own size. It is the
-    // message's *own* setting: the two boxes are placed independently and a person
-    // moving one does not expect the other to follow, which is the mirror of
-    // entry 17 -- there the two shared a distance that should have been one each.
+    // The distance from the edge belongs to the display, so it is not multiplied
+    // by the message's own size; it is the message's own setting, because the two
+    // boxes are placed independently.
     const float inset = config.notification_margin * ui_scale();
-    // Wide enough to read, never wider than the screen it has to fit on: at a large
-    // message size on a small output, 320 units came out wider than the display and
-    // the box hung off both edges.
+    // Wide enough to read, never wider than the screen it has to fit on.
     const float widest = static_cast<float>(width) - inset * 2.0f;
     const float wanted = 320.0f * scale;
     const float toast_width = pixels(wanted < widest ? wanted : (widest > 1.0f ? widest : wanted));
@@ -944,10 +787,8 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
     ImGui::SetNextWindowSize(ImVec2(toast_width, 0.0f), ImGuiCond_Always);
 
     ImVec4 background = ImGui::ColorConvertU32ToFloat4(opaque(theme.toast_surface));
-    // Its own setting, solid unless the user says otherwise. It used to be derived
-    // from the panel's opacity, which meant a panel turned down to sit lightly over
-    // the game took the message box with it -- and small text on a see-through box
-    // over a bright scene cannot be read at all.
+    // Its own setting, independent of the panel's: small text on a see-through
+    // box over a bright scene cannot be read.
     background.w = config.notification_opacity * fade;
     ImGui::PushStyleColor(ImGuiCol_WindowBg, background);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
@@ -960,19 +801,10 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
     // The horizontal gap is `avatar_gap`, exactly as in the panel: it is the same
     // distance, between a picture and the text beside it.
     //
-    // The vertical one is **not** `row_spacing`, and used to be. `row_spacing` is
-    // the gap between one person and the next -- between two rows of a list -- and
-    // the sender and the message are not two rows. They are two lines of one block,
-    // and a line of text already carries its own leading inside its height. Adding
-    // the between-people distance on top of that put a full line of empty space
-    // between a name and what the person said: measured at 1080 lines, eleven pixels
-    // of gap under a name whose letters are eleven pixels tall. Five of those eleven
-    // are the leading and belong there; the other six were the panel's setting
-    // arriving somewhere it was never about.
-    //
-    // Zero here therefore means "no gap beyond the one the type already has", not
-    // "the lines touch" -- and it is the only value that does not change when
-    // somebody drags the panel's row spacing for the panel's own sake.
+    // The vertical one is **not** `row_spacing`: that is the gap between two
+    // people, and the sender and the message are two lines of one block, whose
+    // leading is already inside the line height. Zero means "no gap beyond the
+    // type's own", not "the lines touch".
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
                         ImVec2(pixels(config.avatar_gap * scale), 0.0f));
 
@@ -985,9 +817,8 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
 
     if (ImGui::Begin("##vocem_toast", nullptr, flags)) {
         // The box's edge and its accent, drawn by hand like the panel's edge and
-        // multiplied by the fade at the point of use -- these go into the draw
-        // list as raw colours, so the style alpha pushed above does not reach
-        // them.
+        // multiplied by the fade here: raw draw-list colours the style alpha
+        // pushed above does not reach.
         {
             const ImVec2 window_pos = ImGui::GetWindowPos();
             const ImVec2 window_size = ImGui::GetWindowSize();
@@ -1024,26 +855,18 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
             }
         }
 
-        // The text at the message's own size as well. The atlas is rasterised for
-        // the voice panel, so a message made larger than it is magnified rather
-        // than re-rasterised; a second atlas would cost a couple of megabytes in
-        // every game process, which is not worth it for a box that appears for five
-        // seconds. At the default size nothing is scaled at all.
+        // The text at the message's own size as well: magnified from the panel's
+        // atlas rather than a second atlas in every game process for a box that
+        // appears for a few seconds. At the default size nothing is scaled.
         ImGui::SetWindowFontScale(config.notification_scale);
 
         const float avatar_radius = ImGui::GetTextLineHeight() * 0.9f;
         const float diameter = avatar_radius * 2.0f;
 
         // The picture is centred against the text beside it, and the text against
-        // the picture, so whichever of the two is taller decides the box and the
-        // shorter one sits in the middle of it. Drawn from the top, the picture of
-        // a two-line message sat five units above the centre of the box it was in
-        // -- measured, and visible once anybody looked for it.
-        //
-        // Both heights have to be known before either is drawn, which is why the
-        // wrap width is worked out here rather than taken from the cursor after the
-        // picture: ImGui lays out as it goes, and by then it is too late to move
-        // anything up.
+        // the picture, so whichever is taller decides the box. Both heights have to
+        // be known before either is drawn, so the wrap width is worked out here:
+        // ImGui lays out as it goes.
         const float spacing_x = ImGui::GetStyle().ItemSpacing.x;
         const float text_width = ImGui::GetContentRegionAvail().x - diameter - spacing_x;
         const float body_height =
@@ -1085,11 +908,9 @@ void build_notification(const Snapshot& snapshot, const Config& config, uint32_t
         ImGui::SetCursorPosY(start_y + (content_height - text_height) * 0.5f);
 
         ImGui::BeginGroup();
-        // The same permanent outline as the panel's, from the same switch: one
-        // treatment, one answer, whatever either box's opacity is set to. The
-        // strength rides the fade -- the copies bypass the pushed style alpha,
-        // so without this the entrance and the exit showed full-strength ink
-        // around a fading glyph (the panel does the same with row_alpha).
+        // The same outline as the panel's, from the same switch. The strength
+        // rides the fade, because the copies bypass the pushed style alpha (the
+        // panel does the same with row_alpha).
         const float outline = theme.toast_text_outline * fade;
 
         // The sender is the part that has to be readable at a glance, mid-game,
