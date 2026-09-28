@@ -44,18 +44,12 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
 const int W = 360;
 const int H = 360;
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 using PFN_glXChooseVisual = XVisualInfo* (*)(Display*, int, int*);
 using PFN_glXCreateContext = void* (*)(Display*, XVisualInfo*, void*, int);

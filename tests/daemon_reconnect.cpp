@@ -68,19 +68,12 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
 // The stub's clock and listener are tests/discord_stub.h's; this file carried a copy.
 using vocem_test::monotonic;
-
-void write_file(const std::string& path, const char* contents) {
-    FILE* file = fopen(path.c_str(), "w");
-    if (file) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 // Accept, read the request line, answer 101, close. Nothing else: this peer is
 // a door that opens and shuts.

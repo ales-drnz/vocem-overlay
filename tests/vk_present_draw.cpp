@@ -167,6 +167,7 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 // The layer's file calls on the emoji bank, stamped (tests/vk_file_witness.cpp).
 extern "C" int vocem_file_witness_stamps(const long long** stamps);
@@ -176,13 +177,6 @@ namespace {
 [[noreturn]] void skip(const char* why) {
     printf("skip %s\n", why);
     exit(77);
-}
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
 }
 
 bool copy_file(const char* from, const char* to) {

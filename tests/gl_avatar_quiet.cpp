@@ -59,19 +59,13 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
 // The overlay asking "has it arrived?". Its own reads are counted elsewhere: see
 // the note at the top of this file.
 volatile long g_stats = 0;
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 using PFN_glXChooseVisual = XVisualInfo* (*)(Display*, int, int*);
 using PFN_glXCreateContext = void* (*)(Display*, XVisualInfo*, void*, int);

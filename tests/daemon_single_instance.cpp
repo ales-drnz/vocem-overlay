@@ -40,23 +40,9 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::read_file;
 
 namespace {
-
-std::string read_file(const std::string& path) {
-    FILE* file = fopen(path.c_str(), "rb");
-    if (!file) {
-        return {};
-    }
-    std::string out;
-    char buffer[4096];
-    size_t got = 0;
-    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        out.append(buffer, got);
-    }
-    fclose(file);
-    return out;
-}
 
 bool segment_named() {
     char name[64];

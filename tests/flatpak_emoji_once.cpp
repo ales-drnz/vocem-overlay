@@ -34,6 +34,7 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
@@ -47,15 +48,6 @@ void make_directories(const std::string& path) {
             partial.push_back(path[i]);
         }
     }
-}
-
-void write_file(const std::string& path, const std::string& body) {
-    FILE* file = fopen(path.c_str(), "wb");
-    if (!file) {
-        return;
-    }
-    fwrite(body.data(), 1, body.size(), file);
-    fclose(file);
 }
 
 ino_t inode_of(const std::string& path) {

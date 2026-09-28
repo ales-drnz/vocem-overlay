@@ -47,15 +47,9 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 long lines_saying(const char* path, const char* needle, const char* unless = nullptr) {
     FILE* file = fopen(path, "r");

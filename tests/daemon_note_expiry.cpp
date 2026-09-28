@@ -72,6 +72,7 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
@@ -81,14 +82,6 @@ using vocem_test::recv_text;
 using vocem_test::send_text;
 
 // ---------------------------------------------------------------------------
-
-void write_file(const std::string& path, const char* contents) {
-    FILE* file = fopen(path.c_str(), "w");
-    if (file) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 template <typename Predicate>
 bool wait_for(vocem::StateReader& reader, vocem::Snapshot& snapshot, double seconds,

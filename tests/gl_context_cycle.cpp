@@ -69,6 +69,7 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
@@ -96,13 +97,6 @@ long foreign_pixels() {
         }
     }
     return count;
-}
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
 }
 
 // How many lines of a file contain `needle`.

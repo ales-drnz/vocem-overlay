@@ -80,6 +80,7 @@
 
 using vocem_test::check;
 using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
@@ -89,13 +90,6 @@ namespace {
 using PFN_glXMakeCurrent_real = int (*)(Display*, XID, void*);
 PFN_glXMakeCurrent_real g_real_make_current = nullptr;
 volatile long g_overlay_make_current = 0;
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 // The shapes of what is resolved off the handle. GLX types reduced to void*.
 using PFN_glXChooseVisual = XVisualInfo* (*)(Display*, int, int*);
