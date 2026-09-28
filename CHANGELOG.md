@@ -9,7 +9,9 @@
 
 - A Flatpak sandbox is given the voice channel, the faces and the messages only when the host consents to its application id and a process of it is running.
 - The injected libraries carry their own C++ runtime, so the overlay loads in games that ship an older libstdc++.
+- The font atlas is only as tall as its glyphs, so the overlay uses about 24 MB less memory in each drawing game.
 - The Vulkan loaders are optional dependencies, and the 32-bit libraries depend on lib32-glibc alone.
+- Saving settings rewrites only the lines of the settings that changed, leaving every other line as written.
 
 ### Fixed
 
@@ -17,6 +19,7 @@
 - An OpenGL game no longer exits with an X error when it destroys the overlay's context from another thread or after recreating its window.
 - An OpenGL game that destroys its context the way SDL and GLFW do no longer keeps the overlay's textures in its shared context.
 - The OpenGL overlay no longer leaves a backend behind in each context it moves away from, nor deletes another context's objects at eglTerminate.
+- The switch or a stopped daemon, noticed by another OpenGL context, no longer deletes that context's objects.
 - An OpenGL present no longer goes to a dispatch stub after one API's dispatcher is asked for the other API's name.
 - OpenGL ES games that expose no dispatcher before the first frame get the overlay instead of a shader that never linked.
 - An OpenGL context the overlay cannot draw in no longer takes the overlay away from the game's other contexts.
@@ -43,11 +46,16 @@
 - A Flatpak sandbox writes one application record of its own and can no longer flood or overwrite the host's.
 - Faces copied into a Flatpak sandbox are removed when it stops being served and when the daemon stops.
 - A failed settings copy into a Flatpak sandbox is retried, and the emoji bank is copied into it once.
+- Removing config.ini now also removes the copy inside Flatpak games, which then use the defaults.
 - Names, titles and logged replies lose C1 controls, line separators and bytes hidden behind broken UTF-8.
 - `vocem` says the shared state segment was refused, and why, instead of claiming the daemon is not running.
 - The settings window never signals the running daemon while it is being measured, and a quick close waits for systemd.
+- The settings window says when it cannot create its single-instance socket, and a later launch still opens.
 - The window's saves keep comments, unknown keys, a symlinked settings file, its permissions and edits made outside it.
 - A settings file that cannot be read is no longer written over.
+- A FIFO or a device in place of config.ini no longer hangs the settings window, the daemon or a game.
+- A line holding a NUL byte no longer hides the setting on the line after it.
+- A read-only config.ini is no longer overwritten, and the window says why the change could not be saved.
 - The font box follows a font set outside the window.
 - "Start at login" honours an entry the desktop switched off.
 - The Debug page says "Next login" when only the service manager carries the OpenGL preload.
