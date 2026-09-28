@@ -12,10 +12,7 @@
 // anywhere was followed by an immediate reconnect, and the immediate reconnect
 // by another: measured against the packaged 0.1.3-7 daemon, 2215 connections in
 // five seconds where the fixed one makes 3 -- and 2215 is what this stub could
-// serve, not what the daemon could ask for, so the real figure is higher. (This
-// header and entry 103 used to name 0.1.4-1 and 1914: re-measured on
-// 2026-09-07, the packaged 0.1.4-1 already carries the fix and makes 3, so the
-// figure had come from a build before the tag. The exemplar is 0.1.3-7.)
+// serve, not what the daemon could ask for, so the real figure is higher.
 //
 // It is not a hypothetical peer. Discord's own client closes an RPC connection
 // it will not serve -- a rejected origin, a client_id it does not know, a

@@ -879,15 +879,9 @@ int main() {
         return 1;
     }
     // NVIDIA's implicit manifest is copied so the scratch directory mirrors the
-    // installed implicit set minus the interposers. The claim that used to stand
-    // here -- that presentation on this machine goes through those layers, so a
-    // chain without them measures a different machine -- was wrong, and reading
-    // the file settles it: VK_LAYER_NV_optimus and VK_LAYER_NV_present are gated
-    // behind __NV_PRIME_RENDER_OFFLOAD and NVPRESENT_ENABLE_SMOOTH_MOTION, and
-    // neither is set here, so both are present and inert in every run of this
-    // test. Kept because copying it costs nothing; believed to matter, it would
-    // have been a reason that was never true. The mapped-layer lines below say
-    // what actually loaded.
+    // installed implicit set minus the interposers. Its two layers are gated
+    // behind __NV_PRIME_RENDER_OFFLOAD and NVPRESENT_ENABLE_SMOOTH_MOTION, unset
+    // here, so they are inert; the mapped-layer lines below say what loaded.
     snprintf(destination, sizeof(destination), "%s/layers/nvidia_layers.json", root);
     copy_file("/usr/share/vulkan/implicit_layer.d/nvidia_layers.json", destination);
     // Anything else the caller wants in the chain, which is how the gamescope
@@ -1033,8 +1027,8 @@ int main() {
     // message's author -- is drawn from default_<(id >> 22) % 6>.rgba, which for
     // these small ids is default_0 for all ten. That is entry 184's measurement
     // made a scene (ten cache keys for one file), and it is also what gives the
-    // texture cache something to upload at all: the scenes used to read the
-    // owner's real ~/.cache, where default_0 happens not to exist.
+    // texture cache something to upload at all, whatever the owner's real
+    // ~/.cache holds.
     if (arrivals) {
         char cache[800];
         snprintf(cache, sizeof(cache), "%s/cache", root);
@@ -1711,17 +1705,12 @@ int main() {
         // Acquired rather than grabbed: once acquire hands an image back it is ours
         // again and the presentation engine is done with it, so the read is not a
         // race. But acquire says nothing about WHEN the image was last presented:
-        // this used to say that every image had carried the overlay by then, "45
-        // frames over a handful of images", and the engine is free to keep one
-        // image back while it cycles the others. After a hand-over the frames
-        // after the build all went to images 1 and 2 and the read-back got image
-        // 0, held since the last frame before the new renderer existed: 0
-        // foreign pixels, 6 runs in 75 of the hand-over scenes, while the layer
-        // had drawn into every one of the owner's presents after "backend
-        // ready" (instrumented, 10 runs, 0 missed). An image last
-        // presented before `drawn_from` -- or never -- is given a frame first and
-        // the acquire asked again; each such frame makes one more image current,
-        // so the swapchain's size bounds it.
+        // the engine is free to keep one image back while it cycles the others
+        // (after a hand-over, an image held since before the new renderer read
+        // 0 foreign pixels in 6 of 75 runs). An image last presented before
+        // `drawn_from` -- or never -- is given a frame first and the acquire
+        // asked again; each such frame makes one more image current, so the
+        // swapchain's size bounds it.
         uint32_t index = 0;
         for (uint32_t given = 0;; ++given) {
             if (vk.vkAcquireNextImageKHR(device, chain, UINT64_MAX, VK_NULL_HANDLE, fence,

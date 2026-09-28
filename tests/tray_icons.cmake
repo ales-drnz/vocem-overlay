@@ -92,10 +92,8 @@ foreach(pair IN LISTS pairs)
 endforeach()
 
 # The picture of the tray (TaskbarPreview.qml) derives its icon from a private
-# copy of the same state-to-name table, and this file used to read Tray.qml
-# only: swapping two states in one copy kept every existing check green, while
-# the preview's whole job is to be right about which picture sits in the row.
-# The two mappings are compared pair by pair, not by the presence of names.
+# copy of the same state-to-name table: the two mappings are compared pair by
+# pair, not by the presence of names, so two swapped states fail.
 file(READ "${SOURCE_DIR}/gui/qml/TaskbarPreview.qml" preview)
 string(REGEX REPLACE "//[^\n]*" "" preview "${preview}")
 foreach(source_name IN ITEMS tray preview)
