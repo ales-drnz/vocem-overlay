@@ -79,15 +79,12 @@ int main() {
     }
     vocem_test::set_alarm(120, "the token exchange ending on a stop");
 
-    char root[] = "/tmp/vocem-exchange-stop-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-exchange-stop", {"/state", "/state/vocem", "/config",
+                                                        "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     // No token: the daemon asks Discord for authorisation, which is the road
     // the exchange is on.

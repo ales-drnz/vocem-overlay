@@ -148,15 +148,12 @@ int main() {
            authenticate ? "authenticates the session and then drops it"
                         : "answers the handshake and then drops it");
 
-    char root[] = "/tmp/vocem-reconnect-test-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-reconnect-test", {"/state", "/state/vocem", "/config",
+                                                         "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     // A token, so the daemon goes straight for the connection rather than
     // waiting on an authorisation prompt nobody is there to accept.

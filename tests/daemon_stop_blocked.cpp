@@ -50,15 +50,12 @@ int main() {
     }
     vocem_test::set_alarm(60, "a stop inside a blocked call");
 
-    char root[] = "/tmp/vocem-stop-blocked-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-stop-blocked", {"/state", "/state/vocem", "/config",
+                                                       "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     check(mkfifo((base + "/config/vocem/config.ini").c_str(), 0600) == 0,
           "a FIFO stands where config.ini should be");
@@ -97,7 +94,7 @@ int main() {
     check(took >= 0.0 && WIFEXITED(status) && WEXITSTATUS(status) == 0,
           "and it exits cleanly, through its own shutdown");
 
-    (void)!system(("rm -rf '" + base + "'").c_str());
+    vocem_test::remove_tree(base);
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }

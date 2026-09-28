@@ -114,15 +114,12 @@ int main(int argc, char** argv) {
 
     // A world for the daemon: a token so it authenticates instead of asking, and
     // no settings file, which is every fresh install.
-    char root[] = "/tmp/vocem-daemon-test-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-daemon-test", {"/state", "/state/vocem", "/config",
+                                                      "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     write_file(base + "/state/vocem/token", "test-token\n");
     // A one-second toast, from the start. It was written after the message
@@ -388,7 +385,7 @@ int main(int argc, char** argv) {
 
     close(fd);
     close(listener);
-    system(("rm -rf " + base).c_str());
+    vocem_test::remove_tree(base);
 
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

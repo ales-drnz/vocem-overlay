@@ -92,15 +92,12 @@ int main() {
     }
     vocem_test::set_alarm(60, "one daemon per user");
 
-    char root[] = "/tmp/vocem-single-daemon-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-single-daemon", {"/state", "/state/vocem", "/config",
+                                                        "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
 
     const pid_t first = start_daemon(daemon_path, base, base + "/first.log");
@@ -133,7 +130,7 @@ int main() {
         waitpid(first, nullptr, 0);
     }
 
-    (void)!system(("rm -rf '" + base + "'").c_str());
+    vocem_test::remove_tree(base);
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }
