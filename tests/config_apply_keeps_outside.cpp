@@ -40,17 +40,12 @@
 #include "config_bridge.h"
 #include "probe_alarm.h"
 #include "vocem/config.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 QString read_file(const QString& path) {
     QFile file(path);

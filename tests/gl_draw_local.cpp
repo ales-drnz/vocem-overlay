@@ -76,10 +76,13 @@
 
 #include <string>
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
-
-int failures = 0;
 
 // The overlay's own glXMakeCurrent calls. This probe never calls the name
 // through the global scope -- its own calls go through the pointer it took
@@ -87,20 +90,6 @@ int failures = 0;
 using PFN_glXMakeCurrent_real = int (*)(Display*, XID, void*);
 PFN_glXMakeCurrent_real g_real_make_current = nullptr;
 volatile long g_overlay_make_current = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 // The shapes of what is resolved off the handle. GLX types reduced to void*.
 using PFN_glXChooseVisual = XVisualInfo* (*)(Display*, int, int*);
@@ -179,20 +168,10 @@ int main() {
         printf("FAIL mkdtemp\n");
         return 1;
     }
-    char path[600];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // The rule names THIS binary, read off /proc/self/exe: a literal is
     // wrong the day the binary is renamed and wrong at -m32 today
     // (tests/probe_name.h, entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_draw_local") + "\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
-    snprintf(path, sizeof(path), "%s/cache", root);
-    mkdir(path, 0700);
-    setenv("XDG_CACHE_HOME", path, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_draw_local"));
     // The overlay's own log, for counting how many times its backend came up.
     static char log_path[700];
     snprintf(log_path, sizeof(log_path), "%s/overlay.log", root);

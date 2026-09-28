@@ -65,9 +65,14 @@
 #include <string>
 
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "vocem/note.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
@@ -76,24 +81,7 @@ using vocem_test::monotonic;
 using vocem_test::recv_text;
 using vocem_test::send_text;
 
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
 // ---------------------------------------------------------------------------
-
-void write_file(const std::string& path, const char* contents) {
-    FILE* file = fopen(path.c_str(), "w");
-    if (file) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 template <typename Predicate>
 bool wait_for(vocem::StateReader& reader, vocem::Snapshot& snapshot, double seconds,
@@ -169,7 +157,7 @@ int main(int argc, char** argv) {
         return 77;
     }
 
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
 

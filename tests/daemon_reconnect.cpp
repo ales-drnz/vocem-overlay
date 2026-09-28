@@ -12,10 +12,7 @@
 // anywhere was followed by an immediate reconnect, and the immediate reconnect
 // by another: measured against the packaged 0.1.3-7 daemon, 2215 connections in
 // five seconds where the fixed one makes 3 -- and 2215 is what this stub could
-// serve, not what the daemon could ask for, so the real figure is higher. (This
-// header and entry 103 used to name 0.1.4-1 and 1914: re-measured on
-// 2026-09-07, the packaged 0.1.4-1 already carries the fix and makes 3, so the
-// figure had come from a build before the tag. The exemplar is 0.1.3-7.)
+// serve, not what the daemon could ask for, so the real figure is higher.
 //
 // It is not a hypothetical peer. Discord's own client closes an RPC connection
 // it will not serve -- a rejected origin, a client_id it does not know, a
@@ -63,29 +60,17 @@
 
 #include "probe_alarm.h"
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
 // The stub's clock and listener are tests/discord_stub.h's; this file carried a copy.
 using vocem_test::monotonic;
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const std::string& path, const char* contents) {
-    FILE* file = fopen(path.c_str(), "w");
-    if (file) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 // Accept, read the request line, answer 101, close. Nothing else: this peer is
 // a door that opens and shuts.
@@ -143,7 +128,7 @@ int main() {
         return 77;
     }
 
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
 
@@ -160,15 +145,12 @@ int main() {
            authenticate ? "authenticates the session and then drops it"
                         : "answers the handshake and then drops it");
 
-    char root[] = "/tmp/vocem-reconnect-test-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-reconnect-test", {"/state", "/state/vocem", "/config",
+                                                         "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     // A token, so the daemon goes straight for the connection rather than
     // waiting on an authorisation prompt nobody is there to accept.

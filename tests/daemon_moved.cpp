@@ -62,8 +62,13 @@
 
 #include "probe_alarm.h"
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
 
@@ -72,24 +77,7 @@ using vocem_test::monotonic;
 using vocem_test::recv_text;
 using vocem_test::send_text;
 
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
 // ---------------------------------------------------------------------------
-
-void write_file(const std::string& path, const char* contents) {
-    FILE* file = fopen(path.c_str(), "w");
-    if (file) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 template <typename Predicate>
 bool wait_for(vocem::StateReader& reader, vocem::Snapshot& snapshot, double seconds,
@@ -195,21 +183,18 @@ int main() {
         return 77;
     }
 
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
 
     vocem_test::set_alarm(120, "being dragged between channels");
 
-    char root[] = "/tmp/vocem-moved-test-XXXXXX";
-    if (!mkdtemp(root)) {
+    const std::string base =
+        vocem_test::scratch_dir("vocem-moved-test", {"/state", "/state/vocem", "/config",
+                                                     "/config/vocem", "/cache", "/runtime"});
+    if (base.empty()) {
         printf("FAIL mkdtemp\n");
         return 1;
-    }
-    const std::string base = root;
-    for (const char* leaf :
-         {"/state", "/state/vocem", "/config", "/config/vocem", "/cache", "/runtime"}) {
-        mkdir((base + leaf).c_str(), 0700);
     }
     write_file((base + "/state/vocem/token").c_str(), "test-token\n");
 
@@ -397,7 +382,7 @@ int main() {
 
     close(fd);
     close(listener);
-    system(("rm -rf " + base).c_str());
+    vocem_test::remove_tree(base);
 
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

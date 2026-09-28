@@ -29,17 +29,13 @@
 #include <X11/Xlib.h>
 
 #include "probe_alarm.h"
+#include "vocem_check.h"
+#include "gl_window.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // Child mode: count X requests across a swap loop and print the per-frame rate.
 int count_requests() {
@@ -52,15 +48,7 @@ int count_requests() {
     if (!vi) {
         return 2;
     }
-    XSetWindowAttributes swa;
-    swa.colormap =
-        XCreateColormap(dpy, RootWindow(dpy, vi->screen), vi->visual, AllocNone);
-    // Off screen and override-redirect: this runs while the owner may be in a
-    // game, and a probe window must never appear or take focus.
-    swa.override_redirect = True;
-    Window win = XCreateWindow(dpy, RootWindow(dpy, vi->screen), -4000, 0, 320, 240, 0, vi->depth,
-                               InputOutput, vi->visual, CWColormap | CWOverrideRedirect, &swa);
-    XMapWindow(dpy, win);
+    Window win = vocem_test::offscreen_window(dpy, vi, 320, 240);
     GLXContext ctx = glXCreateContext(dpy, vi, nullptr, True);
     if (!ctx) {
         return 2;

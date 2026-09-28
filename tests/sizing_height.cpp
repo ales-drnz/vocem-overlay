@@ -18,22 +18,13 @@
 #include <stdio.h>
 
 #include "vocem/fonts.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 // fonts.h includes imgui.h for the Fonts struct; this test only needs the
 // header-inline sizing_height(), so ImGui is include-only here, never linked.
-
-namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-}  // namespace
 
 int main() {
     // No published display height: the old fallback, the drawable.

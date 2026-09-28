@@ -27,6 +27,10 @@
 
 #include "texture_cache.h"
 #include "vocem/avatar_rgba.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 // Referenced by TextureCache::upload()/destroy(); never reached here because
 // BeginCommandBuffer fails first. Stubbed so the test does not need the real
@@ -37,15 +41,6 @@ VkDescriptorSet ImGui_ImplVulkan_AddTexture(VkSampler, VkImageView, VkImageLayou
 void ImGui_ImplVulkan_RemoveTexture(VkDescriptorSet) {}
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // The order of events is the claim under test: allocated, registered, then used.
 int counter = 0;

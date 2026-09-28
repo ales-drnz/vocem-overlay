@@ -28,17 +28,14 @@
 #include "probe_alarm.h"
 #include "vocem/flatpak.h"
 #include "vocem/shared_state.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
+using vocem_test::read_file;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const std::string& what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what.c_str());
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void make_directories(const std::string& path) {
     std::string partial;
@@ -50,30 +47,6 @@ void make_directories(const std::string& path) {
             partial.push_back(path[i]);
         }
     }
-}
-
-void write_file(const std::string& path, const std::string& body) {
-    FILE* file = fopen(path.c_str(), "wb");
-    if (!file) {
-        return;
-    }
-    fwrite(body.data(), 1, body.size(), file);
-    fclose(file);
-}
-
-std::string read_file(const std::string& path) {
-    FILE* file = fopen(path.c_str(), "rb");
-    if (!file) {
-        return {};
-    }
-    std::string out;
-    char buffer[4096];
-    size_t got = 0;
-    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        out.append(buffer, got);
-    }
-    fclose(file);
-    return out;
 }
 
 long lines_with(const std::string& path, const char* needle) {

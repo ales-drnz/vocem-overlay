@@ -206,10 +206,8 @@ endfunction()
 #   SETUP <fixture>     this run produces something other runs read
 #   REQUIRES <fixture>  this run reads what a SETUP run produced: ctest runs
 #                       that one first even under -R, and does not run this one
-#                       when it failed. DEPENDS used to stand here, which only
-#                       orders two tests that are both selected -- so
-#                       `ctest -R shared_state_cross_read32` read whatever
-#                       segment64.bin an earlier run had left behind.
+#                       when it failed (DEPENDS only orders two tests that
+#                       are both selected).
 function(vocem_test_run name)
     cmake_parse_arguments(PARSE_ARGV 1 R "SKIP;SERIAL" "TARGET;TIMEOUT"
         "ENV;ARGS;LOCK;BUILD32;SETUP;REQUIRES")

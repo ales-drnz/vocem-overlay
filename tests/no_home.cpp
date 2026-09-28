@@ -28,17 +28,12 @@
 #include "probe_alarm.h"
 #include "vocem/config.h"
 #include "vocem/paths.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 void write_file(const std::string& path, const char* text) {
     vocem::make_directories(path.substr(0, path.rfind('/')));

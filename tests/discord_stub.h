@@ -7,10 +7,8 @@
 // vocemd. Frames from the daemon are masked, as the RFC requires of a client;
 // replies go out unmasked, as it requires of a server.
 //
-// daemon_notification, daemon_moved, daemon_note_expiry and daemon_reconnect
-// each carry a hand-written copy of this; new tests take it from here, and the
-// four should follow when they are next touched (the fifteen-copies lesson of
-// entry 124, one file over).
+// Every daemon end-to-end test takes it from here (entry 124's lesson about
+// hand-written copies); daemon_ws_bounds runs a server of its own by design.
 
 #ifndef VOCEM_TESTS_DISCORD_STUB_H
 #define VOCEM_TESTS_DISCORD_STUB_H

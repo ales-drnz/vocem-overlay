@@ -27,21 +27,16 @@
 #include <unistd.h>
 
 #include "vk_stub_device.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
 
 using vk_stub::fake_handle;
 int& add_texture_calls = vk_stub::add_texture_calls;
 int& remove_texture_calls = vk_stub::remove_texture_calls;
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
 }  // namespace
 
 int main() {

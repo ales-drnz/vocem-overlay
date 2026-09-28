@@ -16,19 +16,10 @@
 #include <stdlib.h>
 
 #include "hdr_pipeline.h"
+#include "vocem_check.h"
 
-namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-}  // namespace
+using vocem_test::check;
+using vocem_test::failures;
 
 int main() {
     check(vocem::hdr_mode_for(VK_COLOR_SPACE_HDR10_ST2084_EXT) == 2,

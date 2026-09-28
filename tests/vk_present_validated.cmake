@@ -68,48 +68,65 @@ endif()
 # already in flight are sampling, ordered only by a barrier -- the kind of
 # claim a validation layer's synchronisation checks exist for. It needs the
 # repository's emoji bank, or there is nothing to fold.
-set(scenarios "" "recreate" "second-device" "in-flight" "daemon-gone" "idle" "arrivals"
+#
+# SCENES names the ones this run measures ("default" is the plain loop), one
+# per ctest test so they run in parallel; without it, all of them. ORDER runs
+# the chain-order control below; without SCENES it always runs.
+set(scenarios "default" "recreate" "second-device" "in-flight" "daemon-gone" "idle" "arrivals"
     "deferred" "second-presenter" "second-queue" "no-texture-cache" "alternate-queue")
+if(DEFINED SCENES)
+    foreach(scene IN LISTS SCENES)
+        if(NOT scene IN_LIST scenarios)
+            message(FATAL_ERROR "no scenario '${scene}' in this script's list")
+        endif()
+    endforeach()
+    set(scenarios ${SCENES})
+else()
+    set(ORDER ON)
+endif()
 set(measured 0)
 
 # The positive control on the ORDER, every run: the loader prints the device
 # chain from the application down, and the overlay has to come before the
 # validation layer in it. The default scene is used because it leaves stderr
 # alone (the scenes that count the layer's lines redirect it into a file).
-execute_process(
-    COMMAND "${PROBE}"
-    RESULT_VARIABLE status
-    OUTPUT_VARIABLE output
-    ERROR_VARIABLE errors
-    TIMEOUT 240
-    ENVIRONMENT_MODIFICATION
-        "VOCEM_VK_MANIFEST=set:${MANIFEST}"
-        "VOCEM_VK_LIBRARY=set:${LIBRARY}"
-        "VOCEM_VK_EXTRA_MANIFESTS=set:${VALIDATION}"
-        "VOCEM_VK_BELOW=set:VK_LAYER_KHRONOS_validation"
-        "VOCEM_VK_SCENARIO=set:"
-        "VK_LOADER_DEBUG=set:layer")
-if(status EQUAL 77)
-    message(STATUS "skip the probe could not measure the chain here; its output says why")
-    return()
+if(ORDER)
+    execute_process(
+        COMMAND "${PROBE}"
+        RESULT_VARIABLE status
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE errors
+        TIMEOUT 240
+        ENVIRONMENT_MODIFICATION
+            "VOCEM_VK_MANIFEST=set:${MANIFEST}"
+            "VOCEM_VK_LIBRARY=set:${LIBRARY}"
+            "VOCEM_VK_EXTRA_MANIFESTS=set:${VALIDATION}"
+            "VOCEM_VK_BELOW=set:VK_LAYER_KHRONOS_validation"
+            "VOCEM_VK_SCENARIO=set:"
+            "VK_LOADER_DEBUG=set:layer")
+    if(status EQUAL 77)
+        message(STATUS "skip the probe could not measure the chain here; its output says why")
+        return()
+    endif()
+    string(FIND "${output}${errors}" "vkCreateDevice layer callstack" callstack_at)
+    if(callstack_at EQUAL -1)
+        message(FATAL_ERROR "the loader printed no device chain to check the order against:\n"
+                            "${output}${errors}")
+    endif()
+    string(SUBSTRING "${output}${errors}" ${callstack_at} -1 callstack)
+    string(FIND "${callstack}" "VK_LAYER_VOCEM_overlay" overlay_at)
+    string(FIND "${callstack}" "VK_LAYER_KHRONOS_validation" validation_at)
+    if(overlay_at EQUAL -1 OR validation_at EQUAL -1 OR NOT overlay_at LESS validation_at)
+        message(FATAL_ERROR "the validation layer is not below the overlay in the device chain, so "
+                            "it would be validating the probe and not the overlay:\n${callstack}")
+    endif()
+    message(STATUS "     device chain: the overlay above the validation layer")
 endif()
-string(FIND "${output}${errors}" "vkCreateDevice layer callstack" callstack_at)
-if(callstack_at EQUAL -1)
-    message(FATAL_ERROR "the loader printed no device chain to check the order against:\n"
-                        "${output}${errors}")
-endif()
-string(SUBSTRING "${output}${errors}" ${callstack_at} -1 callstack)
-string(FIND "${callstack}" "VK_LAYER_VOCEM_overlay" overlay_at)
-string(FIND "${callstack}" "VK_LAYER_KHRONOS_validation" validation_at)
-if(overlay_at EQUAL -1 OR validation_at EQUAL -1 OR NOT overlay_at LESS validation_at)
-    message(FATAL_ERROR "the validation layer is not below the overlay in the device chain, so "
-                        "it would be validating the probe and not the overlay:\n${callstack}")
-endif()
-message(STATUS "     device chain: the overlay above the validation layer")
 
 foreach(scenario IN LISTS scenarios)
-    if(scenario STREQUAL "")
+    if(scenario STREQUAL "default")
         set(label "the default loop")
+        set(scenario "")
     else()
         set(label "${scenario}")
     endif()

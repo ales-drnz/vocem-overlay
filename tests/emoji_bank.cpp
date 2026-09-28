@@ -18,17 +18,12 @@
 #include <string>
 
 #include "vocem/emoji_bank.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
 
 // The biggest |r-g| over opaque pixels: zero for any monochrome rendering,
 // large for a real colour glyph. Colour detectors on captures are forbidden

@@ -63,29 +63,18 @@
 
 #include <string>
 #include "vocem/shm.h"
+#include "vocem_check.h"
+
+using vocem_test::check;
+using vocem_test::failures;
+using vocem_test::write_file;
 
 namespace {
-
-int failures = 0;
 
 constexpr int kWidth = 1280;
 constexpr int kHeight = 720;
 
 unsigned char g_pixels[kWidth * kHeight * 4];
-
-void check(bool condition, const char* what) {
-    printf("%s %s\n", condition ? "ok  " : "FAIL", what);
-    if (!condition) {
-        ++failures;
-    }
-}
-
-void write_file(const char* path, const char* contents) {
-    if (FILE* file = fopen(path, "w")) {
-        fputs(contents, file);
-        fclose(file);
-    }
-}
 
 long lines_containing(const char* path, const char* needle) {
     FILE* file = fopen(path, "r");
@@ -166,20 +155,10 @@ int main() {
         printf("FAIL mkdtemp\n");
         return 1;
     }
-    char path[600];
-    snprintf(path, sizeof(path), "%s/vocem", root);
-    mkdir(path, 0700);
-    snprintf(path, sizeof(path), "%s/vocem/config.ini", root);
     // The rule names THIS binary, read off /proc/self/exe: a literal is
     // wrong the day the binary is renamed and wrong at -m32 today
     // (tests/probe_name.h, entry 129).
-    const std::string rule = "enabled = true\nshown_apps = " +
-                             vocem_test::own_name("vocem_gl_daemon_gone") + "\n";
-    write_file(path, rule.c_str());
-    setenv("XDG_CONFIG_HOME", root, 1);
-    snprintf(path, sizeof(path), "%s/cache", root);
-    mkdir(path, 0700);
-    setenv("XDG_CACHE_HOME", path, 1);
+    vocem_test::overlay_config_home(root, vocem_test::own_name("vocem_gl_daemon_gone"));
     char log_path[700];
     snprintf(log_path, sizeof(log_path), "%s/overlay.log", root);
     setenv("VOCEM_DEBUG", "1", 1);
