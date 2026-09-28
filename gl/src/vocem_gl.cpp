@@ -687,6 +687,9 @@ public:
             session_.journal_begin_once();
         }
         if (drawing_ >= 0 && want != (drawing_ == 1)) {
+            if (!want && release_waits_for_build("switched off")) {
+                return;  // drawing_ stays: the next present asks again
+            }
             VOCEM_GLOG("%s in '%s'", want ? "switched on" : "switched off",
                        vocem::process_name().c_str());
             vocem::journal_note(want ? "switched on" : "switched off");
@@ -720,6 +723,10 @@ public:
             // Not drawing is not enough: the backend, the atlas and a texture
             // per face are held on the daemon's behalf, and go back exactly as
             // when the switch is turned off (entry 146).
+            if (state_poll_.daemon_left_pending() &&
+                release_waits_for_build("the daemon stopped")) {
+                return;  // still pending: the next present asks again
+            }
             if (state_poll_.daemon_left()) {
                 VOCEM_GLOG("the daemon stopped: releasing the backend and the font atlas");
                 vocem::journal_note("daemon stopped: released");
@@ -766,6 +773,9 @@ public:
                 case Present::Foreign:
                     return;
                 case Present::Abandoned:
+                    if (release_waits_for_build("the backend's context fell silent")) {
+                        return;  // Abandoned again at the next present
+                    }
                     VOCEM_GLOG("the backend's context has not presented for %.0f s: moving the "
                                "overlay to the one that does", vocem::HandOver::kSeconds);
                     move_away();
@@ -1076,6 +1086,27 @@ public:
         void* owner = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
         void* current = current_context_ ? current_context_() : owner;
         return current == owner && __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == (egl ? 1 : 0);
+    }
+
+    // Whether a release noticed in this present -- the switch, the daemon,
+    // the hand-over -- has to wait for the first atlas's build. Each of them
+    // joins the worker (release(), move_away()), and joining here would hold
+    // the game's swap for the rest of the build: 142-151 ms at 2160 lines
+    // (tests/gl_release_mid_build.cpp). While it runs this frame goes out
+    // without the overlay, which a build does anyway, and a later present
+    // asks again. Said once per wait.
+    bool release_waits_for_build(const char* what) {
+        vocem::AtlasWorker* worker = vocem::atlas_worker_made();
+        if (!worker || !worker->building()) {
+            waiting_said_ = nullptr;
+            return false;
+        }
+        if (waiting_said_ != what) {
+            VOCEM_GLOG("%s while the first font atlas is being rasterised: releasing once it "
+                       "is done", what);
+            waiting_said_ = what;
+        }
+        return true;
     }
 
     // The switch or the daemon took the overlay away, noticed in this
@@ -1493,6 +1524,9 @@ private:
     // What the last frame concluded about whether the overlay belongs here, so the
     // moment it changes can be noticed. -1 until the first frame has asked.
     int drawing_ = -1;
+    // The release release_waits_for_build() last said it is waiting with, so
+    // it is said once per wait; null when none waits.
+    const char* waiting_said_ = nullptr;
     // Who holds the backend -- nobody, this context ready, or this context
     // where it could not be made -- and the clock and words of the hand-over
     // (vocem/atlas_owner.h). The context itself is in the owner globals above.

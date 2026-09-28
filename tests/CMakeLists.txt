@@ -1614,3 +1614,23 @@ endif()
 # failed-presenter.
 vocem_test_run(vk_present_failed_threads TARGET vk_present_draw
     ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=failed-threads" SKIP TIMEOUT 120)
+
+# A release asked while the first atlas is still being rasterised -- the switch
+# turned off, the daemon stopping, the hand-over -- waits for the build without
+# holding the game's swap: the process on one CPU, the worker at SCHED_IDLE and
+# a spinner beside it make the build last seconds (gl_release_mid_build.cpp).
+# Both widths.
+vocem_test(gl_release_mid_build LINK EGL GLESv2 rt Threads::Threads
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=switch" SKIP TIMEOUT 120)
+vocem_m32_twin(gl_release_mid_build
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=switch"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+foreach(scene daemon handover)
+    vocem_test_run(gl_release_mid_build_${scene} TARGET gl_release_mid_build
+        ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=${scene}" SKIP TIMEOUT 120)
+    vocem_m32_twin_run(gl_release_mid_build_${scene} TARGET gl_release_mid_build_${scene}
+        ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+            "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+            "VOCEM_GL_SCENARIO=${scene}")
+endforeach()
