@@ -41,9 +41,9 @@ void print_snapshot(const vocem::Snapshot& snapshot) {
                 snapshot.user_count == 1 ? "" : "s");
     // The state sits in a fixed cell *before* the name, not padded after it:
     // printf's %-40s counts bytes, and a name with an emoji in it is more bytes
-    // than columns, so the old marks column drifted on exactly the names Discord
-    // is full of. Three ASCII marks, one per state, readable in any terminal
-    // with no colour involved; the legend prints once, only when a mark did.
+    // than columns, so a column after it would drift. Three ASCII marks, one
+    // per state, readable in any terminal with no colour involved; the legend
+    // prints once, only when a mark did.
     bool any_marks = false;
     for (uint32_t i = 0; i < snapshot.user_count; ++i) {
         const vocem::User& user = snapshot.users[i];
@@ -62,9 +62,7 @@ void print_snapshot(const vocem::Snapshot& snapshot) {
 // Why there is no snapshot to print. A reader that met an object at the
 // segment's name and refused it (not this user's, not a regular file, or open
 // to others: segment_trust_problem in vocem/shm.h) has not met "no daemon",
-// and until the second fix round of 0.1.11 this said it had -- the refusal was
-// kept in the reader and never asked for. Entry 55 is what a refusal that
-// reads like silence costs.
+// and says which refusal it was: a refusal must not read like silence.
 void say_nothing_to_read(std::FILE* out, const vocem::StateReader& reader) {
     if (const char* refusal = reader.refusal()) {
         std::fprintf(out, "the shared state segment was refused: %s\n", refusal);
@@ -97,15 +95,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Only a terminal is cleared: piped into a file, the escape sequences were
-    // the file's every fourth line.
+    // Only a terminal is cleared: piped into a file, the escape sequences would
+    // be lines of their own.
     const bool clear_screen = watch && isatty(1);
 
     do {
-        // A mapping outlives the segment's name (vocem/shm.h): after a daemon
-        // restart --watch went on printing the cleared state the old daemon
-        // left, for ever, and never saw the new one -- the one situation a
-        // person watches this for. Asked on every tick, which is what the
+        // A mapping outlives the segment's name (vocem/shm.h): without asking,
+        // --watch would go on printing the state an old daemon left and never
+        // see the one a restart made. Asked on every tick, which is what the
         // reader's own note asks of its callers.
         if (reader.valid() && !reader.still_current()) {
             reader.close();
