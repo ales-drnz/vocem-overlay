@@ -503,7 +503,8 @@ public:
         waiting_.erase(key);
 
         // Noted before the work, not after: if the upload is what kills the
-        // process, the journal's last line has to name it (entry 46).
+        // process, the journal's last line has to name it. Entry 46's crash was
+        // an avatar upload -- the Vulkan cache's eighth face -- and nothing said so.
         {
             char note[840];
             std::snprintf(note, sizeof(note), "uploading avatar %s", path);
@@ -2082,9 +2083,12 @@ __attribute__((destructor)) void vocem_gl_journal_close() {
     // Last, the exception emergency pool (about 73 KB) of the libstdc++ this
     // library carries inside it (-static-libstdc++, the top-level
     // CMakeLists.txt): its destructor never frees it, leaving that to
-    // __gnu_cxx::__freeres(), so every unload would keep one
-    // (tests/injected_unload.cpp). It frees this library's own copy, never the
-    // game's -- the runtime inside is local to it.
+    // __gnu_cxx::__freeres(). In a game this runs once, at exit, where the
+    // pool no longer matters: the shim never unloads this library. It is here
+    // for what does unload it -- tests/injected_unload.cpp loads and unloads
+    // both heavy libraries in a loop, as the Vulkan loader does the layer --
+    // and so the two libraries end alike. It frees this library's own copy,
+    // never the game's: the runtime inside is local to it.
     __gnu_cxx::__freeres();
 }
 
