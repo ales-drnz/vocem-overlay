@@ -20,6 +20,7 @@
 #define VOCEM_CONFIG_H
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -599,7 +600,10 @@ struct Config {
     //   * Written to a temporary beside that file and renamed over it: a game
     //     reloads on the mtime, which would already be final while it read a
     //     half-written file. The temporary takes the file's mode and is
-    //     fsync'd, so a crash leaves the old file or the new one.
+    //     fsync'd, so a crash leaves the old file or the new one. It is named
+    //     for the process (`.tmp.<pid>`), and the file's directory is locked
+    //     from the read to the rename, so two windows writing at once each
+    //     write on top of what the other wrote (tests/config_two_writers.cpp).
     // `written` receives the settings the file now holds; `why`, when the
     // write is refused, says why in words the window can show.
     template <class Edit>
@@ -613,6 +617,17 @@ struct Config {
         if (target.empty()) {
             return refuse(why, "it is a loop of links");
         }
+        const size_t target_slash = target.rfind('/');
+        const std::string directory = target_slash == std::string::npos
+                                          ? std::string(".")
+                                          : target.substr(0, target_slash ? target_slash : 1);
+        // One writer at a time, from the read to the rename: two windows can
+        // run (entry 295), and a write between this one's read and its rename
+        // would be undone by it. The directory is what is locked -- the file
+        // itself is replaced by every write, so a lock on it would be on the
+        // old file. Where the directory cannot be locked the write goes on as
+        // it did without one.
+        const DirectoryLock lock(directory);
         std::FILE* file = nullptr;
         struct stat existing{};
         const int found = open_settings(target, file, &existing, why);
@@ -646,10 +661,13 @@ struct Config {
             return refuse(why, "it is read-only");
         }
 
-        const std::string temporary_path = target + ".tmp";
+        // This process's own name: a writer that does not take the lock (an
+        // older window) still never deletes another's temporary.
+        const std::string temporary_path = target + ".tmp." + std::to_string(::getpid());
         int fd = ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
         if (fd < 0 && errno == EEXIST) {
-            // Left by a write that died before its rename.
+            // Left by a write of an earlier process with this pid that died
+            // before its rename.
             ::unlink(temporary_path.c_str());
             fd = ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
         }
@@ -671,10 +689,6 @@ struct Config {
             ::unlink(temporary_path.c_str());
             return refuse(why, "the new text could not be written");
         }
-        const size_t target_slash = target.rfind('/');
-        const std::string directory = target_slash == std::string::npos
-                                          ? std::string(".")
-                                          : target.substr(0, target_slash ? target_slash : 1);
         const int dir_fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (dir_fd >= 0) {
             ::fsync(dir_fd);
@@ -682,6 +696,24 @@ struct Config {
         }
         return true;
     }
+
+    // An exclusive flock on a directory for the life of the object
+    // (edit_file()). Closing the descriptor lets it go.
+    struct DirectoryLock {
+        explicit DirectoryLock(const std::string& directory)
+            : fd(::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)) {
+            while (fd >= 0 && ::flock(fd, LOCK_EX) != 0 && errno == EINTR) {
+            }
+        }
+        ~DirectoryLock() {
+            if (fd >= 0) {
+                ::close(fd);
+            }
+        }
+        DirectoryLock(const DirectoryLock&) = delete;
+        DirectoryLock& operator=(const DirectoryLock&) = delete;
+        int fd;
+    };
 
     // This whole copy, written over the file: every setting takes this copy's
     // value. Through edit_file(), so the file's own lines stay as they are.

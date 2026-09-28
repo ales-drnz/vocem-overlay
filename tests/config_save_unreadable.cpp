@@ -98,7 +98,10 @@ int main() {
     }
     check(kept, "the file's contents are what they were");
 
-    check(::access((path + ".tmp").c_str(), F_OK) != 0, "and no temporary is left beside it");
+    // Named `<file>.tmp.<pid>` since the writer's temporary is per process.
+    check(::access((path + ".tmp." + std::to_string(::getpid())).c_str(), F_OK) != 0 &&
+              ::access((path + ".tmp").c_str(), F_OK) != 0,
+          "and no temporary is left beside it");
 
     std::remove(path.c_str());
     ::rmdir((config_home + "/vocem").c_str());

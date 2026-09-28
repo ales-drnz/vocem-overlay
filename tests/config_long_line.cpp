@@ -173,6 +173,7 @@ int main() {
 
     ::unlink(vocem::Config::path().c_str());
     ::unlink((vocem::Config::path() + ".tmp").c_str());
+    ::unlink((vocem::Config::path() + ".tmp." + std::to_string(::getpid())).c_str());
     ::rmdir((directory + "/vocem").c_str());
     ::rmdir(directory.c_str());
 

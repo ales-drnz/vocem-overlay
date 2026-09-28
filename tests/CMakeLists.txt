@@ -1639,3 +1639,8 @@ endforeach()
 # its own command line, where every local user reads it (unit_command_env.cpp):
 # --setenv=NAME, the values in systemd-run's environment.
 vocem_test(unit_command_env)
+
+# Two processes writing config.ini at once, a key each, 300 writes apiece
+# (config_two_writers.cpp): none refused, every write that answered true on
+# the file at the end, no temporary left.
+vocem_test(config_two_writers)
