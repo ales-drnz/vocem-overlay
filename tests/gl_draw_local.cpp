@@ -635,7 +635,7 @@ int main() {
               "joining or any message arriving");
         check(folded >= arrival_swaps,
               "and every arrival's emoji reached the atlas, folded in (the positive control)");
-        // As the squares it changed, not the 64 MB atlas (entry 192).
+        // As the squares it changed, not the whole atlas (entry 192).
         const long whole = lines_containing(log_path, "font texture uploaded whole");
         const long in_place = lines_containing(log_path, "copied in place");
         printf("     the font texture went up whole %ld time(s), in place %ld time(s)\n", whole,

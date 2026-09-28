@@ -127,11 +127,25 @@ void AtlasWorker::wait_until_built() {
     }
 }
 
+namespace {
+
+// The worker once atlas_worker() has made it, for atlas_worker_made(). A
+// pointer with constant initialisation: nothing runs to set it up.
+std::atomic<AtlasWorker*> g_made{nullptr};
+
+}  // namespace
+
 AtlasWorker& atlas_worker() {
     // Never destroyed (the class says why); a pointer, so no destructor is
     // registered at exit (entry 151).
-    static AtlasWorker* worker = new AtlasWorker;
+    static AtlasWorker* worker = [] {
+        AtlasWorker* made = new AtlasWorker;
+        g_made.store(made, std::memory_order_release);
+        return made;
+    }();
     return *worker;
 }
+
+AtlasWorker* atlas_worker_made() { return g_made.load(std::memory_order_acquire); }
 
 }  // namespace vocem

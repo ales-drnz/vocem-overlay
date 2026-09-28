@@ -158,6 +158,9 @@ public:
         left_ = false;
         return left;
     }
+    // The same answer without taking it: a caller that cannot hand back yet
+    // (the OpenGL path while the first atlas is rasterised) asks again later.
+    bool daemon_left_pending() const { return left_; }
 
 private:
     // A new segment, or none: nothing read from the last one is carried over,

@@ -59,16 +59,26 @@ public:
     void process_pending();
 
     // The font atlas's texture is owned here rather than by imgui_impl_vulkan:
-    // the stock upload replaces the whole 64 MB image between two
-    // vkQueueWaitIdle, while a new colour emoji changes a 32x32 square. The
-    // backend cannot update part of its image, so the renderer never calls its
-    // NewFrame and hands ImGui this texture through SetTexID.
+    // the stock upload replaces the whole image -- 43 MB of RGBA at a
+    // 2160-line display (4096x2611) -- between two vkQueueWaitIdle, while a
+    // new colour emoji changes a 32x32 square. The backend cannot update part
+    // of its image, so the renderer never calls its NewFrame and hands ImGui
+    // this texture through SetTexID.
     //
     // upload_font_atlas: the whole atlas into a new image, after a real build.
     // The new image and staging buffer are made FIRST, and only then is the old
     // one retired after a queue idle (frames in flight may sample it), so a
     // failed replacement leaves ImGui's TexID alive. The copy itself is not
     // waited for. Returns the descriptor for SetTexID, or 0. Post-present only.
+    // `fill` writes the width x height RGBA32 pixels into the mapped staging
+    // buffer (write only: it may be write-combined) and answers whether it
+    // could; the renderer widens the atlas straight there
+    // (fonts_atlas_widen_into), so no RGBA copy of it is made to be copied.
+    using FillPixels = bool (*)(unsigned char* destination, uint32_t width, uint32_t height,
+                                const void* context);
+    ImTextureID upload_font_atlas(uint32_t width, uint32_t height, FillPixels fill,
+                                  const void* context);
+    // The same from pixels already in memory.
     ImTextureID upload_font_atlas(const unsigned char* rgba, uint32_t width, uint32_t height);
     // update_font_atlas: only the squares a fold wrote, into the live image,
     // with no CPU wait: a barrier on the same queue orders the copy after the

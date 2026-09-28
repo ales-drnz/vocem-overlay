@@ -58,16 +58,21 @@
 // It can also refuse one call, which is how a failure the overlay has to
 // survive is made to happen on a machine where it does not:
 // VOCEM_WITNESS_FAIL_SAMPLER=N answers the process's Nth vkCreateSampler with
-// VK_ERROR_OUT_OF_DEVICE_MEMORY and reports `sampler-refused`. The overlay's
-// backend creates the first (ImGui's own) and its texture cache the second,
-// so 2 is "the texture cache did not come up" (vk_present_draw's
-// no-texture-cache scene).
+// VK_ERROR_OUT_OF_DEVICE_MEMORY and reports `sampler-refused device=<h>`, the
+// device as the application holds it (the loader's handle, the same above and
+// below every layer). The overlay's backend creates the first (ImGui's own)
+// and its texture cache the second, so 2 is "the texture cache did not come
+// up" (vk_present_draw's no-texture-cache scene).
+// VOCEM_WITNESS_FAIL_SAMPLER_RACE=1 also stages a race around the refusal
+// (witness_CreateSampler says which; the failed-threads scene).
 
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
+#include <sched.h>
 #include <time.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -126,6 +131,8 @@ struct DeviceData {
 std::mutex g_lock;
 std::unordered_map<void*, InstanceData> g_instances;
 std::unordered_map<void*, DeviceData> g_devices;
+// Presents that reached this layer, any device (VOCEM_WITNESS_FAIL_SAMPLER_RACE).
+std::atomic<unsigned long> g_presents{0};
 
 void* dispatch_key(void* handle) { return *reinterpret_cast<void**>(handle); }
 
@@ -314,6 +321,7 @@ VKAPI_ATTR VkResult VKAPI_CALL witness_QueuePresentKHR(VkQueue queue,
     if (!next) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
+    g_presents++;
     char line[512];
     std::snprintf(line, sizeof(line), "present waits=%u", pPresentInfo->waitSemaphoreCount);
     // Which semaphores: from below the overlay, the ones it handed down -- its
@@ -476,7 +484,28 @@ VKAPI_ATTR VkResult VKAPI_CALL witness_CreateSampler(VkDevice device,
     }
     const char* refuse = std::getenv("VOCEM_WITNESS_FAIL_SAMPLER");
     if (refuse && std::atoi(refuse) == nth) {
-        report("sampler-refused");
+        // VOCEM_WITNESS_FAIL_SAMPLER_RACE=1 (the failed-threads scene): the
+        // refusal waits for a present of another device -- whose thread then
+        // goes on to the overlay's prepare() and waits there, on the lock
+        // this thread holds -- and 50 ms more, and the refused thread drops
+        // to SCHED_IDLE. On one CPU the thread it wakes by giving that lock
+        // back then runs before it does: the interleaving a loaded machine
+        // gives now and then, every time.
+        if (const char* race = std::getenv("VOCEM_WITNESS_FAIL_SAMPLER_RACE");
+            race && std::strcmp(race, "1") == 0) {
+            const unsigned long seen = g_presents.load();
+            const timespec millisecond{0, 1000000};
+            for (int waited = 0; waited < 2000 && g_presents.load() == seen; ++waited) {
+                nanosleep(&millisecond, nullptr);
+            }
+            const timespec settle{0, 50000000};
+            nanosleep(&settle, nullptr);
+            const sched_param none{};
+            sched_setscheduler(0, SCHED_IDLE, &none);
+        }
+        char line[64];
+        std::snprintf(line, sizeof(line), "sampler-refused device=0x%llx", handle_value(device));
+        report(line);
         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
     return next(device, pCreateInfo, pAllocator, pSampler);

@@ -19,8 +19,13 @@
 // The libraries are VOCEM_GL_LIBRARY and VOCEM_VK_LIBRARY. For each: five cycles to settle, then forty
 // measured with mallinfo2's in-use bytes, and a check that the library really
 // left the address space after each dlclose -- a library that cannot be
-// unloaded would make any heap figure meaningless. The bound is 1 KB per cycle,
-// against the 73.7 KB (12.8 KB at 32 bits) the defect cost.
+// unloaded would make any heap figure meaningless. The bound is less than one
+// allocation a cycle -- under 16 bytes a cycle on average, malloc's smallest
+// chunk at 32 bits -- so any object kept per load fails it: the 73.7 KB (12.8
+// KB at 32 bits) of the pool, and the 160 bytes (112) of an atlas worker the
+// ELF destructor made in order to join it, in a library that never drew
+// (8c6db47; 0 bytes since the destructor joins only a worker that exists).
+// The bound was 1 KB a cycle and let the worker through.
 
 #include <dlfcn.h>
 #include <malloc.h>
@@ -58,7 +63,8 @@ int main() {
     for (const char* path : libraries) {
         constexpr int kSettle = 5;
         constexpr int kCycles = 40;
-        constexpr long kBoundPerCycle = 1024;
+        // Below one of malloc's smallest chunks per cycle, over all of them.
+        constexpr long kBound = 16 * kCycles;
         int stayed = 0;
         size_t before = 0;
         for (int cycle = 0; cycle < kSettle + kCycles; ++cycle) {
@@ -81,9 +87,9 @@ int main() {
         if (stayed != 0) {
             printf("FAIL %s was not unloaded, so the heap figure measures nothing\n", path);
             ++failures;
-        } else if (per_cycle > kBoundPerCycle) {
-            printf("FAIL %s keeps %ld bytes per load/unload cycle (bound %ld)\n", path,
-                   per_cycle, kBoundPerCycle);
+        } else if (grown >= kBound) {
+            printf("FAIL %s keeps %ld bytes over %d load/unload cycles (bound: under %ld)\n",
+                   path, grown, kCycles, kBound);
             ++failures;
         } else {
             printf("ok   %s gives back what it took\n", path);

@@ -687,6 +687,9 @@ public:
             session_.journal_begin_once();
         }
         if (drawing_ >= 0 && want != (drawing_ == 1)) {
+            if (!want && release_waits_for_build("switched off")) {
+                return;  // drawing_ stays: the next present asks again
+            }
             VOCEM_GLOG("%s in '%s'", want ? "switched on" : "switched off",
                        vocem::process_name().c_str());
             vocem::journal_note(want ? "switched on" : "switched off");
@@ -720,6 +723,10 @@ public:
             // Not drawing is not enough: the backend, the atlas and a texture
             // per face are held on the daemon's behalf, and go back exactly as
             // when the switch is turned off (entry 146).
+            if (state_poll_.daemon_left_pending() &&
+                release_waits_for_build("the daemon stopped")) {
+                return;  // still pending: the next present asks again
+            }
             if (state_poll_.daemon_left()) {
                 VOCEM_GLOG("the daemon stopped: releasing the backend and the font atlas");
                 vocem::journal_note("daemon stopped: released");
@@ -766,6 +773,9 @@ public:
                 case Present::Foreign:
                     return;
                 case Present::Abandoned:
+                    if (release_waits_for_build("the backend's context fell silent")) {
+                        return;  // Abandoned again at the next present
+                    }
                     VOCEM_GLOG("the backend's context has not presented for %.0f s: moving the "
                                "overlay to the one that does", vocem::HandOver::kSeconds);
                     move_away();
@@ -1078,6 +1088,27 @@ public:
         return current == owner && __atomic_load_n(&g_owner_egl, __ATOMIC_ACQUIRE) == (egl ? 1 : 0);
     }
 
+    // Whether a release noticed in this present -- the switch, the daemon,
+    // the hand-over -- has to wait for the first atlas's build. Each of them
+    // joins the worker (release(), move_away()), and joining here would hold
+    // the game's swap for the rest of the build: 142-151 ms at 2160 lines
+    // (tests/gl_release_mid_build.cpp). While it runs this frame goes out
+    // without the overlay, which a build does anyway, and a later present
+    // asks again. Said once per wait.
+    bool release_waits_for_build(const char* what) {
+        vocem::AtlasWorker* worker = vocem::atlas_worker_made();
+        if (!worker || !worker->building()) {
+            waiting_said_ = nullptr;
+            return false;
+        }
+        if (waiting_said_ != what) {
+            VOCEM_GLOG("%s while the first font atlas is being rasterised: releasing once it "
+                       "is done", what);
+            waiting_said_ = what;
+        }
+        return true;
+    }
+
     // The switch or the daemon took the overlay away, noticed in this
     // present. The backend is shut down with GL calls only where it lives: in
     // another, unshared context its names are that context's own objects
@@ -1267,9 +1298,9 @@ private:
         // The backend's GL objects -- shader, buffers and the font texture --
         // built HERE, not left to its NewFrame: draw() replaces the font
         // texture once ensure_fonts() has the atlas at this output's size, and
-        // a NewFrame building them after that would orphan a whole 16-64 MB
-        // atlas per backend build (tests/gl_draw_local.cpp counts the
-        // textures).
+        // a NewFrame building them after that would orphan a whole atlas
+        // texture -- 43 MB at a 2160-line display -- per backend build
+        // (tests/gl_draw_local.cpp counts the textures).
         avatars_.resolve(es_version, gl_major);
         {
             // Under the pixel-store guard, as draw() keeps the backend's font
@@ -1493,6 +1524,9 @@ private:
     // What the last frame concluded about whether the overlay belongs here, so the
     // moment it changes can be noticed. -1 until the first frame has asked.
     int drawing_ = -1;
+    // The release release_waits_for_build() last said it is waiting with, so
+    // it is said once per wait; null when none waits.
+    const char* waiting_said_ = nullptr;
     // Who holds the backend -- nobody, this context ready, or this context
     // where it could not be made -- and the clock and words of the hand-over
     // (vocem/atlas_owner.h). The context itself is in the owner globals above.
@@ -2090,7 +2124,10 @@ __attribute__((destructor)) void vocem_gl_journal_close() {
     // A first atlas still being rasterised runs this library's code and reads
     // the atlas: it finishes before exit tears the process down (entry 192).
     // The shim never dlcloses this library, so exit is the one way this runs.
-    vocem::atlas_worker().join();
+    // A process that never drew has no worker, and none is made here.
+    if (vocem::AtlasWorker* worker = vocem::atlas_worker_made()) {
+        worker->join();
+    }
     vocem::journal_end();
     // Last, the exception emergency pool (about 73 KB) of the libstdc++ this
     // library carries inside it (-static-libstdc++, the top-level

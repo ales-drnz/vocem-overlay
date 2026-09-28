@@ -115,6 +115,12 @@ bool OverlayRenderer::load_vulkan_functions(const RendererTarget& target) {
     return true;
 }
 
+void OverlayRenderer::refuse(const RendererTarget& target) {
+    failed_ = true;
+    failed_device_ = target.device;
+    failed_queue_ = target.queue;
+}
+
 bool OverlayRenderer::prepare(const RendererTarget& target) {
     std::lock_guard<std::mutex> guard(lock_);
     if (backend_ready_) {
@@ -127,12 +133,12 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         VOCEM_RLOG("incomplete target: device=%p render_pass=%p gdpa=%p gipa=%p",
                    (void*)target.device, (void*)target.render_pass, (void*)target.gdpa,
                    (void*)target.gipa);
-        failed_ = true;
+        refuse(target);
         return false;
     }
 
     if (!load_vulkan_functions(target)) {
-        failed_ = true;
+        refuse(target);
         return false;
     }
 
@@ -219,7 +225,7 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         if (!ImGui_ImplVulkan_Init(&info) || g_backend_failed) {
             VOCEM_RLOG("ImGui_ImplVulkan_Init failed");
             ImGui_ImplVulkan_Shutdown();
-            failed_ = true;
+            refuse(target);
             return false;
         }
         // The font atlas is uploaded here, post-present, by the texture cache,
@@ -228,7 +234,8 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         // vkQueueWaitIdle are what rule 10 keeps out (tests/vk_witness_layer.cpp
         // sees a queue wait inside a present). The cache owns the font texture
         // so a new colour emoji is copied in as a 32x32 square rather than
-        // replacing 64 MB, so it is initialised before the atlas.
+        // replacing the whole atlas (43 MB at a 2160-line display), so it is
+        // initialised before the atlas.
         //
         // Without the cache there is no backend: ImGui's stock font upload
         // allocates a command buffer the loader never registers, which crashes
@@ -246,14 +253,14 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
                        "without it the font texture would need ImGui's own upload, whose "
                        "command buffer the loader never registers");
             ImGui_ImplVulkan_Shutdown();
-            failed_ = true;
+            refuse(target);
             return false;
         }
         if (!upload_font_texture(true) || g_backend_failed) {
             VOCEM_RLOG("font atlas upload failed");
             textures_.shutdown();
             ImGui_ImplVulkan_Shutdown();
-            failed_ = true;
+            refuse(target);
             return false;
         }
         VOCEM_RLOG("backend ready (%u ring slots, queue family %u)", info.ImageCount,
@@ -291,17 +298,31 @@ bool OverlayRenderer::upload_font_texture(bool whole) {
     } else {
         fonts_take_folded(nullptr, 0);  // already in the whole atlas
     }
-    // The whole atlas as RGBA, widened again with its colour squares if it was
-    // handed back after the last whole upload, and handed back once the
-    // staging buffer holds it: the image is the atlas from here on.
-    unsigned char* pixels = nullptr;
-    int width = 0;
-    int height = 0;
-    if (!fonts_atlas_rgba(&pixels, &width, &height) || width <= 0 || height <= 0) {
+    // The whole atlas as RGBA, widened with its colour squares straight into
+    // the staging buffer when its RGBA copy was handed back after the last
+    // whole upload -- no 43 MB copy made to be copied again -- and the copy a
+    // build left handed back once the staging buffer holds it: the image is
+    // the atlas from here on.
+    if (!io.Fonts->TexPixelsAlpha8 && !io.Fonts->TexPixelsRGBA32) {
+        // No pixels at all: asking for them has ImGui build the atlas.
+        unsigned char* built = nullptr;
+        int built_width = 0;
+        int built_height = 0;
+        if (!fonts_atlas_rgba(&built, &built_width, &built_height)) {
+            return false;
+        }
+    }
+    const int width = io.Fonts->TexWidth;
+    const int height = io.Fonts->TexHeight;
+    if (width <= 0 || height <= 0) {
         return false;
     }
-    const ImTextureID id = textures_.upload_font_atlas(pixels, static_cast<uint32_t>(width),
-                                                       static_cast<uint32_t>(height));
+    const ImTextureID id = textures_.upload_font_atlas(
+        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+        [](unsigned char* destination, uint32_t w, uint32_t h, const void*) {
+            return fonts_atlas_widen_into(destination, static_cast<int>(w), static_cast<int>(h));
+        },
+        nullptr);
     fonts_atlas_uploaded();
     if (id == 0) {
         return false;
@@ -369,8 +390,8 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
 
     // The backend's NewFrame is never called: its only job is creating a font
     // texture when it has none, and with the cache owning that texture it
-    // never has one -- calling it would upload 64 MB with a queue wait inside
-    // the present (rule 10).
+    // never has one -- calling it would upload the whole atlas (43 MB at a
+    // 2160-line display) with a queue wait inside the present (rule 10).
     ImGui::NewFrame();
     AvatarProvider* avatars = textures_.ready() ? avatar_adapter_ : nullptr;
     // A frame can be for the toast alone (a message outside a voice channel),
@@ -486,6 +507,8 @@ void OverlayRenderer::shutdown_locked() {
     // the new one.
     functions_loaded_ = false;
     failed_ = false;
+    failed_device_ = VK_NULL_HANDLE;
+    failed_queue_ = VK_NULL_HANDLE;
     font_retry_ = UploadRetry();
     device_ = VK_NULL_HANDLE;
     queue_ = VK_NULL_HANDLE;

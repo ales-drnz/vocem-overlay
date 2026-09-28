@@ -1394,8 +1394,9 @@ vocem_m32_twin(gl_destroy_private_x11
 
 # The two heavy libraries loaded and unloaded forty times each: the libstdc++
 # they carry inside them since 0.1.11 left its ~73 KB exception emergency pool
-# on the heap at every unload, which is every vkDestroyInstance for the layer
-# (injected_unload.cpp). Both widths, both libraries.
+# on the heap at every unload, which is every vkDestroyInstance for the layer,
+# and 8c6db47's ELF destructors an atlas worker (injected_unload.cpp). Both
+# widths, both libraries.
 vocem_test(injected_unload LINK ${CMAKE_DL_LIBS}
     ENV "LD_PRELOAD=" "VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
         "VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>")
@@ -1602,3 +1603,44 @@ endif()
 if(TARGET vocem-config)
     vocem_script_test(single_instance_long_path ARGS ${VOCEM_WINDOW_ARG})
 endif()
+
+# ---- 0.1.11 clean-up refix lane ----
+
+# failed-presenter with both devices presenting from the first frame, each on
+# a thread of its own and the process on one CPU: the refused renderer's
+# failure is held by the device the witness refused, not by whichever thread
+# took the layer's lock first, and the other device gets the overlay once that
+# one falls silent (vk_present_draw.cpp, failed-threads). 64-bit only, as
+# failed-presenter.
+vocem_test_run(vk_present_failed_threads TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=failed-threads" SKIP TIMEOUT 120)
+
+# A release asked while the first atlas is still being rasterised -- the switch
+# turned off, the daemon stopping, the hand-over -- waits for the build without
+# holding the game's swap: the process on one CPU, the worker at SCHED_IDLE and
+# a spinner beside it make the build last seconds (gl_release_mid_build.cpp).
+# Both widths.
+vocem_test(gl_release_mid_build LINK EGL GLESv2 rt Threads::Threads
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=switch" SKIP TIMEOUT 120)
+vocem_m32_twin(gl_release_mid_build
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=switch"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+foreach(scene daemon handover)
+    vocem_test_run(gl_release_mid_build_${scene} TARGET gl_release_mid_build
+        ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=${scene}" SKIP TIMEOUT 120)
+    vocem_m32_twin_run(gl_release_mid_build_${scene} TARGET gl_release_mid_build_${scene}
+        ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+            "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so"
+            "VOCEM_GL_SCENARIO=${scene}")
+endforeach()
+
+# The systemd-run command of the `_unit` tests keeps the test's environment off
+# its own command line, where every local user reads it (unit_command_env.cpp):
+# --setenv=NAME, the values in systemd-run's environment.
+vocem_test(unit_command_env)
+
+# Two processes writing config.ini at once, a key each, 300 writes apiece
+# (config_two_writers.cpp): none refused, every write that answered true on
+# the file at the end, no temporary left.
+vocem_test(config_two_writers)

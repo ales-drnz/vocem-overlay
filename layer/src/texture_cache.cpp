@@ -502,7 +502,21 @@ VkImageMemoryBarrier font_barrier(VkImage image, VkImageLayout from, VkImageLayo
 
 ImTextureID TextureCache::upload_font_atlas(const unsigned char* rgba, uint32_t width,
                                             uint32_t height) {
-    if (!ready_ || !rgba || width == 0 || height == 0) {
+    if (!rgba) {
+        return 0;
+    }
+    return upload_font_atlas(
+        width, height,
+        [](unsigned char* destination, uint32_t w, uint32_t h, const void* source) {
+            std::memcpy(destination, source, static_cast<size_t>(w) * h * 4);
+            return true;
+        },
+        rgba);
+}
+
+ImTextureID TextureCache::upload_font_atlas(uint32_t width, uint32_t height, FillPixels fill,
+                                            const void* context) {
+    if (!ready_ || !fill || width == 0 || height == 0) {
         return 0;
     }
     const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
@@ -518,8 +532,11 @@ ImTextureID TextureCache::upload_font_atlas(const unsigned char* rgba, uint32_t 
             !create_staging(size, &staging, &staging_memory, &mapped)) {
             break;
         }
-        std::memcpy(mapped, rgba, static_cast<size_t>(size));
+        const bool filled = fill(static_cast<unsigned char*>(mapped), width, height, context);
         fn_.UnmapMemory(device_, staging_memory);
+        if (!filled) {
+            break;
+        }
 
         // Only now that its replacement exists is the old image retired. The
         // frames in flight may still be sampling it: the same wait the stock

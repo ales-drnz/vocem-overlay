@@ -1001,8 +1001,9 @@ constexpr uint32_t kMaxWaitSemaphores = 16;
 
 // `wanted` is set when this frame had something to put on the screen (past the
 // poll and both feature guards), whatever happens after. The caller gates the
-// renderer's construction on it -- a font atlas, a 64 MB upload and a
-// descriptor pool -- and `sizing` is the height that atlas is sized from.
+// renderer's construction on it -- a font atlas, its upload (43 MB at a
+// 2160-line display) and a descriptor pool -- and `sizing` is the height that
+// atlas is sized from.
 VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint32_t image_index,
                          const VkSemaphore* wait_semaphores, uint32_t wait_count, bool& wanted,
                          uint32_t& sizing) {
@@ -1273,9 +1274,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                                          pPresentInfo->waitSemaphoreCount, wanted, sizing);
                         // Built only for a frame that had something on it, not
                         // merely for an allowed game: an idle machine with the
-                        // tray up must not pay for an atlas, a 64 MB upload and
-                        // a descriptor pool. The first drawn frame pays instead,
-                        // post-present (rule 10).
+                        // tray up must not pay for an atlas, its upload (43 MB
+                        // at 2160 lines) and a descriptor pool. The first drawn
+                        // frame pays instead, post-present (rule 10).
                         if (wanted && !vocem::renderer().ready()) {
                             needs_init = true;
                             pending_target.instance = dev->instance;
@@ -1390,19 +1391,24 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                 g_hand_over.take(vocem::HandOver::Holding::Ready, vocem::monotonic_seconds());
             }
         } else if (vocem::renderer().failed()) {
-            // Refused here: this device and queue hold the overlay as a
-            // renderer that came up would, so the failure goes with them
-            // rather than staying the whole process's.
+            // Refused: the device and queue it was refused on hold the
+            // overlay as a renderer that came up would, so the failure goes
+            // with them rather than staying the whole process's. Those the
+            // renderer names, not this present's: a thread that waited on the
+            // renderer through another device's failing prepare() gets here
+            // too, and may get here first.
             // Asked again under the lock: a release on another thread may
             // have cleared the failure in between.
             std::lock_guard<std::mutex> guard(g_lock);
-            if (!g_hand_over.held() && vocem::renderer().failed()) {
+            VkDevice failed_device = VK_NULL_HANDLE;
+            VkQueue failed_queue = VK_NULL_HANDLE;
+            if (!g_hand_over.held() && vocem::renderer().failed(&failed_device, &failed_queue)) {
                 g_hand_over.take(vocem::HandOver::Holding::Failed, vocem::monotonic_seconds());
-                g_failed_device = pending_target.device;
-                g_failed_queue = pending_target.queue;
+                g_failed_device = failed_device;
+                g_failed_queue = failed_queue;
                 VOCEM_LOG("the overlay stays with device %p, where its renderer could not be "
                           "made, until that device is destroyed or falls silent",
-                          static_cast<void*>(pending_target.device));
+                          static_cast<void*>(failed_device));
             }
         }
     } else if (vocem::renderer().ready()) {
@@ -1561,8 +1567,11 @@ namespace {
 __attribute__((destructor)) void vocem_layer_journal_close() {
     // A font atlas still being rasterised on a worker runs this library's code:
     // it finishes before the library can be unmapped -- by exit, or by the
-    // loader's dlclose after vkDestroyInstance.
-    vocem::atlas_worker().join();
+    // loader's dlclose after vkDestroyInstance. A process that never drew has
+    // no worker, and none is made here: this runs at every unload.
+    if (vocem::AtlasWorker* worker = vocem::atlas_worker_made()) {
+        worker->join();
+    }
     vocem::journal_end();
     // Last, the exception emergency pool of the libstdc++ this library carries
     // inside it (-static-libstdc++): its constructor mallocs the pool at every

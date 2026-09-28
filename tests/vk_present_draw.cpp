@@ -135,6 +135,13 @@
 //     gets it once the first falls silent, and the first gets it back when the
 //     second is gone. Against the layer before this scene existed the failure
 //     was the whole process's and nothing was drawn on either device.
+//   * VOCEM_VK_SCENARIO=failed-threads: the same refusal with both devices
+//     presenting from the first frame, each on a thread of its own, the whole
+//     process on one CPU. The failure has to be held by the device the witness
+//     refused, and the other device gets the overlay once that one falls
+//     silent. Against the layer of 8c6db47 the failure went to whichever
+//     thread took the layer's lock first, the other device, which then held
+//     the overlay it was never refused on while nothing was drawn anywhere.
 //   * VOCEM_VK_SCENARIO=no-texture-cache: the witness refuses the texture
 //     cache's sampler, so the cache does not come up. The renderer used to
 //     fall back to ImGui's stock font upload, whose command buffer is
@@ -150,6 +157,7 @@
 
 #include <dlfcn.h>
 #include <malloc.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,7 +165,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <string>
+#include <thread>
 
 #include <X11/Xlib.h>
 
@@ -790,6 +800,9 @@ int main() {
     // failed-presenter is second-presenter with the first device's renderer
     // refused (the no-texture-cache scene's witness), see its checks below.
     const bool failed_presenter = strcmp(scenario, "failed-presenter") == 0;
+    // failed-threads: the same refusal with two devices presenting on two
+    // threads at once, the whole process on one CPU (see its block below).
+    const bool failed_threads = strcmp(scenario, "failed-threads") == 0;
     const bool second_presenter =
         strcmp(scenario, "second-presenter") == 0 || failed_presenter;
     const bool second_queue = strcmp(scenario, "second-queue") == 0;
@@ -980,7 +993,7 @@ int main() {
             printf("     below the overlay: %s\n", below);
         }
     }
-    if (no_cache || failed_presenter) {
+    if (no_cache || failed_presenter || failed_threads) {
         if (!have_witness) {
             skip("the no-texture-cache and failed-presenter scenes need the witness layer, "
                  "which refuses the sampler");
@@ -988,6 +1001,9 @@ int main() {
         // The overlay's backend makes the process's first sampler (ImGui's
         // own) and its texture cache the second; the witness refuses that one.
         setenv("VOCEM_WITNESS_FAIL_SAMPLER", "2", 1);
+        if (failed_threads) {
+            setenv("VOCEM_WITNESS_FAIL_SAMPLER_RACE", "1", 1);
+        }
     }
     if (have_witness) {
         snprintf(witness_report, sizeof(witness_report), "%s/witness.txt", root);
@@ -1114,6 +1130,30 @@ int main() {
         skip("loader has no vkCreateInstance");
     }
 
+    if (failed_threads) {
+        // Two threads present, both through Xlib surfaces.
+        XInitThreads();
+        // The whole process on one CPU, every thread made from here on
+        // included: the interleaving a loaded machine gives, every time. The
+        // thread that finishes a failing prepare() loses the CPU to the one it
+        // woke by unlocking the renderer (measured by the refutation: 10 of 10
+        // on one CPU, 0 of 38 on all of them).
+        cpu_set_t allowed;
+        CPU_ZERO(&allowed);
+        if (sched_getaffinity(0, sizeof(allowed), &allowed) == 0) {
+            for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+                if (CPU_ISSET(cpu, &allowed)) {
+                    cpu_set_t one;
+                    CPU_ZERO(&one);
+                    CPU_SET(cpu, &one);
+                    if (sched_setaffinity(0, sizeof(one), &one) == 0) {
+                        printf("     the process runs on CPU %d alone\n", cpu);
+                    }
+                    break;
+                }
+            }
+        }
+    }
     Display* display = XOpenDisplay(nullptr);
     if (!display) {
         skip("the display did not open from inside the sandbox");
@@ -1904,6 +1944,234 @@ int main() {
         check(mapped_kb < 1024,
               "an instance destroyed while the first atlas was being rasterised hands it back "
               "all the same");
+        char cleanup[800];
+        snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
+        if (system(cleanup) != 0) {
+            printf("     (the scratch root %s outlived the test)\n", root);
+        }
+        printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
+        return failures == 0 ? 0 : 1;
+    }
+    if (failed_threads) {
+        // Two devices presenting from two threads from the very first frame,
+        // the renderer refused on whichever of them brings it up (the witness
+        // refuses the texture cache's sampler and reports the device). The
+        // failure has to be held by THAT device. It was recorded against
+        // whichever presenting thread took g_lock first after prepare()
+        // returned: the other thread, waiting on the renderer's lock through
+        // the failing prepare(), returns false at once and races for g_lock,
+        // and on one CPU it wins (the 2026-09-28 refutation: 10 of 10). The
+        // device that never tried then held the overlay while it presented,
+        // and the one that failed was passed through: nothing was ever drawn
+        // anywhere, entry 289's defect again.
+        Window window_b =
+            XCreateWindow(display, RootWindow(display, screen), -4000, 400, kWidth, kHeight, 0,
+                          CopyFromParent, InputOutput, CopyFromParent,
+                          CWOverrideRedirect | CWBackPixel, &attributes);
+        XMapWindow(display, window_b);
+        XSync(display, False);
+        VkXlibSurfaceCreateInfoKHR surface_b_info = surface_info;
+        surface_b_info.window = window_b;
+        VkSurfaceKHR surface_b = VK_NULL_HANDLE;
+        VkBool32 presentable_b = VK_FALSE;
+        VkDevice device_b = VK_NULL_HANDLE;
+        if (vk.vkCreateXlibSurfaceKHR(instance, &surface_b_info, nullptr, &surface_b) !=
+                VK_SUCCESS ||
+            vk.vkGetPhysicalDeviceSurfaceSupportKHR(gpu, queue_family, surface_b,
+                                                    &presentable_b) != VK_SUCCESS ||
+            !presentable_b ||
+            vk.vkCreateDevice(gpu, &device_info, nullptr, &device_b) != VK_SUCCESS) {
+            printf("FAIL the second presenting device could not be made\n");
+            return 1;
+        }
+        Vk table_b = vk;
+#define VOCEM_LOAD_DEVICE_B(name) \
+        table_b.name = reinterpret_cast<PFN_##name>(vk.vkGetDeviceProcAddr(device_b, #name));
+        VOCEM_VK_DEVICE_FUNCS(VOCEM_LOAD_DEVICE_B)
+#undef VOCEM_LOAD_DEVICE_B
+        VkQueue queue_b = VK_NULL_HANDLE;
+        table_b.vkGetDeviceQueue(device_b, queue_family, 0, &queue_b);
+        VkSwapchainCreateInfoKHR swap_b = swap_info;
+        swap_b.surface = surface_b;
+        VkSwapchainKHR swapchain_b = VK_NULL_HANDLE;
+        if (table_b.vkCreateSwapchainKHR(device_b, &swap_b, nullptr, &swapchain_b) != VK_SUCCESS) {
+            printf("FAIL the second device's swapchain\n");
+            return 1;
+        }
+        uint32_t count_b = 0;
+        table_b.vkGetSwapchainImagesKHR(device_b, swapchain_b, &count_b, nullptr);
+        VkImage images_b[kMaxSwapchainImages];
+        if (count_b > kMaxSwapchainImages) {
+            count_b = kMaxSwapchainImages;
+        }
+        table_b.vkGetSwapchainImagesKHR(device_b, swapchain_b, &count_b, images_b);
+        VkCommandPool pool_b = VK_NULL_HANDLE;
+        table_b.vkCreateCommandPool(device_b, &pool_info, nullptr, &pool_b);
+        VkCommandBufferAllocateInfo cmd_b_info = cmd_info;
+        cmd_b_info.commandPool = pool_b;
+        VkCommandBuffer cmd_b = VK_NULL_HANDLE;
+        table_b.vkAllocateCommandBuffers(device_b, &cmd_b_info, &cmd_b);
+        VkFence fence_b = VK_NULL_HANDLE;
+        table_b.vkCreateFence(device_b, &fence_info, nullptr, &fence_b);
+        // One frame of B's: the image moved to PRESENT_SRC and handed over.
+        // Nothing of the main thread's is touched, so it runs beside it.
+        const auto frame_b = [&]() -> bool {
+            uint32_t index = 0;
+            const VkResult got = table_b.vkAcquireNextImageKHR(device_b, swapchain_b, UINT64_MAX,
+                                                               VK_NULL_HANDLE, fence_b, &index);
+            if (got != VK_SUCCESS && got != VK_SUBOPTIMAL_KHR) {
+                return false;
+            }
+            table_b.vkWaitForFences(device_b, 1, &fence_b, VK_TRUE, UINT64_MAX);
+            table_b.vkResetFences(device_b, 1, &fence_b);
+            table_b.vkResetCommandBuffer(cmd_b, 0);
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            table_b.vkBeginCommandBuffer(cmd_b, &begin);
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = images_b[index];
+            barrier.subresourceRange = whole;
+            table_b.vkCmdPipelineBarrier(cmd_b, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
+                                         nullptr, 1, &barrier);
+            table_b.vkEndCommandBuffer(cmd_b);
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &cmd_b;
+            table_b.vkQueueSubmit(queue_b, 1, &submit, VK_NULL_HANDLE);
+            table_b.vkQueueWaitIdle(queue_b);
+            VkPresentInfoKHR present{};
+            present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            present.swapchainCount = 1;
+            present.pSwapchains = &swapchain_b;
+            present.pImageIndices = &index;
+            const VkResult presented = table_b.vkQueuePresentKHR(queue_b, &present);
+            table_b.vkQueueWaitIdle(queue_b);
+            return presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR;
+        };
+        printf("     device A %p on the main thread, device B %p on its own, both from the "
+               "first frame\n", static_cast<void*>(device), static_cast<void*>(device_b));
+
+        // Both present for three seconds: the renderer is tried and refused
+        // on one of them.
+        std::atomic<bool> stop{false};
+        std::atomic<int> b_frames{0};
+        std::thread presenter([&] {
+            while (!stop.load() && frame_b()) {
+                b_frames++;
+                usleep(1000);
+            }
+        });
+        const long long both_until = now_ns() + 3000000000LL;
+        int a_frames = 0;
+        bool a_ok = true;
+        while (a_ok && now_ns() < both_until) {
+            a_ok = run_frames(swapchain, images, 1);
+            a_frames += a_ok;
+        }
+        stop = true;
+        presenter.join();
+        printf("     A presented %d frames, B %d\n", a_frames, b_frames.load());
+        if (!a_ok) {
+            return 1;
+        }
+
+        // Who the witness refused, and who the layer says holds the failure.
+        unsigned long long refused_device = 0;
+        unsigned long long holder = 0;
+        long refused = 0;
+        if (FILE* report = fopen(witness_report, "r")) {
+            char line[1024];
+            while (fgets(line, sizeof(line), report)) {
+                if (const char* at = strstr(line, "sampler-refused device=")) {
+                    refused_device = strtoull(at + strlen("sampler-refused device="), nullptr, 16);
+                    ++refused;
+                }
+            }
+            fclose(report);
+        }
+        if (FILE* log = fopen(layer_log, "r")) {
+            char line[1024];
+            while (fgets(line, sizeof(line), log)) {
+                if (const char* at = strstr(line, "the overlay stays with device ")) {
+                    holder = strtoull(at + strlen("the overlay stays with device "), nullptr, 16);
+                }
+            }
+            fclose(log);
+        }
+        const unsigned long long a_value = reinterpret_cast<uintptr_t>(device);
+        const unsigned long long b_value = reinterpret_cast<uintptr_t>(device_b);
+        const bool failed_on_a = refused_device == a_value;
+        printf("     the witness refused the sampler on device %s (0x%llx); the layer holds the "
+               "failure with device %s (0x%llx)\n",
+               failed_on_a ? "A" : refused_device == b_value ? "B" : "?", refused_device,
+               holder == a_value ? "A" : holder == b_value ? "B" : "?", holder);
+        check(refused == 1 && (failed_on_a || refused_device == b_value),
+              "the witness refused one texture cache, on one of the two devices (the scene's "
+              "precondition)");
+        check(holder != 0 && holder == refused_device,
+              "the failure is held by the device the renderer was refused on, not by whichever "
+              "thread took the layer's lock first");
+
+        // The device that failed falls silent; the other one, which never
+        // failed, presents alone. It has to be built for once the failed one
+        // has been silent for the hand-over interval. Eight seconds at most, a
+        // deadline and not a measurement (2.0 s in failed-presenter).
+        const long ready_before = lines_containing(layer_log, "backend ready");
+        const long long alone_from = now_ns();
+        const long long alone_until = alone_from + 8000000000LL;
+        long long built_after = -1;
+        while (now_ns() < alone_until) {
+            const bool ok = failed_on_a ? frame_b() : run_frames(swapchain, images, 1);
+            if (!ok) {
+                printf("FAIL a frame of the device that never failed\n");
+                return 1;
+            }
+            usleep(failed_on_a ? 4000 : 0);
+            if (lines_containing(layer_log, "backend ready") > ready_before) {
+                built_after = now_ns() - alone_from;
+                break;
+            }
+        }
+        unsigned long long moved_to = 0;
+        if (FILE* log = fopen(layer_log, "r")) {
+            char line[1024];
+            while (fgets(line, sizeof(line), log)) {
+                if (const char* at = strstr(line, "moving the overlay to device ")) {
+                    moved_to = strtoull(at + strlen("moving the overlay to device "), nullptr, 16);
+                }
+            }
+            fclose(log);
+        }
+        const unsigned long long survivor = failed_on_a ? b_value : a_value;
+        printf("     the device that never failed presented alone: built for %.1f s after the "
+               "other fell silent\n",
+               built_after < 0 ? -1.0 : static_cast<double>(built_after) / 1e9);
+        check(moved_to == survivor,
+              "the overlay moved to the device that never failed once the failed one fell silent");
+        check(built_after >= 0, "and its renderer was built there");
+
+        table_b.vkDeviceWaitIdle(device_b);
+        table_b.vkDestroyFence(device_b, fence_b, nullptr);
+        table_b.vkDestroyCommandPool(device_b, pool_b, nullptr);
+        table_b.vkDestroySwapchainKHR(device_b, swapchain_b, nullptr);
+        table_b.vkDestroyDevice(device_b, nullptr);
+        vk.vkDestroySurfaceKHR(instance, surface_b, nullptr);
+        XDestroyWindow(display, window_b);
+        vk.vkDeviceWaitIdle(device);
+        vk.vkDestroyFence(device, fence, nullptr);
+        vk.vkDestroyCommandPool(device, pool, nullptr);
+        vk.vkDestroySwapchainKHR(device, swapchain, nullptr);
+        vk.vkDestroyDevice(device, nullptr);
+        vk.vkDestroySurfaceKHR(instance, surface, nullptr);
+        vk.vkDestroyInstance(instance, nullptr);
+        XCloseDisplay(display);
         char cleanup[800];
         snprintf(cleanup, sizeof(cleanup), "rm -rf %s", root);
         if (system(cleanup) != 0) {
@@ -2839,8 +3107,10 @@ int main() {
               "and every arrival's emoji reached the atlas, folded in (the positive control: a "
               "layer that noticed nothing would also rebuild nothing)");
         // And reached the GPU as the squares it changed, not as the whole atlas:
-        // the stock upload is 64 MB between two vkQueueWaitIdle on the game's
-        // queue, 36 to 43 ms of every arrival once the rebuild was gone.
+        // the stock upload is the whole atlas between two vkQueueWaitIdle on
+        // the game's queue -- 36 to 43 ms of every arrival once the rebuild was
+        // gone, measured when the atlas was 64 MB (43 MB at 2160 lines since
+        // entry 296).
         const long whole = lines_containing(stderr_log, "font texture uploaded whole");
         const long in_place = lines_containing(stderr_log, "copied in place");
         printf("     the font texture went up whole %ld time(s), in place %ld time(s)\n", whole,

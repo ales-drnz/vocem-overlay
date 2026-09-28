@@ -229,6 +229,51 @@ inline Privacy measure_privacy(const char* live_app) {
     return privacy;
 }
 
+// The systemd-run command that re-executes `self` as a transient unit under
+// `properties` and `privacy`, with the test's environment. Every variable is
+// named, --setenv=NAME, and systemd-run takes its value from its own
+// environment: a value on the command line is readable by every local user
+// for as long as the test runs (/proc/<pid>/cmdline), and the session's
+// tokens are among them (tests/unit_command_env.cpp). The unit's own three
+// variables are set in this process for the same reason.
+inline std::vector<std::string> unit_command(const std::string& self, const char* unit_file,
+                                             const std::string& live_app,
+                                             const std::vector<std::string>& properties,
+                                             const std::vector<std::string>& privacy) {
+    std::string name = self.substr(self.rfind('/') + 1);
+    std::vector<std::string> argv{"systemd-run", "--user", "--quiet", "--collect", "--pipe",
+                                  "--wait", "--same-dir",
+                                  "--unit=vocem-test-" + name + "-" + std::to_string(getpid())};
+    for (const std::string& property : properties) {
+        argv.push_back("--property=" + property);
+    }
+    for (const std::string& property : privacy) {
+        argv.push_back("--property=" + property);
+    }
+    // A client killed by ctest's timeout does not stop the unit; this does.
+    argv.push_back("--property=RuntimeMaxSec=300");
+    // The test's environment, as bwrap would have kept it. Names systemd
+    // refuses (a shell's exported functions) stay behind.
+    for (char** entry = environ; *entry; ++entry) {
+        const char* equals = strchr(*entry, '=');
+        const size_t length = equals ? static_cast<size_t>(equals - *entry) : 0;
+        const bool plain_name =
+            length > 0 && strspn(*entry, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                                         "0123456789_") == length;
+        if (plain_name && strncmp(*entry, "VOCEM_UNIT_", 11) != 0) {
+            argv.push_back(std::string("--setenv=") + std::string(*entry, length));
+        }
+    }
+    setenv("VOCEM_UNIT_FILE", unit_file, 1);
+    setenv("VOCEM_UNIT_CONFINED", "1", 1);
+    setenv("VOCEM_UNIT_LIVE_APP", live_app.c_str(), 1);
+    argv.push_back("--setenv=VOCEM_UNIT_FILE");
+    argv.push_back("--setenv=VOCEM_UNIT_CONFINED");
+    argv.push_back("--setenv=VOCEM_UNIT_LIVE_APP");
+    argv.push_back(self);
+    return argv;
+}
+
 // Returns -1 to proceed, or the exit code to return: 77 when the machine
 // cannot build the confinement, 1 when it was built and did not hold.
 inline int ensure_daemon_confinement() {
@@ -283,34 +328,8 @@ inline int ensure_daemon_confinement() {
         return 1;
     }
     const std::string live_app = live_app_directory();
-    std::string name = self.substr(self.rfind('/') + 1);
-    std::vector<std::string> argv{"systemd-run", "--user", "--quiet", "--collect", "--pipe",
-                                  "--wait", "--same-dir",
-                                  "--unit=vocem-test-" + name + "-" + std::to_string(getpid())};
-    for (const std::string& property : properties) {
-        argv.push_back("--property=" + property);
-    }
-    for (const std::string& property : privacy_properties(live_app)) {
-        argv.push_back("--property=" + property);
-    }
-    // A client killed by ctest's timeout does not stop the unit; this does.
-    argv.push_back("--property=RuntimeMaxSec=300");
-    // The test's environment, as bwrap would have kept it. Names systemd
-    // refuses (a shell's exported functions) stay behind.
-    for (char** entry = environ; *entry; ++entry) {
-        const char* equals = strchr(*entry, '=');
-        const size_t length = equals ? static_cast<size_t>(equals - *entry) : 0;
-        const bool plain_name =
-            length > 0 && strspn(*entry, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-                                         "0123456789_") == length;
-        if (plain_name && strncmp(*entry, "VOCEM_UNIT_", 11) != 0) {
-            argv.push_back(std::string("--setenv=") + *entry);
-        }
-    }
-    argv.push_back(std::string("--setenv=VOCEM_UNIT_FILE=") + unit_file);
-    argv.push_back("--setenv=VOCEM_UNIT_CONFINED=1");
-    argv.push_back("--setenv=VOCEM_UNIT_LIVE_APP=" + live_app);
-    argv.push_back(self);
+    const std::vector<std::string> argv =
+        unit_command(self, unit_file, live_app, properties, privacy_properties(live_app));
     printf("--  re-executed under the %zu [Service] properties of %s\n", properties.size(),
            unit_file);
     fflush(stdout);
