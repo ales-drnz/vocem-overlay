@@ -1835,3 +1835,26 @@ vocem_m32_twin_run(vk_present_alternate_queue TARGET vk_present_alternate_queue
 # scripts/dev-run-gl.sh for a 32-bit child: which_shim built -m32, run through
 # the script, must be answered by a 32-bit shim (dev_run_gl.cmake, PROBE32).
 vocem_m32_twin(which_shim)
+
+# ---- 0.1.11 clean-up measure lane ----
+
+# What the OpenGL overlay costs the process it draws in, as a budget: the same
+# binary three times as its own child in one private /dev/shm -- a prime run
+# that warms this run's own shader cache, VOCEM_DISABLE=1, the overlay on --
+# and on minus off held under a resident-memory and a CPU-per-frame budget
+# (overlay_budget.cpp carries the numbers and the margins). The comparison of
+# 28 Sep 2026 found +130 MB per process that nobody had ever chosen; this is
+# where it is chosen. Serial: a CPU figure taken beside the rest of the suite
+# measures the suite.
+vocem_test(overlay_budget LINK ${CMAKE_DL_LIBS} GL X11 vulkan rt
+    ENV ${VOCEM_GL_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} SKIP SERIAL TIMEOUT 180)
+vocem_m32_twin(overlay_budget
+    ENV ${VOCEM_GL_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV}
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+# The same budget for the Vulkan layer: the child is a Vulkan game presenting
+# to an off-screen window, the layer is the build tree's alone in a scratch
+# implicit set, and the control is the loader refusing it on VOCEM_DISABLE=1.
+vocem_test_run(overlay_budget_vk TARGET overlay_budget
+    ENV ${VOCEM_VK_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_BUDGET_API=vk" SKIP SERIAL TIMEOUT 180)
+vocem_m32_twin_run(overlay_budget_vk TARGET overlay_budget_vk
+    ENV ${VOCEM_VK_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_BUDGET_API=vk")
