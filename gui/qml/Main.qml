@@ -2,18 +2,14 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// One window: a status bar that always says what is going on, a navigation
-// sidebar, and one section at a time in the content area.
+// The settings window: a status bar that always says what is going on, a
+// navigation sidebar, and one section at a time in the content area.
 //
-// Deliberately not a tree of checkboxes. Two of the sections carry a model of the
-// display, because where a box sits and how large it is against a screen are
-// questions only a picture answers; the rest are lists of controls, because a
-// picture of a colour or a padding is the control itself.
-//
-// Nothing ever requires a terminal. The bar at the top carries the daemon's state,
-// the one sentence that says what to do about it, and the single button that does
-// it, which is why DaemonStatus is part of the shared state rather than something
-// the daemon only writes to its log.
+// Two sections carry a model of the display, because where a box sits and how
+// large it is are questions only a picture answers; the rest are lists of
+// controls. Nothing requires a terminal: the bar carries the daemon's state,
+// what to do about it, and the button that does it, which is why DaemonStatus
+// is part of the shared state rather than only the daemon's log.
 
 import QtQuick
 import QtQuick.Controls
@@ -29,9 +25,8 @@ ApplicationWindow {
     height: 720
     minimumWidth: 920
     minimumHeight: 580
-    // Started with the session, the window has nothing to show: the tray icon is
-    // the point. Without a tray to hide behind it shows itself anyway, rather than
-    // running as a process nobody can see.
+    // Started with the session, the window stays hidden behind the tray icon;
+    // without a tray it shows itself rather than run invisibly.
     property bool startHidden: false
 
     visible: !startHidden || !tray.available
@@ -39,8 +34,7 @@ ApplicationWindow {
 
     ConfigBridge { id: config }
 
-    // Expected on the desktop, and it does the right thing already: closing puts
-    // the window away behind its tray icon rather than ending the process.
+    // The desktop's close shortcut; what a close does is decided in onClosing.
     Shortcut {
         sequences: [StandardKey.Close]
         onActivated: window.close()
@@ -56,13 +50,10 @@ ApplicationWindow {
         }
     }
 
-    // Closing with keep-running on puts the window away behind the tray icon,
-    // and the overlay stays up -- the one case in which it does. Every other
-    // close is a Quit in full: with keep-running off by the user's word, or with
-    // no tray to hide behind (where hiding would strand the process with no
-    // interface), the close stops the daemon -- taking the overlay out of every
-    // running game -- and ends the process, exactly the sequence the tray's own
-    // Quit runs. Reopening the application brings the whole overlay back.
+    // With keep-running on and a tray, closing hides the window and the overlay
+    // stays up. Every other close is a full Quit, as the tray's Quit runs it:
+    // the daemon stops, taking the overlay out of every running game, and the
+    // process ends. Without a tray, hiding would strand an invisible process.
     onClosing: function(close) {
         if (tray.available && config.keepRunning) {
             close.accepted = false;
@@ -72,8 +63,8 @@ ApplicationWindow {
         }
     }
 
-    // Which section is open. A property of the window rather than of the sidebar
-    // so that the development screenshot path can step through them.
+    // The open section; a window property so the screenshot harness can step
+    // through them.
     property alias section: sidebar.currentIndex
 
     // ---------------------------------------------------------------- status bar
@@ -97,14 +88,11 @@ ApplicationWindow {
             anchors.bottomMargin: Theme.mediumSpacing
             spacing: Theme.mediumSpacing
 
-            // The state, as a mark that changes shape as well as colour -- the
-            // HIG's rule that colour is never the only carrier, and the same
-            // rule the overlay's ring lives by. A filled disc when the daemon is
-            // connected, a hollow ring while it is waiting for something, a
-            // square when it is not running at all (the shape every media
-            // player means "stopped" by) -- and a halo that pulses while
-            // something is pending, because "waiting" and "stuck" look
-            // identical otherwise.
+            // The state as a mark that changes shape as well as colour (colour
+            // is never the only carrier): a filled disc when connected, a
+            // hollow ring while waiting, a square when not running, and a
+            // pulsing halo while something is pending, so "waiting" does not
+            // look like "stuck".
             Item {
                 Layout.preferredWidth: 22
                 Layout.preferredHeight: 22
@@ -129,9 +117,7 @@ ApplicationWindow {
                 Rectangle {
                     id: dot
 
-                    // From the state rather than from the sentence beside it: the
-                    // sentence is translated, and comparing against a translation is
-                    // a comparison that stops being true in every language but one.
+                    // From the state, not the translated sentence beside it.
                     readonly property bool stopped: config.state === ConfigBridge.NotRunning
                     readonly property bool settled: config.state === ConfigBridge.Connected
                     // Not readonly: a Behavior animates writes, and a readonly
@@ -142,8 +128,7 @@ ApplicationWindow {
                     anchors.centerIn: parent
                     width: 10
                     height: 10
-                    // The square keeps a whisper of corner so it reads as drawn
-                    // rather than as unfinished.
+                    // A little corner, so the square reads as drawn.
                     radius: stopped ? 2 : 5
                     color: settled || stopped ? stateColour : "transparent"
                     border.width: settled || stopped ? 0 : 2
@@ -182,20 +167,12 @@ ApplicationWindow {
                 onClicked: config.performAction()
             }
 
-            // The two switches that decide whether anything is drawn at all, and
-            // the only ones up here. They are worth reaching whatever section is
-            // open, and they are not questions of appearance -- everything that
-            // is lives under Appearance.
-            //
-            // They are also the only Switches left in the window. The KDE
-            // guidelines reserve a switch for a control that takes effect the
-            // moment it is clicked and ask for a checkbox otherwise, and these
-            // two are exactly that: written straight to the file by
-            // persistNow(), reaching a running game within a couple of seconds
-            // with no Apply in between. Every boolean on a page under an Apply
-            // bar waits for that button, so every one of them is a checkbox
-            // now -- they were switches, promising an immediacy the code does
-            // not have.
+            // The two switches that decide whether anything is drawn at all,
+            // reachable from every section. They are the window's only
+            // Switches: the KDE guidelines keep a switch for a control that
+            // takes effect on the click, and these are written straight to the
+            // file and reach a running game within a couple of seconds, with no
+            // Apply. Every setting under an Apply bar is a checkbox.
             Switch {
                 text: qsTr("Voice panel")
                 checked: config.panelEnabled
@@ -233,11 +210,9 @@ ApplicationWindow {
                 anchors.bottomMargin: Theme.mediumSpacing
                 spacing: 0
 
-                // Each entry names the icons it will accept, best first. They are
-                // all `preferences` artwork that Breeze carries at 22, which is the
-                // size drawn: two of the earlier names existed only at 32 and were
-                // downscaled from the full-colour System Settings artwork, which is
-                // what made a column of identically laid out rows look ragged.
+                // Each entry names the icons it accepts, best first: all
+                // `preferences` artwork Breeze carries at 22, the size drawn, so
+                // no row is a downscaled full-colour icon.
                 Repeater {
                     id: sections
 
@@ -256,28 +231,21 @@ ApplicationWindow {
                           icons: ["preferences-desktop-display"] },
                         { title: qsTr("People"),
                           icons: ["preferences-desktop-user", "system-users"] },
-                        // "Applications", because the page lists everything the
-                        // overlay has been loaded into, not only the games it
-                        // draws in -- and "Window" beside it, because two entries
-                        // called Applications and Application would be a reading
-                        // test.
+                        // "Applications": the page lists everything the overlay
+                        // has been loaded into, not only games. "Window" beside
+                        // it, not "Application", to keep the two apart.
                         { title: qsTr("Applications"),
                           icons: ["applications-games", "input-gaming"] },
                         { title: qsTr("Window"),
                           icons: ["preferences-other", "preferences-desktop"] },
-                        // Beside Window, because both are about what this
-                        // application does with itself rather than about what
-                        // the overlay does in a game -- and after it, so the
-                        // sections that were already numbered keep their
-                        // numbers as far as the harness is concerned.
-                        // Not the bell: that is the Notifications section's
-                        // icon, and two entries wearing one picture is a column
-                        // that has to be read twice.
+                        // Beside Window: both are about this application itself.
+                        // After it, so the earlier sections keep their indices
+                        // for the harness. Not the bell, which is the
+                        // Notifications section's icon.
                         { title: qsTr("System tray"),
                           icons: ["preferences-desktop-plasma", "preferences-desktop"] },
-                        // Last of the sections that say something rather than
-                        // set something: what the overlay is doing, and what it
-                        // left behind. The crash pop-up's successor lives here.
+                        // Last of the sections that report rather than set: what
+                        // the overlay is doing and what it left behind.
                         { title: qsTr("Debug"),
                           icons: ["utilities-log-viewer", "text-x-log",
                                   "applications-utilities"] }
@@ -297,10 +265,9 @@ ApplicationWindow {
 
                 Item { Layout.fillHeight: true }
 
-                // About sits at the bottom, away from the sections that change
-                // something -- the same place Tokodon and Kasts put it. Its index
-                // follows the list above rather than being written out, which is
-                // what it was: a literal 5 beside a Repeater of five entries.
+                // About at the bottom, away from the sections that change
+                // something (as Tokodon and Kasts do). Its index follows the
+                // list above.
                 SidebarItem {
                     text: qsTr("About")
                     iconName: config.icon(["dialog-information", "help-about"])
@@ -310,8 +277,8 @@ ApplicationWindow {
                 }
             }
 
-            // Not a real ListView any more -- the entries are two separate groups --
-            // so the current index lives here, and the arrow keys are wired by hand.
+            // The entries are two separate groups, not one ListView, so the
+            // current index lives here and the arrow keys are wired by hand.
             QtObject {
                 id: sidebar
                 property int currentIndex: 0

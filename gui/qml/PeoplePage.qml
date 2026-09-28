@@ -3,9 +3,6 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // Which participants the panel shows.
-//
-// One section of the window. Each is its own file: they have nothing to say to
-// each other, and one file of eight hundred lines said all of it at once.
 
 import QtQuick
 import QtQuick.Controls

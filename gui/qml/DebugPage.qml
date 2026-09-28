@@ -2,39 +2,14 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// What the overlay is doing, what it left behind, and what the daemon said.
+// The Debug section: what the overlay is doing, what it left behind, and what
+// the daemon said. The overlay fails silently, so this is where "is it working,
+// and if not, where does it stop" gets answered.
 //
-// The overlay's failure mode is silence: a layer that did not load, a segment
-// from another ABI, a process that crashed, all look identical from the couch
-// -- nothing on screen. This section is the running answer to "is it working,
-// and if not, where does it stop", and it is the crash pop-up's successor
-// (DESIGN entry 60 says why a section beats a window).
-//
-// Structured on the HIG rather than by instinct, which is what the first cut
-// was: five cards stacked in one scrolling column, a grey line of text where
-// an empty view should have been, and a log box with half a page of nothing
-// under it.
-//
-//   * **Three tabs**, because these are "related views sharing the same level
-//     of hierarchy", which is exactly what the guidelines give tabs for -- and
-//     because the alternative, one long column, spends the main content area
-//     on the two thirds nobody is looking at. Now: what is happening, what
-//     happened, and what the daemon said.
-//   * **The tab that opens is the one with something to say.** A crash report
-//     waiting is the reason somebody comes here, so the page opens on it; with
-//     nothing wrong it opens on the state of things.
-//   * **An inline message above the tabs, only when something is wrong.** The
-//     HIG's severities are colour, icon and words together -- never colour
-//     alone, which is this project's own rule about the speaking ring. A page
-//     with no banner is a page where nothing is wrong; a green "all fine" box
-//     would be noise in the place the eye checks first.
-//   * **ListView, not a Repeater**, for the sessions: the guidelines put
-//     mostly-textual content in a list, and Qt's own advice is to keep a
-//     delegate cheap and put what only an open row needs behind a Loader. The
-//     first cut built a TextArea per crash at launch, on every page of the
-//     window, whether or not anybody opened this one.
-//   * **Placeholder messages for empty views**: an icon and a sentence, the
-//     informational kind, because an empty view here means nothing is wrong.
+// Three tabs (now / sessions / daemon log); the page opens on the one with
+// something to say. A banner appears only when something is wrong, in colour,
+// icon and words together. Sessions are a recycling ListView whose journal
+// text is loaded only for an open row. Empty views show a placeholder message.
 
 import QtQuick
 import QtQuick.Controls
@@ -48,13 +23,10 @@ SectionPage {
     title: qsTr("Debug")
     subtitle: qsTr("What the overlay is doing right now, and what it left behind.")
 
-    // The page's own action, in the bar every other section carries. There is
-    // nothing to apply here and nothing to put back to a default, so the bar
-    // holds this alone: it empties the Sessions list -- both kinds -- and it
-    // says so rather than being called Reset, which on every other page means
-    // "put the settings back". Enabled only when there is something to clear,
-    // because a button that does nothing is a button that lies about the state
-    // of the page. The daemon's log is not in it: those lines are journald's.
+    // The page's one action: it empties the Sessions list, both kinds, and says
+    // so rather than "Reset", which elsewhere means "put the settings back".
+    // Enabled only when there is something to clear. The daemon's log is
+    // journald's and not touched.
     barContent: Button {
         objectName: "debugClear"
         text: qsTr("Clear Journals")
@@ -64,8 +36,8 @@ SectionPage {
         onClicked: root.config.clearJournals()
     }
 
-    // The daemon's journald lines are fetched when somebody actually looks,
-    // not on a timer: this page is the only reader.
+    // The daemon's journald lines are fetched when the page is shown, not on a
+    // timer: this page is the only reader.
     onVisibleChanged: {
         if (visible) {
             root.config.refreshDaemonLog();
@@ -73,25 +45,18 @@ SectionPage {
         }
     }
 
-    // Whichever tab has something to say. A crash waiting is why somebody
-    // opens this section at all; anything else opens on the state of things.
+    // A crash waiting opens Sessions; anything else opens on Now.
     function openingTab() {
         return root.config.crashReports.length > 0 ? 1 : 0;
     }
 
-    // The one comparison the banner and the Shared state row both turn on,
-    // spelled once: the daemon publishes a segment this window cannot read.
+    // The daemon publishes a segment this window cannot read; used by the
+    // banner and the Shared state row.
     readonly property bool abiMismatch:
         config.segmentAbiVersion !== 0 && config.segmentAbiVersion !== config.abiVersion
 
-    // What "nothing is wrong" means here. A segment that is not there at all is
-    // NOT wrong: it means the daemon is stopped, which the header says in words
-    // with the button that starts it beside them. Requiring the versions to be
-    // equal made every stopped daemon unhealthy, and the banner then fell
-    // through its list of causes to the last one and announced that the OpenGL
-    // preload was missing -- two lines above the row saying the preload is
-    // active. Measured with a private /dev/shm: banner "The OpenGL preload is
-    // not in this session's environment", row "Active in this session. Ready".
+    // A missing segment is not unhealthy: it means the daemon is stopped, which
+    // the header already says (entry 108).
     readonly property bool healthy:
         config.vulkanLayerInstalled && config.openglPreloadActive && !abiMismatch
 
@@ -99,21 +64,17 @@ SectionPage {
         anchors.fill: parent
         spacing: Theme.mediumSpacing
 
-        // ---- the one banner, and only when it is earned
+        // ---- the one banner, only when something is wrong
         InlineMessage {
             objectName: "debugBanner"
-            // Not before the preload question is answered: half of it is a
-            // systemctl asked asynchronously, and a banner that appeared for the
-            // moment before the answer arrived would be the fallback answering
-            // for whatever else went wrong -- the shape entry 108 removed here.
+            // Not before the preload question is answered: half of it is an
+            // asynchronous systemctl call.
             visible: root.config.openglPreloadKnown && !root.healthy
             Layout.fillWidth: true
             severity: root.abiMismatch ? InlineMessage.Severity.Error
                                        : InlineMessage.Severity.Warning
-            // The three causes, in the order they are worth reading, and
-            // together they are exactly what `healthy` is false for -- so the
-            // last one is a statement about the preload and not a fallback that
-            // answers for whatever else went wrong.
+            // The three causes in reading order; together they are exactly what
+            // `healthy` is false for, so the last is a real statement.
             text: {
                 if (root.abiMismatch) {
                     return qsTr("The daemon publishes shared state v%1 and this window "
@@ -155,10 +116,8 @@ SectionPage {
 
             // ------------------------------------------------------------ now
             //
-            // Inside a scrolling view, because this tab grows: the health card
-            // is fixed, but "Drawing Now" lists one row per process the overlay
-            // is painting in, and a session with several games open ran off the
-            // bottom of the window with nothing to scroll and no bar to say so.
+            // Scrolls, because "Drawing Now" has one row per process the
+            // overlay paints in.
             ScrollView {
                 id: nowView
 
@@ -167,10 +126,8 @@ SectionPage {
 
                 ColumnLayout {
                     width: nowView.availableWidth
-                    // At least the viewport, so the placeholder message can
-                    // still centre itself on an empty tab (it asks for the
-                    // slack with Layout.fillHeight, and inside a scrolling
-                    // column there is none unless it is granted here).
+                    // At least the viewport, so the placeholder can centre itself
+                    // with Layout.fillHeight on an empty tab.
                     height: Math.max(implicitHeight, nowView.availableHeight)
                     spacing: Theme.largeSpacing
 
@@ -196,10 +153,10 @@ SectionPage {
 
                         SettingRow {
                             label: qsTr("OpenGL preload")
-                            // Three answers, not two: the service manager
-                            // carrying the preload is not this session having
-                            // it -- a program started from the desktop inherits
-                            // the desktop's environment, fixed at login.
+                            // Three answers: the service manager carrying the
+                            // preload is not this session having it, since a
+                            // program started from the desktop inherits the
+                            // environment fixed at login.
                             description: !root.config.openglPreloadKnown
                                          ? qsTr("Asking the session's service manager.")
                                          : root.config.openglPreloadActive
@@ -222,11 +179,9 @@ SectionPage {
                             }
                         }
 
-                        // Both halves of the shared-state contract. A reader that
-                        // meets a segment from another ABI refuses it -- correctly
-                        // -- and from outside that refusal looks exactly like "no
-                        // daemon", so this row is where the difference becomes a
-                        // sentence.
+                        // Both halves of the shared-state contract. A reader
+                        // refuses a segment from another ABI, which from outside
+                        // looks like "no daemon"; this row tells them apart.
                         SettingRow {
                             label: qsTr("Shared state")
                             description: root.config.segmentAbiVersion === 0
@@ -255,9 +210,8 @@ SectionPage {
                     }
 
                     Card {
-                        // The card's own heading rather than a Label beside it
-                        // wearing the same left margin by hand: one way of heading
-                        // a group, so the two cannot drift apart.
+                        // The card's own heading, so there is one way of heading
+                        // a group.
                         title: qsTr("Drawing Now")
                         visible: root.config.liveInstances.length > 0
                         Layout.fillWidth: true
@@ -278,10 +232,9 @@ SectionPage {
                                     else if (modelData.api === "opengl") parts.push(qsTr("OpenGL"));
                                     parts.push(qsTr("pid %1").arg(modelData.pid));
                                     if (modelData.frames !== undefined) {
-                                        // Frames the overlay was willing to draw in
-                                        // against the frames it painted: "12000 / 0"
-                                        // is an overlay attached and idle, which is a
-                                        // different story from one that is absent.
+                                        // Frames seen against frames painted:
+                                        // "12000 / 0" is an overlay attached and
+                                        // idle, not an absent one.
                                         parts.push(qsTr("%1 frames seen, %2 drawn")
                                                        .arg(modelData.frames)
                                                        .arg(modelData.drawn));
@@ -310,13 +263,10 @@ SectionPage {
 
             // ------------------------------------------------------- sessions
             //
-            // One list, two kinds, told apart by a section header: the
-            // journals of processes that ended without unwinding -- a crash or
-            // a forced stop -- and the sessions that ended cleanly. A list
-            // because this is textual content that can be long, and a
-            // ListView because it recycles its rows and can leave the
-            // expensive half (the journal's text) behind a Loader that only
-            // an opened row instantiates.
+            // One list, two kinds, split by a section header: journals of
+            // processes that ended without unwinding (a crash or a forced stop)
+            // and sessions that ended cleanly. The journal text sits behind a
+            // Loader that only an opened row instantiates.
             ColumnLayout {
                 spacing: Theme.mediumSpacing
 
@@ -331,18 +281,10 @@ SectionPage {
                     spacing: Theme.smallSpacing
                     reuseItems: true
 
-                    // A list that can be longer than the window, and was the one
-                    // long list in this window with no bar beside it: twenty
-                    // sessions are kept, and past the third or fourth there was
-                    // nothing on screen to say the rest were there.
-                    //
-                    // Beside the rows, never over them. A ListView's attached
-                    // scrollbar is an overlay by default and sat on top of the
-                    // cards, half over the Journal buttons; every other scrolling
-                    // view in this window keeps room for its bar (ScrollablePage
-                    // says the same thing about the page margin). The room comes
-                    // out of the delegate's width, which is the only place a
-                    // ListView has to give it from.
+                    // Up to twenty sessions are kept, so the list scrolls. The
+                    // bar sits beside the rows, not over them: its room comes
+                    // out of the delegate's width (as ScrollablePage does with
+                    // the page margin).
                     readonly property real barRoom:
                         sessionsBar.visible ? sessionsBar.width + Theme.smallSpacing : 0
 
@@ -375,11 +317,9 @@ SectionPage {
                     delegate: Rectangle {
                         id: row
 
-                        // A card by every measure except the component: the
-                        // border says whether the session ended badly, which
-                        // Card has no opinion to offer about. Named as one
-                        // anyway, so the padding check holds these rows to the
-                        // same inset as every other card in the window.
+                        // A card in all but component (its border says whether
+                        // the session ended badly). Named as one so the padding
+                        // check holds it to the same inset.
                         objectName: "card"
 
                         required property var modelData
@@ -387,8 +327,7 @@ SectionPage {
 
                         readonly property bool crashed: modelData.kind === 0
                         readonly property var entry: modelData.entry
-                        // Reset on reuse, which is what ListView asks of any
-                        // state a recycled delegate keeps.
+                        // Reset on reuse, as ListView asks of recycled state.
                         property bool open: false
                         ListView.onReused: open = false
 
@@ -457,18 +396,9 @@ SectionPage {
                                 }
                             }
 
-                            // No sentence per row here. Every crashed row used
-                            // to carry the same three lines about what ending
-                            // without shutting down means, which on a list of
-                            // eight is the same paragraph eight times: the
-                            // "Ended Badly" header above them says it once, for
-                            // all of them, which is what a section header is
-                            // for.
-
-                            // The journal's text is what makes a row expensive,
-                            // so it exists only while a row is open: Qt's own
-                            // advice for delegates, and the reason the first cut
-                            // cost 780 MB with one oversized journal.
+                            // The "Ended Badly" header explains the crashed rows
+                            // once. The journal text exists only while a row is
+                            // open: it is what makes a row expensive.
                             Loader {
                                 active: row.open
                                 visible: row.open

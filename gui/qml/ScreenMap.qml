@@ -2,29 +2,16 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// The position page: a scale model of the display with the panel on it, dragged
-// to wherever it should sit -- with six anchor points to land on exactly.
+// The position page's map: a scale model of the display with the panel on it,
+// dragged into place, with six anchors (the corners and the middle of either
+// side). A click on an anchor puts the panel there; a drag released close to
+// one snaps to it, and the anchor is lit while in reach. An anchor writes the
+// exact fractions 0 / 0.5 / 1 through the placement the panel itself uses.
 //
-// The anchors are the six positions somebody usually means when they put a panel
-// somewhere: the four corners and the middle of either side. Each is a small
-// target inside the map. A click puts the panel there; a drag released close to
-// one snaps to it, with the target lit while the pointer is in range so the snap
-// never comes as a surprise. What an anchor writes is the exact pair 0 / 0.5 / 1,
-// with the inset from the edge applied by the same clamp the panel itself uses --
-// so "top left" is the same numbers every time rather than wherever the hand
-// happened to stop, and the comparison harness stays exact.
-//
-// History, because this page had targets once before and they were removed: they
-// sat exactly where the panel sits and stole the press meant for it. Three things
-// answer that objection now. The anchors mark the panel's destinations rather
-// than its body; the occupied one is declared but not shown -- the same rule the
-// corner buttons on the Notifications page follow, so Tab walks the rest in an
-// order that never changes; and they are stacked under the panel rather than over
-// it, so a press that lands on both is the panel's drag, never the target's
-// click.
-//
-// The arrangement itself is OverlayStage's; this file adds the drag and the
-// anchors.
+// The anchors mark destinations, not the panel's body: the occupied one is
+// hidden but declared (so Tab order never changes, as with the corner buttons
+// on the Notifications page), and they stack under the panel, so a press on
+// both is the panel's drag. The arrangement itself is OverlayStage's.
 
 import QtQuick
 import QtQuick.Controls
@@ -35,8 +22,8 @@ Item {
 
     required property var config
 
-    // The display the map depicts, forwarded to the stage; null keeps the map
-    // as it has always been. The page's dropdown sets it.
+    // The display the map depicts, forwarded to the stage; set by the page's
+    // dropdown.
     property var shownDisplay: null
 
     // Live while dragging, so the panel follows the pointer without the settings
@@ -44,9 +31,8 @@ Item {
     property real liveX: config.positionX
     property real liveY: config.positionY
 
-    // The six anchors, as the fractions they write. Declared in one fixed order,
-    // left column then right, so the Tab order never depends on where the panel
-    // currently is.
+    // The six anchors as the fractions they write, in one fixed order so the
+    // Tab order never depends on where the panel is.
     readonly property var snapPoints: [
         { fx: 0.0, fy: 0.0, name: qsTr("top left") },
         { fx: 0.0, fy: 0.5, name: qsTr("middle left") },
@@ -56,27 +42,20 @@ Item {
         { fx: 1.0, fy: 1.0, name: qsTr("bottom right") }
     ]
 
-    // How close, in map pixels, a released drag has to be for the magnet to take
-    // it. Scaled with the map so the reach feels the same at any window size.
+    // How close, in map pixels, a released drag must be for the magnet to take
+    // it; scaled with the map so the reach feels the same at any size.
     readonly property real snapThreshold: Math.max(14, stage.height * 0.045)
 
-    // Where an anchor puts the panel's top-left corner, in map coordinates --
-    // through `stage.placeWithin`, the one arithmetic the overlay itself uses, so
-    // the anchor and the panel cannot disagree about where "there" is. It used to
-    // be the fraction times the whole map, clamped: at the middle anchors that put
-    // the panel's *top edge* halfway down and the magnet agreed with it, both
-    // wrong together.
+    // Where an anchor puts the panel's top-left corner, through
+    // `stage.placeWithin`, so the anchor and the panel agree (entry 56).
     function snapTargetX(point) {
         return stage.placeWithin(point.fx, stage.panel.width, stage.width, stage.inset);
     }
     function snapTargetY(point) {
         return stage.placeWithin(point.fy, stage.panel.height, stage.height, stage.inset);
     }
-    // Pixels back to a fraction: the exact inverse of `stage.placeWithin`, which
-    // is the one arithmetic the panel is drawn by (vocem/placement.h has both, and
-    // panel_geometry asserts the round trip). Dividing by the map's size -- the
-    // inverse of the *old* forward map -- is what made a live drag fight the
-    // placement and flash.
+    // Pixels back to a fraction: the exact inverse of `stage.placeWithin`
+    // (vocem/placement.h has both; panel_geometry asserts the round trip).
     function fractionFrom(position, box, extent, gap) {
         const travel = extent - box - gap * 2
         if (travel <= 0)
@@ -84,12 +63,9 @@ Item {
         return Math.max(0, Math.min(1, (position - gap) / travel))
     }
 
-    // Where the panel is now, as the pair of fractions the configuration stores.
-    // ONE place, because two handlers needed it and the second copy is exactly what
-    // shipped in 0.1.0-57: the drag was corrected and the *release* kept dividing
-    // by the map's size, so letting go wrote a fraction from the arithmetic that
-    // had been replaced and the panel jumped somewhere unrelated to the pointer.
-    // Entry 33's shape, in QML, inside the fix for it.
+    // Where the panel is now, as the stored pair of fractions. One function,
+    // shared by the drag and the release, so the two cannot use different
+    // arithmetic.
     function panelFractions() {
         return {
             x: root.fractionFrom(stage.panel.x, stage.panel.width, stage.width, stage.inset),
@@ -130,20 +106,13 @@ Item {
 
         config: root.config
         shownDisplay: root.shownDisplay
-        // The panel alone. This page answers one question -- where does the voice
-        // panel sit -- and a message box drawn beside it only invited the panel to
-        // be dragged relative to something this page cannot move.
+        // The panel alone: this page moves only the voice panel.
         showMessage: false
 
-        // The six anchors. Under the panel -- which is what keeps a press on an
-        // overlap the panel's drag -- but at z 0, never negative: a child at
-        // negative z paints below its parent's own background, so a z of -1 put
-        // the anchors under the map's gradient. They still showed when the panel
-        // sat at its default corner, an accident of the repaint that a screenshot
-        // taken at exactly that position mistook for the feature working; the
-        // panel is raised above them instead (the Binding below), so the stacking
-        // is declared rather than accidental. Each anchor is centred on the exact
-        // destination, nudged only as far as it takes to stay inside the map's
+        // The six anchors, under the panel so a press on an overlap is the
+        // panel's drag -- at z 0 with the panel raised (the Binding below),
+        // never at a negative z, which paints below the map's own background.
+        // Each is centred on its destination, nudged only to stay inside the
         // clipped edge.
         Repeater {
             model: root.snapPoints
@@ -155,26 +124,21 @@ Item {
 
                 readonly property real targetX: root.snapTargetX(modelData)
                 readonly property real targetY: root.snapTargetY(modelData)
-                // Where the panel is right now is where it will stay without a
-                // better instruction, so the anchor that says "here" has nothing
-                // to offer -- hidden, not removed (see the note at the top).
+                // The anchor where the panel already is has nothing to offer:
+                // hidden, not removed (see the note at the top).
                 readonly property bool occupied:
                     Math.abs(stage.panel.x - targetX) < 0.5 &&
                     Math.abs(stage.panel.y - targetY) < 0.5
-                // In reach of the magnet while the panel is being dragged: lit
-                // now, taken at release.
+                // In reach of the magnet during a drag: lit now, taken at release.
                 readonly property bool magnet:
                     grab.drag.active &&
                     Math.hypot(stage.panel.x - targetX,
                                stage.panel.y - targetY) < root.snapThreshold
 
-                // The mark sits on the point of the display the panel will hug --
-                // the right column mirrored against the right edge, the middles at
-                // the exact middle -- NOT on the panel's future top-left corner,
-                // which for the right column sat a whole panel-width short of the
-                // edge and read as a snap that leaves a gap (the owner's report,
-                // looking at it). The magnet and the occupied test keep speaking
-                // panel coordinates; only the mark moved.
+                // The mark sits on the point of the display the panel will hug
+                // (the right column against the right edge), not on the panel's
+                // future top-left corner. The magnet and the occupied test stay
+                // in panel coordinates.
                 readonly property real markX:
                     stage.inset + modelData.fx * (stage.width - 2 * stage.inset)
                 readonly property real markY:
@@ -203,10 +167,8 @@ Item {
             value: 1
         }
 
-        // The handle, and only once the background has been turned down far enough
-        // to leave nothing to take hold of. An outline reads as a boundary rather
-        // than as a box, so it cannot be mistaken for a background the panel does
-        // not have.
+        // The handle, shown only once the background is faint enough to leave
+        // nothing to take hold of: an outline reads as a boundary, not a box.
         Rectangle {
             parent: stage.panel
             anchors.fill: parent
@@ -233,8 +195,8 @@ Item {
             drag.maximumY: stage.panel.maxY
             drag.threshold: 0
 
-            // While the drag is active the bindings on x and y are suspended, so
-            // the fraction is read back from where the item actually is.
+            // While dragging, the x/y bindings are suspended, so the fraction is
+            // read from where the item actually is.
             onPositionChanged: {
                 if (drag.active) {
                     const at = root.panelFractions();
@@ -244,9 +206,8 @@ Item {
                 }
             }
 
-            // The magnet: released in reach of an anchor, the anchor's exact
-            // fractions are what is written -- not the pixels the pointer stopped
-            // at. Out of reach, the drag means what it says.
+            // The magnet: released in reach of an anchor, its exact fractions
+            // are written; out of reach, the drag means what it says.
             onReleased: {
                 commit.stop();
                 const point = root.snapNear(stage.panel.x, stage.panel.y);

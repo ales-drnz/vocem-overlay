@@ -3,16 +3,9 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // One setting: what it is on the left, the control that changes it on the right,
-// and a line underneath saying what it does. The description is part of the row
-// rather than a tooltip, because a setting whose effect has to be discovered by
-// hovering is a setting nobody finds.
-//
-// Two lines and no more. There used to be a third, for a warning a row might have
-// to carry, kept in the layout at zero opacity so that showing it would not change
-// the row's height -- which meant every row in the window was one blank line taller
-// than its text, and the pair of lines sat visibly above the middle of the control
-// beside them. What that line had to say is said by the description instead, which
-// can change with the setting.
+// and a line underneath saying what it does -- part of the row rather than a
+// tooltip, so nobody has to hover to find it. Two lines and no more; a warning is
+// said by the description, which can change with the setting.
 
 import QtQuick
 import QtQuick.Controls
@@ -25,16 +18,12 @@ Item {
     required property string label
     property string description: ""
     property bool first: false
-    // A picture in front of the label, for rows that stand for something with a
-    // face of its own -- an application. Left empty by everything else, and then
-    // it takes no room at all.
+    // A picture in front of the label, for rows that stand for an application.
+    // Empty, it takes no room.
     property string icon: ""
-    // Raw material behind the row, shown on hover -- the application rows put the
-    // record's own evidence token here. A tooltip and not a third line: the
-    // description already carries the meaning in words, and this is for quoting
-    // into a log or a report, not for everybody's eyes. Settings whose effect
-    // needs explaining still use the description; a tooltip is never the only
-    // place something is said.
+    // Raw material behind the row, shown on hover (the application rows put the
+    // record's evidence token here), for quoting into a report. A tooltip is
+    // never the only place something is said: the description carries the words.
     property string tooltip: ""
 
     HoverHandler { id: rowHover; enabled: root.tooltip !== "" }
@@ -49,8 +38,8 @@ Item {
     implicitHeight: layout.implicitHeight + Theme.cardPadding * 2
     Layout.fillWidth: true
 
-    // Rows are divided by a line rather than by gaps, which keeps the card reading
-    // as one object. The first row has nothing above it to divide from.
+    // Rows are divided by a line rather than by gaps, so the card reads as one
+    // object. The first row has nothing above it.
     Rectangle {
         visible: !root.first
         width: parent.width
@@ -61,9 +50,8 @@ Item {
     RowLayout {
         id: layout
 
-        // The padded content of one block in a card, under the name every
-        // other such block carries, so the padding check can measure all of
-        // them at once (Card.qml says what it checks).
+        // The padded content of one block in a card, under the name the
+        // padding check measures (see Card.qml).
         objectName: "cardContent"
 
         anchors.fill: parent
@@ -73,9 +61,8 @@ Item {
         anchors.bottomMargin: Theme.cardPadding
         spacing: Theme.mediumSpacing
 
-        // Centred against the control rather than filling the row, so the label
-        // and its description sit in the middle of the row's height whether there
-        // are one line or two of them.
+        // Centred against the control, so the label and description sit in the
+        // middle of the row's height with one line or two.
         Image {
             source: root.icon
             visible: root.icon !== ""
@@ -95,25 +82,19 @@ Item {
             Label {
                 text: root.label
                 // Plain: a row's label is a process name or a record's field,
-                // which is somebody else's text, and AutoText would draw a
-                // name that looks like markup as markup.
+                // somebody else's text, which AutoText would draw as markup.
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
                 Layout.fillWidth: true
             }
             Label {
                 text: root.description
-                // Plain, for the same reason as the label one line up, which is
-                // where this rule was written and where it stopped. The
-                // description is in fact the MORE exposed of the two: the
-                // Applications page feeds it a record's `reason` and its
-                // `executable`, and a record is written from inside every
-                // GL and Vulkan process of the session -- by a Flatpak game
-                // through the bridge, too -- with only its file name
-                // sanitised. Qt's default is AutoText, and
-                // Qt::mightBeRichText() turns the whole string rich on a known
-                // tag before the first newline; a rich Text then loads <img>
-                // sources through the QML engine's network access manager.
+                // Plain, and more exposed than the label: the Applications page
+                // feeds it a record's `reason` and `executable`, written from
+                // inside every GL and Vulkan process of the session (a Flatpak
+                // game's too). Under AutoText a known tag makes the string rich,
+                // and a rich Text loads <img> sources through the engine's
+                // network access manager.
                 textFormat: Text.PlainText
                 visible: root.description !== ""
                 opacity: 0.65

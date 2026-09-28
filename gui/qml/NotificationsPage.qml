@@ -3,9 +3,6 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // Where a message appears, how large it is, and for how long.
-//
-// One section of the window. Each is its own file: they have nothing to say to
-// each other, and one file of eight hundred lines said all of it at once.
 
 import QtQuick
 import QtQuick.Controls
@@ -15,8 +12,8 @@ import Vocem
 SectionPage {
     id: root
 
-    // notificationPreviewDisplay included for the same reason as the panel
-    // page's: a persisted setting the page edits belongs to its Reset.
+    // notificationPreviewDisplay included: a persisted setting the page edits
+    // belongs to its Reset.
     settings: ["notificationCorner", "notificationMargin", "notificationScale",
                "notificationSeconds", "notificationPreviewDisplay"]
     title: qsTr("Notifications")
@@ -24,14 +21,12 @@ SectionPage {
 
     ColumnLayout {
         anchors.fill: parent
-        // A small step between the dropdown and the map it names, a large one
-        // between the map and the card: the Panel page says why, and the two
-        // pages that carry a picture keep one rhythm.
+        // A small step between the dropdown and its map, a large one before
+        // the card, as on the Panel page.
         spacing: Theme.smallSpacing
 
-        // Which display the map below depicts. Only offered with several
-        // connected; the overlay is sized for the largest, and the map says so
-        // when a smaller one is chosen.
+        // Which display the map below depicts; the overlay is sized for the
+        // largest, and the map says so when a smaller one is chosen.
         DisplayPicker {
             id: messageDisplayPicker
             objectName: "messageDisplayPicker"
@@ -42,10 +37,8 @@ SectionPage {
             onPicked: function(name) { root.config.notificationPreviewDisplay = name; }
         }
 
-        // Inert rather than faded when messages are switched off: a
-        // half-transparent map is still a tab stop and still clickable,
-        // and it is harder to read for no gain. The style greys what it
-        // draws; the picture stays legible.
+        // With messages switched off its marks are disabled rather than the
+        // map faded, so the picture stays legible.
         NotificationScreen {
             config: root.config
             shownDisplay: messageDisplayPicker.shownDisplay
@@ -73,11 +66,9 @@ SectionPage {
                 }
             }
 
-            // The message's own distance from the edge, with the panel's exact
-            // behaviour: the anchor targets in the map above move with it, because
-            // both are placed by the one arithmetic in vocem/placement.h. It used
-            // to borrow the panel's setting, so moving the panel closer to the
-            // edge moved the message nobody had asked to move.
+            // The message's own distance from the edge, independent of the
+            // panel's; the map's anchor marks move with it, placed by the same
+            // arithmetic (vocem/placement.h).
             SettingRow {
                 label: qsTr("Distance from the edge")
                 description: qsTr("How close to the edge of the display a message may sit.")
@@ -93,9 +84,7 @@ SectionPage {
             }
 
             // How long a message stays is when it is drawn, not how it
-            // looks, so it belongs here rather than under Appearance --
-            // where it was the one setting on the page that no colour
-            // or transparency could show.
+            // looks, so it belongs here rather than under Appearance.
             SettingRow {
                 label: qsTr("Show for")
                 description: qsTr("How long a message stays before it fades.")

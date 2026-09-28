@@ -6,9 +6,8 @@
 // a red disc with a crossed-out microphone, or with headphones for someone who
 // cannot hear either.
 //
-// Drawn with shapes rather than an icon from the theme, for the same reason the
-// overlay draws it by hand -- this has to look like the thing in the game, and an
-// icon theme has opinions of its own.
+// Drawn with shapes rather than a theme icon, so it looks like the thing in the
+// game.
 
 import QtQuick
 import QtQuick.Shapes
@@ -19,24 +18,21 @@ Item {
     property bool deafened: false
     property real diameter: 16
     // The badge's colours and proportions, from include/vocem/theme.h through the
-    // bridge. Passed in rather than reached for, because this is the one preview
-    // component with no configuration of its own.
+    // bridge; passed in, since this component has no configuration of its own.
     required property var tokens
 
     width: diameter
     height: diameter
 
-    // panel.cpp works in the badge's radius; everything here is in its diameter, so
-    // every factor is halved on the way in. The proportions are panel.cpp's grid of
-    // sixteenths of the radius -- thirty-seconds of the diameter here.
+    // panel.cpp works in the badge's radius and this file in its diameter, so
+    // every factor is halved: its sixteenths of the radius are thirty-seconds here.
     readonly property real stroke:
         Math.max(1, diameter * root.tokens.badgeStrokeFactor * 0.5)
     readonly property real rim:
         Math.max(1, diameter * root.tokens.badgeRimStrokeFactor * 0.5)
 
-    // The rim, outside the disc and in the surface's own colour at full opacity,
-    // exactly as the overlay draws it: the badge is carved out of whatever it
-    // hangs over, and the glyph never sits directly on pixels nobody chose.
+    // The rim, outside the disc in the surface's own colour at full opacity, as
+    // the overlay draws it: the badge is carved out of whatever it hangs over.
     Rectangle {
         anchors.centerIn: parent
         width: root.diameter + root.rim * 2

@@ -2,20 +2,10 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// The tray, as the panel will draw it.
-//
-// A stand-in for a system tray rather than a model of one: unlike the two maps,
-// nothing here is to scale against anything, because a panel's size is the
-// desktop's business and not this application's. What it has to be right about
-// is the one thing the setting changes -- which picture sits in the row -- and
-// the size that picture is drawn at, which is 22 pixels, the size Tray.qml asks
-// the theme for and the size Breeze carries this artwork at.
-//
-// The neighbours are there because an icon alone answers nothing: the question
-// somebody is answering on this page is "will I be able to tell which one is
-// mine, and will it say something I would rather it did not". So the row holds a
-// few of the things that are actually in a tray on this desktop, drawn from the
-// session's own icon theme, and ours among them.
+// The tray, as the panel will draw it: a stand-in, not to scale, right about
+// which picture sits in the row and its 22-pixel size (what Tray.qml asks the
+// theme for). A few neighbours from the session's icon theme sit beside ours,
+// so the preview shows whether it can be told apart.
 
 import QtQuick
 import QtQuick.Controls
@@ -27,26 +17,21 @@ Item {
 
     required property var config
 
-    // Which picture the tray wears. Bound to the edited setting, so the choice
-    // moves this on the spot; the panel itself follows the saved one
-    // (ConfigBridge::appliedTrayVoiceIcon says why).
+    // Which picture the tray wears: the edited setting, while the panel itself
+    // follows the saved one (see ConfigBridge::appliedTrayVoiceIcon).
     property bool voiceIcon: true
 
-    // The state to draw the icon in. The live one by default -- this page is
-    // about a thing on the panel right now, and showing anything else would be
-    // a picture of somebody else's session -- and pinned by the legend below,
-    // which walks all five so the meanings are readable without being in a call.
+    // The state to draw the icon in: the live one. The legend below shows all
+    // five, so the meanings are readable without being in a call.
     property int state: root.config.selfVoice
 
     implicitHeight: layout.implicitHeight
 
-    // How many of this page's own pictures actually came up: the five states in
-    // the legend and the one in the strip. An Image whose source will not load
-    // keeps the size its layout gave it and paints nothing, so a geometry dump
-    // cannot tell a drawn icon from a missing one -- and missing is exactly what
-    // they were until the artwork was carried in the binary (gui/CMakeLists.txt
-    // says why). Recomputed on every change rather than counted up, so it cannot
-    // drift when the choice changes the strip's source.
+    // How many of this page's pictures loaded: the five in the legend and the
+    // one in the strip. An Image that fails keeps its size and paints nothing,
+    // so the geometry dump needs this to tell a drawn icon from a missing one
+    // (gui/CMakeLists.txt carries the artwork). Recomputed, not counted up, so
+    // it cannot drift when the strip's source changes.
     property int loadedIcons: 0
 
     function recount() {
@@ -82,10 +67,8 @@ Item {
         }
     }
 
-    // The strip. Darker than the window and squared off at the bottom, because a
-    // panel sits against an edge of the screen rather than floating in a page --
-    // the shape is what makes it read as somebody's taskbar and not as another
-    // card.
+    // The strip, darker than the window, so it reads as a taskbar and not as
+    // another card.
     ColumnLayout {
         id: layout
 
@@ -122,9 +105,8 @@ Item {
 
             Item { Layout.fillWidth: true }
 
-            // A few of the desktop's own, so ours has something to be told apart
-            // from. Names the session's theme is certain to carry; one that is
-            // missing simply leaves a gap rather than a broken-image mark.
+            // A few of the desktop's own, so ours has something to be told
+            // apart from; a missing one leaves a gap, not a broken-image mark.
             Repeater {
                 model: [["preferences-system-network", "network"],
                         ["audio-volume-high", "volume"],
@@ -141,8 +123,7 @@ Item {
                 }
             }
 
-            // Ours. Named so the geometry dump can say which picture the page
-            // put in the tray, which is the whole of what this setting decides.
+            // Ours, named so the geometry dump says which picture is shown.
             Image {
                 id: ours
 
@@ -156,8 +137,8 @@ Item {
                 Layout.preferredHeight: 22
                 onStatusChanged: root.recount()
 
-                // The frame a tray puts round the item the pointer is on, so the
-                // eye finds ours in the row without an arrow pointing at it.
+                // The frame a tray puts round a hovered item, so the eye finds
+                // ours in the row.
                 Rectangle {
                     anchors.centerIn: parent
                     width: 30
@@ -173,9 +154,8 @@ Item {
                 }
             }
 
-            // A clock, because every panel has one and it is what makes the
-            // strip read as a panel at a glance. Fixed text: a running clock in
-            // a settings window is a thing that moves for no reason.
+            // A clock, so the strip reads as a panel at a glance. Fixed text: a
+            // running clock would move for no reason.
             Label {
                 text: "20:45"
                 opacity: 0.55
@@ -184,12 +164,9 @@ Item {
         }
     }
 
-        // What the picture in the strip can say, all five of them, at the size
-        // the panel draws them. The strip alone shows whichever state you happen
-        // to be in while you are reading this page -- which is usually "not in a
-        // channel" -- so on its own it answers "will I see an icon" and not
-        // "what will it tell me". Only while the state is what the icon carries:
-        // with the application's own picture chosen there is nothing to read.
+        // All five states the icon can show, at the panel's size, since the
+        // strip shows only the current one. Hidden when the application's own
+        // picture is chosen.
         Flow {
             Layout.fillWidth: true
             Layout.topMargin: Theme.smallSpacing
@@ -204,8 +181,7 @@ Item {
 
                 Row {
                     required property var modelData
-                    // Read by recount() above; the entry has no other reason to
-                    // know its own picture's state.
+                    // Read by recount() above.
                     readonly property int iconStatus: mark.status
 
                     spacing: Theme.smallSpacing

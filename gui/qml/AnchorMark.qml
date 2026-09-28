@@ -3,14 +3,8 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // The anchor mark: a ring with a point in it, the one glyph both maps use for
-// "the box can go here". Born on the Panel page's six anchors; the corner
-// buttons on Notifications wore a themed icon button until the owner asked the
-// two pages to speak the same sign -- and a mark that exists twice starts
-// drifting, which is how the two maps disagreed about scale once already.
-//
-// Shape as well as colour, on a map that is a picture of a game: a flat glyph
-// here has no shape until the pointer arrives (the Notifications page learnt
-// that first).
+// "the box can go here". Shape as well as colour, because on a map that is a
+// picture of a game a flat glyph has no shape until the pointer arrives.
 
 import QtQuick
 import QtQuick.Controls
