@@ -65,6 +65,7 @@
 
 #include "discord_stub.h"
 #include "probe_alarm.h"
+#include "unit_confinement.h"
 
 namespace {
 
@@ -86,137 +87,16 @@ void write_file(const std::string& path, const std::string& body) {
     fclose(file);
 }
 
-std::string read_file(const std::string& path) {
-    FILE* file = fopen(path.c_str(), "rb");
-    if (!file) {
-        return {};
-    }
-    std::string out;
-    char buffer[4096];
-    size_t got = 0;
-    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        out.append(buffer, got);
-    }
-    fclose(file);
-    return out;
-}
-
-std::string self_path() {
-    char self[4096];
-    const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-    if (n <= 0) {
-        return {};
-    }
-    self[n] = '\0';
-    return self;
-}
-
-// A command's standard output and its exit status, the command run with
-// execvp from a fork -- no shell, so no quoting of the unit's own lines.
-int run(const std::vector<std::string>& argv, std::string* out = nullptr) {
-    int pipe_fds[2];
-    if (pipe(pipe_fds) != 0) {
-        return -1;
-    }
-    fflush(stdout);
-    const pid_t pid = fork();
-    if (pid == 0) {
-        close(pipe_fds[0]);
-        dup2(pipe_fds[1], 1);
-        close(pipe_fds[1]);
-        std::vector<char*> args;
-        for (const std::string& arg : argv) {
-            args.push_back(const_cast<char*>(arg.c_str()));
-        }
-        args.push_back(nullptr);
-        execvp(args[0], args.data());
-        _exit(127);
-    }
-    close(pipe_fds[1]);
-    std::string got;
-    char buffer[1024];
-    ssize_t n = 0;
-    while ((n = read(pipe_fds[0], buffer, sizeof(buffer))) > 0) {
-        got.append(buffer, static_cast<size_t>(n));
-    }
-    close(pipe_fds[0]);
-    int status = 0;
-    waitpid(pid, &status, 0);
-    if (out) {
-        *out = got;
-    }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
-}
-
-// Every [Service] line of the unit file but the ones that say what to run
-// and when to restart it: the confinement, as the package installs it.
-std::vector<std::string> unit_properties(const std::string& path) {
-    std::vector<std::string> properties;
-    FILE* file = fopen(path.c_str(), "r");
-    if (!file) {
-        return properties;
-    }
-    char line[1024];
-    bool service = false;
-    while (fgets(line, sizeof(line), file)) {
-        std::string text(line, strcspn(line, "\r\n"));
-        while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
-            text.pop_back();
-        }
-        if (text.empty() || text[0] == '#' || text[0] == ';') {
-            continue;
-        }
-        if (text[0] == '[') {
-            service = text == "[Service]";
-            continue;
-        }
-        if (!service) {
-            continue;
-        }
-        const std::string key = text.substr(0, text.find('='));
-        if (key == "ExecStart" || key == "Type" || key == "Restart" || key == "RestartSec") {
-            continue;
-        }
-        properties.push_back(text);
-    }
-    fclose(file);
-    return properties;
-}
+using vocem_test::read_whole_file;
+using vocem_test::run_command;
+using vocem_test::self_path;
 
 // ---- inside the unit: is it private? ----------------------------------------
 
 int privacy_probe() {
-    int entries = 0;
-    if (DIR* shm = opendir("/dev/shm")) {
-        while (const dirent* entry = readdir(shm)) {
-            entries += entry->d_name[0] != '.';
-        }
-        closedir(shm);
-    } else {
-        entries = -1;
-    }
-    int app_entries = 0;
-    if (const char* app = getenv("VOCEM_UNIT_PEER_APP")) {
-        if (DIR* directory = opendir(app)) {
-            while (const dirent* entry = readdir(directory)) {
-                app_entries += entry->d_name[0] != '.';
-            }
-            closedir(directory);
-        } else {
-            app_entries = -1;
-        }
-    }
-    // A bare connect and close: in the unit's own network nothing listens.
-    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(6463);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    const bool refused =
-        connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 &&
-        errno == ECONNREFUSED;
-    close(fd);
-    printf("shm=%d app=%d refused=%d\n", entries, app_entries, refused ? 1 : 0);
+    const vocem_test::Privacy privacy = vocem_test::measure_privacy(getenv("VOCEM_UNIT_PEER_APP"));
+    printf("shm=%d app=%d refused=%d\n", privacy.shm_entries, privacy.app_entries,
+           privacy.refused ? 1 : 0);
     return 0;
 }
 
@@ -401,7 +281,7 @@ struct Harness {
                       const std::string& log) const {
         std::vector<std::string> argv = transient(unit, runtime, log);
         argv.push_back(daemon);
-        if (run(argv) != 0) {
+        if (run_command(argv) != 0) {
             return -1;
         }
         // The main pid is systemd's executor until it has set the unit's
@@ -412,10 +292,10 @@ struct Harness {
         name = name.substr(0, 15);
         for (int i = 0; i < 100; ++i) {
             std::string pid;
-            run({"systemctl", "--user", "show", "--property=MainPID", "--value", unit}, &pid);
+            run_command({"systemctl", "--user", "show", "--property=MainPID", "--value", unit}, &pid);
             const long value = atol(pid.c_str());
             if (value > 0) {
-                std::string comm = read_file("/proc/" + std::to_string(value) + "/comm");
+                std::string comm = read_whole_file("/proc/" + std::to_string(value) + "/comm");
                 comm = comm.substr(0, comm.find('\n'));
                 if (comm == name) {
                     return value;
@@ -427,7 +307,7 @@ struct Harness {
     }
 
     void stop_unit(const std::string& unit) const {
-        run({"systemctl", "--user", "stop", unit});
+        run_command({"systemctl", "--user", "stop", unit});
     }
 
     // A process in a scope of this name, started by systemd-run --scope from
@@ -478,7 +358,7 @@ void stop_process(pid_t pid) {
 bool wait_for_log(const std::string& log, const std::string& text, double seconds) {
     const double deadline = vocem_test::monotonic() + seconds;
     while (vocem_test::monotonic() < deadline) {
-        if (read_file(log).find(text) != std::string::npos) {
+        if (read_whole_file(log).find(text) != std::string::npos) {
             return true;
         }
         usleep(200 * 1000);
@@ -525,7 +405,7 @@ std::string peer_scenario(Harness& harness, const char* label, const std::string
         verdict = "listener did not start: '" + ready + "'";
     } else {
         // Where the holder really is, as the kernel says.
-        const std::string cgroup = read_file("/proc/" + std::to_string(listener) + "/cgroup");
+        const std::string cgroup = read_whole_file("/proc/" + std::to_string(listener) + "/cgroup");
         printf("--  the listener's cgroup: %s", cgroup.c_str());
         check(cgroup.find("/" + scope) != std::string::npos,
               "the listener runs in the scope " + scope);
@@ -534,7 +414,7 @@ std::string peer_scenario(Harness& harness, const char* label, const std::string
     harness.stop_unit(unit);
     stop_process(listener);
     close(from_listener);
-    *log_text = read_file(log);
+    *log_text = read_whole_file(log);
     print_port_lines(*log_text);
     return verdict;
 }
@@ -566,7 +446,7 @@ int main() {
         printf("skip VOCEM_UNIT_FILE not set or unreadable: no unit to take the confinement from\n");
         return 77;
     }
-    if (run({"systemd-run", "--user", "--quiet", "--wait", "--collect", "true"}) != 0) {
+    if (run_command({"systemd-run", "--user", "--quiet", "--wait", "--collect", "true"}) != 0) {
         printf("skip no user systemd manager reachable (systemd-run --user failed)\n");
         return 77;
     }
@@ -575,13 +455,9 @@ int main() {
     Harness harness;
     harness.self = self_path();
     harness.daemon = daemon;
-    harness.properties = unit_properties(unit_file);
+    harness.properties = vocem_test::unit_properties(unit_file);
     printf("--  %zu properties from %s\n", harness.properties.size(), unit_file);
-    bool restricts_families = false;
-    for (const std::string& property : harness.properties) {
-        restricts_families |= property.rfind("RestrictAddressFamilies=", 0) == 0;
-    }
-    check(harness.properties.size() >= 10 && restricts_families,
+    check(vocem_test::properties_look_read(harness.properties),
           "the unit file's confinement was read (it restricts address families)");
 
     char root[] = "/tmp/vocem-unit-peer-XXXXXX";
@@ -600,17 +476,8 @@ int main() {
 
     // The test's own confinement on top of the unit's, and the proof that it
     // holds before the daemon is started inside it.
-    harness.privacy = {"PrivateNetwork=yes", "TemporaryFileSystem=/dev/shm"};
-    std::string live_app;
-    if (const char* runtime = getenv("XDG_RUNTIME_DIR")) {
-        live_app = std::string(runtime) + "/app";
-        struct stat info {};
-        if (stat(live_app.c_str(), &info) == 0 && S_ISDIR(info.st_mode)) {
-            harness.privacy.push_back("TemporaryFileSystem=" + live_app);
-        } else {
-            live_app.clear();
-        }
-    }
+    const std::string live_app = vocem_test::live_app_directory();
+    harness.privacy = vocem_test::privacy_properties(live_app);
     {
         std::vector<std::string> argv = harness.transient(
             harness.unit_name("probe"), harness.base + "/runtime", harness.base + "/probe.log");
@@ -622,7 +489,7 @@ int main() {
         }
         argv.push_back(harness.self);
         std::string said;
-        const int status = run(argv, &said);
+        const int status = run_command(argv, &said);
         printf("--  inside the unit: %s", said.c_str());
         const bool private_enough =
             status == 0 && said.find("shm=0 ") != std::string::npos &&
@@ -685,7 +552,7 @@ int main() {
         harness.stop_unit(unit);
         stop_process(game);
         close(from_game);
-        const std::string text = read_file(bridge_log);
+        const std::string text = read_whole_file(bridge_log);
         size_t at = 0;
         while (at < text.size()) {
             size_t end = text.find('\n', at);
