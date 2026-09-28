@@ -1602,3 +1602,14 @@ endif()
 if(TARGET vocem-config)
     vocem_script_test(single_instance_long_path ARGS ${VOCEM_WINDOW_ARG})
 endif()
+
+# ---- 0.1.11 clean-up refix lane ----
+
+# failed-presenter with both devices presenting from the first frame, each on
+# a thread of its own and the process on one CPU: the refused renderer's
+# failure is held by the device the witness refused, not by whichever thread
+# took the layer's lock first, and the other device gets the overlay once that
+# one falls silent (vk_present_draw.cpp, failed-threads). 64-bit only, as
+# failed-presenter.
+vocem_test_run(vk_present_failed_threads TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=failed-threads" SKIP TIMEOUT 120)

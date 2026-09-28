@@ -111,11 +111,20 @@ public:
 
     bool ready() const { return backend_ready_; }
 
-    // Whether prepare() failed on the device it was last given, until
-    // shutdown(). The layer then holds the overlay on that device and queue,
-    // as it would a renderer that came up (vocem/atlas_owner.h).
-    bool failed() {
+    // Whether prepare() failed, until shutdown(), and the device and queue it
+    // failed on. The layer then holds the overlay on that device and queue, as
+    // it would a renderer that came up (vocem/atlas_owner.h). Those, and not
+    // the caller's own target: prepare() runs unlocked on every presenting
+    // thread, and one that waited on lock_ through another device's failing
+    // prepare() learns of the failure without having tried.
+    bool failed(VkDevice* device = nullptr, VkQueue* queue = nullptr) {
         std::lock_guard<std::mutex> guard(lock_);
+        if (device) {
+            *device = failed_device_;
+        }
+        if (queue) {
+            *queue = failed_queue_;
+        }
         return failed_;
     }
 
@@ -146,9 +155,13 @@ private:
     bool context_created_ = false;
     bool backend_ready_ = false;
     bool functions_loaded_ = false;
-    // prepare() failed against the current device; nothing will be retried
-    // until shutdown() (a new device) clears it.
+    // prepare() failed, on failed_device_ and failed_queue_; nothing will be
+    // retried until shutdown() (a new device) clears it.
     bool failed_ = false;
+    VkDevice failed_device_ = VK_NULL_HANDLE;
+    VkQueue failed_queue_ = VK_NULL_HANDLE;
+    // Every failure of prepare() ends here, with the target it failed on.
+    void refuse(const RendererTarget& target);
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkFormat format_ = VK_FORMAT_UNDEFINED;

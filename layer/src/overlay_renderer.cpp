@@ -115,6 +115,12 @@ bool OverlayRenderer::load_vulkan_functions(const RendererTarget& target) {
     return true;
 }
 
+void OverlayRenderer::refuse(const RendererTarget& target) {
+    failed_ = true;
+    failed_device_ = target.device;
+    failed_queue_ = target.queue;
+}
+
 bool OverlayRenderer::prepare(const RendererTarget& target) {
     std::lock_guard<std::mutex> guard(lock_);
     if (backend_ready_) {
@@ -127,12 +133,12 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         VOCEM_RLOG("incomplete target: device=%p render_pass=%p gdpa=%p gipa=%p",
                    (void*)target.device, (void*)target.render_pass, (void*)target.gdpa,
                    (void*)target.gipa);
-        failed_ = true;
+        refuse(target);
         return false;
     }
 
     if (!load_vulkan_functions(target)) {
-        failed_ = true;
+        refuse(target);
         return false;
     }
 
@@ -219,7 +225,7 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         if (!ImGui_ImplVulkan_Init(&info) || g_backend_failed) {
             VOCEM_RLOG("ImGui_ImplVulkan_Init failed");
             ImGui_ImplVulkan_Shutdown();
-            failed_ = true;
+            refuse(target);
             return false;
         }
         // The font atlas is uploaded here, post-present, by the texture cache,
@@ -246,14 +252,14 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
                        "without it the font texture would need ImGui's own upload, whose "
                        "command buffer the loader never registers");
             ImGui_ImplVulkan_Shutdown();
-            failed_ = true;
+            refuse(target);
             return false;
         }
         if (!upload_font_texture(true) || g_backend_failed) {
             VOCEM_RLOG("font atlas upload failed");
             textures_.shutdown();
             ImGui_ImplVulkan_Shutdown();
-            failed_ = true;
+            refuse(target);
             return false;
         }
         VOCEM_RLOG("backend ready (%u ring slots, queue family %u)", info.ImageCount,
@@ -486,6 +492,8 @@ void OverlayRenderer::shutdown_locked() {
     // the new one.
     functions_loaded_ = false;
     failed_ = false;
+    failed_device_ = VK_NULL_HANDLE;
+    failed_queue_ = VK_NULL_HANDLE;
     font_retry_ = UploadRetry();
     device_ = VK_NULL_HANDLE;
     queue_ = VK_NULL_HANDLE;

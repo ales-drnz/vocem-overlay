@@ -1390,19 +1390,24 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                 g_hand_over.take(vocem::HandOver::Holding::Ready, vocem::monotonic_seconds());
             }
         } else if (vocem::renderer().failed()) {
-            // Refused here: this device and queue hold the overlay as a
-            // renderer that came up would, so the failure goes with them
-            // rather than staying the whole process's.
+            // Refused: the device and queue it was refused on hold the
+            // overlay as a renderer that came up would, so the failure goes
+            // with them rather than staying the whole process's. Those the
+            // renderer names, not this present's: a thread that waited on the
+            // renderer through another device's failing prepare() gets here
+            // too, and may get here first.
             // Asked again under the lock: a release on another thread may
             // have cleared the failure in between.
             std::lock_guard<std::mutex> guard(g_lock);
-            if (!g_hand_over.held() && vocem::renderer().failed()) {
+            VkDevice failed_device = VK_NULL_HANDLE;
+            VkQueue failed_queue = VK_NULL_HANDLE;
+            if (!g_hand_over.held() && vocem::renderer().failed(&failed_device, &failed_queue)) {
                 g_hand_over.take(vocem::HandOver::Holding::Failed, vocem::monotonic_seconds());
-                g_failed_device = pending_target.device;
-                g_failed_queue = pending_target.queue;
+                g_failed_device = failed_device;
+                g_failed_queue = failed_queue;
                 VOCEM_LOG("the overlay stays with device %p, where its renderer could not be "
                           "made, until that device is destroyed or falls silent",
-                          static_cast<void*>(pending_target.device));
+                          static_cast<void*>(failed_device));
             }
         }
     } else if (vocem::renderer().ready()) {
