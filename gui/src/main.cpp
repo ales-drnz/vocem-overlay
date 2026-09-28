@@ -503,7 +503,15 @@ int main(int argc, char* argv[]) {
             }
         }
         if (!instance_lock.isLocked()) {
-            ask_running_instance_to_show(3000);
+            if (!ask_running_instance_to_show(3000)) {
+                // The holder is alive (the lock says so) and did not answer:
+                // still building a window after three seconds, hung, or
+                // running without its socket (below). Said, not swallowed.
+                std::fprintf(stderr,
+                             "vocem-config: another instance holds %s and did not answer on "
+                             "%s; not opening a second window\n",
+                             qPrintable(instance_lock_name()), qPrintable(instance_socket_name()));
+            }
             return 0;
         }
     }
@@ -539,7 +547,22 @@ int main(int argc, char* argv[]) {
         // world-accessible, and where XDG_RUNTIME_DIR is missing it lands in /tmp
         // -- so any local user could make this window appear on the desktop.
         server.setSocketOptions(QLocalServer::UserAccessOption);
-        server.listen(instance_socket_name());
+        if (!server.listen(instance_socket_name())) {
+            // No socket, so no later launch could reach this window: each one
+            // would find the lock held, ask nobody, and exit showing nothing.
+            // The lock is given back instead, so a later launch opens a
+            // window of its own -- two windows is the lesser failure, and
+            // this line says why. The usual cause is a runtime directory
+            // whose path, with the name, is past the 107 bytes a local
+            // socket's address holds.
+            const QByteArray name = instance_socket_name().toLocal8Bit();
+            std::fprintf(stderr,
+                         "vocem-config: cannot listen on %s (%lld bytes; %s); running without "
+                         "the single-instance guard: a later launch opens a second window\n",
+                         name.constData(), static_cast<long long>(name.size()),
+                         qPrintable(server.errorString()));
+            instance_lock.unlock();
+        }
         QObject::connect(&server, &QLocalServer::newConnection, &server, [&server, main_window] {
             QLocalSocket* client = server.nextPendingConnection();
             if (client) {

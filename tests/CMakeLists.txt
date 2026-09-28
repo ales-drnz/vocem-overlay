@@ -1525,3 +1525,9 @@ if(TARGET vocem-config)
     vocem_script_test(instant_switches ARGS ${VOCEM_WINDOW_ARG})
 endif()
 
+# A window that cannot create its single-instance socket (a runtime directory
+# past the 107 bytes a socket address holds) says so and gives the lock back,
+# so a later launch opens a window rather than exiting with nothing shown.
+if(TARGET vocem-config)
+    vocem_script_test(single_instance_long_path ARGS ${VOCEM_WINDOW_ARG})
+endif()
