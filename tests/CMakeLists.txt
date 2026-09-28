@@ -262,9 +262,9 @@ endif()
 vocem_script_test(one_placement_inverse)
 
 # The emoji bank is a Modified Version of Noto Color Emoji under the OFL 1.1
-# and shipped through 0.1.0-52's sources with no licence text anywhere; the
-# licence now lives beside the bank and installs with it, and this holds both.
-vocem_script_test(emoji_bank_licence)
+# and shipped through 0.1.0-52's sources with no licence text anywhere. Held on
+# a scratch install: the licence lands beside the bank.
+vocem_script_test(emoji_bank_licence ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}")
 
 # The same rule for the project's other one-place facts: the monotonic clock
 # (vocem/clock.h), the mkdir -p loop (vocem/paths.h) and the curl write
@@ -1054,10 +1054,12 @@ endif()
 # answered the display's height for the supersampled case.
 vocem_test(sizing_height INCLUDE "${IMGUI_DIR}" DEFINES IMGUI_USE_WCHAR32)
 
-# The tray's four state icons: present, token-true, well-formed, installed.
-# A missing or broken state icon degrades to the generic one with nothing
-# logged, which is the silence this suite exists to refuse.
-vocem_script_test(tray_icons)
+# The tray's five state icons, installed into a scratch DESTDIR and drawn by
+# Qt's SVG renderer (tray_icon_pictures.cpp): one circle each, one radius,
+# token-true, nothing behind. A missing or broken state icon degrades to the
+# generic one with nothing logged. The names Tray.qml asks for stay a reading.
+vocem_script_test(tray_icons ARGS "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+    "-DPROBE=$<$<TARGET_EXISTS:vocem_tray_icon_pictures>:$<TARGET_FILE:vocem_tray_icon_pictures>>")
 
 if(TARGET vocem-config)
     # A game running right now with the overlay off is said above the history:
@@ -1890,4 +1892,11 @@ if(TARGET vocemd)
     vocem_test_run(daemon_stop_note_mirror_unit TARGET daemon_stop_unlinks
         ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} "VOCEM_DAEMON_STOP_SCENARIO=note-mirror"
         TIMEOUT 150 SKIP)
+endif()
+
+# The picture probe tray_icons runs on the installed icons (Qt's own SVG
+# renderer, so it needs Qt6 Svg; without it tray_icons skips).
+find_package(Qt6 6.5 QUIET COMPONENTS Gui Svg)
+if(TARGET Qt6::Svg)
+    vocem_test(tray_icon_pictures NO_TEST LINK Qt6::Gui Qt6::Svg)
 endif()
