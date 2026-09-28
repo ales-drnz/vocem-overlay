@@ -65,7 +65,7 @@
 #include <string>
 
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "vocem/note.h"
 #include "vocem/shm.h"
 
@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
         return 77;
     }
 
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
 

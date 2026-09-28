@@ -33,6 +33,9 @@
 // so the real daemon's segment is never touched -- and a private network
 // namespace, so port 6463 is free even while Discord is running. Where bwrap is
 // missing it reports itself skipped rather than passing without having run.
+// With VOCEM_UNIT_FILE it re-executes as a transient unit with that file's
+// confinement instead (unit_confinement.h): daemon_notification_unit, which
+// fails against 0.1.11-1's vocemd and unit, whose peer check refused the stub.
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -50,7 +53,7 @@
 #include <string>
 
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "vocem/note.h"
 #include "vocem/shm.h"
 
@@ -112,9 +115,10 @@ int main(int argc, char** argv) {
         return 77;
     }
 
-    // Re-execute under bwrap: private /dev/shm so the real daemon's segment is
-    // never touched, private network so 6463 is free while Discord runs.
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    // Re-execute under bwrap, or under the unit's confinement: private
+    // /dev/shm so the real daemon's segment is never touched, private network
+    // so 6463 is free while Discord runs.
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
 

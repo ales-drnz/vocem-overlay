@@ -63,7 +63,7 @@
 
 #include "probe_alarm.h"
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 
 namespace {
 
@@ -143,7 +143,7 @@ int main() {
         return 77;
     }
 
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
 

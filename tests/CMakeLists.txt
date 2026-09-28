@@ -1835,3 +1835,48 @@ vocem_m32_twin_run(vk_present_alternate_queue TARGET vk_present_alternate_queue
 # scripts/dev-run-gl.sh for a 32-bit child: which_shim built -m32, run through
 # the script, must be answered by a 32-bit shim (dev_run_gl.cmake, PROBE32).
 vocem_m32_twin(which_shim)
+
+# ---- 0.1.11 clean-up tests lane ----
+
+# The daemon's end-to-end tests again, under its unit's own [Service]
+# properties (entry 285: 0.1.11-1 refused the real Discord from its unit while
+# every daemon test ran it from bwrap). VOCEM_UNIT_FILE makes
+# unit_confinement.h re-execute the probe as a transient user unit with every
+# property of the file, plus a private network, /dev/shm and
+# $XDG_RUNTIME_DIR/app measured before the daemon starts; the probe is
+# undumpable there, so its stub on 6463 is closed to the daemon as Discord is.
+# daemon_notification_unit fails against 0.1.11-1's vocemd and unit file.
+# daemon_peer_sandbox has no twin here: its listener is a bwrap, and the unit's
+# RestrictNamespaces refuses one (daemon_unit_peer is its unit form).
+if(TARGET vocemd)
+    set(VOCEM_UNIT_ENV
+        "VOCEM_UNIT_FILE=${CMAKE_SOURCE_DIR}/packaging/systemd/vocemd.service.in")
+    foreach(probe daemon_notification daemon_moved daemon_log_lines daemon_exchange_stop
+                  daemon_stop_blocked daemon_single_instance)
+        vocem_test_run(${probe}_unit TARGET ${probe}
+            ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} TIMEOUT 150 SKIP)
+    endforeach()
+    vocem_test_run(daemon_reconnect_unit TARGET daemon_reconnect
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} TIMEOUT 120 SKIP)
+    vocem_test_run(daemon_reconnect_authenticated_unit TARGET daemon_reconnect
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV}
+            "VOCEM_DAEMON_RECONNECT_SCENARIO=authenticated" TIMEOUT 120 SKIP)
+    vocem_test_run(daemon_note_expiry_unit TARGET daemon_note_expiry
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} TIMEOUT 240 SKIP)
+    vocem_test_run(daemon_note_expiry_port_walk_unit TARGET daemon_note_expiry
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV}
+            "VOCEM_NOTE_EXPIRY_SCENARIO=port-walk" TIMEOUT 120 SKIP)
+    vocem_test_run(daemon_stop_unlinks_unit TARGET daemon_stop_unlinks
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} TIMEOUT 150 SKIP)
+    vocem_test_run(daemon_stop_in_handshake_unit TARGET daemon_stop_unlinks
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} "VOCEM_DAEMON_STOP_SCENARIO=handshake"
+        TIMEOUT 150 SKIP)
+    vocem_test_run(daemon_stop_in_trickle_unit TARGET daemon_stop_unlinks
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} "VOCEM_DAEMON_STOP_SCENARIO=trickle"
+        TIMEOUT 150 SKIP)
+    # Its fake Flatpak is a process in an app-flatpak-<id> scope here, not a
+    # bwrap (fake_flatpak.h): what the bridge sees of a Flatpak from the unit.
+    vocem_test_run(daemon_stop_note_mirror_unit TARGET daemon_stop_unlinks
+        ENV ${VOCEM_DAEMON_ENV} ${VOCEM_UNIT_ENV} "VOCEM_DAEMON_STOP_SCENARIO=note-mirror"
+        TIMEOUT 150 SKIP)
+endif()

@@ -42,7 +42,7 @@
 
 #include "probe_alarm.h"
 #include "discord_stub.h"
-#include "private_shm.h"
+#include "unit_confinement.h"
 #include "vocem/shared_state.h"
 
 namespace {
@@ -86,7 +86,7 @@ int main() {
         printf("skip VOCEM_DAEMON not set: no daemon binary to drive\n");
         return 77;
     }
-    if (const int gate = vocem_test::ensure_private_shm(true); gate >= 0) {
+    if (const int gate = vocem_test::ensure_daemon_confinement(); gate >= 0) {
         return gate;
     }
     vocem_test::set_alarm(120, "the token exchange ending on a stop");
