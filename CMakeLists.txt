@@ -8,20 +8,13 @@ project(vocem-overlay
     # version derives from this or is checked against it: gui/CMakeLists.txt
     # compiles it into the window as VOCEM_VERSION, and tests/version_agrees.cmake
     # holds both PKGBUILDs, .SRCINFO and the metainfo's release list to it.
-    #
-    # It sat at 0.1.0 while four releases went out, because neither PKGBUILD
-    # passes a version to CMake and nothing compared the two: the installed
-    # 0.1.4 package's About page read "Version 0.1.0", the metainfo's newest
-    # release was 0.1.2, and .SRCINFO said 0.1.2 as well. Four copies of one
-    # fact, none of them told when another moved.
     VERSION 0.1.11
     DESCRIPTION "Discord voice overlay drawn inside the game, on Linux"
     LANGUAGES CXX
 )
 
-# Dear ImGui is a submodule, and a plain `git clone` leaves it empty. Without this
-# the first thing a stranger sees is "No SOURCES given to target:
-# vocem_fonts_frame_quiet", which names the wrong problem entirely.
+# Dear ImGui is a submodule, and a plain `git clone` leaves it empty; without this
+# check the first error names the wrong problem entirely.
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui.cpp")
     message(FATAL_ERROR
         "third_party/imgui is empty: Dear ImGui is a git submodule.\n"
@@ -82,7 +75,7 @@ option(VOCEM_BUILD_TESTS "Build the test programs" ON)
 # two directories need the answer: common/ builds the 32-bit twin of the shared
 # objects when it can, and tests/ builds the -m32 test executables against it.
 # The 32-bit injected libraries themselves come from a tree of their own
-# (build32) that ctest does not cover, which is where entries 30/33/34 hid.
+# (build32).
 if(VOCEM_BUILD_HOST_TOOLS AND VOCEM_BUILD_TESTS)
     include(CheckCXXSourceCompiles)
     set(CMAKE_REQUIRED_FLAGS "-m32")
@@ -96,9 +89,8 @@ endif()
 # The C++ runtime of the two injected heavy libraries (libvocem_gl.so and
 # libvocem_vk.so) is linked INTO them, not NEEDED. They are loaded into games,
 # and a game's runtime can put an older libstdc++.so.6 first on the search path
-# -- the Steam scout runtime's 6.0.21, tried by the 0.1.10 review: the build
-# NEEDS GLIBCXX_3.4.29, ld.so refuses the whole library, and the game has no
-# overlay. Both libraries' version scripts keep every symbol but their entry
+# (the Steam scout runtime's 6.0.21), which ld.so would refuse the whole library
+# against. Both libraries' version scripts keep every symbol but their entry
 # points local, so the copy they carry is invisible to the game's own (entry
 # 195; tests/injected_runtime.cmake holds the NEEDED list at both widths). The
 # shim has its own, stricter answer in gl/CMakeLists.txt: no C++ runtime at all.
@@ -125,26 +117,18 @@ endif()
 # Uses the linker's $LIB token so a single script serves both architectures. The
 # literal must survive CMake's configure step, hence the placeholder.
 #
-# From the install prefix, not from a hardcoded /usr. Entry 16's rule is that
-# vocem-run preloads the same shim the session does, so the two entry paths
-# cannot drift -- and this said /usr while packaging/environment.d/50-vocem.conf.in
-# took @CMAKE_INSTALL_PREFIX@ (entry 137 made it a template and did not come
-# back here). Measured on a configure at another prefix: vocem-run said
-# `/usr/$LIB/libvocem_gl_shim.so` and the session's file said
-# `<prefix>/$LIB/libvocem_gl_shim.so`, so every program started through
-# vocem-run after a ~/.local install printed `cannot be preloaded: ignored` and
-# got no OpenGL overlay. tests/one_preload_path.cmake configures at a prefix of
-# its own and compares the two generated files, because at the default prefix
-# the defect is invisible.
+# From the install prefix, as packaging/environment.d/50-vocem.conf.in is:
+# vocem-run preloads the same shim the session does (entry 16), and at any
+# prefix but /usr a hardcoded path would preload nothing.
+# tests/one_preload_path.cmake configures at a prefix of its own and compares
+# the two generated files.
 set(VOCEM_LIBDIR_TOKEN "${CMAKE_INSTALL_PREFIX}/$LIB")
 configure_file(scripts/vocem-run.in "${CMAKE_BINARY_DIR}/vocem-run" @ONLY)
 
 if(VOCEM_BUILD_HOST_TOOLS)
     install(PROGRAMS "${CMAKE_BINARY_DIR}/vocem-run"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
-    # The tool for the person whose game has no overlay. Two release notes
-    # announced it and neither PKGBUILD installed it: it existed in the source
-    # tree and nowhere on an installed machine.
+    # The tool for the person whose game has no overlay.
     install(PROGRAMS scripts/vocem-why.sh
         DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME vocem-why)
 endif()
@@ -176,9 +160,8 @@ if(VOCEM_BUILD_HOST_TOOLS)
 
     # The unit and the session's environment file carry the install prefix in
     # them (ExecStart, and the shim's path), so they are generated from the
-    # prefix rather than written with /usr in them: the README's install into
-    # ~/.local shipped a unit whose ExecStart named a binary that was not there
-    # (entry 137). Both land in build/packaging, where that recipe copies them
+    # prefix rather than written with /usr in them (entry 137). Both land in
+    # build/packaging, where the README's ~/.local install recipe copies them
     # from. The directories below are systemd's own and deliberately not
     # CMAKE_INSTALL_LIBDIR: systemd reads lib/, never lib64/.
     configure_file(packaging/systemd/vocemd.service.in

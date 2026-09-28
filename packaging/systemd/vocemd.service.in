@@ -31,23 +31,18 @@ TimeoutStopSec=10
 # Only directives that need no mount namespace: a user unit that cannot set one up
 # fails to start, and a daemon that will not start is worse than one that is
 # merely confined. ProtectSystem and PrivateTmp are the two left out for that
-# reason; they belong here the day the unit is tested against a machine that
-# cannot do them.
+# reason.
 #
-# `CapabilityBoundingSet=` is deliberately absent, and that is a measurement, not
-# an oversight: an empty bounding set makes a *user* unit fail to start on this
-# systemd -- exit 218, EXIT_CAPABILITIES, three runs out of three under
-# `systemd-run --user`. A user service holds no capabilities to drop anyway. The
-# whole set below was run as a transient unit around a real HTTPS fetch before it
-# was written here, precisely because a daemon that will not start is a worse
-# outcome than a daemon that is not confined.
+# `CapabilityBoundingSet=` is deliberately absent: an empty bounding set makes a
+# *user* unit fail to start (exit 218, EXIT_CAPABILITIES), and a user service
+# holds no capabilities to drop anyway. tests/daemon_unit_peer.cpp runs the
+# daemon under these properties.
 NoNewPrivileges=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-# One set per line: the leading ~ negates the first name only, so the three on one
-# line made two of them literal syscall names systemd did not recognise and
-# silently ignored -- `systemd-analyze verify` says so, which is how this was
-# caught.
+# One set per line: the leading ~ negates the first name only, and systemd
+# silently ignores the others as unknown syscall names (`systemd-analyze verify`
+# says so).
 SystemCallFilter=~@privileged
 SystemCallFilter=~@resources
 SystemCallFilter=~@obsolete
@@ -55,7 +50,7 @@ SystemCallFilter=~@obsolete
 # table (NETLINK_SOCK_DIAG): the cgroup the RPC listener's socket was made in is
 # the one thing about Discord the daemon can still ask from inside this unit,
 # whose user namespace closes every process of the session to it
-# (daemon/src/peer_cgroup.h). Without it 0.1.11-1 refused the real Discord.
+# (daemon/src/peer_cgroup.h, entry 285).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes

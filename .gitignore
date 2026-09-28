@@ -14,32 +14,24 @@ compile_commands.json
 *.user
 .DS_Store
 
-# makepkg works in the packaging directory and leaves its results there. The
-# packages themselves are build output like any other: 120 MB of them had
-# accumulated beside the PKGBUILD before this line existed.
+# makepkg works in the packaging directory and leaves its results there; the
+# packages themselves are build output like any other.
 packaging/pkg/
 packaging/src/
 packaging/*.pkg.tar.*
 # A VCS source is cached as a bare clone named after it, beside the PKGBUILD.
-# Found by running the public PKGBUILD for the first time: two of them appeared
-# as untracked directories in a repository that had just been published.
 packaging/vocem-overlay/
 packaging/imgui/
 
-# Python leaves these beside any script it IMPORTS rather than runs, which is
-# how a 24 KB .pyc of rpc-probe.py came to sit untracked in scripts/ -- one
-# `git add -A` from a compiled binary in a public repository.
+# Python leaves these beside any script it IMPORTS rather than runs.
 __pycache__/
 *.pyc
 
 # Fetched by scripts/make-fonts.py, which deletes them again; what is committed
 # is the subsets it produces under common/fonts/.
 third_party/fonts/*-Variable.ttf
-# Two of the six are not named "-Variable": the pattern above was written when
-# there were three fonts, and NotoSansMath-Regular.ttf and
-# NotoSansSymbols2-Regular.ttf fell outside it. The script unlinks all six in
-# a `finally` now (entry 182); these two lines are for a run killed before it
-# gets there.
+# Two of the six are not named "-Variable". The script unlinks all six in a
+# `finally`; these two lines are for a run killed before it gets there.
 third_party/fonts/NotoSansMath-Regular.ttf
 third_party/fonts/NotoSansSymbols2-Regular.ttf
 
@@ -53,8 +45,7 @@ AUDIT-*.md
 # flatpak-builder leaves its cache and its build trees beside the manifest.
 .flatpak-builder/
 # And the release build keeps its build directory and its exported repository
-# there too, deliberately: all three have to be on one filesystem, and /tmp on
-# this machine is a tmpfs the builder's sandbox does not even share. See
-# flatpak/README.md.
+# there too, deliberately: all three have to be on one filesystem, and /tmp may
+# be a tmpfs the builder's sandbox does not share. See flatpak/README.md.
 vocem-flatpak-build/
 vocem-flatpak-repo/
