@@ -1566,8 +1566,11 @@ namespace {
 __attribute__((destructor)) void vocem_layer_journal_close() {
     // A font atlas still being rasterised on a worker runs this library's code:
     // it finishes before the library can be unmapped -- by exit, or by the
-    // loader's dlclose after vkDestroyInstance.
-    vocem::atlas_worker().join();
+    // loader's dlclose after vkDestroyInstance. A process that never drew has
+    // no worker, and none is made here: this runs at every unload.
+    if (vocem::AtlasWorker* worker = vocem::atlas_worker_made()) {
+        worker->join();
+    }
     vocem::journal_end();
     // Last, the exception emergency pool of the libstdc++ this library carries
     // inside it (-static-libstdc++): its constructor mallocs the pool at every

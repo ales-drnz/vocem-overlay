@@ -125,8 +125,8 @@ private:
 // has no exceptions and std::thread reports a refused clone by throwing,
 // which would end the game; a refusal is a return code here, and the caller
 // then builds on its own thread. One per library, leaked (atlas_worker()), so
-// the ELF destructor can join it without constructing anything and the job it
-// reads is never destroyed under it at exit (entry 151's class).
+// the job it reads is never destroyed under it at exit (entry 151's class);
+// the ELF destructor joins it only if it was ever made (atlas_worker_made()).
 // ---------------------------------------------------------------------------
 class AtlasWorker {
 public:
@@ -186,8 +186,14 @@ private:
     Rasterise rasterise_ = nullptr;
 };
 
-// This library's worker. Never destroyed: see AtlasWorker.
+// This library's worker, made at the first call. Never destroyed: see
+// AtlasWorker.
 AtlasWorker& atlas_worker();
+
+// The worker if atlas_worker() ever made it, null otherwise: what a teardown
+// that must construct nothing asks -- the ELF destructors, which run at every
+// dlclose of a library that may never have drawn (tests/injected_unload.cpp).
+AtlasWorker* atlas_worker_made();
 
 }  // namespace vocem
 

@@ -1394,8 +1394,9 @@ vocem_m32_twin(gl_destroy_private_x11
 
 # The two heavy libraries loaded and unloaded forty times each: the libstdc++
 # they carry inside them since 0.1.11 left its ~73 KB exception emergency pool
-# on the heap at every unload, which is every vkDestroyInstance for the layer
-# (injected_unload.cpp). Both widths, both libraries.
+# on the heap at every unload, which is every vkDestroyInstance for the layer,
+# and 8c6db47's ELF destructors an atlas worker (injected_unload.cpp). Both
+# widths, both libraries.
 vocem_test(injected_unload LINK ${CMAKE_DL_LIBS}
     ENV "LD_PRELOAD=" "VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_gl>"
         "VOCEM_VK_LIBRARY=$<TARGET_FILE:vocem_vk>")

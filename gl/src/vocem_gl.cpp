@@ -2090,7 +2090,10 @@ __attribute__((destructor)) void vocem_gl_journal_close() {
     // A first atlas still being rasterised runs this library's code and reads
     // the atlas: it finishes before exit tears the process down (entry 192).
     // The shim never dlcloses this library, so exit is the one way this runs.
-    vocem::atlas_worker().join();
+    // A process that never drew has no worker, and none is made here.
+    if (vocem::AtlasWorker* worker = vocem::atlas_worker_made()) {
+        worker->join();
+    }
     vocem::journal_end();
     // Last, the exception emergency pool (about 73 KB) of the libstdc++ this
     // library carries inside it (-static-libstdc++, the top-level
