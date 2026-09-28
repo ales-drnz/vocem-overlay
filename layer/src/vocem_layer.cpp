@@ -6,23 +6,18 @@
 //
 // The plumbing: dispatch tables, per-swapchain resources, queue/family
 // tracking, semaphore chaining. What gets painted lives in overlay_renderer /
-// common/src/panel.cpp; this file decides where and when, and its design rules
-// are older than any of the drawing:
+// common/src/panel.cpp; this file decides where and when, under these rules:
 //   * Never block in vkQueuePresentKHR. No per-frame I/O, no allocation on the
-//     hot path (the exact shape of that claim, with its measured exceptions,
-//     is at overlay_wanted_here's call site).
+//     hot path (the exact claim, with its named exceptions, is at the
+//     `drawable` flag in vocem_QueuePresentKHR).
 //   * Per-image state is indexed by swapchain image index, never by acquisition
-//     order (MangoHud 0.8.3 fixed exactly this class of bug).
+//     order.
 //   * If anything we need is missing, degrade to a pure pass-through. A layer
 //     must never be the reason a game fails to start.
 //   * Dispatchable objects we create (command buffers) must be registered with
 //     the loader via pfnSetDeviceLoaderData, or their dispatch will crash.
-//
-// These bullets are this file's own order and are deliberately unnumbered: the
-// numbers anything cites -- in this directory, in tests/, and in DESIGN's own
-// entries -- are DESIGN's, where the index rule is 4 and the loader-data rule
-// is 5. Five citations named rule 4 for the loader-data one, following this
-// list's order while naming that file's numbering (corrected 2026-09-19).
+// The bullets are unnumbered on purpose: a "rule N" cited in this directory
+// uses the project notes' numbering (index rule 4, loader-data rule 5).
 
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
@@ -142,13 +137,9 @@ struct SwapchainData {
     std::vector<VkCommandBuffer> command_buffers;
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
-    // Whether our own submission for this image is outstanding. The fence is
-    // reset before recording and three paths below can return without submitting
-    // -- a command buffer that would not begin or end, a queue submit that failed
-    // under memory pressure. Waiting on an unsignalled fence that nothing will
-    // ever signal blocks forever, under g_lock, with every other present thread
-    // and vkDestroySwapchainKHR behind it: a transient allocation failure that
-    // should cost one undrawn frame instead froze the game.
+    // Whether our own submission for this image is outstanding. Recording can
+    // fail after the fence is reset (begin, end or submit failing), and a wait
+    // on a fence nothing will signal would block forever under g_lock.
     std::vector<uint8_t> submitted;
 
     bool usable = false;   // false => pass through untouched
@@ -176,10 +167,9 @@ struct DeviceData {
     PFN_vkSetDeviceLoaderData set_device_loader_data = nullptr;
     std::unordered_map<VkQueue, uint32_t> queue_families;
     // The capabilities of every queue family, indexed by family, asked once at
-    // device creation. The overlay records a render pass into a command pool
-    // on the family the game presents from; a family without GRAPHICS cannot
-    // take one, and nothing used to ask. Empty when the query was unavailable,
-    // in which case the family is taken on trust as it always was.
+    // device creation: a family without GRAPHICS cannot take the overlay's
+    // render pass. Empty when the query was unavailable; the family is then
+    // taken on trust.
     std::vector<VkQueueFlags> family_flags;
     // Semaphores of swapchains already destroyed, which a present may still
     // be waiting on: destroyed with the device, or once more than
@@ -197,10 +187,8 @@ std::unordered_map<VkSwapchainKHR, SwapchainData> g_swapchains;
 void* dispatch_key(void* handle) { return *reinterpret_cast<void**>(handle); }
 
 // The eight functions the HDR pipeline borrows from the dispatch, in one
-// place: the same list was filled in by hand on the create path and the
-// destroy path, and a member missed on the destroy copy makes complete()
-// false there -- hdr_pipeline_destroy then returns having destroyed nothing,
-// a pipeline leaked per swapchain rebuild, silently, in a resize loop.
+// place for the create and the destroy path: a member missing on the destroy
+// side makes complete() false and leaks a pipeline per swapchain rebuild.
 vocem::HdrDeviceFunctions hdr_functions(const DeviceDispatch& d) {
     vocem::HdrDeviceFunctions fn;
     fn.CreateShaderModule = d.CreateShaderModule;
@@ -216,9 +204,7 @@ vocem::HdrDeviceFunctions hdr_functions(const DeviceDispatch& d) {
 
 
 
-// The attach/detach/read loop is the shared spelling in vocem/state_poll.h --
-// it existed here and in the GL path, identical to the character, free to
-// drift (and it had: only this side said why a read failed).
+// The attach/detach/read loop is shared with the GL path (vocem/state_poll.h).
 void layer_poll_log(const char* line) { VOCEM_LOG("%s", line); }
 
 vocem::StatePoll g_state{&layer_poll_log};
@@ -230,27 +216,19 @@ DeviceData* find_device(void* dispatchable) {
 
 // ---------------------------------------------------------------------------
 // Whose present this is. The renderer lives on one device and uploads on one
-// queue (OverlayRenderer::owns); nothing used to ask, and a second device that
-// presented beside the first had its frames recorded with the first device's
-// vertex ring, pipeline and font image -- VUID-vkCmdBindVertexBuffers-
-// commonparent under the validation layer, then SIGSEGV -- and its post-present
-// phase submitting to, and waiting on, the first device's queue, which that
-// present holds no synchronisation for. A present that is not the owner's is
-// passed through, said once; once the owner has not presented for
-// kHandOverSeconds the backend moves to the one that does. That second half is
-// entry 210's lesson on the OpenGL side, where the first version of the same
-// fix refused every other context for good and a game that shows a loading
-// screen from one and plays from another had no overlay for the session.
+// queue (OverlayRenderer::owns); recording another device's frames with its
+// vertex ring, pipeline and font image is a validation error, then a crash.
+// A present that is not the owner's is passed through, said once; once the
+// owner has not presented for kHandOverSeconds the backend moves to the one
+// that does, so a game that loads on one device and plays on another still
+// gets the overlay.
 //
-// The owner is the QUEUE, not only the device, and that has a price: one
-// swapchain presented from two queues of a family in turn has the overlay in
-// every other frame (vk_present_draw's alternate-queue scene: 1780 pixels in
-// the owner queue's frames, 0 in the other's). Drawing for the whole device
-// was measured and not taken: the texture cache orders its in-place copies
-// into the font image, and its rebuild's wait, on the renderer's queue alone,
-// so a draw submitted on another queue is ordered against neither, and the
-// validation layer reported synchronisation hazards under that variant that
-// it never reports under this one. Everything here is guarded by g_lock.
+// The owner is the QUEUE, not only the device: one swapchain presented from
+// two queues in turn has the overlay in every other frame (vk_present_draw's
+// alternate-queue scene). Drawing for the whole device is not done: the
+// texture cache orders its copies into the font image on the renderer's queue
+// alone, so a draw on another queue would be unordered against them.
+// Everything here is guarded by g_lock.
 // ---------------------------------------------------------------------------
 
 constexpr double kHandOverSeconds = 2.0;
@@ -288,12 +266,10 @@ Presenter whose_present(VkDevice device, VkQueue queue) {
 }
 
 // Waits for every overlay submission still in flight on `device`, by the
-// per-image fences the layer submitted them with. Those command buffers read
-// the renderer's vertex ring, pipeline, font image and faces; the texture
-// cache's own uploads are the only other GPU work that does, and its
-// shutdown() waits for them itself. vkWaitForFences needs no queue's external
-// synchronisation; the vkDeviceWaitIdle that stood in the renderer's shutdown
-// needed every queue's.
+// per-image fences the layer submitted them with; those command buffers read
+// the renderer's resources (the texture cache's shutdown() waits for its own
+// uploads). vkWaitForFences needs no queue's external synchronisation, which
+// vkDeviceWaitIdle would.
 void wait_for_overlay_work(VkDevice device) {
     DeviceData* dev = find_device(device);
     if (!dev || !dev->disp.WaitForFences) {
@@ -421,25 +397,13 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyInstance(VkInstance instance,
         destroy(instance, pAllocator);
     }
     // The loader unloads this library after the last instance goes, and the
-    // font atlas is a heap object the fonts module keeps for the life of the
-    // process on purpose (entry 144): the pointer to it is in this library's
-    // statics and goes with the unload, and the next vkCreateInstance loads a
-    // fresh copy that builds another. Measured before this: the atlas's 8 MB
-    // at the probe's size -- 16 MB at a 4K display's -- still mapped after the
-    // instance was gone, once per instance a game creates and destroys after
-    // drawing. With no instance there is no device and nothing that can draw,
-    // so this is the moment to give it back; shutdown() also joins a build
-    // still running and destroys a context whose device died before its
-    // backend was ready (entry 211).
-    // Only where the atlas was ever made: a process that never drew -- most of
-    // the Vulkan processes of a session -- has nothing here, and asking would
-    // construct the renderer and the atlas object just to clear them. Made,
-    // not built: this asked fonts_build_count() > 0, which moves when the
-    // first build RETURNS, so an instance destroyed inside that build's ~113 ms
-    // skipped all of this and left the context and the whole atlas mapped --
-    // 65,541 kB after the last instance on the early-exit scene. The atlas is
-    // made before the renderer creates its context and starts the build, and
-    // shutdown() joins a build still running.
+    // font atlas (kept for the life of the process) is reachable
+    // only through this library's statics: hand it back now, or every
+    // create/destroy cycle leaves an atlas mapped. shutdown() also joins a
+    // build still running and destroys a context whose device died first.
+    // Only where the atlas was ever made -- a process that never drew has
+    // nothing, and asking would construct the renderer and atlas objects. Made,
+    // not built: an instance destroyed during the first build still holds it.
     if (last && vocem::fonts_atlas_made()) {
         {
             std::lock_guard<std::mutex> guard(g_lock);
@@ -580,12 +544,9 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
         auto it = g_devices.find(dispatch_key(device));
         if (it != g_devices.end()) {
             destroy = it->second.disp.DestroyDevice;
-            // Whatever of ours still lives on this device goes with it: a game
-            // that destroys its device with a swapchain still registered here
-            // would otherwise leave an entry whose handle the driver is free
-            // to hand out again for the next swapchain -- with `attempted`
-            // and `usable` already true and resources on a device that no
-            // longer exists.
+            // Whatever of ours still lives on this device goes with it: the
+            // driver may reuse the swapchain handle, which must not find a
+            // stale entry with resources on a dead device.
             for (auto sc = g_swapchains.begin(); sc != g_swapchains.end();) {
                 if (sc->second.device == device) {
                     destroy_swapchain_resources(it->second, sc->second, true);
@@ -601,12 +562,9 @@ VKAPI_ATTR void VKAPI_CALL vocem_DestroyDevice(VkDevice device,
             }
             g_devices.erase(it);
         }
-        // Only the renderer's OWN device takes the renderer down with it. This
-        // used to shut it down for any device destroyed in the process: a
-        // helper device a game creates beside its main one -- a video decoder,
-        // a launcher-side probe, a second adapter -- tore down the pipeline,
-        // the descriptor pool and every avatar of the device that was still
-        // presenting, with no wait for the command buffers reading them.
+        // Only the renderer's OWN device takes the renderer down: a helper
+        // device (video decoder, probe, second adapter) must not tear down
+        // what the presenting device's command buffers still read.
         if (vocem::renderer().device() == device) {
             vocem::journal_note("device destroyed; renderer shutting down");
             release_renderer_locked();
@@ -629,9 +587,8 @@ VKAPI_ATTR void VKAPI_CALL vocem_GetDeviceQueue(VkDevice device, uint32_t queueF
         }
     }
     if (!next) {
-        // The same answer as GetDeviceQueue2 below, for the same failure: the
-        // output must be a handle the application can test, not whatever was
-        // on its stack. The two answered this differently once.
+        // Same answer as GetDeviceQueue2 below: a handle the application can
+        // test, not whatever was on its stack.
         if (pQueue) {
             *pQueue = VK_NULL_HANDLE;
         }
@@ -656,12 +613,9 @@ VKAPI_ATTR void VKAPI_CALL vocem_GetDeviceQueue2(VkDevice device,
         }
     }
     if (!next) {
-        // The application asked for a function this device does not have.
-        // vocem_GetDeviceProcAddr no longer hands out our hook for one, but
-        // vocem_GetInstanceProcAddr still answers from the intercepted table
-        // before asking the chain -- so this is an ordinary road here, not an
-        // accident (the previous sentence called it one). The output must be a
-        // handle the application can test, not whatever was on its stack.
+        // The device lacks this function: vocem_GetInstanceProcAddr can still
+        // hand out our hook for it, so this is an ordinary road. The output
+        // must be a handle the application can test.
         if (pQueue) {
             *pQueue = VK_NULL_HANDLE;
         }
@@ -716,9 +670,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_CreateSwapchainKHR(VkDevice device,
         g_swapchains[*pSwapchain] = std::move(data);
     }
 
-    // Named rather than numbered, because "mode 3" in a log is a number the
-    // reader has to go and look up, and this line is what somebody reads when
-    // the panel's colours look wrong in their game.
+    // Named rather than numbered: this line is what gets read when the
+    // panel's colours look wrong.
     const char* conversion = "";
     switch (vocem::hdr_mode_for(pCreateInfo->imageColorSpace, pCreateInfo->imageFormat)) {
         case 1: conversion = " (scRGB: colours re-encoded)"; break;
@@ -739,28 +692,16 @@ constexpr size_t kMaxRetiredSemaphores = 64;
 
 // Caller must hold g_lock.
 //
-// No vkDeviceWaitIdle in here. There was one, for any swapchain that had ever
-// had a submit of ours, and it runs inside the application's
-// vkDestroySwapchainKHR, which synchronises that swapchain and nothing else --
-// while vkDeviceWaitIdle needs every queue of the device externally
-// synchronised: a game submitting to another queue from another thread at that
-// moment was a violation of the specification's threading rules. Measured
-// with the witness layer counting waits inside the probe's own
-// vkDestroySwapchainKHR calls: one vkDeviceWaitIdle in each, in every scene
-// that drew (vk_present_draw). What of ours can still be executing is our own
-// submissions, one per image, each with its fence: they are waited for,
-// which needs no queue's synchronisation.
+// No vkDeviceWaitIdle here: this runs inside the application's
+// vkDestroySwapchainKHR, which synchronises that swapchain only, while
+// vkDeviceWaitIdle needs every queue of the device externally synchronised.
+// Our own submissions, one per image, are waited for by fence instead.
 //
-// The semaphores those submissions signalled are another matter: a present
-// waited on each, and a fence says nothing about when the presentation engine
-// consumed it -- which is what VK_EXT_swapchain_maintenance1's present fences
-// exist to say, and an application is not obliged to use them. So they are
-// kept on the device, and destroyed with it (`device_going`, where the
-// application has already finished everything), or once more than
-// kMaxRetiredSemaphores have piled up, oldest first: a semaphore twenty
-// swapchains old whose present has not consumed it is a bound reasoned, not
-// measured. The failed-build path reaches here from inside the present with
-// nothing ever submitted, and destroys them at once.
+// The semaphores they signalled were waited on by a present, and a fence says
+// nothing about when the presentation engine consumed them. So they are kept
+// on the device and destroyed with it (`device_going`), or oldest first once
+// more than kMaxRetiredSemaphores pile up (a reasoned bound, not a measured
+// one). A swapchain never submitted to destroys them at once.
 void destroy_swapchain_resources(DeviceData& dev, SwapchainData& sc, bool device_going) {
     const DeviceDispatch& d = dev.disp;
     const VkDevice device = dev.device;
@@ -884,13 +825,9 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
     dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    // READ as well as WRITE: loadOp LOAD reads the game's finished frame, and a
-    // dependency that makes only writes visible leaves that read unordered
-    // against the game's own rendering. Reported by the Khronos validation
-    // layer's synchronisation checks (SYNC-HAZARD-READ-AFTER-WRITE at
-    // vkCmdBeginRenderPass) the first time it sat BELOW the overlay instead
-    // of above it -- entry 192; every earlier "clean" run was validating the
-    // test's own calls and never saw this render pass.
+    // READ as well as WRITE: loadOp LOAD reads the game's finished frame, and
+    // that read must be ordered after the game's rendering
+    // (SYNC-HAZARD-READ-AFTER-WRITE under the validation layer).
     dependency.dstAccessMask =
         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
@@ -952,13 +889,9 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
             return false;
         }
 
-        // Unsignalled. The `submitted` flag is what keeps the first frame from
-        // waiting on a fence nothing will signal; the fence used to be created
-        // signalled for that purpose as well, and with the flag guarding both
-        // the wait AND the reset, the first submit for every image then took a
-        // fence that was still signalled -- VUID-vkQueueSubmit-fence-00063,
-        // once per image per swapchain, under a comment that had outlived the
-        // flag it was written before.
+        // Unsignalled: the `submitted` flag guards both the wait and the
+        // reset, so a signalled fence would reach the first submit still
+        // signalled (VUID-vkQueueSubmit-fence-00063).
         VkFenceCreateInfo fence_info{};
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         if (d.CreateFence(dev.device, &fence_info, nullptr, &sc.fences[i]) != VK_SUCCESS) {
@@ -967,15 +900,11 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
     }
 
     // Every swapchain gets a pipeline of its own, built against its own render
-    // pass (hdr_pipeline.h): the converting one for a colour space or a format
-    // that needs it, the identity for everything else. Not only the converting
-    // cases, as it was: ImGui's stock pipeline is built once, against the
-    // FIRST swapchain's render pass, and a later swapchain in another format --
-    // HDR switched off in the game's settings, an sRGB attachment replaced by
-    // a UNORM one -- would have had it drawn into an incompatible render pass.
-    // Failure is not failure of the overlay: draw_overlay() still uses the
-    // stock pipeline where the format matches the one it was built for, and
-    // passes the frame through where it does not, saying so in the log.
+    // pass (hdr_pipeline.h): the converting one where the colour space or format
+    // needs it, the identity otherwise. ImGui's stock pipeline is built once,
+    // against the first swapchain's render pass, and is incompatible with a
+    // later one in another format. If this fails, draw_overlay() uses the stock
+    // pipeline where the format matches and otherwise passes through, logged.
     const int mode = vocem::hdr_mode_for(sc.color_space, sc.format);
     if (vocem::hdr_pipeline_create(hdr_functions(d), dev.device, sc.render_pass, mode,
                                    vocem::hdr_sdr_nits(), sc.hdr)) {
@@ -995,18 +924,10 @@ bool build_swapchain_resources(DeviceData& dev, SwapchainData& sc, VkSwapchainKH
 }
 
 // The view and the framebuffer of one image, made the first time the overlay
-// draws into it. They were made for every image of the swapchain at its first
-// present, and with VK_EXT_swapchain_maintenance1's deferred allocation an
-// image has no memory until the application first acquires it: every other
-// image's view was made of nothing, and every overlay submit after it failed --
-// measured, "overlay submit failed" on each of 18 frames, zero foreign pixels,
-// the validation layer below reporting the device lost. An image being
-// presented has been acquired, so its first draw is the first moment the view
-// is certainly legal; one view and one framebuffer, once per image, inside the
-// present -- what the first present always paid, spread over the first frames.
-// For every swapchain, deferred or not: one path, and every scene exercises
-// it. A failure passes this swapchain through for good, said once, rather
-// than asking the driver again every frame.
+// draws into it: with VK_EXT_swapchain_maintenance1's deferred allocation an
+// image has no memory until first acquired, and an image being presented has
+// been. Done for every swapchain, deferred or not, so one path serves all. A
+// failure passes this swapchain through for good, said once.
 // Caller must hold g_lock.
 VkFramebuffer image_target(DeviceData& dev, SwapchainData& sc, uint32_t image_index) {
     if (sc.framebuffers[image_index] != VK_NULL_HANDLE) {
@@ -1056,21 +977,17 @@ VkFramebuffer image_target(DeviceData& dev, SwapchainData& sc, uint32_t image_in
 
 // Record and submit the overlay for one image. Returns the semaphore the
 // present must wait on, or VK_NULL_HANDLE to leave the present untouched.
-// Caller must hold g_lock. Every call down the chain in here goes through a
-// pointer vkGetDeviceProcAddr resolved for the layer below, never through the
-// loader's trampolines -- which is what makes holding the lock safe against
-// rule 9's deadlock (the loader re-entering this layer from the top).
+// Caller must hold g_lock: every call down the chain in here goes through a
+// pointer resolved for the layer below, never the loader's trampolines, so the
+// loader cannot re-enter this layer and deadlock (rule 9).
 // A present waiting on more semaphores than this passes through undrawn: the
-// submit's stage list is a stack array, sized for the one or two semaphores a
-// real present waits on, so the drawn path never allocates.
+// submit's stage list is a stack array, so the drawn path never allocates.
 constexpr uint32_t kMaxWaitSemaphores = 16;
 
-// `wanted` is set when this frame had something to put on the screen -- past the
-// poll and past both feature guards; the master switch is the caller's, in
-// overlay_wanted_here() -- whatever happens after. It is what the caller gates
-// the renderer's construction on, because the construction is a font atlas, a
-// 64 MB upload and a descriptor pool, and the one thing worth knowing before
-// paying it is whether there is anything to draw.
+// `wanted` is set when this frame had something to put on the screen (past the
+// poll and both feature guards), whatever happens after. The caller gates the
+// renderer's construction on it -- a font atlas, a 64 MB upload and a
+// descriptor pool -- and `sizing` is the height that atlas is sized from.
 VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint32_t image_index,
                          const VkSemaphore* wait_semaphores, uint32_t wait_count, bool& wanted,
                          uint32_t& sizing) {
@@ -1081,17 +998,13 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
 
     // Nothing to show: leave the frame, and the application's synchronisation,
     // completely untouched. This is the common case and must cost nothing.
-    //
-    // "Nothing" is asked feature by feature: the guard used to ask only about
-    // the voice channel, which made a toast outside one unreachable in both
-    // injection paths -- exactly the situation a "somebody wrote to you" toast
-    // exists for (vocem/panel.h holds the one spelling of these predicates).
+    // Asked feature by feature (vocem/panel.h), so a toast shows outside a
+    // voice channel too.
     const vocem::Snapshot* snapshot = g_state.poll();
     if (!snapshot) {
         return VK_NULL_HANDLE;
     }
-    // Nothing to show: the master switch is handled by the caller's verdict
-    // now, so what is left here is the two features.
+    // The master switch is the caller's verdict; what is left is the features.
     const vocem::Config& config = vocem::renderer().current_config();
     if (!vocem::panel_wanted(*snapshot, config) &&
         !vocem::notification_wanted(*snapshot, config, vocem::monotonic_seconds())) {
@@ -1108,20 +1021,15 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     // whether it CAN be drawn, which is a different question and not one the
     // renderer should be built for.
     wanted = true;
-    // And the height the atlas will be sized from, the one OverlayRenderer::draw
-    // computes: the display's, not the swapchain's. The renderer used to be
-    // built at the swapchain's height and its first draw then asked for the
-    // display's, so a windowed game rasterised the whole atlas twice in its
-    // first two frames -- 125-145 ms thrown away, measured by the arrivals
-    // scene as one "rebuilt" before anybody arrived (entry 192).
+    // The height the atlas is sized from, as OverlayRenderer::draw computes it:
+    // the display's, not the swapchain's, or a windowed game would rasterise
+    // the atlas twice in its first frames.
     sizing = vocem::sizing_height(snapshot->display_height, sc.extent.height);
 
     // Initialisation happens after the present returns, never here: the font
-    // atlas's upload waits on the queue, and blocking on the queue from inside
-    // a queue operation is a stall at best. That upload is made in prepare(),
-    // by the texture cache, and the backend's own NewFrame -- which would make
-    // ImGui's stock upload here the first time -- is never called
-    // (overlay_renderer.cpp says how that was found).
+    // atlas's upload waits on the queue, and blocking on it from inside a queue
+    // operation is a stall. The texture cache makes that upload in prepare();
+    // the backend's own NewFrame is never called.
     if (!vocem::renderer().ready()) {
         return VK_NULL_HANDLE;
     }
@@ -1206,12 +1114,8 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
 
     // Chain into the application's synchronisation: wait on whatever the present
     // was going to wait on, and hand the present our own semaphore instead.
-    //
-    // The stage list lives on the stack: this used to be a std::vector, one
-    // malloc and free per drawn frame under g_lock, on the path whose own
-    // header says "no allocation on the hot path". Presents wait on one or two
-    // semaphores in practice; more than the array holds passes through
-    // undrawn, decided at the top of this function -- past this point the
+    // The stage list is on the stack (no allocation on the hot path); the
+    // semaphore count was bounded at the top, because past this point the
     // fence has been reset and not submitting would hang the next frame.
     VkPipelineStageFlags stages[kMaxWaitSemaphores];
     for (uint32_t i = 0; i < wait_count; ++i) {
@@ -1237,29 +1141,12 @@ VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint
     return sc.semaphores[image_index];
 }
 
-// Whether the overlay must stay out of this process, from the list the window
-// keeps. The OpenGL side has always had this; the Vulkan side had nothing, and
-// drew in every Vulkan process on the machine -- the desktop's own compositor
-// included.
-//
-// Asked every frame now, like the OpenGL side and like the Applications page
-// promises ("takes effect in a running game within a couple of seconds"): the
-// policy in vocem/draw_decision.h re-walks the lists only when they were
-// edited, so the steady state is two string comparisons. This used to be a
-// static decided at the first present, which made the switch live in one path
-// and next-restart in the other. Letting an application back in builds the
-// swapchain resources at the next present -- the same cost the first frame
-// always paid; hiding one now hands the backend and the atlas back at the
-// bottom of this hook, which is what entry 37's footnote recorded this side as
-// never having done and entry 149 gave it.
-//
-// The decision, its evidence in the log and the word to the daemon across the
-// bridge are the session's (vocem/overlay_session.h): the lists, the verdict
-// and the master switch in one sentence the caller cannot ask by halves. That
-// last part is this side's own omission -- it told the daemon `allowed` where
-// the GL side told it `enabled && allowed`, so a Flatpak game with the master
-// switch off kept receiving the channel and every face from a daemon that
-// believed it was drawing (entry 138).
+// Whether the overlay belongs in this process: the window's application lists
+// and the master switch, decided by the session (vocem/overlay_session.h), which
+// also tells the daemon across the Flatpak bridge -- in one call, so the caller
+// cannot ask by halves. Asked every frame: the policy re-walks the lists only
+// when they were edited, so a change reaches a running game within seconds and
+// the steady state is two string comparisons.
 bool overlay_wanted_here() {
     return vocem::session().decide(vocem::renderer().current_config());
 }
@@ -1278,55 +1165,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     // the work can happen after the present, without holding the lock or an
     // iterator into the maps.
     bool needs_init = false;
-    // Whether this process is one the overlay is in a position to draw in, which
-    // is what the window's list is a list of. The RECORD is acted on after the
-    // present: a handful of syscalls, once in the life of a process.
-    //
-    // The verdict behind it is not, and this comment used to say it was. The
-    // `overlay_wanted_here()` below is asked inside the lock and before the
-    // present, and its first evaluation reads /proc/self/comm, /proc/self/exe,
-    // /proc/self/cgroup and /proc/self/cmdline -- and, for a process none of the
-    // launcher signals answer for, opens every installed desktop entry.
-    // Measured by tests/apps_cost on this machine: 2.2-2.4 ms once when it falls
-    // through to that last pass, 76-92 us once when a signal answers it, and
-    // 0.9 ns per frame ever after.
-    //
-    // And "except the first frame" is still not the whole of it, which the
-    // previous version of this comment claimed (the entry-114 shape, one layer
-    // further in). Two steady-state costs also live inside the present, on
-    // their own cadences: current_config() runs LiveConfig::current() -- one
-    // stat() at most every two seconds, a full fopen-and-reparse when the file
-    // moved -- both here and in draw(); and the state poll asks the segment's
-    // name about itself (one shm_open, two fstats and a close) once a second,
-    // StatePoll::kCadenceSeconds. That used to be a count -- 300 presents -- and
-    // the count is what made the same Quit take two seconds at 144 frames and
-    // ten at thirty; pacing it by the clock costs a drawing process four
-    // syscalls a second at any frame rate, which is 10x the old rate at 30 fps
-    // and half it at 600. Also per present, and new with that change: one
-    // clock_gettime(CLOCK_MONOTONIC), which is the vDSO's on any machine whose
-    // clocksource supports it (tsc here) and a real syscall on one whose does
-    // not.
-    //
-    // So rule 8 as it holds is: no PER-FRAME blocking I/O, a once-per-process
-    // verdict on the first frame, and a handful of deliberate, cadenced
-    // syscalls the design accepts by name. A claim wider than that is where the
-    // next violation hides (entry 42). DESIGN's rule 8 names these exceptions
-    // again since entry 158; this paragraph is where they were kept while it
-    // did not.
-    //
-    // Kept that way on purpose, and not because 2.4 ms is small. Nothing can be
-    // drawn before the verdict exists, so moving it past the present buys a
-    // frame of latency rather than removing the work; the frame it would buy is
-    // one the overlay is not on anyway, since the renderer is built post-present
-    // by rule 10. Against that, it runs under a lock inside somebody's game, and
-    // the cost is once, while the process is still starting, paid hardest by the
-    // processes with no launcher signal -- the browsers and the compositor, not
-    // the games. The sentence that used to stand here, "the Vulkan present path
-    // has no frame-level test to change it under", was true when it was written
-    // on 2026-08-08 and stopped being true on 2026-08-17, when
-    // tests/vk_present_draw.cpp arrived (entry 129): the deferral is testable
-    // work now, and what is left is the argument above rather than the absence
-    // of an instrument.
+    // Whether this process is one the overlay may draw in. The verdict
+    // (overlay_wanted_here()) is taken inside the lock, before the present: its
+    // first evaluation reads /proc/self and may scan the desktop entries, once
+    // per process; afterwards it is a cached read. Deferring it would only buy a
+    // frame of latency, since nothing can be drawn before it exists. The record
+    // is written after the present. Rule 8 as it holds: no per-frame blocking
+    // I/O, one verdict per process, and the cadenced syscalls it names
+    // (LiveConfig's stat every 2 s, StatePoll's once a second) (entry 42).
     bool drawable = false;
     // Set under the lock when the verdict or the master switch turned off on
     // this present; acted on after it returns, where blocking is allowed.
@@ -1346,38 +1192,19 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         next = dev->disp.QueuePresentKHR;
         present_device = dev->device;
 
-        // A process the overlay could draw in, which is what the window's list is
-        // a list of -- recorded below whether or not it is allowed to, since an
-        // excluded application is precisely the one somebody goes looking for in
-        // that list.
-        // Only the single-swapchain case is handled; multi-swapchain presents
-        // pass through untouched rather than risk incorrect synchronisation.
+        // Only single-swapchain presents are drawn; others pass through
+        // untouched rather than risk incorrect synchronisation.
         drawable = pPresentInfo->swapchainCount == 1;
         if (drawable) {
             auto it = g_swapchains.find(pPresentInfo->pSwapchains[0]);
-            // One question at a time. `want` used to be
-            // `it != g_swapchains.end() && overlay_wanted_here()`, which is two
-            // different questions in one bool -- "is this a swapchain we know"
-            // and "does the overlay belong in this process" -- and the code
-            // below then had to take them apart again: the verdict was RECORDED
-            // only for a known swapchain and the transition was ACTED ON for
-            // any, so an unknown one would read as the overlay being switched
-            // off, release the backend and the 64 MB atlas, and the next
-            // present on a known one would say "switched on" and build them
-            // back. Not reachable today -- the only erasures are
-            // vkDestroySwapchainKHR and the device's own teardown, so a live
-            // swapchain the layer saw created is always in the map -- which is
-            // exactly why it was worth asking once instead of guarding the
-            // answer twice.
+            // "Is this a swapchain we know" and "does the overlay belong in this
+            // process" are asked separately: an unknown swapchain must not read
+            // as the overlay being switched off.
             if (it != g_swapchains.end()) {
                 const bool want = overlay_wanted_here();
-                // A verdict that turns off is a moment, not just a state: this
-                // process is holding a renderer, an atlas and a descriptor set
-                // per face, and "stop drawing" without "give it back" is what
-                // entry 37's footnote recorded the Vulkan switch as always
-                // having done. The OpenGL side has released on this transition
-                // since it had a transition to release on; this is that, on the
-                // other path.
+                // A verdict that turns off is a moment, not just a state: the
+                // renderer, the atlas and the faces are handed back after the
+                // present (`switched_off`), as the GL path does.
                 if (g_drawing >= 0 && want != (g_drawing == 1)) {
                     VOCEM_LOG("%s in '%s'", want ? "switched on" : "switched off",
                               vocem::process_name().c_str());
@@ -1396,12 +1223,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                     auto family_it = dev->queue_families.find(queue);
                     uint32_t family =
                         family_it == dev->queue_families.end() ? UINT32_MAX : family_it->second;
-                    // A family that cannot take a render pass -- a compute or a
-                    // transfer queue presenting, which the specification allows --
-                    // gets the frame back untouched, and so does a swapchain
-                    // presented from a family other than the one its command pool
-                    // was built on: a pool's buffers may only be submitted to its
-                    // own family. Nothing used to ask either question.
+                    // A family that cannot take a render pass (a compute or
+                    // transfer queue presenting, which the specification allows)
+                    // gets the frame back untouched, and so does a family other
+                    // than the one the command pool was built on.
                     const bool graphics =
                         family == UINT32_MAX || family >= dev->family_flags.size() ||
                         (dev->family_flags[family] & VK_QUEUE_GRAPHICS_BIT) != 0;
@@ -1431,18 +1256,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                             draw_overlay(*dev, sc, queue, pPresentInfo->pImageIndices[0],
                                          pPresentInfo->pWaitSemaphores,
                                          pPresentInfo->waitSemaphoreCount, wanted, sizing);
-                        // Built only for a frame that had something on it. This
-                        // used to be decided from the swapchain and the
-                        // application's verdict alone -- everything except whether
-                        // there was anything to draw -- so a game the overlay is
-                        // allowed in built the whole renderer, a font atlas, a
-                        // 64 MB upload and a descriptor pool, while the owner
-                        // was simply not in a voice channel: the ordinary state of
-                        // a machine with the tray icon up. The OpenGL path has
-                        // always had this door and one more: its draw() returns at
-                        // the poll and again at these two predicates, both above
-                        // ensure_backend(). The cost of asking late is the first
-                        // frame with something on it, which rule 10 spends anyway.
+                        // Built only for a frame that had something on it, not
+                        // merely for an allowed game: an idle machine with the
+                        // tray up must not pay for an atlas, a 64 MB upload and
+                        // a descriptor pool. The first drawn frame pays instead,
+                        // post-present (rule 10).
                         if (wanted && !vocem::renderer().ready()) {
                             needs_init = true;
                             pending_target.instance = dev->instance;
@@ -1502,19 +1320,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         daemon_left = g_state.daemon_left();
     }
 
-    // The daemon stopped -- the tray's Quit, or `systemctl --user stop`. This
-    // process is holding a backend, a font atlas and a descriptor set per face
-    // on its behalf, and not drawing does not hand any of it back. Here, after
-    // the present has returned, which is where this side is allowed to block;
-    // the next present finds the renderer not ready, sets needs_init again, and
-    // prepare() builds it back if a daemon returns.
-    //
-    // The switch being turned off is the same situation from this side, and the
-    // same answer: what is held is held on the daemon's behalf either way. What
-    // "everything" means is the renderer's own objects and the font atlas -- the
-    // swapchain's render pass, framebuffers, views, command pool, semaphores and
-    // fences stay, because they belong to the swapchain and the next frame in
-    // this game still needs them.
+    // The daemon stopped (the tray's Quit, or `systemctl --user stop`), or the
+    // switch turned off: what this process holds on the daemon's behalf -- the
+    // renderer's objects and the font atlas -- is handed back here, after the
+    // present, where blocking is allowed. The swapchain's own objects stay; the
+    // game's next frame needs them. prepare() builds it all back once there is
+    // something to draw again.
     if (daemon_left || switched_off) {
         VOCEM_LOG("%s: releasing the backend and the font atlas",
                   daemon_left ? "the daemon stopped" : "switched off");
@@ -1525,12 +1336,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
         }
         vocem::fonts_release();
     } else if (hand_over) {
-        // The owner has been silent for kHandOverSeconds: the backend is let
-        // go -- its device's own objects, waited for by fence and destroyed
-        // there -- and the next present here finds it not ready and builds it
-        // on this device and queue. The atlas stays (entry 144): what is built
-        // again is the context, the backend and the one upload. Asked again
-        // under the lock, because another thread may have moved it already.
+        // The owner has been silent for kHandOverSeconds: the backend is let go
+        // (waited for by fence) and the next present here builds it on this
+        // device and queue. The atlas stays. Asked again under the
+        // lock: another thread may have moved it already.
         std::lock_guard<std::mutex> guard(g_lock);
         if (vocem::renderer().ready() && !vocem::renderer().owns(present_device, queue)) {
             VOCEM_LOG("the renderer's device has not presented for %.0f s: moving the overlay "
@@ -1541,21 +1350,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
     }
 
     // Safe here: the present has returned, so the queue is ours to block on.
-    // prepare() is called on each present until the renderer is up -- the
-    // first atlas is rasterised on a worker meanwhile (entry 192) -- and the
-    // renderer is built once per device, not per swapchain.
-    //
-    // `needs_init` is the whole condition, and it is a narrow one: it is set
-    // only where `wanted` came back true from draw_overlay, which is past the
-    // state poll and past both feature predicates, so a daemon that is
-    // publishing something to draw is already part of the question. This used
-    // to be asked a second time here, as `&& g_state.attached()`, under a
-    // comment saying `needs_init` was decided "from the swapchain and the
-    // application's verdict alone" -- which was true until the `wanted`
-    // parameter, added in the same release, made it false. Two spellings of one
-    // gate, and the surviving one is the one that can also see an idle channel.
-    // The re-check of ready() stays: prepare() runs with the lock let go, so a
-    // second presenting thread may have built the backend in between.
+    // prepare() is called on each present until the renderer is up (the first
+    // atlas is rasterised on a worker meanwhile), and the renderer is built
+    // once per device, not per swapchain. `needs_init` is the whole condition:
+    // it is set only when draw_overlay found something to draw. ready() is
+    // asked again because prepare() runs unlocked and another presenting
+    // thread may have built the backend in between.
     if (needs_init && !vocem::renderer().ready()) {
         // Deliberately unlocked: prepare() resolves entry points through the
         // chain, and the loader can route those back into this layer. Its
@@ -1632,11 +1432,9 @@ vocem_GetDeviceProcAddr(VkDevice device, const char* pName) {
         return nullptr;
     }
     // The chain is asked first, and our hook is substituted only for a function
-    // the device actually has. Answering for one it does not -- vkGetDeviceQueue2
-    // on a Vulkan 1.0 device, vkQueuePresentKHR without VK_KHR_swapchain -- turns
-    // an application's feature detection into a call into a layer with nothing
-    // below it. The shim has followed exactly this rule for dlsym since entry 35;
-    // this half of the project did not.
+    // the device actually has (vkGetDeviceQueue2 on Vulkan 1.0, vkQueuePresentKHR
+    // without VK_KHR_swapchain): otherwise feature detection turns into a call
+    // into a layer with nothing below it. The shim's dlsym follows the same rule.
     PFN_vkVoidFunction below = next(device, pName);
     if (!below) {
         return nullptr;
@@ -1649,9 +1447,7 @@ vocem_GetDeviceProcAddr(VkDevice device, const char* pName) {
 
 VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 vocem_GetInstanceProcAddr(VkInstance instance, const char* pName) {
-    // What the loader and the application ask this entry for, by name, when
-    // VOCEM_TRACE_PROCADDR=1: the measurement behind the note below on which
-    // names are answered from the table before the chain is asked.
+    // VOCEM_TRACE_PROCADDR=1 logs every name asked of this entry.
     static const bool trace = [] {
         const char* env = std::getenv("VOCEM_TRACE_PROCADDR");
         return env && env[0] == '1';
@@ -1665,17 +1461,13 @@ vocem_GetInstanceProcAddr(VkInstance instance, const char* pName) {
     if (std::strcmp(pName, "vkGetDeviceProcAddr") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(vocem_GetDeviceProcAddr);
     }
-    // The instance-level names are answered from the table before the chain
-    // is asked, and have to be: the loader asks for vkCreateInstance with a
-    // null instance, before there is a chain to ask. The device-level names in
-    // the same table follow vocem_GetDeviceProcAddr's rule instead (entry 70):
-    // asked with an instance, the chain answers first and our hook stands in
-    // only for a function the chain has. Measured with VOCEM_TRACE_PROCADDR on
-    // one probe run: the loader asks this entry 107 names, every one with a
-    // real instance, and none of them is a device-level name of ours -- so the
-    // order was never wrong in practice, and is right now for an application
-    // that asks vkGetInstanceProcAddr(instance, "vkQueuePresentKHR") itself,
-    // which the specification allows.
+    // The instance-level names are answered from the table before the chain is
+    // asked, and must be: the loader asks for vkCreateInstance with a null
+    // instance, before there is a chain. The device-level names follow
+    // vocem_GetDeviceProcAddr's rule instead: the chain answers
+    // first and our hook stands in only for a function the chain has -- which
+    // matters to an application asking vkGetInstanceProcAddr(instance,
+    // "vkQueuePresentKHR") itself, as the specification allows.
     const bool device_level = std::strcmp(pName, "vkCreateInstance") != 0 &&
                               std::strcmp(pName, "vkDestroyInstance") != 0 &&
                               std::strcmp(pName, "vkCreateDevice") != 0;
@@ -1730,20 +1522,16 @@ namespace {
 // this and takes its marker with it; a crash does not, which is the mechanism
 // (vocem/journal.h).
 __attribute__((destructor)) void vocem_layer_journal_close() {
-    // A font atlas still being rasterised off the game's thread (entry 192)
-    // runs this library's code: it finishes before the library can be
-    // unmapped -- by exit, or by the loader's dlclose after vkDestroyInstance.
+    // A font atlas still being rasterised on a worker runs this library's code:
+    // it finishes before the library can be unmapped -- by exit, or by the
+    // loader's dlclose after vkDestroyInstance.
     vocem::renderer().join_atlas_worker();
     vocem::journal_end();
-    // Last, the exception emergency pool of this library's own libstdc++.
-    // The library carries its C++ runtime inside it (-static-libstdc++, the top-level CMakeLists.txt),
-    // and that runtime's exception emergency pool -- about 73 KB, malloc'd by
-    // its constructor at every load -- is never freed by its destructor:
-    // libstdc++ leaves it to __gnu_cxx::__freeres(), which only memory
-    // checkers call. Every unload kept one, which for the layer is every
-    // vkDestroyInstance: 73,744 bytes a cycle (12,816 at 32 bits), measured
-    // by tests/injected_unload.cpp. It frees this library's own copy, never the
-    // game's -- the runtime inside is local to it (entry 195).
+    // Last, the exception emergency pool of the libstdc++ this library carries
+    // inside it (-static-libstdc++): its constructor mallocs the pool at every
+    // load and nothing frees it but __freeres(), so every unload (every
+    // vkDestroyInstance) would leak one (tests/injected_unload.cpp). Only this
+    // library's copy is freed, never the game's.
     __gnu_cxx::__freeres();
 }
 
