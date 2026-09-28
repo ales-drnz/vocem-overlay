@@ -9,7 +9,7 @@
 
 - A Flatpak sandbox is given the voice channel, the faces and the messages only when the host consents to its application id and a process of it is running.
 - The injected libraries carry their own C++ runtime, so the overlay loads in games that ship an older libstdc++.
-- The font atlas is only as tall as its glyphs, so the overlay uses about 24 MB less memory in each drawing game.
+- A game with the overlay drawing holds about 55 MB less: the font atlas is as tall as its glyphs, and a quarter of its size once uploaded.
 - The Vulkan loaders are optional dependencies, and the 32-bit libraries depend on lib32-glibc alone.
 - Saving settings rewrites only the lines of the settings that changed, leaving every other line as written.
 
