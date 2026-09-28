@@ -273,18 +273,15 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
 
 bool OverlayRenderer::upload_font_texture(bool whole) {
     ImGuiIO& io = ImGui::GetIO();
-    unsigned char* pixels = nullptr;
-    int width = 0;
-    int height = 0;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-    if (!pixels || width <= 0 || height <= 0) {
-        return false;
-    }
     if (!whole) {
+        // The squares come with their own pixels: the atlas's RGBA copy is
+        // not there once the whole atlas is up, and is not made for a fold.
         AtlasRegion regions[kMaxFoldedRegions];
         const uint32_t count = fonts_take_folded(regions, kMaxFoldedRegions);
-        if (textures_.update_font_atlas(pixels, static_cast<uint32_t>(width),
-                                        static_cast<uint32_t>(height), regions, count)) {
+        if (io.Fonts->TexWidth > 0 && io.Fonts->TexHeight > 0 &&
+            textures_.update_font_atlas(static_cast<uint32_t>(io.Fonts->TexWidth),
+                                        static_cast<uint32_t>(io.Fonts->TexHeight), regions,
+                                        count)) {
             // Said, so the arrivals scene can count folds (entry 192).
             VOCEM_RLOG("font texture: %u folded square(s) copied in place", count);
             return true;
@@ -294,8 +291,18 @@ bool OverlayRenderer::upload_font_texture(bool whole) {
     } else {
         fonts_take_folded(nullptr, 0);  // already in the whole atlas
     }
+    // The whole atlas as RGBA, widened again with its colour squares if it was
+    // handed back after the last whole upload, and handed back once the
+    // staging buffer holds it: the image is the atlas from here on.
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    if (!fonts_atlas_rgba(&pixels, &width, &height) || width <= 0 || height <= 0) {
+        return false;
+    }
     const ImTextureID id = textures_.upload_font_atlas(pixels, static_cast<uint32_t>(width),
                                                        static_cast<uint32_t>(height));
+    fonts_atlas_uploaded();
     if (id == 0) {
         return false;
     }

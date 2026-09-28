@@ -116,13 +116,32 @@ int main(int argc, char** argv) {
     unsigned char* pixels = nullptr;
     int width = 0;
     int height = 0;
-    // The module keeps the RGBA32 copy and nothing else (entry 207): the
-    // alpha8 image was a second 16 MB at 4K that nothing read after the
-    // widening. Asked BEFORE reading pixels, because asking ImGui for alpha8
-    // on a null image rebuilds the atlas and would put it back.
-    check(io.Fonts->TexPixelsAlpha8 == nullptr && io.Fonts->TexPixelsRGBA32 != nullptr,
-          "the atlas holds its RGBA32 copy and not the alpha8 one it was widened from");
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    // A build leaves the RGBA32 copy widened, where the build ran, for the
+    // whole upload that follows it; once that upload is done the module hands
+    // the copy back and the alpha8 image -- a quarter of its size, 11 MB
+    // against 43 at a 2160-line display -- is the atlas until the next whole
+    // upload widens it again (entry 207 kept the RGBA copy instead, for the
+    // life of the process). Asked of the atlas's fields BEFORE reading pixels,
+    // because asking ImGui for pixels widens or rebuilds whatever is missing.
+    check(io.Fonts->TexPixelsAlpha8 != nullptr && io.Fonts->TexPixelsRGBA32 != nullptr,
+          "a build leaves the RGBA32 copy widened for its upload, beside the alpha8 image");
+    const auto sum = [](const unsigned char* bytes, size_t count) {
+        unsigned long long total = 1469598103934665603ull;  // FNV-1a
+        for (size_t i = 0; i < count; ++i) {
+            total = (total ^ bytes[i]) * 1099511628211ull;
+        }
+        return total;
+    };
+    const unsigned long long built =
+        sum(reinterpret_cast<const unsigned char*>(io.Fonts->TexPixelsRGBA32),
+            static_cast<size_t>(io.Fonts->TexWidth) * io.Fonts->TexHeight * 4);
+    vocem::fonts_atlas_uploaded();
+    check(io.Fonts->TexPixelsRGBA32 == nullptr && io.Fonts->TexPixelsAlpha8 != nullptr,
+          "after the whole upload the atlas holds its alpha8 image and not the RGBA32 copy");
+    check(vocem::fonts_atlas_rgba(&pixels, &width, &height),
+          "the next whole upload widens it again");
+    check(pixels != nullptr && sum(pixels, static_cast<size_t>(width) * height * 4) == built,
+          "  into the same pixels, byte for byte");
     std::printf("atlas: %dx%d\n", width, height);
     check(pixels != nullptr && width > 0 && height > 0, "the atlas has pixels");
     check(width <= 4096 && height <= 4096, "the atlas fits a conservative texture limit");

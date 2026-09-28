@@ -51,6 +51,7 @@ int main() {
     square.y = 8;
     square.width = 16;
     square.height = 16;
+    square.pixels = atlas;  // a 16x16 square is the first 1 kB of it
 
     // The GPU is behind from here on: nothing submitted has finished.
     vk_stub::fence_status = VK_NOT_READY;
@@ -64,9 +65,9 @@ int main() {
     // frame after.
     const int waits_before = vk_stub::fence_waits;
     const int idles_before = vk_stub::queue_idles;
-    const bool fold_one = cache.update_font_atlas(atlas, kSide, kSide, &square, 1);
+    const bool fold_one = cache.update_font_atlas(kSide, kSide, &square, 1);
     cache.process_pending();
-    const bool fold_two = cache.update_font_atlas(atlas, kSide, kSide, &square, 1);
+    const bool fold_two = cache.update_font_atlas(kSide, kSide, &square, 1);
     cache.process_pending();
     check(fold_one && fold_two, "both folds are copied into the live image");
     printf("     with the GPU behind, the two folds waited %d time(s) on a fence and %d on the "

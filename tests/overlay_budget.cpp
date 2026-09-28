@@ -33,9 +33,10 @@
 // run, so what is budgeted here is the warm case, with the cold one printed.
 //
 // **The display height is fixed at 2160**, as in gl_daemon_gone: it is what
-// sizes the atlas (entry 39), and at 2160 the atlas is 4096x2611, whose RGBA
-// copy is 43 MB of the total. A budget that followed the machine's display
-// would be a different budget on every machine.
+// sizes the atlas (entry 39), and at 2160 the atlas is 4096x2611: 11 MB of
+// alpha8 image held, and a 43 MB RGBA copy that exists only around a whole
+// upload. A budget that followed the machine's display would be a different
+// budget on every machine.
 //
 // **The CPU is the steady state, after the overlay is up.** The comparison's
 // "+55 us per frame since 0.1.10" was not a per-frame cost. Its probe began
@@ -79,14 +80,16 @@
 namespace {
 
 // Resident memory the overlay may add to a process, warm shader cache, at a
-// 2160-line display. Measured twice at each width: +72,764 and +72,808 kB at
-// 64 bits, +73,408 and +73,936 kB at 32 (the atlas's RGBA copy, 4096x2611, is
-// 43 MB of it, the driver's upload staging about 13, the fonts, the lookup
-// tables and the library the rest). 88 MB sits ~15 MB above that and below
-// the 96.6 MB the same probe read with a power-of-two atlas, so the test also
-// holds the atlas at the height its glyphs need; a deliberate 64 MB leak in a
-// scratch copy of the library read +162,160 kB.
-constexpr long kRssBudgetKb = 88 * 1024;
+// 2160-line display. Measured twice at each width: +41,644 and +41,644 kB at
+// 64 bits, +41,736 and +42,684 kB at 32 (the atlas's alpha8 image, 4096x2611,
+// is 10.4 MB of it, the driver's share of the font texture about 13 -- it
+// comes with the texture, not with how it is uploaded -- the fonts, the lookup
+// tables and the library the rest). 56 MB sits ~15 MB above that and below
+// the +72.9 MB the same probe read while the atlas kept its 43 MB RGBA copy
+// after the upload (and +96.6 MB with a power-of-two atlas), so the test holds
+// both; a deliberate 64 MB leak in a scratch copy of the library read
+// +162,160 kB.
+constexpr long kRssBudgetKb = 56 * 1024;
 
 // CPU per frame the overlay may add in the steady state, all threads.
 // Measured +78.1 and +74.8 us at 64 bits, +132.0 and +129.1 us at 32, on a
@@ -99,11 +102,12 @@ constexpr long kRssBudgetKb = 88 * 1024;
 constexpr double kCpuBudgetUs = 400.0;
 
 // The same two for the Vulkan layer (VOCEM_BUDGET_API=vk), measured the same
-// way: +52,948 and +52,972 kB at 64 bits, +52,240 and +52,096 kB at 32; CPU
-// +42 to +80 us at 64 bits, +156 to +173 at 32. 68 MB sits ~15 MB above and
-// below the 76.6 MB of a power-of-two atlas; the scratch 64 MB leak built into
-// the layer read +142,220 kB.
-constexpr long kVkRssBudgetKb = 68 * 1024;
+// way: +21,528 and +21,584 kB at 64 bits, +21,656 and +20,572 kB at 32; CPU
+// +39 to +62 us at 64 bits, +141 to +181 at 32. 36 MB sits ~15 MB above and
+// below the +52.8 MB of an atlas that kept its RGBA copy (and the 76.6 MB of
+// a power-of-two one); the scratch 64 MB leak built into the layer read
+// +142,220 kB.
+constexpr long kVkRssBudgetKb = 36 * 1024;
 constexpr double kVkCpuBudgetUs = 400.0;
 
 constexpr int kWidth = 1280;

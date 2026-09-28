@@ -634,10 +634,9 @@ ImTextureID TextureCache::upload_font_atlas(const unsigned char* rgba, uint32_t 
     return reinterpret_cast<ImTextureID>(font_.descriptor);
 }
 
-bool TextureCache::update_font_atlas(const unsigned char* rgba, uint32_t atlas_width,
-                                     uint32_t atlas_height, const AtlasRegion* regions,
-                                     uint32_t count) {
-    if (!ready_ || !rgba || font_.image == VK_NULL_HANDLE || atlas_width != font_width_ ||
+bool TextureCache::update_font_atlas(uint32_t atlas_width, uint32_t atlas_height,
+                                     const AtlasRegion* regions, uint32_t count) {
+    if (!ready_ || font_.image == VK_NULL_HANDLE || atlas_width != font_width_ ||
         atlas_height != font_height_ || count > kMaxFoldedRegions) {
         return false;
     }
@@ -647,7 +646,7 @@ bool TextureCache::update_font_atlas(const unsigned char* rgba, uint32_t atlas_w
     VkDeviceSize size = 0;
     for (uint32_t i = 0; i < count; ++i) {
         const AtlasRegion& r = regions[i];
-        if (r.width <= 0 || r.height <= 0 || r.x < 0 || r.y < 0 ||
+        if (!r.pixels || r.width <= 0 || r.height <= 0 || r.x < 0 || r.y < 0 ||
             static_cast<uint32_t>(r.x + r.width) > atlas_width ||
             static_cast<uint32_t>(r.y + r.height) > atlas_height) {
             return false;
@@ -669,11 +668,7 @@ bool TextureCache::update_font_atlas(const unsigned char* rgba, uint32_t atlas_w
         for (uint32_t i = 0; i < count; ++i) {
             const AtlasRegion& r = regions[i];
             unsigned char* out = static_cast<unsigned char*>(mapped) + offset;
-            for (int row = 0; row < r.height; ++row) {
-                std::memcpy(out + static_cast<size_t>(row) * r.width * 4,
-                            rgba + (static_cast<size_t>(r.y + row) * atlas_width + r.x) * 4,
-                            static_cast<size_t>(r.width) * 4);
-            }
+            std::memcpy(out, r.pixels, static_cast<size_t>(r.width) * r.height * 4);
             VkBufferImageCopy& copy = copies[i];
             copy = VkBufferImageCopy{};
             copy.bufferOffset = offset;

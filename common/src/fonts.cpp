@@ -187,6 +187,16 @@ static_assert(static_cast<float>(kMaxFoldedSide) >= kEmojiCeiling,
               "a folded square is an emoji square, at most the ceiling on a side");
 AtlasRegion g_folded[kMaxRects];
 uint32_t g_folded_count = 0;
+// The pixels of every colour square folded into the CURRENT atlas, one per
+// reserved rect (index as g_emoji_rects), and where each one sits. The atlas's
+// own pixels are alpha8 once the whole upload is done (fonts_atlas_uploaded),
+// and alpha8 has no colour: these are what a fold uploads and what a later
+// widening pastes back. Static storage, 786 kB of it, touched a page at a
+// time as squares arrive.
+constexpr size_t kSquareBytes = static_cast<size_t>(kMaxFoldedSide) * kMaxFoldedSide * 4;
+unsigned char g_square_pixels[kMaxRects][kSquareBytes];
+AtlasRegion g_squares[kMaxRects];
+bool g_square_filled[kMaxRects];
 // Every run of the rasteriser, counted -- including the second build a refused
 // typeface forces, which is a rasterisation too.
 uint32_t g_build_count = 0;
@@ -676,6 +686,39 @@ uint32_t fonts_take_folded(AtlasRegion* out, uint32_t capacity) {
     return count;
 }
 
+bool fonts_atlas_rgba(unsigned char** pixels, int* width, int* height) {
+    ImFontAtlas* atlas = fonts_atlas();
+    const bool widening = atlas->TexPixelsRGBA32 == nullptr;
+    atlas->GetTexDataAsRGBA32(pixels, width, height);
+    if (!*pixels) {
+        return false;
+    }
+    if (widening) {
+        // ImGui widened the alpha8 image and knows nothing of the colour: every
+        // square folded into this atlas goes back where it was.
+        for (uint32_t i = 0; i < kMaxRects; ++i) {
+            if (!g_square_filled[i]) {
+                continue;
+            }
+            const AtlasRegion& square = g_squares[i];
+            for (int row = 0; row < square.height; ++row) {
+                std::memcpy(*pixels + ((square.y + row) * atlas->TexWidth + square.x) * 4,
+                            square.pixels + row * square.width * 4,
+                            static_cast<size_t>(square.width) * 4);
+            }
+        }
+    }
+    return true;
+}
+
+void fonts_atlas_uploaded() {
+    ImFontAtlas* atlas = fonts_atlas();
+    if (atlas->TexPixelsRGBA32 && atlas->TexPixelsAlpha8) {
+        IM_FREE(atlas->TexPixelsRGBA32);
+        atlas->TexPixelsRGBA32 = nullptr;
+    }
+}
+
 const char* fonts_font_status() { return g_font_reason; }
 
 const char* fonts_emoji_status() {
@@ -739,6 +782,7 @@ void fonts_release() {
     g_emoji_slots = 0;
     for (uint32_t i = 0; i < kMaxRects; ++i) {
         g_emoji_rects[i] = -1;
+        g_square_filled[i] = false;
     }
     for (uint32_t i = 0; i < g_seen_count; ++i) {
         g_seen[i] &= ~(kSeenFolded | kSeenPlaced);
@@ -812,18 +856,19 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
     if (!g_emoji_reserved || g_built_count >= g_wanted_count) {
         return false;
     }
-    // The RGBA the fold writes into. Built by the first caller to ask; after
-    // that this is the cached pointer and costs nothing.
-    unsigned char* pixels = nullptr;
-    int atlas_width = 0;
-    int atlas_height = 0;
-    atlas->GetTexDataAsRGBA32(&pixels, &atlas_width, &atlas_height);
-    if (!pixels) {
+    // The squares go into this module's own storage, which is what a fold's
+    // upload reads, and into the RGBA copy too while one exists -- between a
+    // build and its whole upload, or around a later whole upload. Otherwise
+    // the atlas is alpha8 only, and fonts_atlas_rgba() pastes them back into
+    // the next widening. Never widened here: a fold that widened would keep a
+    // copy nobody hands back.
+    unsigned char* const rgba = reinterpret_cast<unsigned char*>(atlas->TexPixelsRGBA32);
+    const int atlas_width = atlas->TexWidth;
+    if (!atlas->TexPixelsAlpha8 && !rgba) {
         return false;
     }
 
     unsigned char record[kEmojiBankRgbaBytes];
-    unsigned char scaled[kEmojiBankRgbaBytes];
     bool folded_any = false;
     bool lookup_dirty = false;
     for (uint32_t i = 0; i < g_seen_count && g_emoji_slots < kMaxBankGlyphs; ++i) {
@@ -853,11 +898,17 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
             if (!rect->IsPacked()) {
                 continue;
             }
+            const uint32_t square = slot * kAtlasWeights + weight;
+            unsigned char* const scaled = g_square_pixels[square];
             emoji_bank_resample(record, scaled, static_cast<uint32_t>(rect->Width));
-            for (int row = 0; row < rect->Height; ++row) {
-                std::memcpy(pixels + ((rect->Y + row) * atlas_width + rect->X) * 4,
-                            scaled + row * rect->Width * 4,
-                            static_cast<size_t>(rect->Width) * 4);
+            g_squares[square] = AtlasRegion{rect->X, rect->Y, rect->Width, rect->Height, scaled};
+            g_square_filled[square] = true;
+            if (rgba) {
+                for (int row = 0; row < rect->Height; ++row) {
+                    std::memcpy(rgba + ((rect->Y + row) * atlas_width + rect->X) * 4,
+                                scaled + row * rect->Width * 4,
+                                static_cast<size_t>(rect->Width) * 4);
+                }
             }
             ImVec2 uv0;
             ImVec2 uv1;
@@ -870,7 +921,7 @@ bool fold_wanted_emoji(ImFontAtlas* atlas) {
             weights[weight]->Glyphs.back().Colored = 1;
             index_folded_glyph(weights[weight], codepoint);
             if (g_folded_count < kMaxRects) {
-                g_folded[g_folded_count++] = AtlasRegion{rect->X, rect->Y, rect->Width, rect->Height};
+                g_folded[g_folded_count++] = g_squares[square];
             }
             lookup_dirty = true;
             placed = true;
@@ -1011,6 +1062,7 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     g_emoji_offset_y = std::round((pixel_size - emoji_size) * 0.5f);
     for (uint32_t i = 0; i < kMaxRects; ++i) {
         g_emoji_rects[i] = -1;
+        g_square_filled[i] = false;
     }
     g_emoji_slots = 0;
     g_emoji_reserved = g_fonts.body && g_fonts.strong && g_fonts.body != g_fonts.strong;
@@ -1043,20 +1095,18 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     ++g_build_count;
 
     if (built) {
+        // Widened here, where the build ran -- on the worker for the first
+        // one -- for the whole upload that follows every build; the alpha8
+        // image stays, because it is what the atlas is once that upload is
+        // done (fonts_atlas_uploaded) and what a later whole upload widens
+        // from. ImGui rebuilds the whole atlas if asked for pixels with
+        // neither image there, so one of the two always is.
+        unsigned char* rgba = nullptr;
+        atlas->GetTexDataAsRGBA32(&rgba, nullptr, nullptr);
         fold_wanted_emoji(atlas);
         // Folded into a texture that does not exist yet: the caller uploads the
         // whole atlas after a build, so these are already in it.
         g_folded_count = 0;
-        // The RGBA32 copy is the atlas from here on: both backends upload it,
-        // and a fold writes into it. The alpha8 image (16 MB at 4K) is read only
-        // by the widening, so it is freed; asking for alpha8 afterwards would
-        // rebuild the whole atlas, and nothing in the injected code does.
-        unsigned char* rgba = nullptr;
-        atlas->GetTexDataAsRGBA32(&rgba, nullptr, nullptr);
-        if (rgba && atlas->TexPixelsAlpha8) {
-            IM_FREE(atlas->TexPixelsAlpha8);
-            atlas->TexPixelsAlpha8 = nullptr;
-        }
     }
 
     return built;
