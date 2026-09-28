@@ -1835,3 +1835,20 @@ vocem_m32_twin_run(vk_present_alternate_queue TARGET vk_present_alternate_queue
 # scripts/dev-run-gl.sh for a 32-bit child: which_shim built -m32, run through
 # the script, must be answered by a 32-bit shim (dev_run_gl.cmake, PROBE32).
 vocem_m32_twin(which_shim)
+
+# ---- 0.1.11 clean-up atlas lane ----
+
+# The hand-over and the atlas worker (vocem/atlas_owner.h), driven without a
+# GPU over every sequence of up to six events -- presents from two contexts,
+# silence, a context's death, the worker finishing, a failed build, a failed
+# upload, the switch -- against eight invariants, with a real pthread per
+# build. Both widths, and once more under AddressSanitizer and UBSan, with the
+# session's preload cleared so the sanitizer's runtime comes first.
+vocem_test(atlas_owner_states IMGUI LINK vocem_common Threads::Threads TIMEOUT 300)
+vocem_m32_twin(atlas_owner_states)
+vocem_test(atlas_owner_states_asan SOURCES atlas_owner_states.cpp
+    "${PROJECT_SOURCE_DIR}/common/src/atlas_owner.cpp" IMGUI LINK vocem_common Threads::Threads
+    COMPILE_OPTIONS -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
+    LINK_OPTIONS -fsanitize=address,undefined
+    ENV "LD_PRELOAD=" "ASAN_OPTIONS=detect_leaks=1" "UBSAN_OPTIONS=print_stacktrace=1"
+    ARGS 5 TIMEOUT 600)
