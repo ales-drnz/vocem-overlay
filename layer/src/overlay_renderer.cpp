@@ -298,17 +298,31 @@ bool OverlayRenderer::upload_font_texture(bool whole) {
     } else {
         fonts_take_folded(nullptr, 0);  // already in the whole atlas
     }
-    // The whole atlas as RGBA, widened again with its colour squares if it was
-    // handed back after the last whole upload, and handed back once the
-    // staging buffer holds it: the image is the atlas from here on.
-    unsigned char* pixels = nullptr;
-    int width = 0;
-    int height = 0;
-    if (!fonts_atlas_rgba(&pixels, &width, &height) || width <= 0 || height <= 0) {
+    // The whole atlas as RGBA, widened with its colour squares straight into
+    // the staging buffer when its RGBA copy was handed back after the last
+    // whole upload -- no 43 MB copy made to be copied again -- and the copy a
+    // build left handed back once the staging buffer holds it: the image is
+    // the atlas from here on.
+    if (!io.Fonts->TexPixelsAlpha8 && !io.Fonts->TexPixelsRGBA32) {
+        // No pixels at all: asking for them has ImGui build the atlas.
+        unsigned char* built = nullptr;
+        int built_width = 0;
+        int built_height = 0;
+        if (!fonts_atlas_rgba(&built, &built_width, &built_height)) {
+            return false;
+        }
+    }
+    const int width = io.Fonts->TexWidth;
+    const int height = io.Fonts->TexHeight;
+    if (width <= 0 || height <= 0) {
         return false;
     }
-    const ImTextureID id = textures_.upload_font_atlas(pixels, static_cast<uint32_t>(width),
-                                                       static_cast<uint32_t>(height));
+    const ImTextureID id = textures_.upload_font_atlas(
+        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+        [](unsigned char* destination, uint32_t w, uint32_t h, const void*) {
+            return fonts_atlas_widen_into(destination, static_cast<int>(w), static_cast<int>(h));
+        },
+        nullptr);
     fonts_atlas_uploaded();
     if (id == 0) {
         return false;

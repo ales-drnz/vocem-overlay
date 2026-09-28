@@ -711,6 +711,42 @@ bool fonts_atlas_rgba(unsigned char** pixels, int* width, int* height) {
     return true;
 }
 
+bool fonts_atlas_widen_into(unsigned char* destination, int width, int height) {
+    ImFontAtlas* atlas = fonts_atlas();
+    if (!destination || width != atlas->TexWidth || height != atlas->TexHeight || width <= 0 ||
+        height <= 0) {
+        return false;
+    }
+    const size_t pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (atlas->TexPixelsRGBA32) {
+        // Already widened (a build's copy, or a caller's): it holds the squares.
+        std::memcpy(destination, atlas->TexPixelsRGBA32, pixels * 4);
+        return true;
+    }
+    const unsigned char* alpha = atlas->TexPixelsAlpha8;
+    if (!alpha) {
+        return false;
+    }
+    // ImGui's own widening, IM_COL32(255, 255, 255, a), written straight into
+    // `destination` a pixel at a time, which is only ever written.
+    for (size_t i = 0; i < pixels; ++i) {
+        const uint32_t pixel = IM_COL32(255, 255, 255, static_cast<unsigned int>(alpha[i]));
+        std::memcpy(destination + i * 4, &pixel, 4);
+    }
+    for (uint32_t i = 0; i < kMaxRects; ++i) {
+        if (!g_square_filled[i]) {
+            continue;
+        }
+        const AtlasRegion& square = g_squares[i];
+        for (int row = 0; row < square.height; ++row) {
+            std::memcpy(destination + ((square.y + row) * width + square.x) * 4,
+                        square.pixels + row * square.width * 4,
+                        static_cast<size_t>(square.width) * 4);
+        }
+    }
+    return true;
+}
+
 void fonts_atlas_uploaded() {
     ImFontAtlas* atlas = fonts_atlas();
     if (atlas->TexPixelsRGBA32 && atlas->TexPixelsAlpha8) {

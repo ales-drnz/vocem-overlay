@@ -28,6 +28,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <cstring>
+#include <vector>
+
 #include "imgui.h"
 #include "vocem/fonts.h"
 #include "vocem_check.h"
@@ -196,12 +199,30 @@ int main() {
                  "  its %u square(s) carry their own coloured pixels (chroma %d)", count, best);
         check(count == 2 && best > 40, said);
     }
+    // The Vulkan layer's whole upload widens straight into its staging buffer
+    // (fonts_atlas_widen_into): without making the RGBA copy, and into the
+    // very pixels fonts_atlas_rgba() gives, colour squares included.
+    std::vector<unsigned char> staged;
+    {
+        const int width = ImGui::GetIO().Fonts->TexWidth;
+        const int height = ImGui::GetIO().Fonts->TexHeight;
+        staged.assign(static_cast<size_t>(width) * static_cast<size_t>(height) * 4, 0xAB);
+        check(vocem::fonts_atlas_widen_into(staged.data(), width, height),
+              "the atlas widens into a caller's buffer");
+        check(ImGui::GetIO().Fonts->TexPixelsRGBA32 == nullptr,
+              "  without making its own RGBA copy");
+        check(!vocem::fonts_atlas_widen_into(staged.data(), width, height + 1),
+              "  and refuses a buffer of another size");
+    }
     {
         unsigned char* pixels = nullptr;
         int width = 0;
         int height = 0;
         check(vocem::fonts_atlas_rgba(&pixels, &width, &height) && pixels != nullptr,
               "the next whole upload widens the atlas again");
+        check(staged.size() == static_cast<size_t>(width) * static_cast<size_t>(height) * 4 &&
+                  std::memcmp(staged.data(), pixels, staged.size()) == 0,
+              "  to the same pixels the caller's buffer got");
         bool all = glyph_chroma(body_now(), 0x1F389) > 40 &&
                    glyph_chroma(strong_now(), 0x1F389) > 40;
         for (unsigned i = 0; i < arrivals; ++i) {

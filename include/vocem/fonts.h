@@ -147,6 +147,14 @@ struct AtlasRegion {
 // the upload that follows it.
 bool fonts_atlas_rgba(unsigned char** pixels, int* width, int* height);
 
+// The same pixels as fonts_atlas_rgba(), written into `destination`
+// (width * height * 4 bytes, the atlas's own size) without making the RGBA
+// copy: widened from the alpha8 image straight there when the copy is not
+// there, copied from it when it is. `destination` is only written, never
+// read, so it can be a mapped staging buffer (the Vulkan layer's whole
+// upload). False when the atlas has no pixels or is not that size.
+bool fonts_atlas_widen_into(unsigned char* destination, int width, int height);
+
 // The whole atlas went up: its RGBA copy is freed, the alpha8 image and the
 // folded squares stay. Nothing is freed unless the alpha8 image is there to
 // widen from again -- asking ImGui for pixels with neither would rebuild the
