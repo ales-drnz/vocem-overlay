@@ -399,11 +399,11 @@ int main() {
     // 8,188 kB for one release-and-rebuild that had been taken twice and
     // agreed. Across a full suite it failed about one run in four, and the
     // readings show why: the same restart measures **0 kB**, **-832 kB** and
-    // **-30,668 kB** on this machine. A process holding a 64 MB texture, a
-    // driver and an allocator does not have a Pss that stands still between
-    // two samples four seconds apart, so a 4 MB window around zero was
-    // measuring the noise. Entry 31 is the rule and this test was breaking it:
-    // a figure that cannot be taken twice is not one to assert on.
+    // **-30,668 kB** on this machine. A process holding a 64 MB texture (as it
+    // then was), a driver and an allocator does not have a Pss that stands
+    // still between two samples four seconds apart, so a 4 MB window around
+    // zero was measuring the noise. Entry 31 is the rule and this test was
+    // breaking it: a figure that cannot be taken twice is not one to assert on.
     //
     // What carries the claim instead is already above and is exact: the atlas
     // was rasterised twice for two daemons and not a third time, and the

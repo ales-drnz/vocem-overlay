@@ -59,8 +59,9 @@ public:
     void process_pending();
 
     // The font atlas's texture is owned here rather than by imgui_impl_vulkan:
-    // the stock upload replaces the whole 64 MB image between two
-    // vkQueueWaitIdle, while a new colour emoji changes a 32x32 square. The
+    // the stock upload replaces the whole image -- 43 MB of RGBA at a
+    // 2160-line display (4096x2611) -- between two vkQueueWaitIdle, while a
+    // new colour emoji changes a 32x32 square. The
     // backend cannot update part of its image, so the renderer never calls its
     // NewFrame and hands ImGui this texture through SetTexID.
     //

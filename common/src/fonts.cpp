@@ -1051,9 +1051,10 @@ bool build_atlas(ImFontAtlas* atlas, float pixel_size) {
     // The space the colour emoji will occupy, reserved now and bound to a
     // codepoint later. Each weight gets its own rect (a merged glyph belongs to
     // the font it was merged into), and EVERY rect the cap allows is reserved,
-    // seen or not -- about 1% of a 4096x4096 atlas -- so fold_wanted_emoji() has
-    // a place for a new emoji without a rebuild. The monochrome font stays
-    // merged underneath for a codepoint past the cap or a session with no bank.
+    // seen or not -- about 1.6% of the 4096x2611 atlas of a 2160-line display
+    // -- so fold_wanted_emoji() has a place for a new emoji without a rebuild.
+    // The monochrome font stays merged underneath for a codepoint past the cap
+    // or a session with no bank.
     //
     // Reserved as REGULAR rects, with no font and no glyph id, so Build() packs
     // them and registers nothing; the binding is fold_wanted_emoji()'s, and it

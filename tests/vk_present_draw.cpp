@@ -3107,8 +3107,10 @@ int main() {
               "and every arrival's emoji reached the atlas, folded in (the positive control: a "
               "layer that noticed nothing would also rebuild nothing)");
         // And reached the GPU as the squares it changed, not as the whole atlas:
-        // the stock upload is 64 MB between two vkQueueWaitIdle on the game's
-        // queue, 36 to 43 ms of every arrival once the rebuild was gone.
+        // the stock upload is the whole atlas between two vkQueueWaitIdle on
+        // the game's queue -- 36 to 43 ms of every arrival once the rebuild was
+        // gone, measured when the atlas was 64 MB (43 MB at 2160 lines since
+        // entry 296).
         const long whole = lines_containing(stderr_log, "font texture uploaded whole");
         const long in_place = lines_containing(stderr_log, "copied in place");
         printf("     the font texture went up whole %ld time(s), in place %ld time(s)\n", whole,

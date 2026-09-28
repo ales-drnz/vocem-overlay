@@ -234,7 +234,8 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
         // vkQueueWaitIdle are what rule 10 keeps out (tests/vk_witness_layer.cpp
         // sees a queue wait inside a present). The cache owns the font texture
         // so a new colour emoji is copied in as a 32x32 square rather than
-        // replacing 64 MB, so it is initialised before the atlas.
+        // replacing the whole atlas (43 MB at a 2160-line display), so it is
+        // initialised before the atlas.
         //
         // Without the cache there is no backend: ImGui's stock font upload
         // allocates a command buffer the loader never registers, which crashes
@@ -375,8 +376,8 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
 
     // The backend's NewFrame is never called: its only job is creating a font
     // texture when it has none, and with the cache owning that texture it
-    // never has one -- calling it would upload 64 MB with a queue wait inside
-    // the present (rule 10).
+    // never has one -- calling it would upload the whole atlas (43 MB at a
+    // 2160-line display) with a queue wait inside the present (rule 10).
     ImGui::NewFrame();
     AvatarProvider* avatars = textures_.ready() ? avatar_adapter_ : nullptr;
     // A frame can be for the toast alone (a message outside a voice channel),

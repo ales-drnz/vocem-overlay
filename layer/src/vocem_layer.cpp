@@ -1001,8 +1001,9 @@ constexpr uint32_t kMaxWaitSemaphores = 16;
 
 // `wanted` is set when this frame had something to put on the screen (past the
 // poll and both feature guards), whatever happens after. The caller gates the
-// renderer's construction on it -- a font atlas, a 64 MB upload and a
-// descriptor pool -- and `sizing` is the height that atlas is sized from.
+// renderer's construction on it -- a font atlas, its upload (43 MB at a
+// 2160-line display) and a descriptor pool -- and `sizing` is the height that
+// atlas is sized from.
 VkSemaphore draw_overlay(DeviceData& dev, SwapchainData& sc, VkQueue queue, uint32_t image_index,
                          const VkSemaphore* wait_semaphores, uint32_t wait_count, bool& wanted,
                          uint32_t& sizing) {
@@ -1273,9 +1274,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vocem_QueuePresentKHR(VkQueue queue,
                                          pPresentInfo->waitSemaphoreCount, wanted, sizing);
                         // Built only for a frame that had something on it, not
                         // merely for an allowed game: an idle machine with the
-                        // tray up must not pay for an atlas, a 64 MB upload and
-                        // a descriptor pool. The first drawn frame pays instead,
-                        // post-present (rule 10).
+                        // tray up must not pay for an atlas, its upload (43 MB
+                        // at 2160 lines) and a descriptor pool. The first drawn
+                        // frame pays instead, post-present (rule 10).
                         if (wanted && !vocem::renderer().ready()) {
                             needs_init = true;
                             pending_target.instance = dev->instance;

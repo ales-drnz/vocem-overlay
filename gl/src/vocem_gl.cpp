@@ -1298,9 +1298,9 @@ private:
         // The backend's GL objects -- shader, buffers and the font texture --
         // built HERE, not left to its NewFrame: draw() replaces the font
         // texture once ensure_fonts() has the atlas at this output's size, and
-        // a NewFrame building them after that would orphan a whole 16-64 MB
-        // atlas per backend build (tests/gl_draw_local.cpp counts the
-        // textures).
+        // a NewFrame building them after that would orphan a whole atlas
+        // texture -- 43 MB at a 2160-line display -- per backend build
+        // (tests/gl_draw_local.cpp counts the textures).
         avatars_.resolve(es_version, gl_major);
         {
             // Under the pixel-store guard, as draw() keeps the backend's font
