@@ -56,11 +56,18 @@ vocem_test(system_font IMGUI LINK vocem_common SKIP)
 # the point: this runs the code the layer runs.
 vocem_test(panel_geometry IMGUI LINK vocem_common)
 
+# The daemon's Flatpak bridge, for the probes that drive it in-process: the
+# class and its two halves (daemon/src/flatpak_bridge_parts.h).
+set(VOCEM_FLATPAK_BRIDGE_SOURCES
+    "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_policy.cpp"
+    "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_copies.cpp")
+
 # Not a test: a channel that is not there, for looking at the configuration window
 # with a full one in it. scripts/compare-preview.py runs it against a private
 # /dev/shm so it cannot be mistaken for the daemon.
 vocem_test(fake_state NO_TEST
-    SOURCES fake_state.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES fake_state.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src"
     LINK rt vocem_common)
 
@@ -856,13 +863,13 @@ endif()
 # across a fake $XDG_RUNTIME_DIR/app; the child reads state, settings and
 # avatar after the POSIX segment is unlinked. Private /dev/shm.
 vocem_test(flatpak_bridge
-    SOURCES flatpak_bridge.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES flatpak_bridge.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK rt vocem_common SKIP)
 
 # The same directory as a hostile sandbox makes it: every name the daemon
 # opens there is a symbolic link.
 vocem_test(flatpak_bridge_hostile
-    SOURCES flatpak_bridge_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES flatpak_bridge_hostile.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 
 # One package, one version: CMakeLists.txt, both PKGBUILDs (each to its own
@@ -1197,7 +1204,7 @@ vocem_script_test(dev_run_gl ARGS "-DPROBE=$<TARGET_FILE:vocem_which_shim>"
 # `drawing=1` is its word, and the host decides by application id -- an
 # exported desktop entry that says Game, or the id listed in flatpak_apps.
 vocem_test(flatpak_consent
-    SOURCES flatpak_consent.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES flatpak_consent.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 # A listener in a Flatpak sandbox that is not Discord's is not sent the token:
 # the peer socket is mapped to its process and that process's /.flatpak-info
@@ -1221,7 +1228,7 @@ endif()
 # bridge's copy source. Nothing is written through a link, nothing waits on a
 # FIFO, and only a regular file of the format's one size is a face.
 vocem_test(avatar_cache_hostile
-    SOURCES avatar_cache_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES avatar_cache_hostile.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 # A SIGTERM ends a daemon blocked inside a system call: the handler is installed
 # without SA_RESTART, so a blocked open() returns EINTR and the flag is read.
@@ -1238,17 +1245,17 @@ endif()
 # One record per Flatpak sandbox, under a file name no host record can have:
 # a sandbox renaming itself cannot fill the registry or overwrite a host row.
 vocem_test(flatpak_records
-    SOURCES flatpak_records.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES flatpak_records.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
 # A settings copy into a sandbox that failed is tried again on the next sweep,
 # rather than only after the host's config.ini next changes.
 vocem_test(flatpak_config_retry
-    SOURCES flatpak_config_retry.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES flatpak_config_retry.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common)
 # The emoji bank crosses into a sandbox once: a sandbox that stops asking and
 # asks again is not given sixteen megabytes again, on the daemon's main thread.
 vocem_test(flatpak_emoji_once
-    SOURCES flatpak_emoji_once.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES flatpak_emoji_once.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 # What the peer names reaches the daemon's log as one line of text: a refused
 # RPC command is logged through sanitise_text, like every other string from it.
@@ -1508,7 +1515,7 @@ vocem_m32_twin(config_hostile)
 # FIFO, unreadable, dangling, too large or removed. Nothing blocks, nothing is
 # written through a link, a failed copy is retried, a removed file is removed.
 vocem_test(flatpak_config_hostile
-    SOURCES flatpak_config_hostile.cpp "${CMAKE_SOURCE_DIR}/daemon/src/flatpak_bridge.cpp"
+    SOURCES flatpak_config_hostile.cpp ${VOCEM_FLATPAK_BRIDGE_SOURCES}
     INCLUDE "${CMAKE_SOURCE_DIR}/daemon/src" LINK vocem_common SKIP)
 
 # A slider's ends are config.h's clamps (Config::numbers(), compiled): every

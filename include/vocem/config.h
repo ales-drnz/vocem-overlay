@@ -256,7 +256,7 @@ struct Config {
     // the ones whose exported desktop entry says Game. Same list syntax, matched
     // against the id exactly (`org.example.Game`). Read by the daemon alone: a
     // sandbox's own request is its word, and this is the user's
-    // (daemon/src/flatpak_bridge.cpp).
+    // (daemon/src/flatpak_policy.cpp).
     std::string flatpak_apps;
 
     // Which display each map in the window depicts, as the connector's name
