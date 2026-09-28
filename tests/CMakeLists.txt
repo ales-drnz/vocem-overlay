@@ -997,12 +997,23 @@ vocem_m32_twin_run(vk_present_early_exit TARGET vk_present_early_exit
 # has one: the witness knows the handful of calls this project's rules name,
 # the real layer knows all of them. Resolved when the test runs; skips out
 # loud where vulkan-validation-layers is not installed (this machine, today).
-vocem_script_test(vk_present_validated ARGS
+# One test per scene, so they run side by side; vk_present_validated itself
+# is the default loop and the check that the validation layer sits below the
+# overlay in the device chain.
+set(VOCEM_VK_VALIDATED_ARGS
     "-DPROBE=$<TARGET_FILE:vocem_vk_present_draw>"
     "-DMANIFEST=${CMAKE_BINARY_DIR}/dev/VkLayer_vocem_overlay.json"
     "-DLIBRARY=$<TARGET_FILE:vocem_vk>"
     "-DWITNESS=${CMAKE_CURRENT_BINARY_DIR}/vk_witness.json"
     "-DEMOJI_BANK=${CMAKE_SOURCE_DIR}/common/emoji/emoji_bank.rgba")
+vocem_script_test(vk_present_validated ARGS ${VOCEM_VK_VALIDATED_ARGS}
+    "-DSCENES=default" "-DORDER=ON")
+foreach(scene recreate second-device in-flight daemon-gone idle arrivals deferred
+              second-presenter second-queue no-texture-cache alternate-queue)
+    string(REPLACE "-" "_" scene_id "${scene}")
+    vocem_script_test(vk_present_validated_${scene_id} SCRIPT vk_present_validated.cmake
+        ARGS ${VOCEM_VK_VALIDATED_ARGS} "-DSCENES=${scene}")
+endforeach()
 
 # The Vulkan half inside gamescope, with gamescope's own WSI layer in the chain --
 # the one place a gamescope update can reach us, since its WSI layer replaces
