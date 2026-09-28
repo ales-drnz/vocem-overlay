@@ -62,18 +62,16 @@ public:
     // sets it, the connect's and the handshake's waits are taken in slices, and
     // every read and write loop reads it on each turn, so that a stop is
     // noticed rather than waited out -- by a silent peer or by one trickling a
-    // byte at a time (entry 196). recv()'s own wait is bounded by its caller's
-    // one second instead. Without it the handshake's own deadline
-    // was honoured to the letter -- ten seconds of it, inside a stop the unit
-    // gives ten (websocket.cpp, kStopSliceMs). Optional: the bounds tests
-    // construct this client without one.
+    // byte at a time (websocket.cpp, kStopSliceMs). recv()'s own wait is bounded by its caller's
+    // one second instead. Optional: the bounds tests construct this client
+    // without one.
     void watch_stop(const volatile std::sig_atomic_t* stop) { stop_ = stop; }
 
 
 private:
-    // Reads against an absolute deadline. A per-call timeout was not enough:
-    // poll() re-armed it on every chunk, so a peer sending one byte every two
-    // seconds held a frame open for as long as it liked.
+    // Reads against an absolute deadline, not a per-call timeout that poll()
+    // would re-arm on every chunk: a peer sending one byte every two seconds
+    // must not hold a frame open for as long as it likes.
     bool read_exact(void* dest, size_t length, std::chrono::steady_clock::time_point by);
     // Writes against an absolute deadline, for the same reason reads have one:
     // a peer that stops reading fills our send buffer and a blocking send waits

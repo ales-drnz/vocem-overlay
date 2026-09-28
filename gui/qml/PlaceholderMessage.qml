@@ -4,17 +4,10 @@
 //
 // What an empty view says for itself.
 //
-// KDE's HIG asks for a placeholder message in an empty view -- an icon, an
-// explanation, and where there is something to do about it, one action --
-// rather than a line of grey text where the content would have been. The
-// distinction it draws is between the *informational* kind, which is quiet
-// because the emptiness is normal, and the *actionable* kind, which is not.
-// Every empty view in the Debug section is the first kind: no game is drawing
-// the overlay because no game is running, and that is not a problem to solve.
-//
-// Kirigami's component again, and again not the dependency: see InlineMessage
-// for why. Centred in whatever it is given, so a tab with nothing in it reads
-// as deliberately empty rather than as failed to load.
+// KDE's HIG placeholder message, the quiet informational kind: an icon, a
+// title and an explanation, centred in whatever it is given, so an empty tab
+// reads as deliberately empty rather than failed to load. Like InlineMessage,
+// without depending on Kirigami.
 
 import QtQuick
 import QtQuick.Controls
@@ -24,9 +17,8 @@ import Vocem
 ColumnLayout {
     id: root
 
-    // Named so the dump says which views were empty and what stood in for
-    // them: tests/empty_views.cmake asks that every empty view in the window
-    // is one of these rather than a card holding one line of grey text.
+    // Named for the geometry dump: tests/empty_views.cmake asks that every
+    // empty view in the window is one of these.
     objectName: "placeholder"
 
     property string iconName: "dialog-information"
@@ -66,8 +58,7 @@ ColumnLayout {
         opacity: 0.7
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
-        // Kept off the edges: a centred paragraph that runs the whole width of
-        // a wide window is harder to read than one that does not.
+        // Kept off the edges: a centred paragraph is hard to read full-width.
         Layout.maximumWidth: Math.min(parent.width, 420)
         Layout.alignment: Qt.AlignHCenter
     }

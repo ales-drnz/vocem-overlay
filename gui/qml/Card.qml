@@ -2,11 +2,9 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// A group of settings in a rounded box, with an optional heading above it. Both
-// the KDE and the GNOME guidelines land on the same shape for this -- related
-// controls in one container, separated by thin lines, with the group's name
-// outside it -- and it is what makes a settings page readable without a border
-// around every single row.
+// A group of settings in a rounded box, separated by thin lines, with an
+// optional heading and description above it, as the KDE and GNOME guidelines
+// describe.
 
 import QtQuick
 import QtQuick.Controls
@@ -17,15 +15,10 @@ ColumnLayout {
     id: root
 
     property string title: ""
-    // One line saying what the group is for, under its name and outside the box.
-    // Beside the title rather than inside the card because that is where this
-    // window already says it -- the Applications page's own group headers, and
-    // the Debug section's -- and because a paragraph dropped in among the rows
-    // is the one thing that does not take the card's padding: it sat flush
-    // against the edge while every row beside it was inset.
+    // One line saying what the group is for, under its name and outside the
+    // box, where the window's other group headers put it.
     property string description: ""
-    // The rows. They are reparented into the card's own column, so a caller just
-    // lists SettingRows and nothing else.
+    // The rows, reparented into the card's own column: a caller lists SettingRows.
     default property alias content: column.data
 
     spacing: Theme.smallSpacing
@@ -54,20 +47,16 @@ ColumnLayout {
     }
 
     Rectangle {
-        // Named so the geometry dump can be asked what the card actually
-        // measured. `tests/window_padding.cmake` reads every card in the
-        // window out of the dump and holds its height to the sum of the
-        // blocks inside it -- which is how a loose item dropped in beside a
-        // SettingRow, flush against the card's edge while its neighbour is
-        // inset, becomes a number instead of something spotted by eye.
+        // Named for the geometry dump: `tests/window_padding.cmake` holds every
+        // card's height to the sum of the padded blocks inside it, so a loose
+        // unpadded item shows up as a number.
         objectName: "card"
         Layout.fillWidth: true
         implicitHeight: column.implicitHeight
         color: Theme.cardColour
 
-        // The card is a group of settings, and its heading names the group. Said
-        // out loud, that is what tells a screen reader where one group of rows
-        // ends and the next begins.
+        // A named group, so a screen reader says where one group of rows ends
+        // and the next begins.
         Accessible.role: Accessible.Grouping
         Accessible.name: root.title
         radius: Theme.cornerRadius

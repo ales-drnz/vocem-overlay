@@ -4,23 +4,11 @@
 //
 // Which display the map below depicts.
 //
-// The overlay sizes itself from the largest connected display, and a map is a
-// map of one screen: with several plugged in, "the panel covers a twentieth of
-// the display" is a different claim on each of them. This row lets each map say
-// which display it is talking about; OverlayStage then draws the boxes at the
-// share of that screen they will really cover, and says so when it differs.
-//
-// Always shown, one display or several: the header used to promise "hidden
-// outright on a single-display machine" while the body kept it visible, and
-// the body is right (its own comment below says why the old reasoning was
-// overturned) -- a file whose header contradicts its body is read by its
-// header. The empty selection means automatic: the largest display, which is
-// the one the overlay is sized for and the one the maps have always shown.
-//
-// The list comes from the bridge's one display enumeration (environment.h),
-// which is re-read on the window's four-second sweep, so the rebuild below fires
-// for a display plugged in, unplugged or switched to another mode while the
-// window is open -- as well as for the one that was asleep when it opened.
+// The overlay sizes itself from the largest connected display, so "a twentieth
+// of the display" is a different claim on each screen. This row says which
+// display a map stands for; OverlayStage draws the boxes at that screen's share.
+// The empty selection means automatic: the largest display. The list is the
+// bridge's display enumeration (environment.h), re-read on the window's sweep.
 
 import QtQuick
 import QtQuick.Controls
@@ -52,14 +40,8 @@ RowLayout {
         return null;
     }
 
-    // Always shown, the owner's ask, including on a machine with one display.
-    // It was hidden below two on the reasoning that a control with one real
-    // choice is furniture -- and that reasoning ignores what the row says
-    // *besides* offering a choice: which display the picture stands for, at
-    // what resolution, and the fact that the overlay sizes itself for the
-    // largest one. On a single-display machine that is a caption confirming
-    // the map is about the one screen there is, and it is the first place
-    // somebody plugging a second monitor in will look.
+    // Always shown, even with one display: besides offering a choice the row
+    // says which display the picture stands for and at what resolution.
     spacing: Theme.smallSpacing
 
     function optionsFrom(found) {
@@ -102,31 +84,14 @@ RowLayout {
         id: picker
         objectName: "displayPicker"
 
-        // Held in a plain property and only replaced when the enumeration
-        // itself changed: a model bound straight to config.displays would be
-        // reassigned on every displaysChanged, the enumeration's own signal
-        // since entry 139, and a ComboBox whose model is replaced goes back to
-        // row 0.
-        //
-        // **Assigned, not bound.** It used to be initialised with an expression
-        // over `config.displays`, which is a NOTIFY property -- so that
-        // initialiser was a live binding and re-evaluated on the same signal the
-        // guard below listens to. Both are endpoints of one signal and the
-        // binding is delivered first, so by the time the handler ran
-        // `picker.options` already held the fresh list, `sameOptions` answered
-        // true, and `currentIndex` was never restored -- while the model HAD
-        // been replaced, which puts a ComboBox's currentIndex back to 0 (entry
-        // 104's own trap). With a display pinned in "Map shows", plugging in,
-        // unplugging, waking or re-moding a monitor made the dropdown read
-        // "Automatic (largest)" while the map underneath went on drawing the
-        // pinned one and config.ini went on naming it; re-picking the row it
-        // was showing wrote "" and lost the pin.
+        // Assigned in Component.onCompleted and by the handler below, never
+        // bound: a binding over config.displays would replace the model on the
+        // same signal before the guard ran, and a ComboBox whose model is
+        // replaced goes back to row 0 (entry 171).
         property var options: []
 
-        // For the geometry dump, which holds rectangles and would otherwise
-        // have nothing to say about a dropdown's selection: the pin's whole
-        // visible state is an index. display_change_while_open.cmake reads
-        // these two on both sides of a connector arriving.
+        // For the geometry dump: the pin's whole visible state is an index.
+        // display_change_while_open.cmake reads these two.
         readonly property int pickerIndex: currentIndex
         readonly property int pickerCount: options.length
 
@@ -144,13 +109,10 @@ RowLayout {
 
     Connections {
         target: root.config
-        // The bridge announces the enumeration on a signal of its own, and only
-        // when it moved; this used to listen on stateChanged, twice a second.
+        // The bridge signals only when the enumeration moved.
         function onDisplaysChanged() {
-            // Only when the enumeration itself changed. A ComboBox puts
-            // currentIndex back to 0 when its model is replaced (entry 104), so
-            // reassigning on every tick would drag the selection to "Automatic"
-            // under the hand that set it.
+            // Replace the model only when the options differ, and restore the
+            // index after: a replaced model puts currentIndex back to 0.
             const fresh = root.optionsFrom(root.config.displays);
             if (!root.sameOptions(fresh, picker.options)) {
                 picker.options = fresh;

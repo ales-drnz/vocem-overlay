@@ -19,10 +19,7 @@
 # nothing is changed, and it can be run by the person having the problem.
 #
 # In English like everything else the project prints: this script's output ends up
-# pasted into bug reports read next to the overlay's own log lines, and a report
-# half in one language and half in another is harder on everyone including its
-# author. (It started out in Italian, being written mid-chase on an Italian
-# desktop.)
+# pasted into bug reports read next to the overlay's own log lines.
 
 set -u
 
@@ -38,21 +35,16 @@ case "${LD_PRELOAD:-}" in
 esac
 # `systemctl is-active` reports a STATE, so its exit status *is* that state
 # rather than an error: "inactive" comes back with exit 3, and a unit systemd
-# has never heard of with exit 4, both having printed the word on stdout. So
-# `|| echo unknown` ran the fallback as well as the command and put two lines
-# where one belongs -- and it did it precisely when the daemon is down, which is
-# the situation somebody runs this tool in. Entry 99 is the same mistake with
-# `grep -c`, five lines further down, found and fixed while this one stood.
-# Take the output; fall back only when there is none.
+# has never heard of with exit 4, both having printed the word on stdout, so
+# `|| echo unknown` would print two lines. Take the output; fall back only when
+# there is none (entry 116).
 daemon_state=$(systemctl --user is-active vocemd.service 2>/dev/null)
 [ -n "$daemon_state" ] || daemon_state=unknown
 echo "daemon: $daemon_state"
 
 # What the user decided, which the overlay obeys before anything measured
-# below: the master switch here, the two lists per process further down. This
-# tool looked at none of it until 0.1.11, so a game somebody had hidden came out
-# as "shim loaded: yes" with nothing to say why it drew nothing. Read the way
-# vocem/config.h reads it: a key is the text before '=' on a line that does not
+# below: the master switch here, the two lists per process further down. Read
+# the way vocem/config.h reads it: a key is the text before '=' on a line that does not
 # open with '#', '[' or ';', both sides trimmed, surrounding quotes dropped, and
 # the LAST occurrence wins.
 config="${XDG_CONFIG_HOME:-$HOME/.config}/vocem/config.ini"
@@ -135,10 +127,8 @@ fi
 target=$1
 # The exact process name first, and only then the whole command line -- because
 # `pgrep -f` matches this script's own shell, whose command line contains the name
-# that was just typed. Run against `plasmashell` it answered about the shell as
-# well, with "shim loaded: yes" and no record, which is the shape of the report
-# somebody would paste into a bug. Our own two pids and anything running this
-# script are dropped for the same reason.
+# that was just typed. Our own two pids and anything running this script are
+# dropped for the same reason.
 pids=$(pgrep -x "$target" 2>/dev/null)
 if [ -z "$pids" ]; then
     pids=$(pgrep -f "$target" 2>/dev/null | while read -r candidate; do
@@ -161,26 +151,16 @@ for pid in $pids; do
 
     # 1. Are we inside it? This is the question the registry cannot answer.
     #
-    # `grep -c` prints 0 and exits 1 when it finds nothing, so `|| echo 0` put a
-    # second line in the variable and every comparison below then said
-    # "[: 0\n0: integer expected" -- in the middle of the answer, on almost every
-    # process, since most of them have no Vulkan layer in them.
+    # `grep -c` prints 0 and exits 1 when it finds nothing, so `|| echo 0` would
+    # put a second line in the variable (entry 99).
     count_in_maps() {
         found=$(grep -c "$1" "/proc/$pid/maps" 2>/dev/null | head -1)
         [ -n "$found" ] || found=0
         echo "$found"
     }
     # And whether the question could be asked at all, which is a different
-    # answer from "no". An unreadable /proc/<pid>/maps -- a process of another
-    # uid, which is exactly whose overlay somebody is most likely to be confused
-    # about -- gives grep nothing to count, so `found=0`, so the report used to
-    # print `shim loaded: NO`, `GL overlay: no`, `Vulkan layer: no` and then the
-    # confident sentence "we are not inside it at all: a sandbox (Flatpak/Snap),
-    # or the program started before the preload existed in the session". That is
-    # this script's third round of printing something it did not measure
-    # (entries 99 and 116 are the other two), in the one tool whose stated
-    # purpose is to tell "never started" from "ran for an hour without our code
-    # reaching it". Measured against pid 1: three noes and the sentence.
+    # answer from "no": an unreadable /proc/<pid>/maps gives grep nothing to
+    # count, and must not be reported as "not inside it".
     # Readable AND with something in it. A kernel thread's map is readable and
     # empty, and "no overlay in a kworker" is true but not an answer anybody
     # came here for; an unreadable one is another user's process, which is the
@@ -230,8 +210,7 @@ for pid in $pids; do
     env_of() {
         # The redirect is what fails when /proc/<pid>/environ is another user's,
         # and a redirect fails in the SHELL: `2>/dev/null` on the command does
-        # not silence it, so the report carried "Permesso negato" in the middle
-        # of its own answer. cat's own error is silenced the ordinary way.
+        # not silence it. cat's own error is silenced the ordinary way.
         cat "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' | sed -n "s/^$1=//p" | head -1
     }
     echo "  SteamAppId:        $(env_of SteamAppId)"
@@ -242,8 +221,7 @@ for pid in $pids; do
     # ways: the OpenGL path is off when the value starts with 1, and the
     # Vulkan loader drops the layer when the variable is SET at all -- it is
     # the manifest's disable_environment, and the loader compares no value
-    # (measured with VK_LOADER_DEBUG=layer: unset inserts the layer; 1, 0,
-    # empty, 10 and no insert nothing). So "0" and an empty value still turn
+    # (VK_LOADER_DEBUG=layer shows it). So "0" and an empty value still turn
     # the Vulkan overlay off, and an empty value is not "not set". The lists
     # are matched against the process name and the executable's, and hidden
     # wins over shown (vocem/apps.h, draw_here).

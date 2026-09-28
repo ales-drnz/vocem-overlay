@@ -4,16 +4,9 @@
 //
 // A section whose content is a column of cards that can be taller than the window.
 //
-// The page margin belongs to the column inside the flickable rather than to the
-// flickable itself, which is what gives the scrollbar somewhere to sit. The pages
-// used to keep the page margin on the ScrollView and then subtract a gutter from
-// the content's width on the right only, so the cards sat 24 from the left edge of
-// the window and 42 from the right -- a page that was visibly off-centre against
-// the two that carry a picture, and off-centre by a different amount depending on
-// whether it scrolled.
-//
-// Kirigami's ScrollablePage is arranged the same way, and so is every other Qt
-// application on the desktop: the bar overlays the margin, never the content.
+// The page margin belongs to the column inside the flickable, not to the
+// flickable, so the scrollbar sits in the margin and never over the content, as
+// in Kirigami's ScrollablePage; the cards stay centred whether or not it scrolls.
 
 import QtQuick
 import QtQuick.Controls
@@ -28,27 +21,16 @@ SectionPage {
 
     default property alias cards: column.data
 
-    // Room beside the cards, outside the flickable: what a page puts here -- the
-    // live preview -- stays put while the controls scroll, because it answers for
-    // whichever control was just edited, wherever that control has scrolled to.
-    // Empty on the pages that have nothing to show there, and then it takes no
-    // room at all.
+    // Room beside the cards, outside the flickable: the live preview put here
+    // stays put while the controls scroll. Empty, it takes no room.
     property alias side: sideHolder.data
     readonly property bool hasSide: sideHolder.children.length > 0
 
     // Whether the column stretches to the bottom of the window when the cards
-    // are shorter than it. Off for a page of settings, and on only for a page
-    // whose whole content is one thing that should be centred or filled -- an
-    // empty view's placeholder message.
-    //
-    // Not "a card only grows if it asks", which is what this said and what it
-    // is not: Layout.fillHeight defaults to TRUE for an item that is itself a
-    // layout, and a Card and the Applications page's groups are ColumnLayouts.
-    // So a stretched column hands its slack to all of them at once. Switched on
-    // for a page that also has cards, it spread the Applications page's two
-    // group headings 253 units apart where they belong 127 apart. Anything that
-    // turns this on with content on the page has to answer
-    // tests/window_padding.cmake, which holds a page carrying a card to its own
+    // are shorter. Only for a page whose whole content is one placeholder
+    // message: Layout.fillHeight defaults to true for an item that is itself a
+    // layout, as every Card is, so a stretched column hands its slack to all of
+    // them (entry 65). tests/window_padding.cmake holds a page with a card to its
     // implicit height.
     property bool stretchToBottom: false
 
@@ -73,21 +55,13 @@ SectionPage {
         clip: true
 
         // The desktop style's scrollbar is not an overlay: ScrollView keeps room
-        // for it beside the content rather than over it, and that room comes out
-        // of the page margin -- which put the cards 24 from the left edge and 45
-        // from the right. Given back here, so both sides are the page margin and
-        // the bar, narrower than that margin, still has room of its own.
+        // for it beside the content, out of the page margin. Given back here, so
+        // both sides are the page margin and the bar sits inside it.
         readonly property real barRoom: width - availableWidth
 
-        // The Flickable is written out rather than left to ScrollView so that
-        // the column's height can be set from here (stretchToBottom below).
-        //
-        // It keeps no bottom margin of its own. It used to, and that was the
-        // page margin counted twice: SectionPage already holds the content
-        // area clear of the bar and of the window's edge, so a page scrolled
-        // to the end left 36 units under its last card where a page that does
-        // not scroll left 12, and About left 48. The clearance belongs to the
-        // frame, in one place, for every page.
+        // Written out rather than left to ScrollView so the column's height
+        // can be set from here (stretchToBottom). No bottom margin of its own:
+        // SectionPage keeps the clearance for every page, in one place.
         Flickable {
             id: flick
 
@@ -98,19 +72,17 @@ SectionPage {
             ColumnLayout {
                 id: column
 
-                // Named so the dump carries both its height and its implicit
-                // one: a page that is taller than its contents is a page
-                // handing dead space to whatever is on it, and that is not
-                // something a screenshot makes obvious.
+                // Named so the dump carries its height and implicit height: a
+                // page taller than its contents hands out dead space, which a
+                // screenshot does not make obvious.
                 objectName: "pageColumn"
 
                 x: Theme.pageMargin
                 width: parent.width - Theme.pageMargin -
                        Math.max(0, Theme.pageMargin - view.barRoom)
-                // Its own height rather than the layout's implicit one, so a
-                // page that stretches can hand the leftover room to whichever
-                // card asked for it. The room is the whole viewport: the
-                // clearance below it is the frame's, outside this.
+                // Its own height, so a page that stretches can hand the
+                // leftover viewport to its content; the clearance below is the
+                // frame's.
                 height: root.stretchToBottom
                         ? Math.max(implicitHeight, flick.height)
                         : implicitHeight

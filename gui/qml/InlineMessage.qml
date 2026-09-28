@@ -4,23 +4,10 @@
 //
 // A banner that says something is wrong, in the place it is wrong about.
 //
-// KDE's HIG calls this an inline message and reserves it for "messages that
-// should get the user's attention but not interrupt their current task", with
-// three severities carrying three colours -- highlight for the benign, neutral
-// for warnings, negative for errors -- and one rule over the top of them:
-// never colour alone, so an icon and the words carry the meaning too. That is
-// this project's own rule about the speaking ring, arriving from the other
-// direction.
-//
-// Kirigami has this component and this window does not depend on Kirigami:
-// the application is Qt Quick Controls with the desktop style, and adding a
-// framework for one banner is not a trade worth making. So the shape is
-// borrowed and the implementation is the desktop style's own palette, which
-// is where those three colours live anyway (Theme.online / busy / offline are
-// Breeze's Positive, Neutral and Negative).
-//
-// Shown only when there is something to say: a page with no banner is a page
-// where nothing is wrong, which is worth more than a green "all fine" box.
+// KDE's HIG inline message, without depending on Kirigami: three severities in
+// Breeze's colours (Theme.palette.highlight, Theme.busy, Theme.offline), never
+// colour alone -- an icon and the words carry the meaning too. Shown only when
+// there is something to say.
 
 import QtQuick
 import QtQuick.Controls

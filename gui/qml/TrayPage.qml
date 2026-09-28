@@ -4,14 +4,8 @@
 //
 // What the icon in the system tray is a picture of.
 //
-// One section of the window. Each is its own file: they have nothing to say to
-// each other, and one file of eight hundred lines said all of it at once.
-//
-// A section rather than two more rows on the Window page, on the owner's ask:
-// the tray is the one part of this application that is on screen all the time,
-// it is the only way back to a window that has been put away, and this page
-// carries a picture -- which is the line the rest of the window already draws
-// between a section and a row.
+// A section of its own rather than rows on the Window page: the tray is always
+// on screen, and this page carries a picture.
 
 import QtQuick
 import QtQuick.Controls
@@ -22,16 +16,12 @@ ScrollablePage {
     id: root
 
     settings: ["trayVoiceIcon"]
-    // The title repeats the words of the sidebar entry it was reached from
-    // (AboutPage states the rule); this one said "System Tray" against the
-    // sidebar's "System tray".
+    // The title repeats the sidebar entry's words (see AboutPage).
     title: qsTr("System tray")
     subtitle: qsTr("What the icon in the panel shows. Whichever you choose, it is always the way back to this window.")
 
-    // The tray as the panel will draw it, following the choice below on the
-    // spot. The panel itself follows the saved answer, not this one -- a control
-    // that reached out and changed the desktop before Apply would be the one
-    // setting here that cannot be tried out.
+    // The tray as the panel will draw it, following the choice below at once;
+    // the panel itself follows the saved answer, so it changes only on Apply.
     TaskbarPreview {
         objectName: "trayPreview"
         config: root.config
@@ -39,9 +29,8 @@ ScrollablePage {
         Layout.fillWidth: true
     }
 
-    // Two mutually exclusive answers, each with the reason somebody would want
-    // it, which is what the KDE guidelines give radio buttons for: a short set
-    // where every option is worth seeing at once.
+    // Two mutually exclusive answers: radio buttons, as the KDE guidelines give
+    // for a short set where every option is worth seeing at once.
     ButtonGroup { id: choice }
 
     Card {

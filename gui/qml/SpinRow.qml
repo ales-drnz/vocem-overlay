@@ -3,8 +3,8 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // A number that is typed or stepped rather than dragged, and the way back to the
-// default. The counterpart of SliderRow, and the same block width, so that a page
-// of spin boxes and a page of sliders line up their controls in one column.
+// default. The counterpart of SliderRow, with the same block width, so spin boxes
+// and sliders line up in one column.
 
 import QtQuick
 import QtQuick.Controls

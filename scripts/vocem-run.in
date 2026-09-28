@@ -24,15 +24,12 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-# The shim, not the overlay itself: 18,728 bytes on disk with no C++ runtime behind
-# it, and 24 kB of mapping in a live process, 8 kB of that its own share. It dlopens
-# the real library RTLD_LOCAL on the first GL frame -- so a game that never draws
-# pays almost nothing, and the overlay's bundled ImGui never enters the game's
-# global symbol scope. This is the same file the session preloads through
-# environment.d, at the same path: the two agreeing matters more than it sounds,
-# because a difference between them would only show up in the games launched one
-# way, and it did -- the path here was a hardcoded /usr while the session's came
-# from the install prefix. tests/one_preload_path.cmake compares the two.
+# The shim, not the overlay itself: a small library with no C++ runtime behind it.
+# It dlopens the real library RTLD_LOCAL on the first GL frame -- so a game that
+# never draws pays almost nothing, and the overlay's bundled ImGui never enters the
+# game's global symbol scope. This is the same file the session preloads through
+# environment.d, at the same path, both taken from the install prefix: a difference
+# would only show up in the games launched one way (tests/one_preload_path.cmake).
 VOCEM_PRELOAD='@VOCEM_LIBDIR_TOKEN@/libvocem_gl_shim.so'
 
 if [ -n "${LD_PRELOAD:-}" ]; then

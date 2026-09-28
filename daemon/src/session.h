@@ -3,10 +3,9 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // The voice channel as the daemon knows it, and its publication into the
-// segment. This is the model half of main.cpp, moved out so that main.cpp is
-// the loops and nothing else (entry 134): who is in the channel, what each of
-// them is doing, which message arrived last, and one publish() that writes
-// all of it under the seqlock.
+// segment: who is in the channel, what each of them is doing, which message
+// arrived last, and one publish() that writes all of it under the seqlock.
+// main.cpp is the loops and nothing else.
 
 #ifndef VOCEM_DAEMON_SESSION_H
 #define VOCEM_DAEMON_SESSION_H

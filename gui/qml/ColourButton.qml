@@ -15,7 +15,7 @@ Item {
 
     required property color colour
     // What the swatch goes back to. The reset appears only once the colour has
-    // actually been changed, but it always occupies its space.
+    // changed, but always occupies its space.
     property color defaultColour: colour
     property string title: qsTr("Choose a colour")
     signal picked(color colour)
@@ -32,10 +32,8 @@ Item {
     implicitWidth: 96
     implicitHeight: Math.max(swatch.height, reset.height)
 
-    // An AbstractButton rather than a Rectangle with a TapHandler on it. As a
-    // rectangle it could only be clicked: no focus, no Space or Enter, no role for
-    // a screen reader, and nothing to show that it was the focused control -- the
-    // one setting on the page that the keyboard could not reach at all.
+    // An AbstractButton, so the swatch takes focus, Space and Enter, and has a
+    // role for a screen reader.
     AbstractButton {
         id: swatch
 
@@ -77,14 +75,9 @@ Item {
         }
     }
 
-    // Last in the row and at its right edge, which is where the reset sits on
-    // every other kind of row (SliderRow, SpinRow): the way back to the default
-    // is meant to be one column down the page. It used to be first, so on the
-    // Appearance page the colour rows' resets stood 65 units left of the slider
-    // rows' -- measured out of the geometry dump, two right edges where there
-    // should have been one. Declared after the swatch as well as drawn after
-    // it, so Tab reaches the swatch first; both are in the chain, which the
-    // dump reports for every reset in the window (activeFocusOnTab).
+    // Last in the row and at its right edge, where the reset sits on every
+    // other kind of row (SliderRow, SpinRow), so the resets form one column.
+    // Declared after the swatch, so Tab reaches the swatch first.
     ToolButton {
         id: reset
         objectName: "rowReset"
@@ -107,9 +100,7 @@ Item {
         id: dialog
         title: root.title
         selectedColor: root.colour
-        // The overlay's colours have no alpha of their own -- transparency is a
-        // separate setting, so offering an alpha channel here would be two ways to
-        // say the same thing, disagreeing with each other.
+        // No alpha: transparency is a separate setting.
         options: ColorDialog.NoEyeDropperButton
         onAccepted: root.picked(selectedColor)
     }

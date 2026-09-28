@@ -3,9 +3,6 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // The gaps inside the boxes.
-//
-// One section of the window. Each is its own file: they have nothing to say to
-// each other, and one file of eight hundred lines said all of it at once.
 
 import QtQuick
 import QtQuick.Layouts
@@ -18,9 +15,7 @@ ScrollablePage {
     title: qsTr("Spacing")
     subtitle: qsTr("The gaps inside both boxes, on a 1080p display. They grow with the panel size.")
 
-    // Both boxes, live, beside the controls -- every gap edited on this page
-    // moves them on the spot. The same components the geometry comparison
-    // measures, fed by the bridge's edited copy.
+    // Both boxes, live, beside the controls: every gap edited here moves them.
     side: LivePreview {
         objectName: "spacingLive"
         anchors.fill: parent

@@ -3,9 +3,6 @@
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
 // What this is, what is installed, and where the settings live.
-//
-// One section of the window. Each is its own file: they have nothing to say to
-// each other, and one file of eight hundred lines said all of it at once.
 
 import QtQuick
 import QtQuick.Controls
@@ -15,15 +12,12 @@ import Vocem
 ScrollablePage {
     id: root
 
-    // No settings here, so no bar along the bottom. The title repeats the words
-    // of the entry it was reached from, which is what the KDE guidelines ask of a
-    // page heading.
+    // No settings here, so no bar along the bottom. The title repeats the
+    // sidebar entry's words, as the KDE guidelines ask of a page heading.
     title: qsTr("About Vocem Overlay")
     subtitle: qsTr("Shows your Discord voice channel inside the game, through a Vulkan layer and an OpenGL hook. Not affiliated with Discord Inc.")
 
-    // The version at the top, beside the name, rather than in small
-    // grey type at the foot of the page: it is the thing an About page
-    // is opened for.
+    // The version at the top: it is what an About page is opened for.
     RowLayout {
         spacing: Theme.mediumSpacing
         Layout.fillWidth: true
@@ -59,15 +53,12 @@ ScrollablePage {
 
         SettingRow {
             label: qsTr("Settings file")
-            // Selectable, and with the button that puts it on the
-            // clipboard: a path nobody can copy is a path to be typed
-            // out by hand.
+            // Shown as the description, with a button that copies it.
             description: root.config.configPath
 
-            // Zero-sized as well as invisible. SettingRow sizes its control column
-            // from what is in it, and a hidden text item as wide as the path pushed
-            // the copy button back into the middle of the row instead of leaving it
-            // at the right edge with every other control in the window.
+            // The copy's source, zero-sized as well as invisible: SettingRow
+            // sizes its control column from its children, and a path-wide item
+            // would push the button off the right edge.
             TextEdit {
                 id: pathHolder
                 visible: false

@@ -7,8 +7,7 @@
 // None of this is a setting and none of it is state the daemon publishes: it is
 // the typeface the previews have to draw with, the icons the desktop happens to
 // carry, the resolution of the display, and whether the two halves of the overlay
-// are actually installed. It sat in the middle of ConfigBridge, between the
-// setters, which made a file about settings twice as long and half as clear.
+// are actually installed.
 //
 // ConfigBridge keeps the QML-facing properties; each one is a line that calls in
 // here.
@@ -51,12 +50,12 @@ namespace vocem {
 // Only TrueType outlines are offered, and the reason is narrower than it looks.
 // ImGui rasterises with stb_truetype, which *does* implement Type 2 charstrings
 // (imstb_truetype.h, stbtt__run_charstring) and so reads plain CFF OpenType --
-// but not CFF2, which is what a variable .otf carries: Cantarell-VF.otf was
-// measured producing an atlas of 0x0 pixels and no glyphs at all. The window
-// cannot tell those two apart without rasterising, and fontconfig's format
-// string can, so the filter is the conservative one: what is offered is what the
-// overlay is measured drawing. A family kept out this way is a family the user
-// cannot pick; a family let in wrongly is a setting that appears to do nothing.
+// but not CFF2, which is what a variable .otf carries, and a CFF2 face builds
+// an empty atlas. The window cannot tell those two apart without rasterising,
+// and fontconfig's format string can, so the filter is the conservative one:
+// what is offered is what the overlay is known to draw. A family kept out this
+// way is a family the user cannot pick; a family let in wrongly is a setting
+// that appears to do nothing.
 inline bool font_file_for(const QString& family, bool bold, QString* file) {
     if (family.isEmpty() || !FcInit()) {
         return false;
@@ -91,9 +90,7 @@ inline bool font_file_for(const QString& family, bool bold, QString* file) {
     // per name the face answers to, and nothing in fontconfig's documentation
     // promises that index 0 of a *matched* pattern is the same string FcFontList
     // reported for the same font. Asking all of them costs a loop over two or
-    // three strings and takes the promise out of it. (Measured on this machine
-    // before the change: all 267 offered families resolved through index 0
-    // alone, so this is a promise made rather than a defect fixed.)
+    // three strings and takes the promise out of it.
     FcChar8* matched_family = nullptr;
     FcChar8* path = nullptr;
     FcChar8* format = nullptr;
@@ -121,11 +118,8 @@ inline bool font_file_for(const QString& family, bool bold, QString* file) {
     // Refused rather than shipped.
     //
     // A named instance is accepted, and what gets drawn is the file's default
-    // instance. Measured on this machine: of 534 resolutions (267 families,
-    // both weights) exactly one lands anywhere but face 0 -- Adwaita Sans bold,
-    // instance 7 of AdwaitaSans-Regular.ttf, which is why the bold of a variable
-    // family comes out at the regular weight and why the comment on
-    // ConfigBridge::setFontFamily says what it says.
+    // instance: the bold of a variable family (Adwaita Sans, for one) comes out
+    // at the regular weight -- see ConfigBridge::setFontFamily.
     int face = 0;
     FcPatternGetInteger(match, FC_INDEX, 0, &face);
     const bool whole_file = (face & 0xFFFF) == 0;
@@ -203,10 +197,10 @@ struct OverlayFonts {
     // The two measure a font size differently. ImGui asks stb_truetype to scale the
     // face so that ascent minus descent comes to the size it asked for, while Qt's
     // pixelSize is the em square. For Inter those differ by about a fifth, so a
-    // preview asking Qt for "16 pixels" drew noticeably larger text than the game
-    // did at 16 -- which then made every box that ends where its text ends too
-    // wide. Measured here rather than written down: it is a property of the font
-    // file, and the file can be replaced.
+    // preview asking Qt for "16 pixels" would draw larger text than the game does
+    // at 16, and every box that ends where its text ends would be too wide.
+    // Computed from the file rather than written down: it is a property of the
+    // font file, and the file can be replaced.
     qreal ratio = 1.0;
 };
 
@@ -243,9 +237,9 @@ inline const OverlayFonts& overlay_fonts() {
     return fonts;
 }
 
-// The same measurement for a family the user chose. It cannot be the constant
-// it used to be: ascent-minus-descent against the em square is a property of
-// the file, so every preview drawn in somebody else's font would otherwise be
+// The same measurement for a family the user chose. It cannot be a constant:
+// ascent-minus-descent against the em square is a property of the file, so
+// every preview drawn in somebody else's font would otherwise be
 // laid out against Inter's proportion and end up the wrong width -- which is
 // exactly the divergence this ratio exists to close. Cached per family, because
 // a QML binding asks for it on every evaluation.
@@ -283,7 +277,7 @@ inline QString theme_icon(const QStringList& names) {
 // The displays, as the maps depict them.
 //
 // Not from Qt. On a fractionally scaled Wayland session Screen.width is logical --
-// 2560 on the 3840-wide panel this was written on -- and the device pixel ratio
+// 2560 on a 3840-wide panel at 150% -- and the device pixel ratio
 // that would put it back is rounded to a whole number by the compositor protocol,
 // so multiplying the two overshoots by a third. What the game will actually render
 // at is the mode the display is in, and the kernel says what that is.
@@ -309,9 +303,8 @@ inline QString drm_root() {
 }
 
 // Every connected, enabled connector with a readable mode, sorted by name --
-// through display.h's one reader, which is the daemon's too. This file carried
-// a second reader in Qt, and the two had disagreed once about `enabled` (entry
-// 135); the shape of the tree is known in one place now.
+// through display.h's one reader, which is the daemon's too, so the two cannot
+// disagree about what a connected display is.
 inline QList<DisplayMode> read_displays() {
     QList<DisplayMode> found;
     vocem::DisplayModeInfo modes[vocem::kMaxDisplayModes];
@@ -331,19 +324,10 @@ inline QList<DisplayMode> read_displays() {
 //
 // Remembered, because a QML binding asks for each of them every time the state
 // changes -- twice a second -- and a /sys walk per binding per tick is not what
-// this window should spend its time on. NOT answered once, which is what they
-// used to be: this is a tray application that starts hidden at login and stays
-// up for the session, so "once" meant "at login". Meanwhile the daemon re-reads
-// the same tree every sixty seconds and republishes, and running games follow
-// it -- so after a monitor was plugged in the overlay resized and the window
-// that is supposed to be a picture of it went on drawing the old display,
-// captioning the old resolution, and not offering the new one in "Map shows",
-// until somebody quit the tray icon and opened it again. Measured against the
-// packaged 0.1.4-1 with a 1280x1024 tree and a 3840x2160 connector added 1.6 s
-// after the window was up: every map stayed 5:4 for the rest of the run, where
-// the same two displays present at startup gave 16:9. The reader was right; the
-// remembering was the defect (entry 63's shape, in the instrument the owner uses
-// to place the overlay).
+// this window should spend its time on. Not answered once: this is a tray
+// application that stays up for the whole session, while the daemon re-reads
+// the same tree every sixty seconds and running games follow it, so a monitor
+// plugged in later must reach the maps, the caption and "Map shows" too.
 //
 // All three together, so one call forgets all of them: two facts about one
 // display refreshed a tick apart is a window disagreeing with itself.
@@ -365,21 +349,17 @@ inline RememberedDisplays& remembered_displays() {
 // Ask the kernel again the next time each of them is read.
 //
 // The cadence belongs to the caller and ConfigBridge puts it on its four-second
-// sweep, not on the twice-a-second tick. Measured before choosing: one
-// read_displays() against this machine's /sys/class/drm (four connectors, one
-// connected) costs 141 us, twice over 200 runs -- so four seconds is thirty-five
-// parts in a million of the window's time, sooner than anybody can plug a
-// monitor in and look at the settings, and fifteen times more attentive than the
-// daemon, which calls the same question every sixty seconds.
+// sweep, not on the twice-a-second tick: a read_displays() costs on the order of
+// a hundred microseconds, so four seconds is a negligible share of the window's
+// time and still sooner than anybody can plug a monitor in and look.
 inline void forget_displays() {
     detail::remembered_displays() = detail::RememberedDisplays{};
 }
 
 inline const QList<DisplayMode>& displays() {
-    // A display that is asleep reports itself disconnected with no modes at all
-    // -- which is what a run with the monitor blanked found, and what a caption
-    // of "0 × 0" came from -- so an empty answer is asked again on the next read
-    // rather than kept until the sweep.
+    // A display that is asleep reports itself disconnected with no modes at all,
+    // which would caption "0 × 0", so an empty answer is asked again on the next
+    // read rather than kept until the sweep.
     QList<DisplayMode>& connected = detail::remembered_displays().connected;
     if (connected.isEmpty()) {
         connected = read_displays();
@@ -401,13 +381,9 @@ inline uint32_t overlay_display_height() {
 
 // The display the overlay is sized for: the tallest connected mode, which is
 // what display.h picks and what the daemon publishes. Zero-sized where nothing
-// can be read.
-//
-// The enumeration is sorted by connector name, and the first entry of it was
-// what the maps used to caption themselves with -- so on a machine whose
-// tallest display is not its alphabetically first, the automatic map named one
-// display and drew the boxes at the size they take on another. The number the
-// overlay is actually sized from has one source; so should the picture of it.
+// can be read. Not the enumeration's first entry: that is sorted by connector
+// name, and the picture must follow the number the overlay is actually sized
+// from (entry 106).
 inline DisplayMode sizing_display() {
     DisplayMode best;
     for (const DisplayMode& display : displays()) {
@@ -419,9 +395,8 @@ inline DisplayMode sizing_display() {
 }
 
 // The shape of that display, or 0 where no mode can be read -- the automatic
-// map's aspect, which used to come from `Screen`: the screen this window
-// happens to be on, which on a laptop beside a 16:9 monitor is neither the
-// display the overlay is sized for nor the one the caption names.
+// map's aspect. Not `Screen`: the screen this window happens to be on is not
+// necessarily the display the overlay is sized for nor the one the caption names.
 inline qreal sizing_display_aspect() {
     const DisplayMode sizing = sizing_display();
     return sizing.height > 0 ? static_cast<qreal>(sizing.width) / sizing.height : 0.0;
@@ -455,8 +430,7 @@ inline QString screen_resolution() {
 // installed" without running a game to find out. XDG_DATA_DIRS is honoured because
 // a --prefix=~/.local install is a supported way to have this.
 inline bool vulkan_layer_installed() {
-    // The XDG data roots, spelled once for the project (apps.h): this was the
-    // third copy of the enumeration.
+    // The XDG data roots, spelled once for the project (apps.h).
     for (const std::string& root : vocem::detail::desktop_roots()) {
         const QString manifest = QString::fromStdString(root) +
                                  QStringLiteral("/vulkan/implicit_layer.d/VkLayer_vocem_overlay.json");
@@ -469,9 +443,7 @@ inline bool vulkan_layer_installed() {
 
 // The OpenGL side has no loader to ask: it is there only if something preloaded
 // it, which is what the environment.d file arranges. Two places have to be
-// checked, and the difference between them is real -- measured on this machine,
-// the user manager had the preload while plasmashell, started before the package
-// was installed, did not:
+// checked, and they differ after an install in the middle of a session:
 //
 //   * our own environment, which is what a game started from this window or from
 //     the same shell would inherit -- and, for a window started from the
@@ -482,17 +454,14 @@ inline bool vulkan_layer_installed() {
 //
 // Only the first means OpenGL games started from this desktop are covered. The
 // second alone means the file is installed and the session has not picked it up
-// yet, which only logging out fixes; the Debug page says that in its own words
-// rather than "Active in this session", which it used to say for either.
+// yet, which only logging out fixes; the Debug page says that in its own words.
 //
 // Two halves, asked differently. This process's own environment is a string
 // compare and is answered here at once. The user manager's is a `systemctl`
-// spawn, and that is NOT asked here: it used to be, synchronously with a
-// three-second cap, behind a CONSTANT property the Debug page reads while the
-// window is being built -- so the first frame waited on systemctl. ConfigBridge
-// starts that spawn asynchronously and publishes the answer when it arrives
-// (openglPreloadKnown); the arguments it runs are these, so the two stay one
-// question.
+// spawn, and that is NOT asked here, so the first frame never waits on it:
+// ConfigBridge starts that spawn asynchronously and publishes the
+// answer when it arrives (openglPreloadKnown); the arguments it runs are
+// these, so the two stay one question.
 inline bool opengl_preload_in_own_environment() {
     return qgetenv("LD_PRELOAD").contains("vocem_gl_shim");
 }
@@ -507,8 +476,8 @@ inline bool opengl_preload_in_manager_output(const QByteArray& show_environment)
 // the directories systemd.unit(5) lists for user units rather than asked of
 // systemctl. It is the answer ConfigBridge falls back on when
 // `systemctl --user cat` does not answer inside its cap -- a busy login, a
-// manager still starting -- because "no answer" read as "no unit" made the
-// window exec a vocemd of its own beside the one the unit was about to start.
+// manager still starting -- because reading "no answer" as "no unit" would make
+// the window exec a vocemd of its own beside the one the unit is about to start.
 // The runtime directories (transient units, generators) are left out: nothing
 // puts this unit there.
 inline bool daemon_unit_on_disk() {
@@ -558,10 +527,9 @@ inline QString autostart_entry_path() {
 // Whether the desktop will start this window at login: the entry is there AND
 // nothing in it switches it off. The desktops switch an entry off without
 // deleting it -- the Autostart specification's Hidden=true, which XFCE's
-// settings write, and GNOME's X-GNOME-Autostart-enabled=false -- and this used
-// to be a bare existence test, so the switch said "on" for a window that would
-// not start. Only the [Desktop Entry] group counts: an action group may carry
-// a key of the same name.
+// settings write, and GNOME's X-GNOME-Autostart-enabled=false -- so existence
+// alone would say "on" for a window that will not start. Only the
+// [Desktop Entry] group counts: an action group may carry a key of the same name.
 inline bool autostart_enabled() {
     QFile file(autostart_entry_path());
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -590,9 +558,9 @@ inline bool autostart_enabled() {
 
 // Makes the entry say `enabled`, and answers whether it does now. Off removes
 // the entry (see above for why it is not emptied); on writes this program's.
-// The caller writes only when the switch and autostart_enabled() differ: an
-// Apply of any setting used to rewrite the entry, which turned a desktop's own
-// "off" back on and threw away whatever the user had added to it.
+// The caller writes only when the switch and autostart_enabled() differ, so an
+// Apply of any other setting neither turns a desktop's own "off" back on nor
+// throws away what the user added to the entry (entry 226).
 inline bool set_autostart(bool enabled) {
     const QString path = autostart_entry_path();
     if (!enabled) {
@@ -608,7 +576,7 @@ inline bool set_autostart(bool enabled) {
     // an entry that names a program the desktop cannot find fails silently.
     // Quoted the way the specification's Exec key wants an argument quoted
     // (apps.h, desktop_exec_quoted): written bare, a path with a space in it
-    // was two arguments and a path with a `%` in it a field code.
+    // would be two arguments and a path with a `%` in it a field code.
     const QString executable = QString::fromStdString(
         vocem::detail::desktop_exec_quoted(QCoreApplication::applicationFilePath().toStdString()));
     QTextStream out(&file);

@@ -61,10 +61,9 @@ QFont ConfigBridge::overlayFont(qreal points, bool strong) const {
     return font;
 }
 
-// Not a constant any more, and it must not be: the ratio between ImGui's font
-// size and Qt's is a property of the file, so a preview drawn in a chosen family
-// and laid out against Inter's proportion would be the wrong width by however
-// much the two faces differ.
+// Not a constant: the ratio between ImGui's font size and Qt's is a property of
+// the file, so a preview in a chosen family laid out against Inter's proportion
+// would be the wrong width by however much the two faces differ.
 qreal ConfigBridge::overlayFontRatio() const {
     return vocem::overlay_font_ratio_for(QString::fromStdString(config_.font_family));
 }
@@ -130,16 +129,14 @@ QVariantMap ConfigBridge::counters() const {
 // half -- this process's own environment -- is answered in the constructor; a
 // hit there is the whole answer and nothing is spawned. Otherwise the spawn
 // runs beside the window's first frame, and the Debug page says it is asking
-// until the answer is in. Capped at three seconds, as the synchronous version
-// was, and "no answer" reads as "not in the manager" -- but off the first
-// frame's path.
+// until the answer is in. Capped at three seconds, and "no answer" reads as
+// "not in the manager".
 //
 // The manager's answer is its own fact and never "active": a program launched
 // from the desktop inherits the desktop's environment, fixed at login, not the
 // manager's -- so with the environment.d file installed after login the
 // manager has the preload and no game started from Plasma gets it until the
-// next login. This used to set openglPreloadActive from either half, and the
-// page said "Active in this session" and "Ready" for exactly that case.
+// next login.
 void ConfigBridge::probePreload() {
     opengl_preload_active_ = vocem::opengl_preload_in_own_environment();
     if (opengl_preload_active_) {
@@ -147,9 +144,7 @@ void ConfigBridge::probePreload() {
         return;
     }
     // A QPointer, not a raw one: the cap fires three seconds later whatever
-    // happened, and the process may have finished and been deleted by then --
-    // the first version dereferenced it from the timer and died there
-    // (SIGSEGV in QProcess::state, measured on the second run of the window).
+    // happened, and the process may have finished and been deleted by then.
     QPointer<QProcess> probe = new QProcess(this);
     const auto settle = [this, probe](bool in_manager) {
         if (opengl_preload_known_) {
@@ -179,14 +174,13 @@ void ConfigBridge::probePreload() {
 // A packaged install has a systemd user unit; a build tree does not. Preferring
 // systemctl keeps one owner of the process, so the daemon started from here is the
 // same one the session starts at login. Asked once, of `systemctl --user cat`,
-// and asynchronously: it used to be a synchronous spawn with a three-second cap
-// in the constructor, before the first frame. A start or a stop asked for before
-// the answer is in waits for it (startDaemon, stopDaemon).
+// asynchronously so the first frame does not wait for it. A start or a stop
+// asked for before the answer is in waits for it (startDaemon, stopDaemon).
 //
 // No answer inside the cap is NOT "no unit": it is a busy login or a manager
 // still coming up, which is exactly when the unit is about to start vocemd
-// itself -- and reading it as "no unit" made startDaemon exec a second one
-// beside it. The cap falls back on the unit files systemd would read
+// itself, and "no unit" would make startDaemon exec a second one beside it.
+// The cap falls back on the unit files systemd would read
 // (daemon_unit_on_disk). A systemctl that cannot be run at all is a machine
 // without systemd, and there the answer is no.
 void ConfigBridge::probeUnit() {
@@ -264,30 +258,23 @@ ConfigBridge::ConfigBridge(QObject* parent) : QObject(parent) {
     // somebody who alt-tabs out of a game to look is asking about *now*.
     refreshLiveInstances();
 
-    // The window and the overlay rise and fall together now: opened means the
+    // The window and the overlay rise and fall together: opened means the
     // overlay is up, Quit means everything down until the next opening. This is
     // the rising half -- if the daemon is not there, start it, whether the
     // window was opened from the menu or arrived hidden with the session's
     // autostart. The falling half is quitOverlay().
     //
-    // Not during a harness run: the offscreen geometry dump and the screenshot
-    // walk drive this window headless, and a measurement must not reach into
-    // the session's services. VOCEM_CONFIG_NO_DAEMON says the same for a run
-    // that is not a dump -- tests/single_instance.cmake, which needs the
-    // window's own startup path and none of its services.
+    // Not during a harness run: a measurement must not reach into the
+    // session's services (see skipDaemonUnderHarness).
     if (!attached_ && !harness_) {
         startDaemon();
     }
 }
 
-// A setting is edited here and written on Apply, not on the way past.
-//
-// Everything used to save on the keystroke, which is defensible for a window whose
-// every control has a picture beside it -- and wrong for the same reason: dragging
-// a slider from one end to the other wrote the file forty times and moved the
-// overlay in a running game forty times. The window now edits its own copy, the
-// previews follow it immediately, and the game sees one write when Apply is
-// pressed.
+// A setting is edited here and written on Apply, not on the way past: the
+// window edits its own copy, the previews follow it immediately, and a running
+// game sees one write when Apply is pressed rather than one per step of a
+// slider drag.
 void ConfigBridge::persist() {
     if (!pending_) {
         pending_ = true;
@@ -315,32 +302,26 @@ void ConfigBridge::persistNow(bool vocem::Config::*which) {
         // This write IS the file moving under the window, and `written` is the
         // file as it now stands -- every key, including anything edited outside
         // since this window opened, which write_switch reloads rather than
-        // overwrites (entry 136). The copy the window shows and Apply writes
-        // takes it from here, when nothing is waiting for Apply: without the
-        // line below the window went on showing its own morning copy, the Apply
-        // button stayed grey because nothing was pending, nothing said the two
-        // differed, and the next Apply wrote the window's copy over the edit.
-        // The timestamp is not advanced: the next sweep reloads the file it
-        // just wrote, which changes nothing, and a write that lands between
-        // this save and that sweep is read rather than adopted unread.
+        // overwrites. With nothing waiting for Apply the window takes it whole,
+        // or it would go on showing a stale copy that the next Apply writes
+        // over the outside edit. The timestamp is not advanced:
+        // the next sweep reloads the file it just wrote, which changes nothing,
+        // and a write that lands between this save and that sweep is read
+        // rather than adopted unread.
         //
         // With an edit waiting for Apply the window keeps its own edits, and
         // only those, exactly as reloadIfMoved decides it: every key it did not
-        // change follows the file (Config::merged), so neither the window nor
-        // the next Apply carries a value the file no longer has.
-        // start_at_login is read from the autostart entry, not from the file
-        // (which carries the key and is not believed) -- so it is carried
-        // across rather than taken from the read.
+        // change follows the file (Config::merged).
+        // start_at_login is read from the autostart entry, not from the file,
+        // so it is carried across rather than taken from the read.
         const bool login = config_.start_at_login;
         config_ = pending_ ? vocem::Config::merged(followed, config_, written) : written;
         config_.start_at_login = login;
     } else {
-        // The write failed and the switch in the window has already moved. Left
-        // alone, the window shows "on" against a file that says "off" for the
-        // rest of the session, with a grey Apply and nothing to press: entry
-        // 136 made apply() leave the edit pending for this exact reason and
-        // persistNow() was outside that fix. The InlineMessage says why; this
-        // is what makes the edit recoverable.
+        // The write failed and the switch in the window has already moved.
+        // Left pending, as apply() leaves a failed edit, so the window does not
+        // show "on" against a file that says "off" with nothing to press. The
+        // InlineMessage says why; this is what makes the edit recoverable.
         if (!pending_) {
             pending_ = true;
             emit pendingChanged();
@@ -355,10 +336,9 @@ void ConfigBridge::apply() {
     }
     // What the window changed, on top of the file as it stands: config_ is
     // the window's copy, saved_ the file it last followed, and a key the
-    // window did not change takes the file's value now (Config::merged).
-    // Saving config_ whole wrote back every key edited outside the window
-    // since it last followed the file -- a hand-written flatpak_apps, which
-    // the window has no control for, went back to its startup value.
+    // window did not change takes the file's value now (Config::merged), so
+    // a key edited outside the window -- flatpak_apps, which has no control
+    // here -- is not written back to an older value (entry 272).
     vocem::Config fresh;
     fresh.load();
     vocem::Config written = vocem::Config::merged(saved_, config_, fresh);
@@ -424,9 +404,8 @@ void ConfigBridge::reloadIfMoved() {
     // An edit waiting for Apply keeps the window's edits: Apply means "what the
     // window shows", and a reload underneath it would take them away. Every
     // key the window did not change follows the file even then
-    // (Config::merged): the window kept its whole copy here once, and the next
-    // Apply wrote the keys edited outside back to their old values. With
-    // nothing pending the window follows the file, as the game does.
+    // (Config::merged). With nothing pending the window follows the file, as
+    // the game does.
     config_ = pending_ ? vocem::Config::merged(saved_, config_, fresh) : fresh;
     saved_ = fresh;
     emit configChanged();
@@ -446,8 +425,7 @@ namespace {
 // The evidence the process wrote down, as a sentence about where the answer came
 // from rather than a verdict on the application. The record carries a token so
 // that it stays readable in a file and greppable in a log; the window is where it
-// has to be words a person is comfortable reading about their own software --
-// "Not a game" told somebody they disagreed with the window and nothing else.
+// has to be words a person is comfortable reading about their own software.
 //
 // The point of showing it at all is the case the detection gets wrong. `not-ours`
 // says the process was started from an entry that names a different program,
@@ -488,17 +466,17 @@ QString reason_text(const std::string& reason) {
         return ConfigBridge::tr("No desktop entry found under the name %1").arg(detail);
     if (kind == "nothing")
         return ConfigBridge::tr("No launcher id, game arguments or desktop entry to go on");
-    // A record written before the evidence was kept, and anything a later version
-    // learns to write. Neither is worth a row that says "unknown".
+    // A record without evidence, and any token this version does not know.
+    // Neither is worth a row that says "unknown".
     return {};
 }
 
 // Which of the page's groups this application belongs in. The verdict decides the
 // first; the evidence's own prefix tells the others apart -- the tokens are stable
-// on purpose (DESIGN, "Saying what it went on"), which is what makes them safe to
-// build interface on. `nothing`, `not-ours:`, `no-entry:` and the records written
-// before the evidence was kept all land in the last group: the cases where the
-// detection had nothing it could believe, and where the switch is the remedy.
+// on purpose, which is what makes them safe to build interface on. `nothing`,
+// `not-ours:`, `no-entry:` and records without evidence all land in the last
+// group: the cases where the detection had nothing it could believe, and where
+// the switch is the remedy.
 QString category_of(bool game, const std::string& reason) {
     if (game) {
         return QStringLiteral("game");
@@ -537,11 +515,9 @@ void ConfigBridge::refreshApplications() {
     // applications last changed -- an application installed while this window was
     // open gets one fresh look, and one that will never have an entry (a game under
     // a path its store invented) does not cost a directory walk every few seconds.
+    // A loop, not a call to itself: the latch that stops the second pass is
+    // lifted by the same condition that starts it.
     //
-    // A loop and not a call to itself. It was written as a call to itself, and the
-    // latch that was supposed to stop it was lifted by the same condition that
-    // started it: the window recursed until the stack was gone, which the
-    // screenshot run turned up as a segmentation fault at startup.
     // Which of the recorded names has a live process at this moment: one walk
     // of /proc per refresh (every four seconds, and only while the window is
     // up), comm per pid, into a set the loop below asks. The kernel truncates
@@ -594,10 +570,9 @@ void ConfigBridge::refreshApplications() {
             const bool asked_for = vocem::listed(config_.shown_apps, key) ||
                                    vocem::listed(config_.shown_apps, binary);
             // What the process itself concluded, which is the answer the injected
-            // code will act on. A record written before the detection existed does
-            // not carry it, so a Steam id in the same record stands in: it is the
-            // same evidence, and it is what made that process a game in the first
-            // place. Everything else sorts itself out the next time it runs.
+            // code will act on. A record without the verdict counts as a game when
+            // it carries a Steam id, which is the same evidence; everything else
+            // sorts itself out the next time it runs.
             const bool game = application.looks_like_game || !application.steam_app_id.empty();
             entry["game"] = game;
             entry["reason"] = reason_text(application.reason);
@@ -679,12 +654,9 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
 
     // The name the process really runs under. The kernel cuts it to fifteen
     // bytes, and a cut can end on a space -- "Slay the Spire 2" runs as
-    // "Slay the Spire " -- which the registry's reader trims away: the page
-    // then names it "Slay the Spire", a rule on that matches neither the
-    // process name nor the executable's, and the switch stored it and showed
-    // the application hidden while the overlay went on drawing there. The
-    // executable's first fifteen bytes are the cut when they trim to the
-    // page's name.
+    // "Slay the Spire " -- which the registry's reader trims away, so a rule
+    // on the page's name would match nothing (entry 278). The executable's
+    // first fifteen bytes are the cut when they trim to the page's name.
     std::string process = key;
     if (binary.size() >= 15) {
         const std::string cut = binary.substr(0, 15);
@@ -701,7 +673,7 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
     // and the executable's name when only that one fits. A name neither can
     // be -- a comma, or a space at either end, in both -- is refused and
     // said, and the checkbox is put back by re-announcing the list it reads:
-    // stored, "Foo, Bar" hid the applications Foo and Bar.
+    // stored, "Foo, Bar" would hide the applications Foo and Bar.
     const std::string rule = vocem::list_entry_fits(process) ? process : binary;
     if (!vocem::list_entry_fits(rule)) {
         reportFailure(tr("\"%1\" cannot be put in the list of applications: a name with a comma "
@@ -713,10 +685,8 @@ void ConfigBridge::setApplicationDrawn(const QString& name, bool drawn, bool gam
     }
 
     // Both spellings a rule may use are taken out: the process name, and the
-    // executable's own name, which config.h says a rule may be written
-    // against and which the list page honours when it reads. The switch used
-    // to remove the process name alone, so a hand-written rule on the
-    // executable's name snapped the box back the moment it was ticked.
+    // executable's own name, which the list page honours when it reads -- a
+    // hand-written rule on either would otherwise snap the box back.
     for (const std::string& spelling : {key, binary}) {
         if (spelling.empty()) {
             continue;
@@ -759,7 +729,7 @@ void ConfigBridge::refreshLiveInstances() {
         entry[QStringLiteral("path")] = QString::fromStdString(live.path);
         // The counters the process keeps beside its journal: how many presents
         // it was willing to draw in, and how many frames it actually painted.
-        // Zero-zero for a library from before the counters existed.
+        // Absent for a library that does not keep them.
         long frames = 0;
         long drawn = 0;
         if (vocem::journal_read_stat_beside(live.path, frames, drawn)) {
@@ -778,15 +748,12 @@ void ConfigBridge::refreshLiveInstances() {
     }
 }
 
-// Every report at once, not one at a time: the pop-up held one story because a
-// window holds one story, and the Debug section is a list.
+// Every report at once: the Debug section is a list.
 //
-// The text is NOT in the model. It was, on the reasoning that a crash report
-// exists to be read and there are never more than a handful -- and measured,
-// that reasoning cost 780 MB of resident memory and four and a half seconds of
-// startup for one 10 MB journal, paid whether or not anybody opened the page,
-// because every page of the window is built at launch. The list carries the
-// header only; the page asks for a text when it shows one.
+// The text is NOT in the model: every page of the window is built at launch,
+// so one oversized journal would cost memory and startup time whether or not
+// anybody opened the page (entry 62). The list carries the header only; the
+// page asks for a text when it shows one.
 void ConfigBridge::refreshCrashReports() {
     QVariantList fresh;
     for (const vocem::JournalEntry& report : vocem::journal_crashes()) {
@@ -824,16 +791,12 @@ void ConfigBridge::refreshCrashReports() {
 namespace {
 
 // A journal file is a file in the journal's own directory -- resolved, not
-// spelled. The first version compared `QFileInfo::absolutePath()` as a string,
-// which cleans `..` but does NOT resolve symlinks: a symlink planted inside
-// the journal directory passed the check and was followed, so the Debug
-// section displayed -- and the Copy button copied -- any file the user could
-// read. Worse than an invokable somebody has to call: the four-second scan
-// picked such a link up by itself, unattended. Measured with a link to
-// /etc/passwd, which duly appeared in the window. `canonicalFilePath()`
-// resolves the whole chain and returns empty for what does not exist, and the
-// directory is canonicalised too so that a spelling with a doubled slash --
-// which made Dismiss silently do nothing, forever -- cannot miss either.
+// spelled. A string comparison of `absolutePath()` cleans `..` but does not
+// resolve symlinks, and a link planted in the directory would have the Debug
+// section display and copy any file the user can read, picked up unattended
+// by the four-second scan. `canonicalFilePath()` resolves the whole chain and
+// returns empty for what does not exist; the directory is canonicalised too,
+// so a spelling with a doubled slash cannot miss either.
 bool inside_journal_directory(const QString& path) {
     const QString resolved = QFileInfo(path).canonicalFilePath();
     if (resolved.isEmpty()) {
@@ -851,8 +814,7 @@ bool inside_journal_directory(const QString& path) {
 
 // What one journal may contribute to this window's memory. A journal is a
 // handful of lines by construction; anything past this is not a journal, and
-// a settings window is not the place to find out how large it is (measured:
-// one 10 MB file cost 780 MB resident and 4.5 s of startup).
+// a settings window is not the place to find out how large it is.
 constexpr qint64 kJournalTextCap = 128 * 1024;
 
 }  // namespace
@@ -881,9 +843,9 @@ void ConfigBridge::crashCopy(const QString& path) const {
 void ConfigBridge::crashDismiss(const QString& path) {
     if (inside_journal_directory(path)) {
         QFile::remove(path);
-        // The counters go with the journal. Only the clean-exit path used to
-        // remove them, so a crashed process left its .stat behind for good --
-        // small, but it accumulated in the directory both walks scan.
+        // The counters go with the journal: a crashed process never removes
+        // its own .stat, and it would accumulate in the directory both walks
+        // scan.
         QString stat = path;
         if (stat.endsWith(QStringLiteral(".running"))) {
             stat.chop(8);
@@ -932,9 +894,8 @@ void ConfigBridge::clearJournals() {
 // history above is what there is, and this says so instead of pretending.
 //
 // Asynchronous, because this is called from the page becoming visible and from
-// a button, both on the GUI thread: the first version waited up to three
-// seconds for journalctl and froze the whole window while it did (measured at
-// 3003 ms against a slow stand-in). The answer arrives when it arrives.
+// a button, both on the GUI thread, and a slow journalctl would freeze the
+// whole window. The answer arrives when it arrives.
 void ConfigBridge::refreshDaemonLog() {
     if (daemon_log_process_) {
         return;  // one ask at a time; the answer refreshes the page either way
@@ -981,12 +942,9 @@ void ConfigBridge::refreshDaemonLog() {
                        QStringLiteral("-o"), QStringLiteral("short")});
 }
 
-// The machine's displays, re-read and announced only when they changed. They
-// were read once, on first use, and kept for the life of the process -- which
-// for a tray application started at login is the whole session (entry 111);
-// then forgotten on every sweep and re-read by every binding on stateChanged,
-// which fires twice a second. Read here, once per sweep, compared, announced
-// on a signal of their own.
+// The machine's displays, re-read once per sweep and announced on a signal of
+// their own only when they changed: a tray application started at login lives
+// the whole session, and monitors come and go under it (entry 111).
 void ConfigBridge::refreshDisplays() {
     vocem::forget_displays();
     ++display_reads_;
@@ -1026,30 +984,19 @@ void ConfigBridge::refreshState() {
         reloadIfMoved();
         refreshApplications();
         refreshCrashReports();
-        // The live list on the same tick as the rest. It used to be computed
-        // in the constructor and never again, so a window left open before a
-        // game started said "the overlay is not drawing anywhere" while the
-        // overlay was drawing -- reported by the owner with Minecraft up,
-        // 28223 frames in its journal, and an empty Debug page. Exactly the
-        // silence this page exists to break, produced by the page itself.
+        // The live list on the same tick as the rest, so a game started while
+        // the window is open appears on the Debug page (entry 63).
         refreshLiveInstances();
-        // And the machine's displays, on the same slow tick. They were read
-        // once, on first use, and kept for the life of the process -- which for
-        // a tray application started at login is the whole session. The daemon
+        // And the machine's displays, on the same slow tick: the daemon
         // re-reads /sys/class/drm every sixty seconds and running games follow
-        // it, so a monitor plugged in after the window opened resized the
-        // overlay while the map of it went on drawing the display that was
-        // there at login. Forgotten here rather than re-read here: the reads
-        // are what fill them again, and every one of them is a binding on
-        // stateChanged, which this tick ends by emitting.
-        //
-        // On this tick and not the twice-a-second one, measured: 141 us per
-        // enumeration on this machine, so four seconds is thirty-five parts in
-        // a million and still fifteen times more often than the daemon asks.
+        // it, so the map has to follow a monitor plugged in after the window
+        // opened. An enumeration costs about 141 us, so four seconds is
+        // thirty-five parts in a million and still fifteen times more often
+        // than the daemon asks.
         refreshDisplays();
-        // The segment's ABI, for the Debug page's two-sided question (entry
-        // 60): asked here, once per sweep, rather than by every binding on
-        // every tick. Attached means the reader accepted it, which is our own.
+        // The segment's ABI, for the Debug page's two-sided question: asked
+        // here, once per sweep, rather than by every binding on every tick.
+        // Attached means the reader accepted it, which is our own.
         ++abi_peeks_;
         segment_abi_ = attached_ ? static_cast<int>(vocem::kAbiVersion)
                                  : static_cast<int>(vocem::peek_abi_version());
@@ -1084,12 +1031,9 @@ void ConfigBridge::refreshState() {
     SelfVoice fresh_voice = NotInChannel;
     if (attached_ && snapshot_.in_channel) {
         // In a channel, whoever we turn out to be: the quiet ring rather than
-        // the not-in-a-channel portrait. Without this, a segment that carries
-        // no self flag -- an older daemon, or one whose AUTHENTICATE reply
-        // never named the user -- showed the tray icon of somebody not in a
-        // call while the tooltip beside it said "Connected, 3 participants".
-        // A fallback that is right for its own case hiding the case it was
-        // not written for is entry 34's shape.
+        // the not-in-a-channel portrait, also when no row carries the self
+        // flag (an AUTHENTICATE reply that never named the user), so the icon
+        // never contradicts the tooltip's "Connected, 3 participants".
         fresh_voice = InChannelIdle;
         for (uint32_t i = 0; i < snapshot_.user_count; ++i) {
             const vocem::User& user = snapshot_.users[i];
@@ -1156,10 +1100,8 @@ QString ConfigBridge::statusText() const {
         return tr("Connected, not in a voice channel");
     }
     // Two sentences rather than "%1 participant(s)": with no translation loaded
-    // Qt shows the source text as written, so the bracketed suffix reached the
-    // screen for somebody to expand in their head. (%n would need a translator
-    // to pick the form; two plain strings are right today and translatable
-    // tomorrow.)
+    // Qt shows the source text as written. (%n would need a translator to pick
+    // the form; two plain strings are right untranslated and translatable.)
     if (snapshot_.user_count == 1) {
         return tr("Connected, one participant");
     }
@@ -1215,12 +1157,12 @@ QString ConfigBridge::daemonExecutable() const {
 }
 
 
-// The harness drives this window to measure it, and a measurement must not
-// reach the session's services: the Quit at the end of a run, a close with no
-// tray behind it (every offscreen run has none) and Re-authorise all used to
-// end in a stop, and with the unit question never asked the stop was
-// `pkill -TERM -x vocemd` -- the owner's live daemon included. Said once, so a
-// harness run that expected a daemon can find out why there was none.
+// The harness (the offscreen geometry dump, the screenshot walk, and
+// tests/single_instance.cmake through VOCEM_CONFIG_NO_DAEMON) drives this
+// window to measure it, and a measurement must not reach the session's
+// services: the Quit at the end of a run, a close with no tray behind it and
+// Re-authorise would otherwise stop the live daemon (entry 223). Said once, so
+// a harness run that expected a daemon can find out why there was none.
 void ConfigBridge::skipDaemonUnderHarness(const char* what) {
     if (!harness_said_) {
         harness_said_ = true;
@@ -1317,9 +1259,9 @@ void ConfigBridge::stopDaemon(std::function<void()> done) {
 // tests/daemon_notification.cpp on the backend's side) -- and only then does
 // this process end, so nothing can interleave between "the window is gone" and
 // "the overlay is still up" in the order a user would notice. The wait is
-// asynchronous now: the windows are hidden at once and the process ends when
-// the stop has, where a synchronous stop held a visible, frozen window for as
-// long as the daemon took to leave -- up to its TimeoutStopSec. Reopening the
+// asynchronous: the windows are hidden at once and the process ends when the
+// stop has, so no frozen window stays up for as long as the daemon takes to
+// leave -- up to its TimeoutStopSec. Reopening the
 // application starts the daemon again (see the constructor), and a game still
 // running reattaches to the new segment by itself.
 void ConfigBridge::quitOverlay() {
@@ -1379,28 +1321,19 @@ QString ConfigBridge::channelName() const { return tr("Voice channel"); }
 
 // The four people every preview draws, and never anybody real.
 //
-// It used to be the live channel when the daemon was connected, which made the
-// preview a moving picture: the box changed width when somebody with a long name
-// joined, rows appeared and disappeared under the slider being dragged, and the
-// same page looked different from one minute to the next. Nothing the user is
-// setting here depends on who is in the channel, and a settings window that shifts
-// under the hand while it is being read is worse than one that shows an example.
+// Nothing the user is setting here depends on who is in the channel, and a
+// preview of the live channel would shift under the hand -- the box changing
+// width as somebody joins, rows coming and going under a dragged slider.
 //
 // Fixed also means the preview can be held to the drawing: tests/panel_geometry.cpp
 // builds the real panel from this same roster, and scripts/compare-preview.py puts
 // the two side by side. One of each state, so every decoration a row can draw is on
 // screen at once.
 //
-// And no pictures, which is what the measurement's roster has: each of these used
-// to carry the desktop's own `user-identity` icon, drawn *over* the overlay's
-// placeholder by the preview's masked-image path. Two head-and-shoulders figures
-// from two artwork sets, in two greys, one of them square-shouldered -- which is
-// the grey shadow under the silhouette the owner kept reporting and no
-// instrument here could see: the icon does not resolve in the offscreen harness,
-// so it drew nothing where it draws a second figure on a real desktop. What the
-// preview shows now is the placeholder the game draws for somebody whose picture
-// has not arrived, which is also the only honest example: the window has no
-// Discord pictures to show.
+// And no pictures: the preview shows the placeholder the game draws for somebody
+// whose picture has not arrived, which is the only honest example -- the window
+// has no Discord pictures to show. A desktop icon here would be drawn over that
+// placeholder as a second figure, and only on a real desktop.
 QVariantList ConfigBridge::participants() const {
     const struct {
         const char* name;
@@ -1582,9 +1515,8 @@ void ConfigBridge::setFontSize(qreal value) {
 //
 // A family whose files cannot be resolved is refused rather than half-written.
 // The alternative -- storing the name and no path -- is a setting that shows the
-// user's choice in the window and draws Inter in the game, which is the shape of
-// defect this project keeps finding: the interface saying one thing and the
-// overlay doing another.
+// user's choice in the window and draws Inter in the game: the interface saying
+// one thing and the overlay doing another.
 void ConfigBridge::setFontFamily(const QString& value) {
     const QString wanted = value.trimmed();
     if (wanted.isEmpty()) {
@@ -1604,9 +1536,7 @@ void ConfigBridge::setFontFamily(const QString& value) {
         // Refused, and said so by putting the control back: a ComboBox has
         // already moved to what was clicked, and its binding on this value only
         // re-runs when the settings change. Without this the box would go on
-        // naming a family the file does not carry -- the interface saying one
-        // thing while the overlay does another, which is the shape this refusal
-        // exists to avoid in the first place.
+        // naming a family the file does not carry.
         emit configChanged();
         return;
     }
@@ -1619,9 +1549,8 @@ void ConfigBridge::setFontFamily(const QString& value) {
     // named instances of one file, and the overlay opens files rather than
     // instances -- so Adwaita Sans, whose bold fontconfig answers as instance 7
     // of AdwaitaSans-Regular.ttf, comes out here as the same path twice and is
-    // drawn at the regular weight. The behaviour is the right one; the reason is
-    // worth writing down, because a family that plainly has a bold and does not
-    // show it looks like a defect from the outside.
+    // drawn at the regular weight. That is right, though it looks like a
+    // defect from the outside.
     if (!vocem::font_file_for(wanted, true, &bold) || bold.isEmpty()) {
         bold = regular;
     }
@@ -1704,14 +1633,14 @@ void ConfigBridge::setShowMutedState(bool value) {
 // injected code calls, so the previews cannot drift from the drawing.
 //
 // The colours arrive with their alpha: the scrim over a muted picture and the rim
-// around a badge are translucent by design, and a preview that dropped that would
+// around a badge are translucent on purpose, and a preview that dropped that would
 // be showing a different picture rather than the same one at another size. The
 // distances arrive in the overlay's reference unit, which is what the previews are
 // already laid out in.
+//
 // One function builds the map whatever configuration it is asked about:
 // overlayTheme() passes the window's edited copy, presetThemes() passes that
-// copy with one preset's writes applied. Two hand-kept copies of this table
-// would be the hand-mirrored-colours era back under another name.
+// copy with one preset's writes applied, so there is no second table to drift.
 static QVariantMap theme_map(const vocem::Config& config) {
     const vocem::Theme theme = vocem::theme_for(config);
 
@@ -1811,8 +1740,8 @@ QVariantList ConfigBridge::overlayPresets() const {
 // picture has not arrived.
 //
 // The body is always there, because the drawn toast always carries one: the
-// message's text is not a setting any more, it is a transport (vocem/note.h).
-// The example the preview draws is therefore the shape of every toast.
+// message's text is a transport, not a setting (vocem/note.h). The example is
+// therefore the shape of every toast.
 QVariantMap ConfigBridge::notificationPreview() const {
     QVariantMap entry;
     entry["title"] = tr("User 1");

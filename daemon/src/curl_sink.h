@@ -2,31 +2,26 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// The one CURLOPT_WRITEFUNCTION callback. It existed twice, identical to the
-// character, in the two files of this binary that download anything -- the
-// entry-33 shape at its smallest.
+// The one CURLOPT_WRITEFUNCTION callback, shared by the two files of this
+// binary that download anything.
 //
 // It carries a byte limit because `CURLOPT_MAXFILESIZE` does not: that option
 // acts on the length a server *advertises*, and a response with no length
-// (chunked, which any server may choose) advertises nothing -- so the callback
-// was the only place a body could be bounded, and it bounded nothing. It also
-// may not let an exception out: it is called from libcurl's own C frames, where
-// an unwind is undefined behaviour, and `append`'s bad_alloc had nothing
-// between it and std::terminate.
+// (chunked, which any server may choose) advertises nothing, so the callback
+// is the only place a body can be bounded. It also may not let an exception
+// out: it is called from libcurl's own C frames, where an unwind is undefined
+// behaviour.
 
 #ifndef VOCEM_CURL_SINK_H
 #define VOCEM_CURL_SINK_H
 
 #include <cstddef>
 
-// The one User-Agent, beside the one write callback, for the same reason: it
-// existed twice, identical to the character, in the two files of this binary
-// that download anything -- and both copies said 0.1 while the package said
-// 0.1.5, because a hand-written version is a version nobody re-measures
-// (entry 110's shape, in the one string the daemon shows a server it does not
-// control). The number comes from CMakeLists.txt's project(VERSION) through
-// VOCEM_VERSION, the same road the window's About page takes, and
-// tests/version_agrees.cmake holds the definition to the file.
+// The one User-Agent, beside the one write callback. The number comes from
+// CMakeLists.txt's project(VERSION) through VOCEM_VERSION, the same road the
+// window's About page takes, because a hand-written version goes stale;
+// tests/version_agrees.cmake holds the definition to the
+// file.
 #define VOCEM_USER_AGENT "vocem-overlay/" VOCEM_VERSION
 #include <string>
 

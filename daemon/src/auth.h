@@ -42,12 +42,10 @@ void forget_token();
 
 // Exchanges the code from the AUTHORIZE reply for an access token. Blocking, by
 // design: nothing else can proceed until authorisation completes, and it happens
-// once -- up to forty seconds (the two curl timeouts below) with no tick in
-// them, which rpc_client.cpp writes down. What it must not do is outlive a
-// stop: `stop` is the daemon's own flag, consulted from the transfer's
-// progress callback exactly as the avatar worker's is (entry 134), so a
-// SIGTERM during a stalled exchange ends it within a second rather than at
-// the transfer's timeout -- and past the unit's TimeoutStopSec, with the
+// once -- up to forty seconds (the two curl timeouts) with no tick in them.
+// `stop` is the daemon's own flag, consulted from the transfer's progress
+// callback as the avatar worker's is, so a SIGTERM during a stalled exchange
+// ends it within a second rather than past the unit's TimeoutStopSec with the
 // segment still published (tests/daemon_exchange_stop.cpp). Null means no way
 // out, which no caller in the daemon passes.
 std::string exchange_code_for_token(const std::string& code,

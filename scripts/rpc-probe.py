@@ -38,11 +38,10 @@ from typing import Any, Iterator
 try:
     import websocket  # provided by python-websocket-client
 except ImportError:
-    # Not installed here (it was, on 2026-08-10; it is not on 2026-09-08), and
-    # the moment a probe is wanted is a moment somebody is streaming, not a
-    # moment to install packages. The handful of the protocol this script uses
-    # -- one handshake, masked text frames out, text/ping/close frames in --
-    # fits in the standard library below, under the same three names.
+    # Often not installed, and the moment a probe is wanted is not a moment to
+    # install packages. The handful of the protocol this script uses -- one
+    # handshake, masked text frames out, text/ping/close frames in -- fits in
+    # the standard library below, under the same three names.
     import base64
     import os as _os
     import socket
@@ -66,10 +65,8 @@ except ImportError:
             )
             self.sock.sendall(request.encode())
             head = b""
-            # Bounded, and on the caller's clock. A peer that accepts and then
-            # trickles has to hit something: the daemon's own client learned
-            # this twice (entries 72 and 77), and this probe had neither a cap
-            # nor a deadline on the handshake.
+            # Bounded, and on the caller's clock: a peer that accepts and then
+            # trickles has to hit something (entry 182).
             deadline = time.monotonic() + max(timeout, 1.0)
             while b"\r\n\r\n" not in head:
                 if len(head) > 8192:
@@ -113,27 +110,11 @@ except ImportError:
         def send(self, text: str) -> None:
             self._frame(0x1, text.encode())
 
-        # A frame is taken whole or not at all.
-        #
-        # This used to consume the two-byte header and then read the payload,
-        # so a socket timeout inside the read propagated out of the MIDDLE of a
-        # frame -- and run() catches timeouts and continues, so the next recv()
-        # read two bytes of payload as a header. From there the stream was
-        # desynchronised for the rest of the session and every garbled message
-        # landed in `except json.JSONDecodeError: continue`, which is silence;
-        # report() then printed "the local RPC does not expose it; drop the
-        # feature from scope" on an empty list of hits. This is the instrument
-        # phase 0b was settled with, and its own comment already records that
-        # it has produced one wrong verdict.
-        #
-        # The first repair closed the connection on any timeout inside recv(),
-        # including one at a frame boundary with nothing read: with run()'s
-        # one-second timeout, every session ended after its first quiet second
-        # (measured with a loopback peer sending a frame, pausing 2.5 s and
-        # sending another: CLOSED at 1.0 s, the second frame never read). Now
-        # the bytes stay in the buffer until a whole frame is there, so a
-        # timeout -- at a boundary or inside a frame -- consumes nothing and is
-        # handed to the caller as the timeout it is.
+        # A frame is taken whole or not at all. The bytes stay in the buffer
+        # until a whole frame is there, so a timeout -- at a frame boundary or
+        # inside a frame -- consumes nothing and reaches the caller as the
+        # timeout it is; run() catches it and goes on reading in step with the
+        # stream (entries 182, 206).
         def _whole_frame(self):
             """(fin, opcode, payload) once a whole frame is buffered, unmasked."""
             while True:
@@ -291,8 +272,7 @@ class Probe:
             # The channel snapshot carries the channel's recent text messages,
             # and a message's embed of a tweet or a Twitch link has a `video`
             # key of its own: that is content somebody posted, not a
-            # participant's state, and on 2026-09-08 it made this report say
-            # FEASIBLE about a channel whose voice states said nothing.
+            # participant's state, so messages are left out of the hunt.
             if path.startswith("data.messages"):
                 continue
             leaf = path.rsplit(".", 1)[-1].removesuffix("[]").lower()

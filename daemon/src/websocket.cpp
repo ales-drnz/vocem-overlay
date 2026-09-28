@@ -27,9 +27,8 @@ constexpr uint8_t kOpClose = 0x8;
 constexpr uint8_t kOpPing = 0x9;
 constexpr uint8_t kOpPong = 0xA;
 
-// One frame, and one whole message, may be this large. The frame cap was always
-// here; the message cap was not, and a peer that never set FIN grew the
-// reassembly buffer without limit -- 256 MiB measured in tests/daemon_ws_bounds.
+// One frame, and one whole message, may be this large: a peer that never sets
+// FIN must not grow the reassembly buffer without limit (entry 72).
 constexpr uint64_t kMaxFrame = 8u << 20;
 constexpr size_t kMaxMessage = 8u << 20;
 
@@ -42,8 +41,9 @@ constexpr uint64_t kMaxControlPayload = 125;
 // recv must not be mistaken for a broken connection.
 constexpr int kFrameTimeoutMs = 5000;
 
-// The handshake as a whole, not per byte. The header loop reads one byte at a
-// time, so a per-byte timeout let a silent peer hold the connection for hours.
+// The handshake as a whole, not per byte: the header loop reads one byte at a
+// time, and a per-byte timeout would let a silent peer hold the connection for
+// hours.
 constexpr int kHandshakeTimeoutMs = 10000;
 
 using Clock = std::chrono::steady_clock;
@@ -62,18 +62,14 @@ constexpr int kConnectTimeoutMs = 2000;
 // safely -- and a poll() already asleep on a silent peer wakes for it only when
 // the signal happens to land on this thread rather than on the avatar worker's.
 // Every wait inside this client is therefore taken in slices with the flag
-// read between them. The class has been repaired in one function after another
-// (entries 77, 102, 112, 161 and the token exchange before 161, then 196 for a
-// peer busy enough that no slice ever expired): the handshake had an absolute
-// deadline and honoured it, and honouring it
-// meant waiting the whole ten seconds out while `g_stop` was already set, so
-// `systemctl --user stop` -- and the tray's Quit, which does the same -- ended
-// in SIGKILL with the segment, the note's words and every Flatpak mirror still
-// published, the leftover entry 81 forbids. 200 ms is five reads a second on an
-// idle descriptor and invisible against the unit's TimeoutStopSec of ten. The
-// slice is what bounds a SILENT peer; a busy one is bounded by reading the flag
-// on every turn of the loop (read_exact, write_all), because a byte every
-// 100 ms never lets a slice expire (entry 196).
+// read between them; otherwise a stop waits out the handshake's whole deadline
+// and the unit's TimeoutStopSec ends it in SIGKILL with the segment, the note's
+// words and every Flatpak mirror still published. 200 ms is five
+// reads a second on an idle descriptor and invisible against the unit's
+// TimeoutStopSec of ten. The slice is what bounds a SILENT peer; a busy one is
+// bounded by reading the flag on every turn of the loop (read_exact,
+// write_all), because a byte every 100 ms never lets a slice expire
+// (entry 196).
 constexpr int kStopSliceMs = 200;
 
 // Milliseconds left before `deadline`, never negative -- poll() reads a negative
@@ -128,7 +124,7 @@ bool WebSocket::write_all(const void* data, size_t length, Clock::time_point dea
     while (written < length) {
         // Read on every turn and not only when a slice expires empty: a peer
         // that takes a byte at a time keeps every slice from expiring (see
-        // read_exact, entry 196).
+        // read_exact).
         if (stopping()) {
             return false;
         }
@@ -175,21 +171,16 @@ bool WebSocket::read_exact(void* dest, size_t length, Clock::time_point by) {
     auto* bytes = static_cast<uint8_t*>(dest);
     size_t read_total = 0;
     while (read_total < length) {
-        // The stop flag on every turn, whatever poll() answered. It used to be
-        // read only when a slice expired empty, and a peer trickling a byte
-        // every 100 ms -- an upgrade that never ends, a frame that never
-        // finishes -- never lets one expire: measured, a stop inside such a
-        // handshake waited 9.2 s, the handshake's own deadline against the
-        // unit's TimeoutStopSec of ten (entry 196).
+        // The stop flag on every turn, whatever poll() answered: a peer
+        // trickling a byte every 100 ms -- an upgrade that never ends, a frame
+        // that never finishes -- never lets a slice expire (see kStopSliceMs).
         if (stopping()) {
             return false;
         }
         struct pollfd pfd{fd_, POLLIN, 0};
-        // The deadline is for the whole read, not for each chunk of it. Per chunk,
-        // a peer that announced a 64 KiB frame and then sent one byte every two
-        // seconds stayed inside a five-second window for ever -- measured: recv
-        // had not returned after thirty seconds. That is the same defect the
-        // handshake loop below was fixed for, one function away.
+        // The deadline is for the whole read, not for each chunk of it: per
+        // chunk, a peer that announced a 64 KiB frame and then sent one byte
+        // every two seconds would stay inside the window for ever.
         int ready = ::poll(&pfd, 1, wait_ms(by));
         if (ready == 0) {
             // A stop, or the deadline. A slice expiring is neither, and
@@ -241,10 +232,9 @@ bool WebSocket::connect(const char* host, uint16_t port, const std::string& path
     // below waits through poll() anyway, and a descriptor whose mode changes
     // under the rest of this file is a second thing to reason about.
     //
-    // A plain blocking ::connect() was the one call left in this daemon with no
-    // deadline and no stop check (see kStopSliceMs): a peer that drops the SYN
-    // holds it in the kernel for ~2 minutes, and nothing in it ever reads
-    // g_stop. Now: EINPROGRESS, then poll(POLLOUT) in slices, then SO_ERROR --
+    // A plain blocking ::connect() has no deadline and no stop check (see
+    // kStopSliceMs): a peer that drops the SYN holds it in the kernel for ~2
+    // minutes. So: EINPROGRESS, then poll(POLLOUT) in slices, then SO_ERROR --
     // which is how a connect failure is collected, since the ::connect() call
     // itself has already returned.
     const int flags = ::fcntl(fd_, F_GETFL, 0);
@@ -320,8 +310,7 @@ bool WebSocket::connect(const char* host, uint16_t port, const std::string& path
 
     // Read headers one byte at a time up to the blank line. Wasteful in general,
     // trivial here, and it guarantees we never consume part of the first frame.
-    // The deadline is on the whole handshake: per byte, a peer trickling one
-    // character every four seconds held the connection open for hours.
+    // The deadline is on the whole handshake (kHandshakeTimeout).
     const Clock::time_point handshake_by =
         Clock::now() + std::chrono::milliseconds(kHandshakeTimeoutMs);
     std::string response;
@@ -342,16 +331,13 @@ bool WebSocket::connect(const char* host, uint16_t port, const std::string& path
     // Sec-WebSocket-Accept is deliberately not checked. It proves only that
     // the peer read the key this request carried, which any listener on the
     // port can do, so it says nothing about who the peer is. That is asked
-    // right after connect() returns and before anything but this request has
-    // been sent -- the owner's uid and, for a sandboxed process, its Flatpak
-    // application id (peer_owner(), socket_process() in peer_identity.h,
-    // main.cpp) -- and the token is withheld on the answer. This comment said
-    // the owner had "already" been identified by uid when the check came after
-    // this handshake, as it still does; what this request gives away is the
+    // after this handshake and before anything but this request has been sent
+    // -- the owner's uid and, for a sandboxed process, its Flatpak application
+    // id (peer_owner(), socket_process() in peer_identity.h, main.cpp) -- and
+    // the token is withheld on the answer. What this request gives away is the
     // public client_id and the origin. Checking the accept would cost a SHA-1
     // in a daemon that has no other use for one. The nonce is still random
     // because the RFC requires a key and some servers refuse a fixed one.
-    // Written down so the omission reads as a decision and not an oversight.
     return true;
 }
 
@@ -448,23 +434,20 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
         return Result::Closed;
     }
 
-    // The caller's timeout is a deadline for the whole call, not for each frame.
-    // It used to be re-armed after every ping and pong, so a peer pinging faster
-    // than the timeout kept this function from ever returning -- and everything
-    // the daemon does once per tick lives after this call: expiring the note
-    // segment, reconciling the channel, and reading the stop flag.
+    // The caller's timeout is a deadline for the whole call, not for each
+    // frame: a peer pinging faster than the timeout must not keep this
+    // function from returning, because everything the daemon does once per
+    // tick lives after this call -- expiring the note segment, reconciling the
+    // channel, and reading the stop flag.
     const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
 
     for (;;) {
         // The deadline bounds the whole call, the work as well as the waiting.
-        // poll() only ever consults it when it has to wait, so a peer that keeps
-        // the socket readable -- pings sent as fast as the wire takes them --
-        // made every poll return at once and this loop never came back at all:
-        // measured, recv() asked for one second and had not returned after
-        // sixty. That is entry 72's starvation again, one step further in. An
-        // absolute deadline that only bounds the sleeping is not a deadline on
-        // the call. Whatever has already been read stays in `pending_` for the
-        // next call, so a fragmented message is not lost by returning here.
+        // poll() only consults it when it has to wait, so a peer that keeps the
+        // socket readable -- pings sent as fast as the wire takes them -- would
+        // make every poll return at once and this loop never come back
+        // at all. Whatever has already been read stays in `pending_` for
+        // the next call, so a fragmented message is not lost by returning here.
         if (remaining_ms(deadline) == 0) {
             return Result::Timeout;
         }
@@ -496,9 +479,8 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
 
         // RSV1-3 are for extensions, and none was negotiated: RFC 6455
         // section 5.2 says a peer that sets one anyway has failed the
-        // connection. They went unchecked -- bounded, since the payload is
-        // still capped, but a peer speaking a protocol this client does not
-        // is not a peer to go on reading.
+        // connection, and a peer speaking a protocol this client does not is
+        // not a peer to go on reading.
         if ((head[0] & 0x70) != 0) {
             return Result::Closed;
         }
@@ -546,8 +528,8 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
             case kOpPing:
                 // The pong may not outlive the deadline this call was given: a
                 // peer that floods pings and reads nothing fills our send buffer,
-                // and a reply with a deadline of its own then held the daemon's
-                // tick for five seconds per ping, for as long as the flood ran.
+                // and a reply with a deadline of its own would hold the daemon's
+                // tick for five seconds per ping.
                 send_frame(kOpPong, payload.data(), payload.size(),
                            deadline < frame_by ? deadline : frame_by);
                 continue;
@@ -566,16 +548,15 @@ WebSocket::Result WebSocket::recv(std::string& out, int timeout_ms) {
             case kOpContinuation:
                 // A continuation of something that was not text -- a binary
                 // message this client does not read -- is dropped with it,
-                // rather than glued onto the next text message: the first
-                // version appended every continuation, so a binary frame
-                // followed by its continuations became the start of whatever
-                // text came next.
+                // rather than glued onto the start of whatever text message
+                // comes next.
                 if (!pending_is_text_) {
                     continue;
                 }
                 // A message is the concatenation of its frames, so capping the
-                // frame capped nothing: a peer that never sets FIN can send 64 KiB
-                // at a time forever. The whole message gets the frame's ceiling.
+                // frame alone caps nothing: a peer that never sets FIN can send
+                // 64 KiB at a time forever. The whole message gets the frame's
+                // ceiling.
                 if (pending_.size() + payload.size() > kMaxMessage) {
                     return Result::Closed;
                 }

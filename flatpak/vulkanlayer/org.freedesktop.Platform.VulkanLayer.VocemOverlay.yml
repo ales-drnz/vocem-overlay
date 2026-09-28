@@ -1,6 +1,6 @@
 # The overlay as a Vulkan layer extension, which is how it reaches a game that
 # is itself a Flatpak. Built from this checkout, not from Flathub: the release
-# channel for this project is the AUR, and the reasons are in DESIGN, entry 85.
+# channel for this project is the AUR (entry 85).
 # One manifest, therefore, and no second one to drift away from it.
 id: org.freedesktop.Platform.VulkanLayer.VocemOverlay
 runtime: org.freedesktop.Platform
@@ -16,9 +16,8 @@ sdk-extensions:
 # of this branch is the version of the extension POINT declared by the runtime,
 # not the runtime's own branch name: org.gnome.Platform/50 declares
 # `org.freedesktop.Platform.VulkanLayer` at version 25.08, which is why one
-# branch built here reaches GNOME applications as well. Measured: Sober runs on
-# org.gnome.Platform/50 and its /.flatpak-info lists this extension among its
-# runtime-extensions.
+# branch built here reaches GNOME applications as well (Sober, on
+# org.gnome.Platform/50, lists this extension among its runtime-extensions).
 build-options:
   prefix: /usr/lib/extensions/vulkan/VocemOverlay
   strip: true
@@ -78,9 +77,7 @@ modules:
       # nothing across versions (entry 142). It is data the injected code reads
       # at a path compiled in from this prefix (vocem/emoji_bank.h), and the
       # reader looks for the table BESIDE the bank by name, so the two travel
-      # together or the sequences draw as their parts -- which is what the
-      # published 0.1.9 extension did, in every Flatpak game, because this list
-      # carried two files of three.
+      # together or the sequences draw as their parts.
       - install -Dm644 common/emoji/emoji_bank.rgba
         ${FLATPAK_DEST}/share/vocem/emoji_bank.rgba
       - install -Dm644 common/emoji/emoji_sequences.bin
@@ -94,9 +91,8 @@ modules:
       # libraries carry about four megabytes of font in them: six OFL faces
       # compiled into vocem_common, which both injected libraries link, and
       # Dear ImGui, which is MIT and requires its notice to travel. Both
-      # PKGBUILDs have shipped these texts since 0.1.6 (entry 50, entry 76's
-      # rule about artefacts that must not drift); this manifest is the third
-      # artefact and shipped none of them.
+      # PKGBUILDs ship the same texts (entry 50); this manifest is the third
+      # artefact that must not drift from them (entry 76).
       - install -Dm644 third_party/fonts/OFL.txt
         ${FLATPAK_DEST}/share/licenses/vocem-overlay/OFL-Inter.txt
       - install -Dm644 third_party/fonts/OFL-NotoEmoji.txt
@@ -115,17 +111,15 @@ modules:
       - type: dir
         path: ../..
         # The copy takes the whole checkout, and a special file anywhere in it
-        # fails the build (it cannot copy a special file): a test's leftover socket
-        # under build/tests did, at 0.1.8. The build trees, the builder's own
-        # state and the exported repository are not sources either way.
+        # (a test's leftover socket under a build tree) fails the build. The
+        # build trees, the builder's own state and the exported repository are
+        # not sources either way.
         #
         # `packaging` and `.git` are skipped because they are the weight and
-        # none of it is a source here: measured, 594 MB of historical packages,
-        # makepkg's own `src`/`pkg` trees and two bare VCS clones, plus 80 MB of
-        # history, against a 25 MB extension. Nothing outside
-        # `if(VOCEM_BUILD_HOST_TOOLS)` in CMakeLists.txt reads `packaging/`, and
-        # both modules here pass that OFF -- and `packaging/src/build` is
-        # exactly the class of directory that produced 0.1.8's socket.
+        # none of it is a source here: historical packages, makepkg's own
+        # `src`/`pkg` trees (a build tree too) and bare VCS clones, plus the
+        # history. Nothing outside `if(VOCEM_BUILD_HOST_TOOLS)` in
+        # CMakeLists.txt reads `packaging/`, and both modules here pass that OFF.
         skip:
           - build
           - build32
@@ -150,8 +144,8 @@ modules:
 # a preload at all: it is two environment variables the user sets on the
 # application, a bare soname on LD_PRELOAD and both architecture directories on
 # LD_LIBRARY_PATH, so the loader picks the matching ABI and says nothing about
-# the other. The linker's $LIB token was tried first and measured NOT to expand
-# under /usr/lib/extensions -- see the README, and DESIGN entry 83.
+# the other. The linker's $LIB token does NOT expand under
+# /usr/lib/extensions -- see the README, and entry 83.
 #
 # And no AppStream metainfo: that is Flathub's requirement for a listing, and
 # there is no listing. Flatpak itself does not want one.

@@ -12,7 +12,7 @@ namespace vocem {
 
 // The cut that backs off to a UTF-8 sequence boundary lives in
 // vocem/shared_state.h, beside the capacities it cuts to, because the note
-// segment needs the same one and had a byte-boundary snprintf instead.
+// segment needs the same one.
 
 void Session::set_status(DaemonStatus value) {
     status_ = value;
@@ -64,13 +64,13 @@ void Session::upsert(uint64_t id, const std::string& raw_name, const std::string
         participant.is_self = (id == self_id_);
         // A ceiling on what one channel can make this process hold. Every
         // id here came off the socket, and nothing removes one until the
-        // peer says so: a peer emitting a fresh id per message grew both
-        // containers without limit and made publish(), which walks `order_`
-        // on every event, quadratic in the number of ids ever seen. The
-        // segment carries kMaxUsers; a few times that is room for a channel
-        // churning and still a bound. Said in the log once per channel: a
-        // person the panel silently stops showing is otherwise a report
-        // nobody can investigate.
+        // peer says so: without it a peer emitting a fresh id per message
+        // grows both containers without limit and makes publish(), which
+        // walks `order_` on every event, quadratic in the number of ids ever
+        // seen. The segment carries kMaxUsers; a few times that is room for a
+        // channel churning and still a bound. Said in the log once per
+        // channel: a person the panel silently stops showing is otherwise a
+        // report nobody can investigate.
         if (order_.size() >= kParticipantCeiling) {
             if (!ceiling_said_) {
                 ceiling_said_ = true;
@@ -140,6 +140,19 @@ void Session::expire_note(double seconds) {
     note_cleared_ = true;
     note_.clear();
     // And the sender with the words. `vocem/note.h` promises that "between
+    // messages there is nothing to read anywhere", and that covers everything
+    // around the body too: the serial, the user id, the timestamp, the avatar
+    // hash and the title (the sender's display name plus the guild and the
+    // channel) would otherwise stand in SharedState, which every GL and Vulkan
+    // process of the session maps, until the next message.
+    //
+    // Safe at exactly this moment and no earlier, which is why it is here
+    // rather than on a clock of its own: expire_note() has already waited the
+    // toast's seconds plus a second of margin, so no reader is still drawing
+    // it, and publish() below is the same write that retires it everywhere.
+    // The counter is NOT reset -- `notification_serial_` goes on increasing, or
+    // a later message would reuse a serial a reader has already seen and been
+    // latched on (note.h's `have_`).
     // messages there is nothing to read anywhere", and that was true of the
     // body and false of everything around it: the serial, the user id, the
     // timestamp, the avatar hash and the TITLE -- Discord's composed string,
@@ -180,13 +193,10 @@ namespace {
 
 // A hash the readers will accept, or nothing. The readers judge a hash by
 // avatar_hash_is_sane() on the field as they find it, and the field is cut to
-// kAvatarHashCapacity - 1 characters on the way in: a hash of forty or more
-// hex characters -- which Discord does not issue, so this needs a hostile
-// peer -- failed the daemon's own sanity check and was fetched as the default
-// face, while its first thirty-nine characters passed the readers' and sent
-// them looking for a file under a name that was never written. One rule on
-// both sides now: what the daemon publishes is what it judged sane, whole, or
-// empty (entry 133).
+// kAvatarHashCapacity - 1 characters on the way in, so an over-long hash (which
+// only a hostile peer sends) could fail the daemon's check while its truncated
+// prefix passed the readers'. One rule on both sides: what the daemon publishes
+// is what it judged sane, whole, or empty (entry 133).
 const std::string& publishable_hash(const std::string& hash) {
     static const std::string none;
     return avatar_hash_is_sane(hash.c_str()) ? hash : none;
@@ -238,7 +248,10 @@ void Session::publish() {
         state.notification.received = retired ? 0.0 : notification_received_;
         copy_string(state.notification.title, kNotificationTitleCapacity,
                     retired ? std::string() : notification_title_);
-        // Deliberately always empty: the message's text has its own
+        // Deliberately always empty: the message's text has its own segment
+        // (vocem/note.h). The field stays because removing it would move
+        // every offset after it and empty the overlay in every running game;
+        // the next ABI bump that happens for its own reasons takes it away.
         // segment now (vocem/note.h). The field stays because removing it
         // would move every offset after it and empty the overlay in every
         // running game for a change nobody asked to feel; the next bump

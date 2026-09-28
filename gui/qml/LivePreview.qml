@@ -4,19 +4,13 @@
 //
 // The two boxes, live, beside the controls that edit them.
 //
-// The same PanelPreview and NotificationPreview the maps use -- the components
-// scripts/compare-preview.py holds against the overlay's own geometry -- drawn
-// unchanged from the bridge's edited copy, so every control on the page moves
-// them on the spot, before Apply. Outside the scrolling column on purpose: the
-// preview answers for whichever control was just edited, wherever that control
-// has scrolled to.
+// The same PanelPreview and NotificationPreview the maps use, drawn from the
+// bridge's edited copy, so every control moves them before Apply. Placed outside
+// the scrolling column, so it stays in view while the controls scroll.
 //
-// Each box is drawn at the overlay's reference size and scaled as a whole
-// (never laid out small; PanelPreview says why), to fit this column and never
-// above 1 -- at 1 a box is the size the overlay draws it on 1080 lines with
-// the size settings at 1. The column is not a model of the display: how large
-// the boxes are against a screen is the Panel and Notifications pages'
-// question, and the caption says so.
+// Each box is drawn at the overlay's reference size and scaled as a whole to
+// fit this column, never above 1 (the size on 1080 lines with the size settings
+// at 1). Size against a screen is the Panel and Notifications pages' question.
 
 import QtQuick
 import QtQuick.Controls
@@ -92,8 +86,7 @@ Item {
             }
         }
 
-        // The message box, on the same terms. Dimmed, as the maps dim it, while
-        // notifications are switched off.
+        // The message box, on the same terms, dimmed while notifications are off.
         Rectangle {
             id: messageScene
 

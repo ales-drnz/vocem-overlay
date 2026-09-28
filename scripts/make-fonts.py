@@ -18,7 +18,7 @@
 # format that ImGui can only read through FreeType, which is a library the injected
 # code has no business linking. Noto Sans JP carries the handful of CJK and
 # fullwidth punctuation marks a Discord channel name is full of and Inter has none
-# of: the "・" in "🔊・stanza" was drawn as a question mark until this existed.
+# of, such as the "・" in "🔊・stanza". Three symbol fonts complete the set (below).
 #
 # The output of this script is committed, so building the project needs neither
 # Python nor fonttools.
@@ -44,21 +44,18 @@ EMOJI_SOURCE = f"{GOOGLE}/notoemoji/NotoEmoji%5Bwght%5D.ttf"
 PUNCTUATION_SOURCE = f"{GOOGLE}/notosansjp/NotoSansJP%5Bwght%5D.ttf"
 # The three symbol fonts, all OFL like everything above. They exist because a
 # Discord server decorates its channel and display names from symbol-picker
-# sites (the owner's uses coolsymbol.com, whose full symbol table is the corpus
-# these ranges were measured against, 2026-08-10): box drawing, circled
-# letters, fancy math alphabets, arrows beyond Inter's. Measured on that
-# corpus of 3199 distinct codepoints: the shipped trio drew 1674, and the
-# blocks below take the coverage to ~94% -- what stays out is out by decision
-# (whole CJK, scripts that need shaping, and the Private Use Area, where no
-# font of ours could draw the glyph the site means).
+# sites: box drawing, circled letters, fancy math alphabets, arrows beyond
+# Inter's. The ranges below were chosen against one such site's whole table
+# (entry 128); what stays out is out by decision (whole CJK, scripts that need
+# shaping, and the Private Use Area, where no font of ours could draw the glyph
+# the site means).
 MATH_SOURCE = f"{GOOGLE}/notosansmath/NotoSansMath-Regular.ttf"
 SYMBOLS2_SOURCE = f"{GOOGLE}/notosanssymbols2/NotoSansSymbols2-Regular.ttf"
 SYMBOLS_SOURCE = f"{GOOGLE}/notosanssymbols/NotoSansSymbols%5Bwght%5D.ttf"
 
 # Latin with its extensions, Greek and Cyrillic: what a display name is realistically
 # written in. Then every symbol Inter carries, which is most of the ones a name or a
-# channel gets decorated with -- arrows, stars, ticks, bullets, card suits, fractions
-# -- and which used to be left out for no reason but the range list being short.
+# channel gets decorated with -- arrows, stars, ticks, bullets, card suits, fractions.
 # Whole CJK is deliberately absent: it would multiply the atlas size for a case the
 # overlay cannot serve well anyway.
 # ...plus IPA and the modifier letters, the phonetic extensions and Greek
@@ -73,11 +70,11 @@ RANGES = ("U+0020-00FF,U+0100-024F,U+0250-02FF,U+0370-03FF,U+0400-04FF,"
 EMOJI_RANGES = None  # the font's whole cmap
 
 # The punctuation a Discord channel name is written with and Inter has none of:
-# CJK punctuation, the katakana middle dot, and the fullwidth forms.
-# The original punctuation, plus what the corpus above actually meets in
-# names: full box drawing and block elements (complete in this font where the
-# symbol fonts carry fragments), the kana, the compatibility jamo, and the
-# enclosed/compatibility CJK blocks (circled ideographs, katakana words).
+# CJK punctuation, the katakana middle dot, and the fullwidth forms. Then what
+# decorated names actually use: full box drawing and block elements (complete
+# in this font where the symbol fonts carry fragments), the kana, the
+# compatibility jamo, and the enclosed/compatibility CJK blocks (circled
+# ideographs, katakana words).
 # Whole CJK ideographs stay out, as the header says.
 PUNCTUATION_RANGES = ("U+2500-259F,U+3000-303F,U+3041-30FF,U+3131-318E,"
                       "U+3200-33FF,U+FE30-FE6F,U+FF01-FF60")
@@ -137,21 +134,15 @@ def subset_static(variable_font: Path, ranges, destination: Path, weight: int = 
     return destination
 
 
-# What each source was when the committed .inc files were generated. The
-# generator beside this one, make-emoji-bank.py, refuses an input whose sha256
-# it does not recognise unless it is told --repin, and this one pinned nothing
-# at all: it fetches six fonts from a MOVING branch of google/fonts, so a
-# regeneration could silently change what every shipped library draws with --
-# in a project where a licence obligation (entry 50) and a coverage claim
-# (entry 128, "3100 of 3199") are both properties of these exact files.
+# What each source was when the committed .inc files were generated. The six
+# fonts come from a MOVING branch of google/fonts, and the licence texts
+# (entry 50) and the coverage figures (entry 128) are properties of these exact
+# files, so a pinned digest that does not match stops the run; `--repin`
+# accepts it.
 #
-# Every entry is empty TODAY, and deliberately so: the originals are deleted
-# after each run, so the only honest digest is one taken at a regeneration, and
-# writing down whatever upstream serves now would pin the wrong file while
-# looking like a pin. The script prints the sha256 of each font it fetches; the
-# next person to regenerate copies those six lines in here, and from then on a
-# moved upstream stops the run instead of quietly changing what ships.
-# `--repin` accepts a digest that differs from the table.
+# An empty entry is not pinned yet: the originals are deleted after each run,
+# so the only honest digest is one taken at a regeneration. The script prints
+# the sha256 of each font it fetches; whoever regenerates copies those lines in.
 PINS = {
     "Inter-Variable.ttf": "",
     "NotoEmoji-Variable.ttf": "",
@@ -189,18 +180,11 @@ def fetch(url: str, destination: Path, repin: bool = False) -> Path:
 
 def main() -> int:
     repin = "--repin" in sys.argv
-    # One name per font, and the cleanup at the bottom of the file walks the
-    # same PINS table rather than repeating them: two of the six were not
-    # matched by .gitignore's "-Variable.ttf" pattern, and the unlinks used to
-    # be the last statements of main() with no try/finally, so an interrupted
-    # run left whatever it had fetched sitting untracked in third_party/fonts.
+    # One name per font. The cleanup at the bottom of the file walks PINS, so a
+    # font fetched without an entry there would never be deleted, and two of
+    # the six are not matched by .gitignore's "-Variable.ttf" pattern
+    # (entry 175): refuse it.
     def take(url: str, name: str) -> Path:
-        # PINS is the list, not a table beside one. The names are written twice
-        # -- here and in PINS -- and a seventh font added without an entry
-        # would be fetched, never pinned, and never deleted by the `finally`
-        # below, which walks PINS. Two of the six are not matched by
-        # .gitignore's "-Variable.ttf" pattern, so that leftover is one
-        # `git add -A` from a 10 MB binary in a public repository (entry 175).
         if name not in PINS:
             raise SystemExit(
                 f"{name} has no entry in PINS, so it would be fetched without a pin and "
@@ -226,8 +210,7 @@ def main() -> int:
             result = subprocess.run([str(compressor), "-nostatic", "-u8", str(ttf), symbol],
                                     check=True, capture_output=True, text=True)
             # The tool names its input by the path it was given, which is absolute
-            # here: the committed headers used to carry whoever's home directory
-            # generated them into every clone. Say where the file is in the tree.
+            # here: say where the file is in the tree, not whose home it was in.
             text = result.stdout.replace(f"{ROOT}/", "")
             (OUT_DIR / output).write_text(text)
             print(f"{output}: {ttf.stat().st_size} bytes of TTF")

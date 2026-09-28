@@ -2,22 +2,11 @@
 // All rights reserved.
 // Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 //
-// A slider, the figure it is at, and the way back to the default. Six settings are
-// this row, and they were six copies of it: the same three controls in a block
-// 210 units wide, with the reset button inside that block and shown only once
-// there was something to reset.
+// A slider, the figure it is at, and the way back to the default.
 //
-// Which meant the track changed length under the cursor. Pushing a slider off its
-// default made a button appear beside it, the block gave the button its width, and
-// the slider lost seventy units of it -- so the value under the handle moved
-// without the handle moving. The block is a fixed width here, every control in it
-// has a width that does not depend on what it currently reads, and the reset is
-// always there and merely disabled: a control that comes and goes moves its
-// neighbours, and one faded to nothing is a tab stop with no picture on it.
-//
-// The figure's box is measured from the widest string it can ever hold rather than
-// from the one it holds, for the same reason: "1.00×" and "10.00×" are not the
-// same width, and the difference came off the slider.
+// The track must not change length under the cursor: the block has a fixed
+// width, the reset is always there and merely disabled, and the figure's box is
+// measured from the widest string it can hold ("10.00×", not "1.00×").
 
 import QtQuick
 import QtQuick.Controls
@@ -29,16 +18,14 @@ RowLayout {
 
     required property real value
     required property real defaultValue
-    // What a screen reader announces. The label in the left-hand column of the row
-    // is a sibling of this control, not its name, so without this a slider is read
-    // out as "slider" and nothing more.
+    // What a screen reader announces: the row's label is a sibling, not this
+    // control's name.
     required property string accessibleName
 
     property real from: 0.0
     property real to: 1.0
     property real stepSize: 0.01
-    // A multiplier, a percentage and a duration are three different sentences, and
-    // only the caller knows which one this is.
+    // How the figure is written; only the caller knows what it measures.
     property int decimals: 2
     property string suffix: ""
 
@@ -56,8 +43,7 @@ RowLayout {
         to: root.to
         stepSize: root.stepSize
         value: root.value
-        // Emitted for the arrow keys as well as for the pointer, so this is the
-        // whole of the keyboard path too.
+        // Emitted for the arrow keys as well as the pointer.
         onMoved: root.moved(value)
 
         Layout.fillWidth: true
@@ -77,17 +63,14 @@ RowLayout {
 
         TextMetrics {
             id: widest
-            // The label's own font, by id. `parent` is undefined here: TextMetrics
-            // is not an item and has no parent item to take a font from, so this
-            // was measuring the widest string in the default font -- which is not
-            // the one the figure is drawn in.
+            // The label's own font, by id: TextMetrics is not an item and has
+            // no `parent` to take a font from.
             font: figure.font
             text: root.to.toFixed(root.decimals) + root.suffix
         }
     }
 
-    // The same affordance, with the same icon, that ColourButton uses for the same
-    // job: one way back to the default everywhere in the window.
+    // The same reset as ColourButton's: one way back to the default everywhere.
     ToolButton {
         objectName: "rowReset"
         icon.name: "edit-undo"
