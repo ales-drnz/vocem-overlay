@@ -100,6 +100,12 @@ private:
 // A font upload that failed, owed until one works. Vulkan's allocations can
 // fail and say so (entry 194); nothing is drawn from an image that does not
 // match the atlas, and the whole upload is tried again once a second.
+//
+// Only the Vulkan path has a failure to retry. On OpenGL the backend's
+// CreateFontsTexture answers true whatever happened, and glTexImage2D reports
+// running out of memory only through glGetError -- the game's own error queue,
+// which asking would empty. A fold that cannot go up in place goes up whole,
+// which is the one fallback that path can know it needs.
 // ---------------------------------------------------------------------------
 class UploadRetry {
 public:
