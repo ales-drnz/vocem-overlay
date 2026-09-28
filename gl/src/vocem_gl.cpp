@@ -5,19 +5,17 @@
 // Vocem Overlay - OpenGL interposer.
 //
 // Vulkan has a layer mechanism; OpenGL has nothing of the sort, so the overlay
-// gets in by symbol interposition. Three levels, because applications reach GL in
-// three different ways:
+// gets in by symbol interposition, through three doors, all of them in the
+// shim (gl/src/vocem_gl_shim.cpp):
 //
 //   1. Direct calls resolved by the dynamic linker  -> LD_PRELOAD is enough.
 //   2. glXGetProcAddress / eglGetProcAddress lookups -> those are hooked too.
 //   3. dlsym() called by the application itself      -> dlsym is hooked as
-//      well, IN THE SHIM (gl/src/vocem_gl_shim.cpp): SDL, GLFW and glad
-//      dlopen their GL and dlsym on that handle, invisible to interposition
-//      by construction. All three doors live in the shim since the entry-45
-//      rebuild took this file's own hook table away; this library only draws
-//      when the shim hands it a frame.
+//      well: SDL, GLFW and glad dlopen their GL and dlsym on that handle,
+//      invisible to interposition by construction.
 //
-// The panel is the shared implementation in common/src/panel.cpp: this file only
+// This library hooks nothing; it draws when the shim hands it a frame. The
+// panel is the shared implementation in common/src/panel.cpp: this file only
 // deals with getting a frame, a size, and a texture upload path.
 
 #include <dlfcn.h>
@@ -58,10 +56,8 @@
 #include "vocem/shm.h"
 #include "vocem/state_poll.h"
 
-// No image parser in here, on purpose. The cache is raw RGBA at one fixed size
-// (vocem/avatar_rgba.h); the daemon is the only process that ever decodes a PNG.
-// stb_image lived in this file for four packages, parsing internet-supplied
-// bytes inside every game the overlay drew in.
+// No image parser in here, on purpose: the cache is raw RGBA at one fixed size
+// (vocem/avatar_rgba.h), and the daemon is the only process that decodes a PNG.
 
 // A minimal slice of the GL and window-system ABIs. Declaring what we use avoids
 // a build dependency on the GL headers of whichever driver is installed.
@@ -122,27 +118,16 @@ bool overlay_disabled() {
     return disabled;
 }
 
-// The real dlsym, reached through dlvsym so it bypasses the interposed dlsym
-// in the shim -- which is in this process, even though this file no longer
-// hooks anything itself (entry 45 removed its table). Every internal lookup
-// must go through this: asking the interposed dlsym for "glXSwapBuffers"
-// would hand back the shim's hook, and the hook would call itself for every
-// frame until the stack ran out.
-//
-// The version is looked for and not assumed -- see real_dlsym.h. This was the
-// **second** copy of that line, and it outlived the fix to the first by exactly as
-// long as it took somebody to start a 32-bit game: the shim was corrected, this was
-// not, and here the failure is quiet rather than fatal. Nothing crashes. Every
-// `next_symbol` below returns null, so `glXQueryDrawable` is not found, the drawable
-// comes back 0x0, `glGetIntegerv` is not found either so the fallback cannot run,
-// and `draw()` returns having drawn nothing -- once per frame, for the life of the
-// game. The overlay is loaded, is detected, says it is drawing, and is not there.
+// The real dlsym, reached through dlvsym so it bypasses the shim's interposed
+// dlsym, which is in this process. Every internal lookup must go through this:
+// the interposed dlsym asked for "glXSwapBuffers" would hand back the shim's
+// hook, and the hook would call itself every frame until the stack ran out.
+// The version is looked for, not assumed (real_dlsym.h): wrong here, every
+// lookup below is null and the overlay silently draws nothing.
 void* real_dlsym(void* handle, const char* name) {
     using PFN_dlsym = void* (*)(void*, const char*);
-    // A null is not remembered -- the shim's rule, applied here too: a static
-    // initialised once from a failed lookup would answer null for the life
-    // of the process, and the whole point of looking rather than assuming
-    // (real_dlsym.h) is lost if the first look is the only one.
+    // A null is not remembered: a failed first look must not answer null for
+    // the life of the process.
     static PFN_dlsym real = nullptr;
     if (!real) {
         static const char* const versions[] = VOCEM_DLSYM_VERSIONS;
@@ -155,20 +140,12 @@ void* real_dlsym(void* handle, const char* name) {
 
 // Resolves a GL or GLX function this library does *not* interpose.
 //
-// RTLD_NEXT first, which is right when this library was preloaded directly, and
-// then RTLD_DEFAULT, which is what makes it work when it was not. That second
-// attempt is not belt-and-braces: it is the case that matters. In a real install
-// nothing preloads this library -- the shim does, and it brings this one in
-// with dlopen(RTLD_LOCAL) on the first GL frame. RTLD_NEXT inside a library loaded
-// that way searches the objects after it in *its own* local scope, which does not
-// contain libGL, so every lookup returned null.
+// RTLD_NEXT first, right when this library was preloaded directly, then
+// RTLD_DEFAULT, which is the case that matters: the shim brings this library
+// in with dlopen(RTLD_LOCAL), and RTLD_NEXT then searches *its own* local
+// scope, which does not contain libGL.
 //
-// The visible effect was that glXQueryDrawable could not be found, the drawable
-// size came back as 0x0, the fallback through glGetIntegerv could not be found
-// either, and draw() returned before drawing anything. The overlay never appeared
-// in an OpenGL game, and cost so little that the measurement looked like success.
-//
-// Only safe for functions the SHIM does not hook: asking RTLD_DEFAULT for
+// Only safe for functions the SHIM does not hook: RTLD_DEFAULT asked for
 // glXSwapBuffers would find its interposed copy -- ahead of libGL in the
 // global scope -- and call it forever.
 template <typename Fn>
@@ -179,30 +156,17 @@ Fn next_symbol(const char* name) {
     return reinterpret_cast<Fn>(real_dlsym(RTLD_DEFAULT, name));
 }
 
-// The third road, for the games where the two above find nothing at all.
+// The third road, for the games where the two above find nothing at all:
+// everything built on GLFW, LWJGL or SDL opens its GL library with
+// dlopen(RTLD_LOCAL), so no GL symbol is in the global scope (glxgears links
+// libGL, and is the wrong witness for this).
 //
-// Minecraft, and everything else built on GLFW, LWJGL or SDL, opens its GL
-// library with dlopen(RTLD_LOCAL): no GL symbol is in the global scope, so
-// RTLD_NEXT and RTLD_DEFAULT both come back empty -- for every function this
-// library does not interpose. glXQueryDrawable was null, the fallback through
-// glGetIntegerv was null, the drawable read 0x0, and the overlay logged
-// "no drawable size: nothing drawn this frame" once per frame for the life of
-// the game. Measured on Minecraft 26.2, from inside, the first time the debug
-// log could be read out of a launcher that swallows the game's stderr. glxgears
-// had been the wrong witness all along: it *links* libGL, and for the loaders
-// that matter -- the level-3 door the shim exists for -- linking is the
-// exception.
-//
-// What is always reachable is a *dispatcher*: RTLD_DEFAULT finds our own
-// exported glXGetProcAddress/eglGetProcAddress (the shim's, or this library's
-// when it was preloaded directly), and those forward to the real dispatcher
-// from the moment the application's own resolution revealed it -- which happens
-// before the first frame, because resolving the dispatcher is how such a game
-// finds every other function too. Asked only for names we do not interpose: for
-// an interposed one the hook would answer with itself.
-//
-// The result is not cached when it is null -- the dispatcher becomes known when
-// the application reveals it, and a null must not outlive that moment.
+// What is always reachable is a *dispatcher*: RTLD_DEFAULT finds the shim's
+// exported glXGetProcAddress/eglGetProcAddress, which forward to the real
+// dispatcher once the application's own resolution has revealed it -- before
+// its first frame, since that is how it finds every other function. Asked
+// only for names we do not interpose (the hook would answer with itself). A
+// null is not cached: it must not outlive the dispatcher becoming known.
 void* dispatcher_symbol(const char* name) {
     using PFN_lookup = void* (*)(const char*);
     static PFN_lookup glx_arb = nullptr;
@@ -249,22 +213,17 @@ Fn gl_symbol(const char* name) {
 
 // The application's pixel-store state, neutralised for one upload and put back.
 //
-// glTexImage2D does not read a client pointer as a plain array: it reads it
-// through GL_UNPACK_*, which is application state that survives a swap. A game
-// that left GL_UNPACK_ROW_LENGTH at 2048 makes a 64x64 upload read half a
-// megabyte from our 16 KB buffer -- measured as a SIGSEGV attributed to the game
-// -- and a game with a pixel-unpack buffer bound makes the pointer an offset into
-// *its* buffer, so the upload silently fails and pushes GL_INVALID_OPERATION into
-// the game's error queue. ImGui's own backend carries the same lesson in a
-// comment from 2016 ("SDL changes it"), and neutralises these only inside
-// CreateDeviceObjects -- which is not the path a font-atlas rebuild takes.
+// glTexImage2D reads a client pointer through GL_UNPACK_*, application state
+// that survives a swap: a game's wide GL_UNPACK_ROW_LENGTH makes a 64x64
+// upload read far past our 16 KB buffer, and a bound pixel-unpack buffer
+// makes the pointer an offset into *its* buffer and pushes
+// GL_INVALID_OPERATION into the game's error queue (tests/gl_unpack_state.cpp).
+// ImGui's backend neutralises these only in CreateDeviceObjects, not on a
+// font-atlas rebuild.
 //
-// Every value is read before it is written and written back afterwards: this runs
-// inside somebody else's renderer and rule 12 is that we leave no state changed.
-//
-// The same holds for the other direction: glReadPixels WRITES through GL_PACK_*
-// and the pixel-pack buffer, and the frame capture (VOCEM_CAPTURE_FRAME) is a
-// read. `Pack` is that flavour, name for name the same shape.
+// Every value is read before it is written and written back afterwards
+// (rule 12). `Pack` is the same guard for glReadPixels, which writes through
+// GL_PACK_* and the pixel-pack buffer (the frame capture).
 class PixelStoreGuard {
 public:
     enum class Direction { Unpack, Pack };
@@ -361,34 +320,20 @@ private:
 };
 
 // The application's sRGB-write state, switched off for the overlay's draw and
-// put back.
+// put back (rule 12). With GL_FRAMEBUFFER_SRGB on, the hardware encodes what
+// the shader writes, and ImGui's colours are already sRGB: encoded twice, the
+// panel's dark slate turns light grey while white and saturated colours, being
+// fixed points, still look right. The Vulkan half answers this in the shader;
+// here it is a switch. ImGui's GL backend does not touch it.
 //
-// With GL_FRAMEBUFFER_SRGB enabled and an sRGB-capable drawable, the hardware
-// applies linear->sRGB to whatever the fragment shader writes. ImGui's colours
-// are already sRGB, so they get encoded twice: measured on the Vulkan side,
-// where the same thing happens through the swapchain's format, the panel's own
-// 79,84,92 came back 151,155,162 -- a light grey where the theme asks for dark
-// slate. White and fully saturated colours are fixed points, which is why this
-// hides: the text looks right and the box does not.
-//
-// The Vulkan half answers this in the shader, because there the encoding is the
-// attachment's own property and cannot be switched off. Here it is a switch, so
-// it is switched -- and switched back, because it is the game's (rule 12).
-// ImGui's own GL backend does not touch it (0 occurrences in
-// imgui_impl_opengl3.cpp); MangoHud's fork of that backend saves, clears and
-// restores it in exactly this way, which is where the question came from.
-//
-// Desktop GL only. On OpenGL ES the enum is not core -- it arrives with
-// EXT_sRGB_write_control -- and asking for one that does not exist is a
-// GL_INVALID_ENUM in the game's error queue, which is the fault PixelStoreGuard
-// exists to avoid.
+// Desktop GL only: on OpenGL ES the enum arrives with EXT_sRGB_write_control,
+// and asking for one that does not exist is a GL_INVALID_ENUM in the game's
+// error queue.
 class SrgbWriteGuard {
 public:
     // `es` is 0 for desktop GL, or the OpenGL ES major version; `major` is the
-    // desktop GL major version. GL_FRAMEBUFFER_SRGB is core from 3.0
-    // (ARB_framebuffer_sRGB before it), and asking a 2.1 context about it is
-    // GL_INVALID_ENUM in the game's queue, once per frame -- the fault
-    // PixelStoreGuard's comment says this class exists to avoid.
+    // desktop GL major version. GL_FRAMEBUFFER_SRGB is core from 3.0, and
+    // asking a 2.1 context about it is GL_INVALID_ENUM, once per frame.
     SrgbWriteGuard(PFN_glIsEnabled is_enabled, PFN_glEnable enable, PFN_glDisable disable, int es,
                    int major)
         : enable_(enable) {
@@ -417,22 +362,15 @@ private:
     bool was_enabled_ = false;
 };
 
-// The first font atlas of a process, rasterised off the game's thread (entry
-// 192). On this path the build ran INSIDE the game's glXSwapBuffers, in the
-// frame the panel first appeared: 179-184 ms, measured by gl_draw_local's
-// arrivals scene, 113 of them stb_truetype. The frame the worker starts in, and
-// every frame until it is done, goes out without the overlay; the panel then
-// appears about a tenth of a second later instead of the game standing still.
-//
-// Outside GlOverlay -- a heap object behind atlas_worker(), leaked at exit the
-// way overlay() is -- so the ELF destructor below can wait for it without
-// constructing the overlay in a process that never drew. A pthread and
-// not a std::thread: std::thread reports a refused clone by throwing, and
-// nothing on this path catches -- the exception would end the game (this
-// library is compiled with exceptions; the Vulkan layer is not, where the same
-// throw is a terminate()). A refusal here is a return code, and the build then
-// happens on the game's thread as it always did. Started and joined under g_gl_lock or by the destructor; its own
-// mutex makes the two exclusive.
+// The first font atlas of a process, rasterised off the game's thread: built
+// inside glXSwapBuffers it would stall the frame the panel first appears in
+// for well over a tenth of a second. Frames go out without the overlay until
+// it is done. A heap object leaked at exit, as overlay() is, so the ELF
+// destructor can wait for it without constructing the overlay. A pthread, not
+// a std::thread: std::thread reports a refused clone by throwing, and nothing
+// here catches; a refusal is a return code, and the build then happens on the
+// game's thread. Started and joined under g_gl_lock or by the destructor; its
+// own mutex makes the two exclusive.
 struct AtlasWorker {
     std::mutex lock;
     pthread_t thread{};
@@ -453,9 +391,8 @@ struct AtlasWorker {
         vocem::fonts_atlas()->GetTexDataAsRGBA32(&rgba, &width, &height);
         // Said here, where the rasterisation happened, and not where the game's
         // thread next looks: a context that dies mid-build joins the worker in
-        // release() and never reaches the draw path's join, and the count
-        // gl_context_cycle and gl_daemon_gone take of this line read 0 for an
-        // atlas that had been built (measured, the first run of this worker).
+        // release() and never reaches the draw path's join, and
+        // gl_context_cycle and gl_daemon_gone count this line.
         VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(worker->pixels));
         worker->done.store(true, std::memory_order_release);
         return nullptr;
@@ -520,21 +457,16 @@ public:
         tex_image_ = gl_symbol<PFN_glTexImage2D>("glTexImage2D");
         tex_parameter_ = gl_symbol<PFN_glTexParameteri>("glTexParameteri");
         get_integer_ = gl_symbol<PFN_glGetIntegerv>("glGetIntegerv");
-        // The two that make an upload safe in somebody else's renderer. Core
-        // since GL 1.0 and 1.5. A null here means no GL could be reached at
-        // all -- no symbol in scope and no dispatcher known yet -- and then
-        // there are no avatars rather than an upload that reads wherever the
-        // game's state points. It does NOT mean the context lacks them: once
-        // a dispatcher is known, gl_symbol() never answers null for a gl*
-        // name, because glvnd's dispatchers hand out a stub for any name at
-        // all (measured: glXGetProcAddressARB and eglGetProcAddress both
-        // answer "glNoSuchFunctionVocem"), and a stub for a function the
-        // context does not have does nothing.
+        // The two that make an upload safe in somebody else's renderer. A null
+        // here means no GL could be reached at all (no symbol in scope, no
+        // dispatcher known yet), and then there are no avatars rather than an
+        // upload that reads wherever the game's state points. It does NOT mean
+        // the context lacks them: glvnd's dispatchers hand out a stub for any
+        // name at all, and a stub for a function the context lacks does nothing.
         pixel_store_ = gl_symbol<PFN_glPixelStorei>("glPixelStorei");
         bind_buffer_ = gl_symbol<PFN_glBindBuffer>("glBindBuffer");
-        // Core since GL 1.0, and not part of `resolved_`: without them the
-        // overlay draws exactly as it did before SrgbWriteGuard existed, which
-        // is a wrong colour rather than a missing avatar.
+        // Not part of `resolved_`: without them the overlay's colours are wrong
+        // (SrgbWriteGuard), which is no reason to go without avatars.
         is_enabled_ = gl_symbol<PFN_glIsEnabled>("glIsEnabled");
         enable_ = gl_symbol<PFN_glEnable>("glEnable");
         disable_ = gl_symbol<PFN_glDisable>("glDisable");
@@ -574,15 +506,12 @@ public:
         return SrgbWriteGuard(is_enabled_, enable_, disable_, es_, gl_major_);
     }
 
-    // The two things the framebuffer retarget in draw() needs, ES-aware: the
-    // target to bind and the binding to read back. GL_FRAMEBUFFER binds BOTH
-    // the draw and the read framebuffer, and GL_FRAMEBUFFER_BINDING reads the
-    // draw one, so binding GL_FRAMEBUFFER to 0 and putting "the binding" back
-    // restored the draw side and left the read side pointing at whatever the
-    // overlay drew into -- a game that presents by blitting from its own
-    // read framebuffer had that binding clobbered every frame (rule 12).
-    // Desktop GL and ES 3 have the two targets; ES 2 has only the one, where
-    // there is nothing else to clobber.
+    // The target the framebuffer retarget in draw() binds. GL_FRAMEBUFFER binds
+    // BOTH the draw and the read framebuffer while GL_FRAMEBUFFER_BINDING reads
+    // the draw one, so restoring "the binding" would leave the read side
+    // pointing at what the overlay drew into -- clobbering a game that presents
+    // by blitting from its own read framebuffer (rule 12). ES 2 has only the
+    // one target, and nothing else to clobber.
     GLenum draw_framebuffer_target() const {
         return es_ == 2 ? GL_FRAMEBUFFER : 0x8CA9;  // GL_DRAW_FRAMEBUFFER
     }
@@ -595,9 +524,8 @@ public:
         if (!resolved_) {
             return 0;
         }
-        // A POD key, so the steady-state lookup below allocates nothing: the
-        // formatted std::string this used to be was one malloc and free per
-        // visible face per frame (vocem/avatar_key.h says why).
+        // A POD key, so the steady-state lookup below allocates nothing
+        // (vocem/avatar_key.h says why).
         const vocem::AvatarKey key = vocem::AvatarKey::make(user_id, avatar_hash);
 
         auto it = textures_.find(key);
@@ -612,14 +540,11 @@ public:
             return 0;
         }
 
-        // At most one picture taken on per frame -- the rule the Vulkan cache has
-        // stated in its own header since it was written, and which this side never
-        // adopted. Measured before it was adopted here: with six faces landing on
-        // disk together, one frame read and uploaded all six
-        // (tests/gl_avatar_quiet.cpp). A channel filling up is exactly when that
-        // happens, and a few frames of grey discs is invisible where a hitch is
-        // not. The check sits above the stat as well as above the read, so a
-        // deferred face costs this frame nothing at all.
+        // At most one picture taken on per frame, the Vulkan cache's rule: a
+        // channel filling up lands several faces at once, and a few frames of
+        // grey discs are invisible where a hitch is not (entry 52). The check
+        // sits above the stat as well as above the read, so a deferred face
+        // costs this frame nothing at all.
         if (taken_on_this_frame_ >= kFacesPerFrame) {
             return 0;
         }
@@ -630,11 +555,9 @@ public:
         char path[768];
         vocem::avatar_rgba_path(path, sizeof(path), user_id, avatar_hash);
 
-        // Not there yet is not the same as broken. Somebody who joins is drawn on
-        // the next frame, while the daemon is still downloading their picture, and
-        // writing that off as a permanent failure is what left them a grey disc
-        // for the rest of the session. Looked at again twice a second rather than
-        // on every frame: this runs inside somebody's game.
+        // Not there yet is not the same as broken: somebody who joins is drawn
+        // while the daemon is still downloading their picture. Looked at again
+        // twice a second rather than on every frame.
         const double now = vocem::avatar_now_seconds();
         if (!vocem::avatar_file_exists(path)) {
             // `waiting` is the lookup from above: the map has not changed since.
@@ -653,8 +576,7 @@ public:
         waiting_.erase(key);
 
         // Noted before the work, not after: if the upload is what kills the
-        // process, the journal's last line has to name it (entry 46's crash
-        // was exactly an avatar upload, and nothing anywhere said so).
+        // process, the journal's last line has to name it (entry 46).
         {
             char note[840];
             std::snprintf(note, sizeof(note), "uploading avatar %s", path);
@@ -719,14 +641,11 @@ public:
 
     // Every texture name we hold belongs to a GL context. Forget them.
     //
-    // No `glDeleteTextures` here. A context being destroyed deletes them first
-    // wherever it can reach them (GlOverlay::release_dying) -- the names are
-    // NOT meaningless there: in a share group they outlive the context -- and
-    // the user switching the overlay off is where the tidiest thing is not to
-    // touch the application's GL state on the way out. The pictures cost a few
-    // hundred kilobytes and are re-uploaded from the cache on the first frame
-    // after the overlay comes back, which is the same path that put them there
-    // to begin with.
+    // No `glDeleteTextures` here: a dying context deletes them first wherever
+    // it can reach them (GlOverlay::release_dying -- in a share group the names
+    // outlive the context), and switching the overlay off should not touch the
+    // application's GL state on the way out. The pictures are re-uploaded from
+    // the cache on the first frame after the overlay comes back.
     void forget() {
         textures_.clear();
         waiting_.clear();
@@ -770,14 +689,11 @@ private:
 // Overlay state, one per process
 // ---------------------------------------------------------------------------
 
-// The context the backend's GL objects live in, and the display it belongs
-// to. Read by the two teardown hooks below before they touch anything, which
-// is why these are plain globals rather than members: a process that never
-// built a backend -- every browser and compositor of the session, which get
-// our eglDestroyContext hook through the dispatcher door -- must be able to
-// answer "not mine" without constructing the overlay, let alone making a
-// dying context current on the calling thread. Written under g_gl_lock;
-// read with the atomic builtins so the hooks can look before they lock.
+// The context the backend's GL objects live in, and its display: plain
+// globals so the teardown hooks can answer "not mine" -- in every browser and
+// compositor, which get our eglDestroyContext hook -- without constructing
+// the overlay. Written under g_gl_lock; read with the atomic builtins so the
+// hooks can look before they lock.
 void* g_owner_context = nullptr;
 void* g_owner_display = nullptr;
 int g_owner_egl = 0;
@@ -790,10 +706,9 @@ int g_left_backends = 0;
 class GlOverlay {
 public:
     // Asks the windowing system how large the drawable is. Passed in rather
-    // than asked up front: on GLX each of the two queries is an X server round
-    // trip -- measured on this machine, 33 us the pair, every frame, in every
-    // GL process of the session -- so the question is only asked once a frame
-    // has decided it will actually draw. The handle is an XID or an
+    // than asked up front: on GLX the two queries are X server round trips,
+    // in every GL process of the session, so the question is asked only once a
+    // frame has decided to draw (entry 45). The handle is an XID or an
     // EGLSurface, opaque here either way.
     using SizeQuery = void (*)(void* display, void* handle, uint32_t& width, uint32_t& height);
 
@@ -824,33 +739,17 @@ public:
         // One stat() every couple of seconds, not per frame.
         const vocem::Config& config = config_.current();
 
-        // Written down before any of the decisions below, so that an application
-        // appears in the window's list whether or not the overlay is allowed to
-        // draw in it, and whether or not there is anything to draw right now --
-        // otherwise nothing is listed until somebody happens to be in a voice
-        // channel, which is exactly when nobody is reading the list.
+        // Recorded before any decision below, so an application appears in the
+        // window's list whether or not the overlay may draw in it, and whether
+        // or not there is anything to draw right now.
         vocem::record_application("opengl");
 
-        // Whether the overlay belongs in this frame, asked **every** frame.
-        //
-        // This used to be decided once and never again, and the page said so: a
-        // change took effect the next time the game started. That is not what the
-        // switch looks like it does, and it is not what the tray icon looks like it
-        // does either -- Discord's overlay goes off and comes back in the running
-        // game, and so should this one. The cost of asking is two string
-        // comparisons against the configuration the process already re-reads every
-        // couple of seconds; the lists themselves are only walked when one of them
-        // has actually changed, because walking them is the expensive half and it
-        // does not need doing at 144 frames a second.
-        //
-        // Turning it off releases the GL state rather than merely skipping the
-        // drawing -- see `release()`. Turning it back on costs one frame, in which
-        // the backend is built again from nothing.
-        // The decision, its evidence and the word to the daemon across the
-        // bridge are one spelling with the Vulkan layer's, master switch
-        // included: spelling the switch here as well short-circuited past the
-        // sentence that tells the daemon whether this sandbox is drawing
-        // (vocem/overlay_session.h).
+        // Whether the overlay belongs in this frame, asked **every** frame, so
+        // the switch and the tray act on a running game: two string
+        // comparisons, the lists walked only when one has changed. One
+        // spelling with the Vulkan layer's, master switch included
+        // (vocem/overlay_session.h). Turning it off releases the GL state
+        // (release()); turning it back on rebuilds the backend in one frame.
         const bool want = session_.decide(config);
         if (want) {
             // The session's journal (vocem/journal.h): opened at the first
@@ -864,24 +763,15 @@ public:
                        vocem::process_name().c_str());
             vocem::journal_note(want ? "switched on" : "switched off");
             if (!want) {
-                // A present hook is the one place where the application's context
-                // is guaranteed current, so this is the good moment to hand back
-                // everything that lives in it.
-                //
-                // Said in the same words the daemon-stopped case below uses, and
-                // in the same words the Vulkan layer uses: the two paths release
-                // for the same two reasons now, and a reader chasing one of them
-                // should not have to know which half of the overlay wrote the
-                // line. What it names is what actually goes -- the backend and
-                // the atlas -- rather than "everything", which the swapchain's
-                // and the context's own objects are not.
+                // A present hook is the one place where the application's
+                // context is guaranteed current, so this is the moment to hand
+                // back what lives in it. Worded as the daemon-stopped case
+                // below and the Vulkan layer word the same release.
                 VOCEM_GLOG("switched off: releasing the backend and the font atlas");
                 release(true);
-                // The atlas does not live in the context: it belongs to the
-                // fonts module and survives release() on purpose, so that a game
-                // cycling its context pays nothing. Being switched off is the
-                // other case, and there 64 MB of rasterised glyphs in somebody
-                // else's process is exactly what release() exists to give back.
+                // The atlas belongs to the fonts module and survives release()
+                // on purpose, so that a game cycling its context pays nothing;
+                // being switched off is when its 64 MB of glyphs go back.
                 vocem::fonts_release();
             }
         }
@@ -891,22 +781,16 @@ public:
         }
 
         // The Debug section's frame and draw counters, written every few
-        // seconds. The write is two file syscalls and a rename -- inside the
-        // budget this side already spends on the avatar path (entry 52) and
-        // throttled far below it; the counting itself is two integers.
+        // seconds: two file syscalls and a rename, throttled far below entry
+        // 52's budget; the counting itself is two integers.
         session_.frame_seen();
 
         vocem::Snapshot* snapshot = poll_state();
         if (!snapshot) {
             // The daemon stopped -- the tray's Quit, or `systemctl --user stop`.
-            // Not drawing is not enough: this process is holding a backend, an
-            // atlas and a texture per face on the daemon's behalf, and measured
-            // before this existed it went on holding all of it -- 139.7 MB
-            // against 22 MB for the same process without the overlay -- for the
-            // rest of its life. The same handing back as the switch being turned
-            // off, because from the guest's side it is the same situation; a
-            // present hook is the one place the application's context is
-            // guaranteed current, which is what makes it safe here.
+            // Not drawing is not enough: the backend, the atlas and a texture
+            // per face are held on the daemon's behalf, and go back exactly as
+            // when the switch is turned off (entry 146).
             if (state_poll_.daemon_left()) {
                 VOCEM_GLOG("the daemon stopped: releasing the backend and the font atlas");
                 vocem::journal_note("daemon stopped: released");
@@ -918,23 +802,20 @@ public:
         // One clock for the whole frame: the animation step, the panel's motion
         // and the toast's age must agree about what time it is.
         const double now = vocem::monotonic_seconds();
-        // Either feature is a reason to spend the frame -- the guard used to ask
-        // only about the voice channel, which made a toast outside one
-        // unreachable (vocem/panel.h says why there is one spelling of this).
+        // Either feature is a reason to spend the frame (vocem/panel.h says
+        // why there is one spelling of this).
         const bool panel_frame = vocem::panel_wanted(*snapshot, config);
         const bool toast_frame = vocem::notification_wanted(*snapshot, config, now);
         if (!panel_frame && !toast_frame) {
             session_.note_forget();
             return;
         }
-        // The message's words, fetched only now: this process has decided it
-        // will draw this toast, which is the one condition under which the
-        // note segment is opened at all (vocem/note.h). Three syscalls per
-        // message, none per frame -- the snapshot is this process's own copy,
-        // so writing the text into it touches nothing anybody else can see,
-        // and forget() above wipes it the moment the toast is over. A message
-        // that arrived without its words is said once, in the session (the one
-        // failure this path has that looks like success).
+        // The message's words, fetched only now that this process will draw
+        // the toast, the one condition under which the note segment is opened
+        // (vocem/note.h): three syscalls per message, none per frame. The
+        // snapshot is this process's own copy, and note_forget() wipes it the
+        // moment the toast is over. A message that arrived without its words
+        // is said once, by the session.
         if (toast_frame) {
             std::snprintf(snapshot->notification.body, sizeof(snapshot->notification.body),
                           "%s", session_.note_words(snapshot->notification.serial));
@@ -942,25 +823,13 @@ public:
             session_.note_forget();
         }
         // The backend's objects are names in the context it was built in, and
-        // in any other unshared context the same names are that context's own
-        // textures, programs and buffers -- or nothing. A game presenting a
-        // second window from a second context (a tool window, an emulator's
-        // debugger) used to get the whole frame drawn with them: measured, the
-        // second context's texture 1 became a 2048x4096 atlas under a fold and
-        // a whole upload, and every one of its swaps left a GL error in its
-        // queue. The open risk DESIGN states -- the overlay in one of the two
-        // windows -- is what this makes true (entry 210).
-        //
-        // A context that is not the owner is drawn nothing into -- until the
-        // owner has not presented for kHandOverSeconds. Then the backend moves:
-        // a game that showed its loading screen from one context and the game
-        // itself from another, keeping the first alive for its loader, would
-        // otherwise have no overlay for the whole session (the review of this
-        // very change found it). The old context's GL objects cannot be deleted
-        // from here -- it is not current -- so they are remembered with it and
-        // deleted the next time it presents (move_away(), reclaim_left()).
-        // A context the backend could not be made in holds the overlay the
-        // same way (fail_in_this_context), so it can be handed over too.
+        // mean something else, or nothing, in another unshared context: a
+        // context that is not the owner is drawn nothing into, until the owner
+        // has been silent for kHandOverSeconds and the backend moves to it (a
+        // game may keep its loading-screen context alive). The old context's
+        // objects are deleted the next time it presents (move_away(),
+        // reclaim_left()). A context the backend could not be made in holds the
+        // overlay the same way (fail_in_this_context).
         if (backend_ready_ || failed_) {
             switch (whose_present(egl, now)) {
                 case Present::Owner:
@@ -978,8 +847,7 @@ public:
             return;
         }
         // Only now is the drawable's size worth two X round trips: every path
-        // above this line returns without drawing, and used to pay for the
-        // answer anyway.
+        // above this line returns without drawing.
         uint32_t width = 0;
         uint32_t height = 0;
         query_size(display, handle, width, height);
@@ -1010,15 +878,11 @@ public:
         // The atlas at the size this drawable needs: the first one from the
         // worker, a rebuild for a new size or typeface here, and a new colour
         // emoji -- noted from this frame's text before the question is asked --
-        // folded in and its squares copied, never a rebuild (entries 191, 192).
+        // folded in and its squares copied, never a rebuild.
         //
-        // Everything below touches GL through the ImGui backend, and the backend
-        // reads and writes the application's pixel-store state: CreateFontsTexture
-        // sets GL_UNPACK_ROW_LENGTH to 0 and never restores it. One guard over the
-        // whole of it -- a whole upload, the folded squares, the draw -- so the
-        // game gets its state back whichever path ran. Measured against the
-        // library before it: a game that left the row length at 2048 found it at
-        // 0 after the overlay's first frame.
+        // One pixel-store guard over the whole of it -- a whole upload, the
+        // folded squares, the draw -- because the backend's CreateFontsTexture
+        // sets GL_UNPACK_ROW_LENGTH to 0 and never restores it.
         const PixelStoreGuard unpack = avatars_.pixel_store_guard();
 
         // The FIRST atlas of this process, or the first after fonts_release(),
@@ -1046,26 +910,22 @@ public:
         }
 
         vocem::fonts_note_emoji_in(*snapshot);
-        // Sized by the display, not by the window: a window is where the overlay
-        // is drawn, not how large it should be, and sizing from the drawable
-        // made every resize rubber-band the whole panel -- text, pictures,
-        // spacing, all of it, since every distance is a multiple of ui_scale().
-        // The daemon publishes the display's mode height; sizing_height() says
-        // when the drawable wins instead (zero display, or a supersampled
-        // drawable taller than the display and headed for a downscale).
+        // Sized by the display, not by the window: sizing from the drawable
+        // would make every resize rubber-band the whole panel, since every
+        // distance is a multiple of ui_scale(). sizing_height() says when the
+        // drawable wins instead (zero display, or a supersampled drawable
+        // taller than the display and headed for a downscale).
         const float wanted_pixels = vocem::font_pixel_size(
             vocem::sizing_height(snapshot->display_height, height), config.scale,
             config.font_size);
         const uint32_t builds_before = vocem::fonts_build_count();
         if (vocem::ensure_fonts(wanted_pixels, config.font_size, config.font_path.c_str(),
                                 config.font_path_strong.c_str())) {
-            // The expensive thing this process does, said out loud: 133 ms of
-            // rasterising, and nothing said so until a context cycle was found
-            // paying it every time. tests/gl_context_cycle.cpp counts these
-            // lines, which is why it can assert a count instead of a clock. A
-            // new emoji FOLDED into the atlas answers true as well (the texture
-            // still has to be uploaded again) and is not a build, so it says so
-            // in its own words rather than inflating that count (entry 191).
+            // The expensive thing this process does, said out loud:
+            // tests/gl_context_cycle.cpp counts these lines, so it can assert a
+            // count instead of a clock. A new emoji FOLDED into the atlas
+            // answers true as well (the texture still has to go up again) and
+            // is not a build, so it says so in its own words (entry 191).
             const bool rebuilt = vocem::fonts_build_count() != builds_before;
             if (rebuilt) {
                 VOCEM_GLOG("font atlas built at %.0f px", static_cast<double>(wanted_pixels));
@@ -1075,9 +935,8 @@ public:
             vocem::configure_style(config);
             // A fold changed a few 32-pixel squares of an atlas the texture
             // already holds, so only those go up (entry 192): the whole atlas
-            // is a 64 MB glTexImage2D, 11.5 to 16.9 ms on its own (entry 145).
-            // A build replaces the texture whole, and so does a fold the
-            // regions cannot describe.
+            // is a 64 MB glTexImage2D. A build replaces the texture whole, and
+            // so does a fold the regions cannot describe.
             if (rebuilt || atlas_from_worker || !upload_folded_regions()) {
                 vocem::fonts_take_folded(nullptr, 0);  // the whole atlas carries them
                 ImGui_ImplOpenGL3_DestroyFontsTexture();
@@ -1111,18 +970,13 @@ public:
         vocem::build_notification(*snapshot, config, width, height, &avatars_, now);
         ImGui::Render();
 
-        // Into the framebuffer that is about to be presented, which is not
-        // necessarily the one the application left bound.
-        //
-        // ImGui's OpenGL backend draws into whatever is bound and saves a dozen
-        // pieces of state around it -- the framebuffer binding is not one of them.
-        // An application that swaps with its own framebuffer object still bound
-        // therefore gets the overlay drawn into that object, which is then
-        // discarded, and the overlay is invisible for a reason nothing reports.
-        // Restored immediately, like every other piece of state this touches
-        // (rule 12).
-        // The DRAW target alone where the API has one (GlAvatarProvider says
-        // what binding GL_FRAMEBUFFER to 0 did to the READ side).
+        // Into the framebuffer about to be presented, not necessarily the one
+        // the application left bound: ImGui's backend saves a dozen pieces of
+        // state around its draw, but not the framebuffer binding, and an
+        // application that swaps with its own framebuffer object bound would
+        // get the overlay drawn into an object that is then discarded. The
+        // DRAW target alone where the API has one (draw_framebuffer_target()),
+        // restored immediately (rule 12).
         GLint previous_framebuffer = 0;
         const GLenum draw_target = avatars_.draw_framebuffer_target();
         const bool retarget = bind_framebuffer_ && avatars_.get_integer();
@@ -1134,11 +988,8 @@ public:
         }
 
         {
-            // After the framebuffer is chosen and around the draw alone: the
-            // switch is per-draw state, and the uploads above are not affected
-            // by it. ImGui's own backend never looks at it, so the overlay's
-            // already-sRGB colours would be encoded a second time in every game
-            // that leaves it on (SrgbWriteGuard says what that measures).
+            // Around the draw alone: the switch is per-draw state and does not
+            // affect the uploads above (SrgbWriteGuard says why it is off).
             const SrgbWriteGuard srgb = avatars_.srgb_write_guard();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         }
@@ -1151,27 +1002,16 @@ public:
         session_.frame_drawn();
     }
 
-    // Give back everything that belongs to a GL context, and be ready to build it
-    // again on the next frame that wants one.
-    //
-    // Two callers, one operation, which is why it is one function:
-    //
-    //   * **The application destroyed the context** our objects live in. Every
-    //     texture name and every object inside ImGui's backend refers to something
-    //     that no longer exists, and using one after that is undefined rather than
-    //     merely wrong.
-    //   * **The user switched the overlay off.** Not drawing is not enough: this
-    //     code is a guest in somebody else's process, and a guest that has been
-    //     asked to leave should not still be holding a shader program, a vertex
-    //     buffer and a texture per person in the channel.
-    //
-    // `gl_current` says whether a GL context is current *right now* and safe to
-    // call into. Inside a present hook it is; inside `glXDestroyContext` it is only
-    // if the caller made the dying context current for us, and it says so.
+    // Give back everything that belongs to a GL context, and be ready to build
+    // it again: the context our objects live in was destroyed, or the overlay
+    // was switched off (a guest asked to leave keeps nothing). `gl_current`
+    // says whether a GL context is current *right now* and safe to call into:
+    // in a present hook it is; in a destroy hook only if the dying context was
+    // made current for the purpose.
     void release(bool gl_current) {
         // A first atlas still being rasterised reaches the context through
         // ImGui::GetIO() and the atlas that fonts_release() is about to clear:
-        // it finishes first (entry 192). At most the ~113 ms the build takes.
+        // it finishes first (entry 192).
         atlas_worker().join();
         if (backend_ready_ && gl_current) {
             ImGui_ImplOpenGL3_Shutdown();
@@ -1192,28 +1032,23 @@ public:
         owner_seen_ = 0.0;
         capture_warmup_frames_ = 0;
 
-        // Without a current context ImGui's backend cannot be shut down, because
-        // shutting it down means deleting GL objects. Its own small heap block is
-        // then leaked once per context destruction -- a hundred-odd bytes, not
-        // once per frame -- and the GL objects it named are gone with the context
-        // regardless. Destroying the ImGui context here is what makes the next
-        // `Init` start from nothing rather than from a half-torn-down backend.
+        // Without a current context ImGui's backend cannot be shut down (that
+        // deletes GL objects): its small heap block is leaked once per context
+        // destruction, and the GL objects it named are gone with the context.
+        // Destroying the ImGui context makes the next `Init` start from nothing
+        // rather than from a half-torn-down backend.
         if (ImGui::GetCurrentContext()) {
             ImGui::DestroyContext();
         }
     }
 
     // The backend moves to another context and leaves this one's objects where
-    // they are, because they can only be deleted with this context current and
-    // it is not. release(false) used to be the whole of it, so the old context
-    // kept a program, two buffers, the font texture -- 16 to 64 MB -- and a
-    // texture per face for the rest of its life, and coming back built a new
-    // set beside them: 1, 2, 3, 4 textures over four visits, measured by the
-    // 0.1.10 review (tests/gl_handover.cpp). Now the ImGui context that owns
-    // the backend is kept whole, with the context it lives in and the face
-    // textures' names, and reclaim_left() shuts it down properly the first
-    // time that context is current again. A context that dies first is
-    // handed to forget_left() by the teardown hooks.
+    // they are: they can only be deleted with this context current, and it is
+    // not. The ImGui context that owns the backend is kept whole, with the GL
+    // context it lives in and the face textures' names, and reclaim_left()
+    // shuts it down the first time that context is current again; a context
+    // that dies first is handed to forget_left() by the teardown hooks
+    // (tests/gl_handover.cpp).
     void move_away() {
         atlas_worker().join();
         void* context = __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE);
@@ -1236,16 +1071,11 @@ public:
 
     // The teardown hooks' half: `context` is dying (or, null, every context on
     // `display` with eglTerminate). A backend left in it is shut down properly
-    // when that context is current on the calling thread, and dropped without
-    // GL otherwise -- its objects go with the context, as release(false)'s do.
-    //
-    // A build still running is waited for first, as release() and move_away()
-    // wait for it: tearing down a left backend destroys its ImGui context --
-    // made the current one for the purpose -- and every allocation the worker
-    // makes counts itself through that same global pointer (ImGui::MemAlloc),
-    // so a worker still rasterising could write into the context just freed
-    // (tests/gl_handover.cpp, `worker-destroy`). Waited for, not joined: the
-    // live backend's next present joins it and uploads what it built.
+    // when that context is current on the calling thread, dropped without GL
+    // otherwise. A running build is waited for first: the worker's allocations
+    // count themselves through the ImGui context about to be destroyed
+    // (ImGui::MemAlloc). Waited for, not joined: the live backend's next
+    // present joins it and uploads what it built.
     void forget_left(void* display, void* context, bool egl) {
         atlas_worker().wait_until_built();
         for (size_t i = left_.size(); i-- > 0;) {
@@ -1295,10 +1125,9 @@ public:
 
     // Whether the context presenting now is the one the backend lives in,
     // asked with the API it arrived through: one getter call per frame, only
-    // once a backend exists; a getter that could not be resolved answers
-    // "the owner", which is how every frame was drawn before this was asked.
-    // A foreign context is Abandoned-for once the owner has been silent for
-    // kHandOverSeconds, and the caller moves the backend to it.
+    // once a backend exists; a getter that could not be resolved answers "the
+    // owner". A foreign context is Abandoned once the owner has been silent
+    // for kHandOverSeconds, and the caller moves the backend to it.
     enum class Present { Owner, Foreign, Abandoned };
     static constexpr double kHandOverSeconds = 2.0;
     Present whose_present(bool egl, double now) {
@@ -1338,15 +1167,10 @@ public:
 private:
     // A development aid: with VOCEM_CAPTURE_FRAME set to a path, the first frame
     // that carries the overlay is read back out of the game's own framebuffer and
-    // written there as a PPM.
-    //
-    // This exists because there is no other honest way to check what the overlay
-    // actually looks like. Screenshot tools on Wayland capture the wrong window or
-    // need a portal prompt, and "it should render correctly" is not a claim worth
-    // making about code that draws inside somebody else's frame. Reading the
-    // framebuffer after the draw shows exactly what the game shows.
-    //
-    // Once per process, and nothing at all when the variable is unset.
+    // written there as a PPM -- the one honest check of what the overlay looks
+    // like, since screenshot tools on Wayland capture the wrong window or need a
+    // portal prompt. Once per process, and nothing at all when the variable is
+    // unset.
     void capture_if_asked(uint32_t width, uint32_t height) {
         static const char* target = std::getenv("VOCEM_CAPTURE_FRAME");
         if (!target || !target[0] || captured_ || width == 0 || height == 0) {
@@ -1370,8 +1194,7 @@ private:
         }
 
         // RGBA rather than RGB: OpenGL ES only guarantees RGBA/UNSIGNED_BYTE for a
-        // read from the default framebuffer, and asking it for RGB produced an
-        // image that looked like a fault in the overlay rather than in the capture.
+        // read from the default framebuffer.
         constexpr GLenum GL_RGBA_FORMAT = 0x1908;
         const size_t count = static_cast<size_t>(width) * height * 4;
         unsigned char* pixels = static_cast<unsigned char*>(std::malloc(count));
@@ -1380,15 +1203,10 @@ private:
         }
         {
             // From the framebuffer the overlay drew into, through neutral pack
-            // state, and everything put back. glReadPixels reads the READ
+            // state, and everything put back: glReadPixels reads the READ
             // framebuffer and writes through GL_PACK_* and the pixel-pack
-            // buffer, all of it the game's: a game reading from its own
-            // object got a capture of that object, one with a wide
-            // GL_PACK_ROW_LENGTH had rows written far past the end of this
-            // buffer, and one with a pack buffer bound had the pixels go into
-            // its buffer and GL_INVALID_OPERATION into its queue
-            // (tests/gl_capture_state.cpp). Without the entry points to
-            // neutralise the state there is no capture at all.
+            // buffer, all of it the game's (entry 240). Without the entry
+            // points to neutralise the state there is no capture at all.
             const PixelStoreGuard pack = avatars_.pack_store_guard();
             if (!pack.ok()) {
                 std::free(pixels);
@@ -1426,9 +1244,7 @@ private:
         std::free(pixels);
     }
 
-    // One spelling with the Vulkan layer's, in vocem/state_poll.h -- the loop
-    // had drifted apart once already (the layer said why a read failed, this
-    // path did not).
+    // One spelling with the Vulkan layer's, in vocem/state_poll.h.
     vocem::Snapshot* poll_state() { return state_poll_.poll(); }
 
     bool ensure_backend(bool egl) {
@@ -1442,9 +1258,8 @@ private:
         if (!ImGui::GetCurrentContext()) {
             IMGUI_CHECKVERSION();
             // With the fonts module's atlas, not one of the context's own: the
-            // atlas has to outlive the context, because this is a context that
-            // dies and comes back (vocem/fonts.h says what the alternatives
-            // cost, both in a crash and in 133 ms per context).
+            // atlas has to outlive this context, which dies and comes back
+            // (vocem/fonts.h says what the alternatives cost).
             ImGui::CreateContext(vocem::fonts_atlas());
             ImGuiIO& io = ImGui::GetIO();
             io.IniFilename = nullptr;
@@ -1453,20 +1268,11 @@ private:
             vocem::configure_style(config_.current());
         }
 
-        // The shader source has to match the context, and the backend cannot work
-        // that out on its own: it detects an ES context at runtime for its feature
-        // flags, but the GLSL version it compiles with is chosen at build time, and
-        // for a file built against desktop GL that is "#version 130". Handed to an
-        // OpenGL ES context the shader does not compile, the program does not link,
-        // and every draw call after it is rejected with GL_INVALID_OPERATION --
-        // silently, since the backend's own checks are assertions and this is built
-        // with them off.
-        //
-        // Measured inside a Qt application on Wayland, which runs on OpenGL ES 3.2
-        // through EGL: the overlay was building nine hundred vertices a frame and
-        // not one of them reached the screen. Native games that go through GLX get
-        // a desktop context and were never affected, which is why this went
-        // unnoticed.
+        // The shader source has to match the context (entry 28): the backend
+        // chooses its GLSL version at build time, "#version 130" for desktop GL,
+        // and an OpenGL ES context refuses it -- the program does not link and
+        // every draw call is rejected with GL_INVALID_OPERATION, silently, since
+        // the backend's own checks are assertions and those are compiled out.
         const char* glsl_version = nullptr;
         int es_version = 0;  // 0 desktop GL, otherwise the OpenGL ES major version
         int gl_major = 0;    // the desktop GL major version, for what a context can be asked
@@ -1498,20 +1304,11 @@ private:
             return fail_in_this_context(egl);
         }
         // Asked again after Init where the first ask found nothing: in a game
-        // that never resolved a dispatcher of its own (this project's own GLX
-        // probes are that game), the third road has nothing to forward to
-        // until ImGui's loader resolves glXGetProcAddressARB through the
-        // dlsym door and the shim remembers it -- which Init has just done.
-        // The GL major gates what the context may be asked (SrgbWriteGuard).
-        //
-        // And the GLSL is not settled by then, whatever this said before: Init
-        // took ImGui's desktop default, "#version 130", and an ES context
-        // refuses it. An ES game that opens its libraries RTLD_LOCAL and
-        // never asks for a dispatcher was drawn with a program that never
-        // linked -- "OpenGL backend ready" in the log, 42 GL errors in the
-        // game's queue over 42 frames and not one pixel (tests/gl_es_glsl.cpp).
-        // An ES answer now initialises the backend again with its language;
-        // nothing has been built yet, so the second Init costs nothing.
+        // that never resolved a dispatcher of its own, the third road has
+        // nothing to forward to until ImGui's loader, in Init, has resolved one
+        // through the dlsym door. Init took the desktop default GLSL, which an ES
+        // context refuses (tests/gl_es_glsl.cpp), so an ES answer initialises
+        // the backend again with its language; nothing is built yet.
         if (!version_known) {
             read_version();
             if (glsl_version) {
@@ -1525,23 +1322,16 @@ private:
             }
         }
         // The backend's GL objects -- shader, buffers and the font texture --
-        // built HERE, not left to its NewFrame. draw() replaces the font
-        // texture explicitly once ensure_fonts() has rasterised the atlas at
-        // the size this output needs, and it did so on the first frame before
-        // NewFrame had built the device objects; NewFrame then built them,
-        // font texture included, over the one draw() had just made. One whole
-        // atlas -- 16 to 64 MB of RGBA at the sizes fonts.cpp measures --
-        // orphaned per backend build: per overlay toggle, per context
-        // recreation, for the life of the game's context. The comment above
-        // the replace used to claim the objects "already exist by now"; this is
-        // what makes it true. tests/gl_draw_local.cpp counts the textures.
+        // built HERE, not left to its NewFrame: draw() replaces the font
+        // texture once ensure_fonts() has the atlas at this output's size, and
+        // a NewFrame building them after that would orphan a whole 16-64 MB
+        // atlas per backend build (tests/gl_draw_local.cpp counts the
+        // textures).
         avatars_.resolve(es_version, gl_major);
         {
-            // Under the pixel-store guard, exactly as draw() keeps the backend's
-            // font upload: CreateFontsTexture zeroes GL_UNPACK_ROW_LENGTH and
-            // never restores it, and this call is what makes it now. The first
-            // version of this block ran it bare, and gl_unpack_state caught the
-            // game's row length at 0 the same minute.
+            // Under the pixel-store guard, as draw() keeps the backend's font
+            // upload: CreateFontsTexture zeroes GL_UNPACK_ROW_LENGTH and never
+            // restores it.
             const PixelStoreGuard unpack = avatars_.pixel_store_guard();
             if (!ImGui_ImplOpenGL3_CreateDeviceObjects()) {
                 VOCEM_GLOG("ImGui OpenGL3 backend could not create its GL objects");
@@ -1601,8 +1391,7 @@ private:
                   "with the new backend's struct, then change this number");
 
     // Whether the backend's shader program linked. Unknown -- no
-    // glGetProgramiv, no backend -- is answered yes, which is how every
-    // backend was taken before this was asked.
+    // glGetProgramiv, no backend -- is answered yes.
     bool backend_program_linked() {
         using PFN_glGetProgramiv = void (*)(GLuint, GLenum, GLint*);
         const auto* data =
@@ -1618,15 +1407,12 @@ private:
 
     // The backend could not be made in the context current now. The failure
     // belongs to that context, and it is remembered WITH it: the context is
-    // taken as the owner, so the ways an owner is given up -- its teardown,
+    // taken as the owner, so every way an owner is given up -- its teardown,
     // the hand-over once it has been silent for kHandOverSeconds, the switch,
-    // the daemon stopping -- all clear the failure and let the next context
-    // try. The flag used to be set before any owner was remembered, and only
-    // those four clear it, the first two of them only for an owner: a splash
-    // or helper context whose program did not link took the overlay away from
-    // the whole process for good (tests/gl_failed_context.cpp: 0 backends and
-    // 0 overlay pixels in the context that came next, however long it
-    // presented). Asked every frame in the meantime is one flag.
+    // the daemon stopping -- clears the failure and lets the next context try,
+    // rather than one splash context taking the overlay from the whole
+    // process (tests/gl_failed_context.cpp). Asked every frame in the
+    // meantime is one flag.
     bool fail_in_this_context(bool egl) {
         failed_ = true;
         remember_owner(egl);
@@ -1691,13 +1477,11 @@ private:
     }
 
     // In a present: a backend left in the context current now goes, properly.
-    // Not while the atlas worker is still rasterising -- the teardown destroys
-    // an ImGui context the worker's allocations can reach (forget_left() says
-    // how) -- and not by waiting for it either, inside the game's present: the
-    // reclaim waits for a present after the build, and a context that dies
-    // first goes through forget_left(), which does wait (tests/gl_handover.cpp,
-    // `worker`). A finished build is not joined here: the live backend's
-    // present joins it and uploads what it built.
+    // Not while the atlas worker is still rasterising (forget_left() says why),
+    // and not by waiting for it either, inside the game's present: the reclaim
+    // waits for a present after the build, and a context that dies first goes
+    // through forget_left(), which does wait. A finished build is not joined
+    // here: the live backend's present joins it and uploads what it built.
     void reclaim_left(bool egl) {
         void* current = current_context_of(egl);
         if (!current) {
@@ -1777,14 +1561,11 @@ private:
     double owner_seen_ = 0.0;
 
     // The squares a fold wrote, uploaded into the font texture the backend
-    // already made, and nothing else. Runs under draw()'s PixelStoreGuard, so
-    // the unpack state is the neutral one and no pixel-unpack buffer is bound;
-    // each square is copied out of the atlas into a contiguous buffer first,
-    // because GL_UNPACK_ROW_LENGTH does not exist on ES 2 and a sub-image read
-    // straight out of a 4096-wide atlas would need it. The texture binding is
-    // the game's and goes back as it was (rule 12), exactly as the backend's
-    // own CreateFontsTexture does. False when anything is missing -- the
-    // caller then replaces the texture whole, which is always correct.
+    // already made. Runs under draw()'s PixelStoreGuard; each square is copied
+    // into a contiguous buffer first, because ES 2 has no GL_UNPACK_ROW_LENGTH
+    // to read it out of the atlas. The game's texture binding goes back
+    // (rule 12). False when anything is missing: the caller then replaces the
+    // texture whole, which is always correct.
     bool upload_folded_regions() {
         if (!tex_sub_image_ || !bind_texture_ || !get_integer_) {
             return false;
@@ -1845,9 +1626,7 @@ GlOverlay& overlay() {
 // GLX
 // ---------------------------------------------------------------------------
 
-// Only the query is needed here: the swap and dispatcher signatures that used
-// to sit beside it were the deleted hook table's (entry 45), and a leftover
-// signature is what makes growing that table back a two-line change.
+// Only the query is needed here: the swap and dispatcher hooks are the shim's.
 using PFN_glXQueryDrawable = void (*)(void*, unsigned long, int, unsigned int*);
 
 constexpr int kGlxWidth = 0x801D;
@@ -1872,34 +1651,23 @@ void query_glx_size(void* display, unsigned long drawable, uint32_t& width, uint
     height = value;
 }
 
-// The context the backend lives in, dying while it is not current here.
-//
-// Its objects -- the program, two buffers, the 16-64 MB font texture, a
-// texture per face -- can only be deleted with it current, and they do not
-// always die with it: SDL_GL_DeleteContext and glfwDestroyWindow make NULL
-// current and then destroy, which is the standard order, and a game with a
-// loader context shares its objects with every window context it makes. The
-// first round of 0.1.11 dropped the backend without GL whenever the dying
-// context was not current, and every owner left a whole set in the share group
-// for good: 8 textures, 4 programs and 8 buffers after four owners
+// The context the backend lives in, dying while it is not current here. Its
+// objects can only be deleted with it current, and they do not always die
+// with it: SDL and GLFW make NULL current and then destroy, and a loader
+// context shares its objects with every window context
 // (tests/gl_destroy_owner.cpp, `shared`).
 //
-// So the dying context is made current here, for the teardown and no longer,
-// on a 1x1 pbuffer made from its own framebuffer configuration -- never on the
-// game's drawable, whose configuration may not match (that was the BadMatch of
-// the `visual` scene) -- and what was current before is put back, read and
-// draw drawables both. A GLX failure is an X error, and with no handler of
-// the game's own that is Xlib's default one calling exit(1) (the `thread`
-// scene's BadAccess: the dying context still current on another thread). So
-// everything between the first request and the last runs under a handler of
-// ours that swallows the errors this thread's requests raise from the first
-// serial on, and hands every other error to the handler it replaced. Any
-// error, or any function that cannot be found, and the teardown is the one
-// without GL, as before.
+// So it is made current for the teardown alone, on a 1x1 pbuffer of its own
+// framebuffer configuration -- the game's drawable may not match (BadMatch)
+// -- and what was current before is put back, read and draw drawables both.
+// A GLX failure is an X error, and Xlib's default handler calls exit(1): so
+// everything runs under a handler of ours that swallows the errors this
+// thread's requests raise from the first serial on and forwards every other.
+// Any error or missing function, and the teardown is the one without GL.
 //
-// Xlib is found where the game put it: the global scope when the game links
-// it, and otherwise among the loaded objects -- SDL and GLFW dlopen libX11
-// RTLD_LOCAL -- asked through its own handle. Nothing here opens a file.
+// Xlib is found where the game put it: the global scope, or among the loaded
+// objects (SDL and GLFW dlopen libX11 RTLD_LOCAL), asked through its own
+// handle. Nothing here opens a file.
 struct XErrorEventLayout {  // XErrorEvent as <X11/Xlib.h> lays it out, unchanged since X11R4
     int type;
     void* display;
@@ -2191,32 +1959,20 @@ void query_egl_size(void* display, void* surface, uint32_t& width, uint32_t& hei
 // ---------------------------------------------------------------------------
 
 // Everything else in this library is hidden (-fvisibility=hidden), so only the
-// names below are exported. That is not tidiness: this library carries its own
-// copy of ImGui, and it used to export all thousand-odd of its symbols. Loaded
-// through the shim that never mattered, because the shim dlopens it RTLD_LOCAL --
-// but preloaded directly, as vocem-run used to do, those symbols would sit at the
-// front of the global lookup order and a game with its own dynamically linked
-// ImGui would have found ours instead.
-//
-// This library used to carry its own interposed glXSwapBuffers, dlsym and the
-// proc-address hooks as well, "for direct preloading of this library, which is
-// what the development scripts do" -- and no script had preloaded it since
-// vocem-run switched to the shim. Every path into a process preloads the shim
-// (environment.d, vocem-run, dev-run-gl.sh, the tests), the shim dlopens this
-// library RTLD_LOCAL and resolves exactly the vocem_gl_* names below, so those
-// eighty lines were a second, unreachable copy of the shim's hook table --
-// free to drift from the real one, which is the entry-33 shape.
+// names below are exported: this library carries its own copy of ImGui, which
+// preloaded directly would sit at the front of the global lookup order ahead
+// of a game's own. It has no hooks: every path into a process
+// preloads the shim, which dlopens this library RTLD_LOCAL and resolves
+// exactly these vocem_gl_* names (tests/gl_entry_points.cmake).
 #define VOCEM_EXPORT __attribute__((visibility("default")))
 
 // One lock over everything this library exports.
 //
-// The four entry points below reach one process-wide overlay -- an ImGui context,
-// two maps, GL objects -- and an application may call them from different threads:
-// a worker loading resources destroys its context while the render thread is
-// between NewFrame and RenderDrawData, and release() then runs
-// ImGui_ImplOpenGL3_Shutdown and DestroyContext underneath it. The Vulkan half
-// has taken a lock for exactly this since it was written; this half had none at
-// all. It is not a lock-free path -- draw() already reads files -- so the cost is
+// The four entry points below reach one process-wide overlay -- an ImGui
+// context, two maps, GL objects -- and an application may call them from
+// different threads: a worker destroying its context while the render thread
+// is between NewFrame and RenderDrawData would run ImGui_ImplOpenGL3_Shutdown
+// and DestroyContext underneath it. draw() already reads files, so the cost is
 // a contended mutex on a path that is already making syscalls.
 static std::mutex g_gl_lock;
 
@@ -2226,8 +1982,7 @@ extern "C" {
 VOCEM_EXPORT void vocem_gl_present_glx(void* display, unsigned long drawable) {
     const std::lock_guard<std::mutex> serialise(g_gl_lock);
     // The size is not queried here: on GLX it is two X round trips, and draw()
-    // asks for it only once the frame has decided to draw (33 us a pair,
-    // measured -- a real cost in every GL process that never draws).
+    // asks for it only once the frame has decided to draw.
     overlay().draw(
         [](void* dpy, void* handle, uint32_t& w, uint32_t& h) {
             query_glx_size(dpy, reinterpret_cast<unsigned long>(handle), w, h);
@@ -2244,45 +1999,20 @@ VOCEM_EXPORT void vocem_gl_present_egl(void* display, void* surface) {
         display, surface, true);
 }
 
-// A GL context is going away, and everything we built lives in one.
-//
-// Called from the shim before the real destroy runs. The backend's program,
-// buffers, font texture and faces are deleted in the dying context: directly
-// when it is current on the calling thread, and otherwise after making it
-// current for the teardown on a pbuffer of its own configuration, under a
-// trapped X error handler, with what was current put back afterwards
-// (DyingGlxCurrent says why each of those three is there). Only when that
-// fails -- the context current on another thread, a function missing, any X
-// error -- is the state dropped without calling GL, and then the objects stay
-// wherever the context's share group lives on (DESIGN, Open risks).
-//
-// The first version of this hook did MangoHud's dance: glXMakeCurrent of the
-// dying context on the CURRENT drawable, with Xlib's handler in place. A
-// failed GLX request is an X error, and in a game with no handler of its own
-// that is exit(1). Measured twice (tests/gl_destroy_owner.cpp): BadMatch on
-// NVIDIA for a game that recreated its window with MSAA, the dying context
-// made current on a drawable of another configuration; BadAccess under Mesa
-// for an owner destroyed from a second thread while current on the render
-// thread. 0.1.11's first round then made nothing current at all, and a game
-// that makes NULL current before destroying -- SDL, GLFW -- with a loader
-// context sharing its objects kept one whole backend per window context it
-// ever made (the `shared` scene).
-//
-// Without this hook the overlay held texture names and a shader program
-// belonging to a context that no longer existed, and used them on the next
-// frame. Nothing said so: the driver is entitled to do anything at all with a
-// stale name, and mostly it draws nothing.
+// A GL context is going away, and everything we built lives in one. Called
+// from the shim before the real destroy. The backend's objects are deleted in
+// the dying context: directly when it is current here, otherwise after making
+// it current for the purpose (DyingGlxCurrent). Only when that fails is the
+// state dropped without GL, the objects left to the context's share group.
+// Without this hook the overlay would use names of a context that no longer
+// exists.
 VOCEM_EXPORT void vocem_gl_context_destroyed(void* display, void* context) {
-    // Only the context the backend lives in. Every context a game destroys
-    // used to reach the release below -- a loader thread's helper context, a
-    // splash screen's, SDL's probe context -- and left the next frame to
-    // rebuild the whole backend (an atlas rasterised again, every face
-    // uploaded again) for a context that had never been touched. And it
-    // reached here in every process that ever presented, browsers included,
-    // whether or not a backend existed at all. Asked before the lock and
-    // before the overlay is so much as constructed: "not mine" costs one
-    // atomic load. tests/gl_draw_local.cpp destroys a second context and
-    // counts the rebuilds.
+    // Only the context the backend lives in, or one a backend was left in: any
+    // other context a game destroys -- a loader's helper, a splash screen,
+    // SDL's probe, every context of a browser -- must not cost a backend
+    // rebuild. Asked before the lock and before the overlay is so much as
+    // constructed: "not mine" costs one atomic load. tests/gl_draw_local.cpp
+    // destroys a second context and counts the rebuilds.
     if (!GlOverlay::owns(display, context, false) && !GlOverlay::left_anywhere()) {
         return;
     }
@@ -2366,11 +2096,9 @@ VOCEM_EXPORT void vocem_gl_egl_context_destroyed(void* display, void* context) {
     void* previous = current_context();
     if (!context) {
         // eglTerminate: GL calls reach the backend's objects only when the
-        // context current here is the one it lives in. It used to be "any
-        // context at all", and in another, unshared context the backend's
-        // names are that context's own textures, buffers and programs --
-        // measured, one eglTerminate took 1 of 16, 2 of 16 and 1 of 4 of them
-        // (tests/gl_egl_terminate.cpp).
+        // context current here is the one it lives in; in another, unshared
+        // context the backend's names are that context's own objects
+        // (entry 237).
         overlay().release(previous != nullptr &&
                           previous == __atomic_load_n(&g_owner_context, __ATOMIC_ACQUIRE));
         return;
@@ -2402,20 +2130,16 @@ namespace {
 // takes its crash marker with it; a crash does not, which is the mechanism.
 __attribute__((destructor)) void vocem_gl_journal_close() {
     // A first atlas still being rasterised runs this library's code and reads
-    // the atlas: it finishes before exit goes on to tear the process down
-    // (entry 192). The shim never dlcloses this library, so exit is the one
-    // way this runs.
+    // the atlas: it finishes before exit tears the process down (entry 192).
+    // The shim never dlcloses this library, so exit is the one way this runs.
     atlas_worker().join();
     vocem::journal_end();
-    // Last, the exception emergency pool of this library's own libstdc++.
-    // The library carries its C++ runtime inside it (-static-libstdc++, the top-level CMakeLists.txt),
-    // and that runtime's exception emergency pool -- about 73 KB, malloc'd by
-    // its constructor at every load -- is never freed by its destructor:
-    // libstdc++ leaves it to __gnu_cxx::__freeres(), which only memory
-    // checkers call. Every unload kept one, which for the layer is every
-    // vkDestroyInstance: 73,744 bytes a cycle (12,816 at 32 bits), measured
-    // by tests/injected_unload.cpp. It frees this library's own copy, never the
-    // game's -- the runtime inside is local to it (entry 195).
+    // Last, the exception emergency pool (about 73 KB) of the libstdc++ this
+    // library carries inside it (-static-libstdc++, the top-level
+    // CMakeLists.txt): its destructor never frees it, leaving that to
+    // __gnu_cxx::__freeres(), so every unload would keep one
+    // (tests/injected_unload.cpp). It frees this library's own copy, never the
+    // game's -- the runtime inside is local to it.
     __gnu_cxx::__freeres();
 }
 

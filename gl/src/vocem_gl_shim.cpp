@@ -4,29 +4,17 @@
 //
 // Vocem Overlay - OpenGL shim.
 //
-// Vulkan games are covered automatically: the Vulkan loader loads our layer, in
-// every application, with nothing to configure. OpenGL has no such mechanism, so
-// the only way to reach OpenGL games without asking the user to do anything is to
-// be preloaded into the session -- and that means being preloaded into *everything*
-// the session starts, browsers and shells included.
-//
-// This file is what makes that defensible. It is the only thing preloaded: a few
-// kilobytes that interpose the swap functions and do nothing else. No ImGui, no
-// image decoding, no configuration parsing, no static constructors that touch
-// anything. A process that never presents an OpenGL frame -- which is almost all of
-// them -- pays for one small mapping and nothing more.
-//
-// The first time a real GL frame is presented, the shim loads the actual overlay
-// and hands the frame over. Everything expensive lives there, and is therefore only
-// ever paid for by processes that draw.
+// OpenGL has no layer mechanism, so reaching GL games with no setup means being
+// preloaded into every process of the session. This file is the only thing
+// preloaded: a few kilobytes that interpose the present, context-teardown and
+// lookup functions and nothing else. On the first real GL frame it loads the
+// overlay library and hands the frame over, so only processes that draw pay
+// for anything beyond one small mapping.
 
-// Written without the C++ runtime on purpose. A function-local static with a
-// dynamic initialiser would emit __cxa_guard calls, which pull in libstdc++ -- and
-// this object is mapped into every process in the session, including ones that
-// never load libstdc++ themselves. Plain globals plus atomic builtins keep the
-// dependency list at libc alone (glibc 2.34 folded libdl into it; NEEDED is
-// libc.so.6 and nothing else at both widths, which tests/shim_artifact.cmake
-// holds, and the link refuses anything undefined outside it).
+// Invariants: no C++ runtime (a function-local static with a dynamic
+// initialiser emits __cxa_guard, pulling libstdc++ into every process), so
+// plain globals and atomic builtins only; NEEDED is libc.so.6 alone at both
+// widths (tests/shim_artifact.cmake); exactly the 12 hooks below are exported.
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -41,11 +29,8 @@ namespace {
 using PFN_dlsym = void* (*)(void*, const char*);
 PFN_dlsym g_real_dlsym = nullptr;
 
-// The real dlsym, reached through dlvsym so it bypasses our own interposed dlsym
-// below: asking the interposed one for a symbol would return our own hook.
-//
-// The version has to be looked for and not assumed -- see real_dlsym.h for what
-// assuming it cost. Tried in order, this architecture's own first.
+// The real dlsym, reached through dlvsym so it bypasses our own interposed
+// dlsym. The version is tried from real_dlsym.h's list, never assumed.
 void* real_dlsym(void* handle, const char* name) {
     PFN_dlsym real = __atomic_load_n(&g_real_dlsym, __ATOMIC_ACQUIRE);
     if (!real) {
@@ -53,15 +38,9 @@ void* real_dlsym(void* handle, const char* name) {
         for (unsigned i = 0; i < sizeof(versions) / sizeof(versions[0]) && !real; ++i) {
             real = reinterpret_cast<PFN_dlsym>(dlvsym(RTLD_NEXT, "dlsym", versions[i]));
         }
-        // Nothing sensible is left to do here -- there is no way to answer a dlsym
-        // without one -- so at least say so once, on the way down. A single line
-        // naming this file is the difference between an afternoon and a minute:
-        // what the application reports is its own symbol failing, which points
-        // anywhere but here.
-        // Said once, not once per lookup. The null is deliberately not cached --
-        // a null resolution is never remembered here -- so without a separate
-        // flag this printed a line on every dlsym for the life of the process,
-        // in every process in the session, which is noise rather than a report.
+        // Without it no lookup can be answered. Say so once per process (a
+        // separate flag, since the null itself is never cached): the
+        // application will report its own symbol failing, pointing elsewhere.
         static int said = 0;
         if (!real && __atomic_exchange_n(&said, 1, __ATOMIC_ACQ_REL) == 0) {
             fprintf(stderr,
@@ -116,11 +95,9 @@ void say(const char* a, const char* b = "", const char* c = "", const char* d = 
     }
 }
 
-// One attempt at the overlay library. Under VOCEM_DEBUG a refusal is said with
-// ld.so's own words: a game whose runtime puts an older libstdc++ first on its
-// search path used to lose the overlay with nothing said anywhere -- no line,
-// no application record, because the record is written by the library that
-// did not load (tests/gl_old_libstdcxx.cpp).
+// One attempt at the overlay library. Under VOCEM_DEBUG a refusal is said in
+// ld.so's words: the application record is written by the library that did
+// not load, so nothing else would say it (tests/gl_old_libstdcxx.cpp).
 void* try_load(const char* path, bool debug) {
     void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!handle && debug) {
@@ -138,15 +115,9 @@ void load_overlay() {
     const char* debug_env = getenv("VOCEM_DEBUG");
     const bool debug = debug_env && debug_env[0] == '1';
 
-    // An absolute path can be given explicitly, which is what running from a build
-    // tree needs: without it the overlay would have to be on the library search
-    // path, and putting a build directory there for every process in the session is
-    // a worse trade than one extra variable.
-    //
-    // When it is given it is the only path tried. The fallbacks below used to run
-    // after it as well, so a build-tree path that failed to load was answered by
-    // the INSTALLED library -- a mixed stack, this tree's shim drawing with the
-    // package's overlay, and nothing said so.
+    // VOCEM_GL_LIBRARY names an absolute path (a build tree) and, when set, is
+    // the only path tried: falling back to the installed library would silently
+    // pair this tree's shim with the package's overlay.
     const char* override_path = getenv("VOCEM_GL_LIBRARY");
     const bool overridden = override_path && override_path[0];
 
@@ -154,40 +125,21 @@ void load_overlay() {
     // namespace, where they could shadow something it defines itself.
     void* handle = try_load(overridden ? override_path : "libvocem_gl.so", debug);
 
-    // Inside a container, by its path on the host.
+    // Inside a container, by its path on the host. The Steam Linux Runtime has
+    // its own /usr, where the soname does not resolve; pressure-vessel copies
+    // this shim in (as every LD_PRELOAD module) but knows nothing of the
+    // library it opens, and mounts the host at /run/host. VOCEM_LIBDIR rather
+    // than $LIB: it is where this build's package puts the file.
     //
-    // A Steam game runs in the Steam Linux Runtime, which is a container with a
-    // filesystem of its own: `/usr` is the runtime's, and the soname above is not on
-    // any search path in there. pressure-vessel does bring *this* shim in -- it
-    // copies every LD_PRELOAD module into the container and expands `$LIB` while it
-    // does, measured: `libvocem_gl_shim.so` turns up in both `lib` and `lib32` of
-    // `/tmp/pressure-vessel-libs-*`, beside MangoHud's -- but the shim is all it
-    // knows about. Nothing tells it that this small library opens a larger one.
-    //
-    // What it does do is mount the host at `/run/host`, so the larger one is
-    // reachable by the path it was installed to with that prefix. Measured from
-    // inside a running game: `/run/host/usr/lib/libvocem_gl.so` and
-    // `/run/host/usr/lib32/libvocem_gl.so` are both there.
-    //
-    // The directory is the one this build installs to rather than `$LIB`, because
-    // the two are not the same question -- `$LIB` is what the linker calls the
-    // architecture, `VOCEM_LIBDIR` is where the package actually put the file -- and
-    // each of the two builds knows its own answer at compile time.
-    //
-    // This dlopen pair lives on the *present* path, after a frame has actually been
-    // drawn by the application, never in a resolution path. The distinction is
-    // load-bearing: dlopen walks the filesystem, and a resolution path runs inside
-    // sandboxed processes where a file syscall is SIGSYS. See the comment block
-    // above the dispatch table.
+    // These dlopens are on the present path, after a real frame, never in a
+    // resolution path: dlopen walks the filesystem, and resolution runs inside
+    // sandboxed processes where a file syscall is SIGSYS.
     if (!handle && !overridden) {
         handle = try_load("/run/host" VOCEM_LIBDIR "/libvocem_gl.so", debug);
     }
-    // And by its own path, unprefixed. Inside a Flatpak the overlay is mounted
-    // from the VulkanLayer extension at a directory the loader does not search:
-    // the extension point has no add-ld-path, so the soname above resolves to
-    // nothing and there is no /run/host either. The build that goes into the
-    // extension compiles VOCEM_LIBDIR to where it will be mounted, which is the
-    // one place left to look.
+    // And by its own path, unprefixed: inside a Flatpak the overlay is mounted
+    // from the VulkanLayer extension, which has no add-ld-path and no /run/host;
+    // that build compiles VOCEM_LIBDIR to the mount point.
     if (!handle && !overridden) {
         handle = try_load(VOCEM_LIBDIR "/libvocem_gl.so", debug);
     }
@@ -200,11 +152,8 @@ void load_overlay() {
         }
         return;
     }
-    // Stored with the atomic builtins, like every other slot in this file: a
-    // second thread presenting at the same moment reads these after seeing
-    // g_load_attempted set, and a plain store is a data race by the letter
-    // (harmless on x86, where it costs a skipped frame at worst; still not
-    // the shape this file promises).
+    // Atomic stores: a second presenting thread reads these once it sees
+    // g_load_attempted set.
     __atomic_store_n(&g_present_glx,
                      reinterpret_cast<PFN_present_glx>(real_dlsym(handle, "vocem_gl_present_glx")),
                      __ATOMIC_RELEASE);
@@ -235,38 +184,18 @@ void context_gone(bool egl, void* display, void* context) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// The three ways a program reaches a present function, and why all three are
-// needed.
+// The three ways a program reaches a present function; all three are needed.
 //
-// This was written as "interpose the symbol, and hook dlsym as a last line of
-// defence". That has it backwards, and the measurements say so:
+//   1. The program's own call, resolved by the dynamic linker: we are ahead of
+//      libGL in the global scope. The only interposable point in the chain --
+//      glvnd links its libraries -Bsymbolic, so nothing downstream is hookable.
+//   2. glXGetProcAddress / eglGetProcAddress: they return glvnd's internal
+//      pointer, so without these hooks every GL loader (glad, GLEW, epoxy)
+//      bypasses us.
+//   3. dlsym: SDL, GLFW and glad dlopen the GL library and dlsym on that
+//      handle, which never searches the global scope. Most games arrive here.
 //
-//   1. **The program's own call**, resolved by the dynamic linker. We are ahead of
-//      libGL in the global scope, so our definition wins. This is the *only*
-//      interposable point in the whole chain: libglvnd links libGL, libGLX and
-//      libEGL with `-Bsymbolic`, and libGL reaches libGLX's `glXSwapBuffers`
-//      through a relative relocation with no symbol name at all. Nothing
-//      downstream of the application can be hooked, ever. Godot 3, RetroArch and
-//      Dolphin are caught here -- and not many others.
-//
-//   2. **`glXGetProcAddress` / `eglGetProcAddress`.** Measured: these return
-//      libglvnd's *internal* pointer, byte-identical with and without the preload,
-//      because the dispatch table took its address at link time under -Bsymbolic.
-//      An application that asks for `glXSwapBuffers` this way gets the real one
-//      and we never see a frame. So these are not a nicety: without them every GL
-//      loader -- glad, GLEW, epoxy -- bypasses us.
-//
-//   3. **`dlsym`.** The one that actually carries the weight. SDL, GLFW and glad
-//      all `dlopen` the GL library and `dlsym` on *that handle*, which searches the
-//      object's own scope and never the global one, so interposition is invisible
-//      to them. That is Unity, Godot 4, PCSX2, and Minecraft through LWJGL/GLFW --
-//      and Balatro, which is LÖVE on SDL. `readelf` on the installed libSDL2,
-//      libSDL3 and libglfw shows zero undefined `glX*`/`egl*` symbols and only
-//      `dlopen`/`dlsym`: for those libraries there is nothing else to hook.
-//
-// One table, consulted by 2 and 3 alike, so the two cannot drift apart -- which
-// they had, quietly: the proc-address hooks answered for two names and dlsym for
-// five.
+// One table (g_hooks) serves 2 and 3, so the two cannot drift apart.
 
 // Every present entry point, and the dispatch functions themselves. Declared with
 // C linkage here because they are defined that way below, and the table needs their
@@ -291,45 +220,21 @@ unsigned int eglTerminate(void* display);
 namespace {
 
 // ---------------------------------------------------------------------------
-// Which pointers the shim is allowed to remember, and why that is the question.
+// Which pointers the shim may remember.
 //
-// A process does not contain one implementation of these names. Every Electron
-// application contains **two**: ANGLE's bundled libEGL.so, which Chromium opens
-// privately, and the system's libEGL.so.1, which ANGLE's own native backend opens
-// privately underneath it. Both have an `eglGetProcAddress`; both pass through
-// our `dlsym` hook.
+// A process can hold more than one implementation of these names: every
+// Electron app has ANGLE's bundled libEGL.so and the system's libEGL.so.1
+// beneath it. Forwarding ANGLE's question back to ANGLE deadlocks its GPU
+// process, and dlsym(RTLD_DEFAULT, ...) returns the shim's own export, a
+// forward-to-self loop (tests/shim_two_egls.cpp). So a pointer is remembered
+// only when it belongs to the system GL stack -- glvnd or a vendor ICD, of
+// which there is one per process. A private GL keeps its names untouched; the
+// overlay still sees every frame because ANGLE presents through the system
+// library.
 //
-// The 0.1.0-41/-42 shim kept one global slot per name, first pointer wins. The
-// first one seen is ANGLE's, so when ANGLE asked what it believed was the
-// *driver's* dispatcher for a native entry point, the shim forwarded the question
-// back to ANGLE. ANGLE re-entered its own initialisation, took its own display
-// lock a second time, and the GPU process froze before it could rewrite its own
-// argv. Measured on Discord under -42: five threads, the main one in futex_wait,
-// libEGL.so.1 mapped but the NVIDIA vendor library never loaded, the splash
-// screen up forever -- where -40 had broken Electron loudly, -42 broke it
-// silently. Reproduced on the first relaunch, and by `tests/shim_two_egls.cpp`.
-//
-// The same first-wins slot had a second corpse in it: `dlsym(RTLD_DEFAULT,
-// "eglGetProcAddress")` resolves the shim's *own* export -- the shim is first in
-// the global scope -- and a shim that remembers that pointer as "the real one"
-// has its hook forwarding to itself. The forward is a tail call, so it does not
-// even crash: it loops at constant stack, forever. Also in the test.
-//
-// So the rule is not "remember the first pointer". It is: **remember a pointer
-// only when it belongs to the system's GL stack** -- glvnd's libraries or a
-// vendor ICD -- because that is the level the overlay draws at, and it is the
-// only level of which there is one per process. A private implementation such as
-// ANGLE keeps its own names: whoever resolves them gets the real thing,
-// untouched, and the shim stays out of that layer entirely. The overlay still
-// sees every frame, because ANGLE's backend presents through the system library,
-// and *that* resolution is remembered and hooked.
-//
-// `dladdr` is what answers "whose pointer is this": it walks the loaded objects
-// in memory and makes no file syscall, which matters because this runs inside
-// sandboxed processes. The name compared is the basename of the object's path,
-// against the glvnd family -- with the trailing dot doing real work: the system
-// library is `libEGL.so.1...`, ANGLE's bundled copy is exactly `libEGL.so`, and
-// the dot is what tells them apart.
+// dladdr answers "whose pointer is this" from memory, with no file syscall
+// (this runs in sandboxed processes). The trailing dot is load-bearing: the
+// system library is libEGL.so.1..., ANGLE's is exactly libEGL.so.
 bool is_system_gl(void* pointer) {
     Dl_info info;
     if (!pointer || dladdr(pointer, &info) == 0 || !info.dli_fname) {
@@ -352,38 +257,23 @@ bool is_system_gl(void* pointer) {
     return false;
 }
 
-// One entry per interposed name. Two remembered pointers, with different trust:
+// One entry per interposed name, with two remembered pointers:
 //
-//   `seen` is what the `dlsym` hook saw the application resolve, already vetted
-//   by is_system_gl(). This is the only way to reach a library that was opened
-//   with RTLD_LOCAL -- Chromium, ANGLE, SDL -- and it is filled at the exact
-//   moment the application resolves the name, with no lookup of our own.
+//   `seen`: what the dlsym hook saw the application resolve, vetted by
+//   is_system_gl(). The only way to reach a GL library opened RTLD_LOCAL.
 //
-//   `next` is RTLD_NEXT, tried once, for the application that linked its GL
-//   library normally, where our exported symbol won the relocation and no dlsym
-//   was ever involved. Deliberately *not* vetted: at level 1 the substitution
-//   already happened at link time, and whatever is next in the global scope --
-//   even a privately-shipped GL an application linked against -- is the only
+//   `next`: RTLD_NEXT, for an application that linked its GL normally. Not
+//   vetted: at level 1 whatever is next in the global scope is the only
 //   correct place to forward to.
 //
-// Neither is ever cached as null: `seen` stores only successes, and `next`
-// remembers the *finished* attempt in a separate flag. A null answer must not become
-// permanent -- the first frame of a process can precede the library being mapped
-// -- but the lookup must not repeat forever either: `dlsym(RTLD_NEXT, ...)`
-// takes the dynamic loader's lock, and Chromium forks its children from a
-// zygote whose other threads may have been holding it. Look once, remember the
-// attempt, and let the `dlsym` hook fill `seen` in later if the application
-// resolves the name -- an atomic store, with no loader involvement at all.
+// Neither is cached as null (the first frame can precede the library being
+// mapped), yet RTLD_NEXT is looked up once, the attempt kept in a flag: the
+// lookup takes the loader's lock, which a child forked from Chromium's zygote
+// may find held. The dlsym hook can still fill `seen` later, atomically.
 //
-// **And no dlopen of any kind in here.** The -41 shim fell back to
-// `dlopen(soname, RTLD_NOLOAD)` on the theory that NOLOAD only looks at what is
-// already mapped. Measured with a trapping seccomp filter: for a soname that is
-// *not* mapped -- precisely the case the fallback existed for -- glibc walks the
-// search path first, three openat and four newfstatat, before honouring NOLOAD.
-// Chromium's children run under seccomp filters where that is SIGSYS, and the
-// process is killed rather than told no. Discord went from starting without
-// hardware acceleration to not starting at all. `tests/shim_seccomp.cpp` holds
-// the door shut.
+// No dlopen of any kind here: dlopen(RTLD_NOLOAD) of an unmapped soname walks
+// the search path first, which is SIGSYS under Chromium's seccomp filters
+// (tests/shim_seccomp.cpp).
 struct Hook {
     const char* name;
     void* hook;
@@ -394,17 +284,11 @@ struct Hook {
 
 Hook g_hooks[] = {
     {"glXSwapBuffers", reinterpret_cast<void*>(&glXSwapBuffers), nullptr, nullptr, 0},
-    // A second, separately exported GLX present entry point. It is a real function
-    // in the installed libGL, and MangoHud hooks it; we did not.
+    // A second, separately exported GLX present entry point.
     {"glXSwapBuffersMscOML", reinterpret_cast<void*>(&glXSwapBuffersMscOML), nullptr, nullptr, 0},
     {"eglSwapBuffers", reinterpret_cast<void*>(&eglSwapBuffers), nullptr, nullptr, 0},
-    // Damage-aware present. Measured: `libEGL.so.1` does **not** export these --
-    // `nm -D` finds nothing -- so they exist only through `eglGetProcAddress`, and
-    // an application that uses them is invisible to symbol interposition by
-    // construction. MangoHud does not cover them either (checked: zero occurrences
-    // in its EGL injection), so this is our own judgement rather than borrowed:
-    // the cost is two forwarding functions and the failure it prevents is an
-    // overlay that never appears and never explains why.
+    // Damage-aware presents: libEGL.so.1 does not export these, so they are
+    // reachable only through eglGetProcAddress (doors 2 and 3).
     {"eglSwapBuffersWithDamageEXT", reinterpret_cast<void*>(&eglSwapBuffersWithDamageEXT), nullptr,
      nullptr, 0},
     {"eglSwapBuffersWithDamageKHR", reinterpret_cast<void*>(&eglSwapBuffersWithDamageKHR), nullptr,
@@ -415,10 +299,8 @@ Hook g_hooks[] = {
     {"glXGetProcAddress", reinterpret_cast<void*>(&glXGetProcAddress), nullptr, nullptr, 0},
     {"glXGetProcAddressARB", reinterpret_cast<void*>(&glXGetProcAddressARB), nullptr, nullptr, 0},
     {"eglGetProcAddress", reinterpret_cast<void*>(&eglGetProcAddress), nullptr, nullptr, 0},
-    // The end of a context, which is the end of everything the overlay built in
-    // it. Hooked for the same reason MangoHud hooks them: what we hold -- a shader
-    // program, a vertex buffer, a texture per person in the channel -- belongs to
-    // the context and means nothing once it is gone.
+    // Context teardown: what the overlay built in a context (program, buffer,
+    // textures) must be released before the context goes.
     {"glXDestroyContext", reinterpret_cast<void*>(&glXDestroyContext), nullptr, nullptr, 0},
     {"eglDestroyContext", reinterpret_cast<void*>(&eglDestroyContext), nullptr, nullptr, 0},
     {"eglTerminate", reinterpret_cast<void*>(&eglTerminate), nullptr, nullptr, 0},
@@ -436,20 +318,13 @@ Hook* find_hook(const char* name) {
     return nullptr;
 }
 
-// The real function behind a hook: what the dlsym hook vetted and remembered,
-// or RTLD_NEXT, once. Null when neither has an answer *yet* -- the dlsym hook
-// keeps filling `seen` as the application resolves names.
+// The real function behind a hook: `seen`, else RTLD_NEXT looked up once. Null
+// when neither has an answer yet.
 //
-// The attempt is remembered only AFTER the lookup has its answer, and the
-// answer is stored before the attempt. The other order -- "attempted" first,
-// then the lookup -- told every thread that arrived in between that the real
-// function did not exist: a null eglGetProcAddress("glClear") to a game, a
-// skipped real swap in a present hook. Measured with sixteen threads asking at
-// once: some thread was told null in 181 of 300 fresh processes
-// (tests/shim_lookup_race.cpp). Threads that arrive together now each look
-// the name up, which is harmless -- the lookup is idempotent, and what the
-// rule above forbids is a lookup repeated for the life of the process, which
-// the flag still prevents once one of them has finished.
+// The answer is stored before the attempt is marked: the other order would
+// tell threads arriving in between that the function does not exist
+// (tests/shim_lookup_race.cpp). Threads arriving together may each look the
+// name up, which is harmless; the flag still stops it repeating.
 void* real_for(Hook& entry) {
     if (void* seen = __atomic_load_n(&entry.seen, __ATOMIC_ACQUIRE)) {
         return seen;
@@ -486,13 +361,9 @@ void* real_egl_proc(const char* name) {
     return real ? real(name) : nullptr;
 }
 
-// The two damage-aware presents exist only through eglGetProcAddress (libEGL
-// does not export them -- the table in DESIGN), so they have slots of their
-// own: the damage hooks used to ask the dispatcher by name on every frame,
-// which put a per-name lookup, and whatever lock glvnd holds around it, on the
-// present path -- the one place this file promises "resolve once per slot". A
-// pointer is remembered only when it belongs to the system GL stack, and a
-// null is never remembered (entry 36, both halves).
+// The damage-aware presents get slots of their own, so the dispatcher (and
+// glvnd's lock) is asked once, not on every frame. As everywhere: only
+// system-GL pointers are remembered, never a null (entry 36).
 void* g_swap_damage_ext = nullptr;
 void* g_swap_damage_khr = nullptr;
 
@@ -530,34 +401,16 @@ void present_egl(void* display, void* surface) {
     }
 }
 
-// The shared body of the three dispatch hooks: forward to the real dispatcher,
-// answering with our own hook for the names we interpose. Our hook is offered
-// only when the real function has been found -- handing back a dispatch function
-// that knows five names and answers null to the rest is not a partial hook, it
-// is a broken EGL, and it is what put every Electron application on this machine
-// into software compositing under -40.
+// The shared body of the three dispatch hooks. The real dispatcher is asked
+// first: a dispatcher also answers whether a name exists, and its answer is
+// the only place ANGLE's native present functions are ever seen (ANGLE does
+// not use dlsym for them). Our hook is offered only when the real function
+// exists -- a dispatcher that answers null to every other name is a broken EGL.
 //
-// For an interposed name, the real dispatcher is asked *first*, for two reasons
-// that are both load-bearing. A dispatcher is also how a program asks whether
-// something exists -- an EGL dispatcher that has no `glXSwapBuffers` must keep
-// saying so, not hand out ours. And the answer is the only chance to learn where
-// this name's real function lives: ANGLE resolves the native present functions
-// through `eglGetProcAddress` alone, never through `dlsym`, so without keeping
-// this pointer our present hook would have nothing to forward to in exactly the
-// process the dispatch substitution exists for.
-//
-// **And only for a name of the dispatcher's own family**: egl* from
-// eglGetProcAddress, glX* from the two GLX spellings. A glvnd dispatcher asked
-// for the other family's name does not say "no" -- it answers every name it
-// does not know with a libGLdispatch stub for a GL extension function
-// (glXGetProcAddressARB("eglSwapBuffers") and eglGetProcAddress("glXSwapBuffers")
-// both do, measured). That stub is in libGLdispatch.so.0, so it passed
-// is_system_gl(), and the shim remembered it as the real eglSwapBuffers for the
-// life of the process: first sighting wins, and the application's own correct
-// resolution a moment later could not replace it. Every present then went to a
-// GL stub that does nothing (tests/shim_dispatch_family.cpp). A name of the
-// other family gets the dispatcher's answer untouched, and nothing is
-// remembered from it.
+// Only for a name of the dispatcher's own family (egl* from eglGetProcAddress,
+// glX* from the GLX ones): glvnd answers the other family's names with a
+// libGLdispatch stub that passes is_system_gl() and does nothing, which would
+// hold the slot for good (tests/shim_dispatch_family.cpp).
 bool same_family(const Hook& dispatcher, const char* name) {
     const bool egl_dispatcher = dispatcher.name[0] == 'e';
     return strncmp(name, egl_dispatcher ? "egl" : "glX", 3) == 0;
@@ -673,29 +526,18 @@ void* eglGetProcAddress(const char* name) {
     return dispatch(*find_hook("eglGetProcAddress"), name);
 }
 
-// Not a last line of defence -- the main one. SDL, GLFW and glad reach their
-// present function through `dlopen` plus `dlsym` on that handle, which searches the
-// object's own scope and never the global one, so nothing we interpose is visible
-// to them. That covers Unity, Godot 4, PCSX2 and Minecraft, and LÖVE, which is what
-// Balatro is. VOCEM_NO_DLSYM=1 turns it off if it ever upsets an application.
+// The main door, not a last line of defence: SDL, GLFW and glad reach the
+// present through dlopen + dlsym on that handle. VOCEM_NO_DLSYM=1 turns it off.
 //
-// **The real lookup happens first, and the hook is substituted only when it
-// succeeded** -- `dlsym` is also how a program asks *whether* something exists, and
-// answering `glXSwapBuffers` out of an EGL-only handle tells a caller that GLX is
-// available when it is not. **And the substitution happens only when the real
-// pointer belongs to the system's GL stack** -- see is_system_gl() above for the
-// two ways one global slot per name froze every Electron application. A private
-// GL keeps its private names; the system's are remembered and replaced. With
-// VOCEM_DISABLE=1 nothing is remembered and nothing is replaced, because the
-// promised way out of a broken interposition has to switch off the interposition
-// and not just the drawing.
+// The real lookup runs first and the hook is substituted only on success, and
+// only when the pointer belongs to the system GL stack (is_system_gl()):
+// dlsym is also how a program asks whether something exists. With
+// VOCEM_DISABLE=1 nothing is remembered or replaced -- the way out of a broken
+// interposition switches off the interposition, not just the drawing.
 //
-// Two things about interposing dlsym at all, neither of which has a good answer:
-// it changes the search scope, so `RTLD_NEXT` and `RTLD_DEFAULT` from the
-// application are now resolved relative to *this* library rather than to the
-// caller. MangoHud has an opt-in workaround using the return address and
-// `dlopen(RTLD_NOLOAD)` which their own code says crashes on NVIDIA, and which was
-// force-enabled in 0.8.2 and turned back off in 0.8.3. It is not copied here.
+// Known limit: interposing dlsym makes the application's RTLD_NEXT and
+// RTLD_DEFAULT resolve relative to this library. MangoHud's workaround
+// (return address + dlopen(RTLD_NOLOAD)) is not copied: it crashes on NVIDIA.
 void* dlsym(void* handle, const char* name) {
     static int hook_enabled = -1;  // -1 unknown, 0 off, 1 on; the disabled() shape
     int enabled = __atomic_load_n(&hook_enabled, __ATOMIC_ACQUIRE);
@@ -709,11 +551,8 @@ void* dlsym(void* handle, const char* name) {
     if (enabled == 1 && real && !disabled()) {
         if (Hook* entry = find_hook(name)) {
             if (is_system_gl(real)) {
-                // This lookup is the only place the real function is ever visible
-                // when the application opened its GL library with RTLD_LOCAL, and a
-                // moment later we hand back ours instead. First one wins: there is
-                // one system GL stack per process, so a second sighting is the same
-                // pointer or a symlinked spelling of it.
+                // The only moment the real function of an RTLD_LOCAL library is
+                // visible. First one wins: one system GL stack per process.
                 void* expected = nullptr;
                 __atomic_compare_exchange_n(&entry->seen, &expected, real, false,
                                             __ATOMIC_RELEASE, __ATOMIC_RELAXED);

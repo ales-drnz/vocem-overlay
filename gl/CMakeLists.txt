@@ -24,12 +24,11 @@ target_include_directories(vocem_gl PRIVATE
     "${IMGUI_DIR}/backends"
 )
 
-# This library has no hooks any more (entry 45 removed its interposed-symbol
-# table; the shim owns all three doors) -- what it exports is exactly the four
-# vocem_gl_* entry points the shim resolves, which carry an explicit visibility
-# attribute. Hiding the rest is what actually holds it to those names: without
-# it the library exported its entire bundled copy of ImGui ahead of any ImGui a
-# game links (entry 16). tests/gl_entry_points.cmake holds the set both ways.
+# This library has no hooks (the shim owns all three doors): it exports exactly
+# the four vocem_gl_* entry points the shim resolves, which carry an explicit
+# visibility attribute. Hidden visibility is what holds it to those names, or
+# its bundled ImGui would be exported ahead of any ImGui a game links
+# (entry 16). tests/gl_entry_points.cmake holds the set both ways.
 target_compile_options(vocem_gl PRIVATE -Wall -Wextra)
 set_target_properties(vocem_gl PROPERTIES
     CXX_VISIBILITY_PRESET hidden
@@ -39,11 +38,10 @@ target_compile_definitions(vocem_gl PRIVATE
     IMGUI_USE_WCHAR32
     IMGUI_DISABLE_FILE_FUNCTIONS
     IMGUI_DISABLE_DEBUG_TOOLS
-    # ImGui's IM_ASSERT is assert() (imgui.h), 387 of them in the units that
-    # go into this library, every one an abort() in somebody's game if it
+    # ImGui's IM_ASSERT is assert(), an abort() in somebody's game if it
     # fires (rule 7). Compiled out for this target alone, whatever the build
-    # type, by include/vocem/imconfig_injected.h, which says why it is a
-    # header and not a -D: the tests keep their asserts.
+    # type, by include/vocem/imconfig_injected.h (a header, not a -D, so the
+    # tests keep their asserts).
     IMGUI_USER_CONFIG="vocem/imconfig_injected.h"
 )
 
@@ -56,12 +54,9 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-w"
 )
 
-# The panel, the fonts, the application registry and the palette, compiled
-# once per width in common/ (common/CMakeLists.txt says what the objects agree
-# on -- hidden visibility above all, or the archive's symbols would be exported
-# past the four entry points).
-# Threads: the first font atlas is rasterised on a worker (entry 192). The
-# shim is a separate target and stays libc-only.
+# The panel, the fonts, the registry and the palette, compiled once per width
+# in common/ with hidden visibility (common/CMakeLists.txt). Threads: the first
+# font atlas is rasterised on a worker; the shim stays libc-only.
 find_package(Threads REQUIRED)
 target_link_libraries(vocem_gl PRIVATE vocem_common ${CMAKE_DL_LIBS} Threads::Threads)
 # The export list, stated: hidden visibility does not reach the libstdc++
@@ -85,26 +80,19 @@ set_target_properties(vocem_gl_shim PROPERTIES OUTPUT_NAME vocem_gl_shim)
 target_compile_options(vocem_gl_shim PRIVATE
     -Wall -Wextra -fno-exceptions -fno-rtti -fno-threadsafe-statics)
 
-# Where this build installs the overlay, so the shim can find it by its path on the
-# host when it is running inside a container and the soname resolves to nothing.
-# Each of the two builds -- 64-bit and 32-bit -- carries its own answer, which is
-# why this is a compile-time define and not a guess made at runtime.
+# Where this build installs the overlay, so the shim can find it by its path on
+# the host inside a container, where the soname resolves to nothing. A
+# compile-time define because each width carries its own answer.
 target_compile_definitions(vocem_gl_shim PRIVATE
     VOCEM_LIBDIR="${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
-# -static-libgcc as well as -nostdlib++, so the only thing this needs is libc.
+# -static-libgcc as well as -nostdlib++, so the only thing this needs is libc:
+# a preloaded object that cannot be loaded makes ld.so print "cannot be
+# preloaded: ignored" on the stderr of every process that starts, so it may
+# depend on nothing that might be absent (libgcc_s at 32 bits).
 #
-# It is a two-kilobyte trade for a real property: this object is preloaded into
-# every process in the session, and a preloaded object that cannot be loaded is not
-# a quiet failure -- ld.so prints "cannot be preloaded: ignored" to the stderr of
-# every process that starts. Depending on libgcc_s meant the 32-bit half needed
-# lib32-gcc-libs present or the whole session started talking. Now it needs the C
-# library, which is there by definition.
-#
-# And --no-undefined, because -nostdlib++ alone does not refuse anything: a
-# `new` added to this file linked, left `U _Znam` in the library with libc as
-# its only NEEDED, and under LD_BIND_NOW=1 every program in the session would
-# have failed to start. The link says so now, at the line that caused it
-# (tests/shim_artifact.cmake compiles such a toy with these very flags).
+# --no-undefined because -nostdlib++ alone refuses nothing: a stray C++ symbol
+# would link and, under LD_BIND_NOW=1, stop every program in the session from
+# starting (tests/shim_artifact.cmake compiles such a toy with these flags).
 target_link_options(vocem_gl_shim PRIVATE -nostdlib++ -static-libgcc -Wl,--no-undefined)
 target_link_libraries(vocem_gl_shim PRIVATE ${CMAKE_DL_LIBS})
 
