@@ -25,6 +25,7 @@ set(IMGUI_DIR "${PROJECT_SOURCE_DIR}/third_party/imgui")
 function(vocem_add_common target)
     add_library(${target} STATIC
         src/apps.cpp
+        src/atlas_owner.cpp
         src/theme.cpp
         src/overlay_log.cpp
         src/overlay_session.cpp

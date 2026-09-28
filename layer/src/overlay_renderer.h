@@ -17,13 +17,11 @@
 
 #include <vulkan/vulkan.h>
 
-#include <pthread.h>
-
-#include <atomic>
 #include <mutex>
 #include <string>
 
 #include "texture_cache.h"
+#include "vocem/atlas_owner.h"
 #include "vocem/live_config.h"
 #include "vocem/overlay_session.h"
 #include "vocem/shared_state.h"
@@ -111,12 +109,15 @@ public:
     // (owns()): the present's external synchronisation covers no other.
     void process_uploads(VkDevice device, VkQueue queue);
 
-    // Waits for the atlas worker if one is running, for the ELF destructor: the
-    // library must not be unmapped under a thread running its code. Takes only
-    // worker_lock_, so it cannot deadlock against a thread exiting under lock_.
-    void join_atlas_worker();
-
     bool ready() const { return backend_ready_; }
+
+    // Whether prepare() failed on the device it was last given, until
+    // shutdown(). The layer then holds the overlay on that device and queue,
+    // as it would a renderer that came up (vocem/atlas_owner.h).
+    bool failed() {
+        std::lock_guard<std::mutex> guard(lock_);
+        return failed_;
+    }
 
     // The settings as this process sees them: the same LiveConfig draw() reads,
     // one stat() every couple of seconds. A copy, because the reparse happens
@@ -137,30 +138,12 @@ private:
     std::mutex lock_;
 
     bool context_ready_ = false;
-    // The ImGui context exists but the atlas is being rasterised on
-    // atlas_worker_, so the game keeps presenting meanwhile.
-    // Nothing on the game's thread touches ImGui or the fonts module until then
-    // -- draw() and process_uploads() wait for backend_ready_ -- and every
-    // teardown joins the worker first.
+    // The ImGui context exists but the atlas is being rasterised on the
+    // library's atlas worker (vocem/atlas_owner.h), so the game keeps
+    // presenting meanwhile. Nothing on the game's thread touches ImGui or the
+    // fonts module until then -- draw() and process_uploads() wait for
+    // backend_ready_ -- and every teardown joins the worker first.
     bool context_created_ = false;
-    // A pthread, not a std::thread: the injected code is built without
-    // exceptions and std::thread reports a refused clone by throwing. When
-    // pthread_create fails, the build runs on the game's thread.
-    pthread_t atlas_worker_{};
-    bool atlas_worker_running_ = false;
-    // What the worker builds, copied in before it starts.
-    struct AtlasJob {
-        float pixels = 0.0f;
-        float reference = 16.0f;
-        std::string body;
-        std::string strong;
-    };
-    AtlasJob atlas_job_;
-    static void* rasterise_atlas(void* renderer);
-    // Guards starting and joining atlas_worker_ only: the ELF destructor joins
-    // it without lock_, and joining one thread twice is undefined.
-    std::mutex worker_lock_;
-    std::atomic<bool> atlas_rasterised_{false};
     bool backend_ready_ = false;
     bool functions_loaded_ = false;
     // prepare() failed against the current device; nothing will be retried
@@ -181,10 +164,10 @@ private:
     // Owns the font atlas's texture as well as the faces (entry 192); prepare()
     // brings no backend up without it.
     TextureCache textures_;
-    // Set while the GPU's font image no longer matches the CPU atlas: nothing is
-    // drawn until it does, and the whole upload is retried once a second
-    // (process_uploads). 0 while the texture matches.
-    double font_retry_at_ = 0.0;
+    // Owed while the GPU's font image no longer matches the CPU atlas: nothing
+    // is drawn until it does, and the whole upload is retried once a second
+    // (process_uploads).
+    UploadRetry font_retry_;
     // Uploads the atlas through whichever of the two owns it, whole or only
     // the squares a fold wrote. False when neither managed.
     bool upload_font_texture(bool whole);

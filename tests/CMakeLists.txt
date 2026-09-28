@@ -1524,3 +1524,44 @@ vocem_test_run(overlay_budget_vk TARGET overlay_budget
     ENV ${VOCEM_VK_PROBE_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_BUDGET_API=vk" SKIP SERIAL TIMEOUT 180)
 vocem_m32_twin_run(overlay_budget_vk TARGET overlay_budget_vk
     ENV ${VOCEM_VK_PROBE32_ENV} ${VOCEM_EMOJI_BANK_ENV} "VOCEM_BUDGET_API=vk")
+
+# ---- 0.1.11 clean-up atlas lane ----
+
+# The hand-over and the atlas worker (vocem/atlas_owner.h), driven without a
+# GPU over every sequence of up to six events -- presents from two contexts,
+# silence, a context's death, the worker finishing, a failed build, a failed
+# upload, the switch -- against eight invariants, with a real pthread per
+# build. Both widths, and once more under AddressSanitizer and UBSan, with the
+# session's preload cleared so the sanitizer's runtime comes first.
+vocem_test(atlas_owner_states IMGUI LINK vocem_common Threads::Threads TIMEOUT 300)
+vocem_m32_twin(atlas_owner_states)
+vocem_test(atlas_owner_states_asan SOURCES atlas_owner_states.cpp
+    "${PROJECT_SOURCE_DIR}/common/src/atlas_owner.cpp" IMGUI LINK vocem_common Threads::Threads
+    COMPILE_OPTIONS -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
+    LINK_OPTIONS -fsanitize=address,undefined
+    ENV "LD_PRELOAD=" "ASAN_OPTIONS=detect_leaks=1" "UBSAN_OPTIONS=print_stacktrace=1"
+    ARGS 5 TIMEOUT 600)
+
+# The switch turned off, or the daemon stopping, noticed in a present of an
+# unshared context the backend does not live in: the backend's names are that
+# context's own objects there, and the release used to delete them
+# (gl_switch_foreign.cpp). Both causes, both widths.
+vocem_test(gl_switch_foreign LINK EGL GLESv2 rt
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=switch" SKIP TIMEOUT 120)
+vocem_m32_twin(gl_switch_foreign
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=switch"
+    BUILD32 "${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so")
+vocem_test_run(gl_switch_foreign_daemon TARGET gl_switch_foreign
+    ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=daemon" SKIP TIMEOUT 120)
+vocem_m32_twin_run(gl_switch_foreign_daemon TARGET gl_switch_foreign_daemon
+    ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
+        "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=daemon")
+
+# The renderer refused on the first of two presenting devices (the witness fails
+# its texture cache's sampler): the failure belongs to that device, which holds
+# the overlay as a working renderer would until it falls silent or goes, and the
+# second device gets it then (vk_present_draw.cpp, failed-presenter). 64-bit
+# only: the refusal needs the witness layer, which is built at one width.
+vocem_test_run(vk_present_failed_presenter TARGET vk_present_draw
+    ENV ${VOCEM_VK_WITNESSED_ENV} "VOCEM_VK_SCENARIO=failed-presenter" SKIP TIMEOUT 120)

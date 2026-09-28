@@ -137,6 +137,7 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
     }
 
     if (!context_ready_) {
+        bool first = false;
         if (!context_created_) {
             IMGUI_CHECKVERSION();
             // With the fonts module's atlas, so the ImFont pointers it caches
@@ -148,41 +149,34 @@ bool OverlayRenderer::prepare(const RendererTarget& target) {
             io.BackendPlatformName = "vocem";
             io.DisplaySize = ImVec2(1.0f, 1.0f);
             context_created_ = true;
+            first = true;
+        }
 
-            // Built before the backend exists, at the target's size, so the
-            // upload sends the atlas we want -- and off the game's thread,
-            // RGBA widening included. The context comes first
-            // because ensure_fonts() reaches the atlas through ImGui::GetIO(),
-            // and GImGui is a plain global the worker sees. Everything the
-            // worker reads is copied into atlas_job_ here.
-            const Config& config = config_.current();
-            atlas_job_.pixels = font_pixel_size(target.height, config.scale, config.font_size);
-            atlas_job_.reference = config.font_size;
-            atlas_job_.body = config.font_path;
-            atlas_job_.strong = config.font_path_strong;
-            atlas_rasterised_.store(false, std::memory_order_relaxed);
-            {
-                std::lock_guard<std::mutex> worker_guard(worker_lock_);
-                atlas_worker_running_ =
-                    pthread_create(&atlas_worker_, nullptr, &OverlayRenderer::rasterise_atlas,
-                                   this) == 0;
-            }
-            if (atlas_worker_running_) {
-                // Named, so a stack in a game's crash report says whose it is.
-                pthread_setname_np(atlas_worker_, "vocem-atlas");
+        // Built before the backend exists, at the target's size, so the upload
+        // sends the atlas we want -- and off the game's thread, RGBA widening
+        // included (vocem/atlas_owner.h). The context comes first because
+        // ensure_fonts() reaches the atlas through ImGui::GetIO(), and GImGui is
+        // a plain global the worker sees. The worker copies what it reads.
+        const Config& config = config_.current();
+        const float pixels = font_pixel_size(target.height, config.scale, config.font_size);
+        switch (atlas_worker().step(first, pixels, config.font_size, config.font_path,
+                                    config.font_path_strong, nullptr)) {
+            case AtlasWorker::Step::Started:
                 VOCEM_RLOG("rasterising the font atlas at %.0f px off the game's thread",
-                           static_cast<double>(atlas_job_.pixels));
+                           static_cast<double>(pixels));
                 return false;  // asked again on the next frame with something on it
-            }
-            // No thread to be had (a sandbox that refuses clone, resources): the
-            // build happens here.
-            VOCEM_RLOG("no thread for the font atlas; rasterising it on the game's thread");
-            rasterise_atlas(this);
+            case AtlasWorker::Step::Building:
+                return false;  // still rasterising; the game goes on presenting meanwhile
+            case AtlasWorker::Step::NoThread:
+                // No thread to be had (a sandbox that refuses clone, resources):
+                // the build happens here.
+                VOCEM_RLOG("no thread for the font atlas; rasterising it on the game's thread");
+                atlas_worker().run_here();
+                break;
+            case AtlasWorker::Step::Finished:
+            case AtlasWorker::Step::Idle:
+                break;
         }
-        if (!atlas_rasterised_.load(std::memory_order_acquire)) {
-            return false;  // still rasterising; the game goes on presenting meanwhile
-        }
-        join_atlas_worker();  // finished: this returns at once
         configure_style(config_.current());
         context_ready_ = true;
     }
@@ -314,7 +308,7 @@ void OverlayRenderer::draw(VkCommandBuffer command_buffer, const Snapshot& snaps
                            uint32_t width, uint32_t height, VkPipeline pipeline, VkDevice device,
                            VkQueue queue) {
     std::lock_guard<std::mutex> guard(lock_);
-    if (!backend_ready_ || font_retry_at_ > 0.0 || device != device_ || queue != queue_) {
+    if (!backend_ready_ || font_retry_.owed() || device != device_ || queue != queue_) {
         return;
     }
 
@@ -399,12 +393,12 @@ void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
     // queue, which would deadlock inside it. A new colour emoji answers true
     // too, folded into reserved space and uploaded as its squares with no
     // wait; the log line says which of the two it was.
-    if (font_retry_at_ > 0.0 && monotonic_seconds() >= font_retry_at_) {
+    if (font_retry_.due(monotonic_seconds())) {
         if (upload_font_texture(true)) {
-            font_retry_at_ = 0.0;
+            font_retry_.succeeded();
             VOCEM_RLOG("font texture went up on a later attempt: drawing again");
         } else {
-            font_retry_at_ = monotonic_seconds() + 1.0;
+            font_retry_.failed(monotonic_seconds());
         }
     }
     const uint32_t builds_before = fonts_build_count();
@@ -415,15 +409,15 @@ void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
         const bool rebuilt = fonts_build_count() != builds_before;
         // While a whole upload is owed, a fold would copy its squares into the
         // old image and call that success: it goes up whole instead.
-        if (!upload_font_texture(rebuilt || font_retry_at_ > 0.0)) {
+        if (!upload_font_texture(rebuilt || font_retry_.owed())) {
             // The GPU's image no longer matches the atlas: nothing is drawn
             // with it until an upload works (draw() asks), rather than text from
             // the wrong squares or a descriptor that is gone.
-            font_retry_at_ = monotonic_seconds() + 1.0;
+            font_retry_.failed(monotonic_seconds());
             VOCEM_RLOG("font texture upload failed at %.1f px: not drawing until it goes up, "
                        "tried again every second", wanted_font_size_);
         } else if (rebuilt) {
-            font_retry_at_ = 0.0;  // the whole atlas went up: the image matches again
+            font_retry_.succeeded();  // the whole atlas went up: the image matches again
             VOCEM_RLOG("font atlas rebuilt at %.1f px", wanted_font_size_);
         } else {
             VOCEM_RLOG("colour emoji folded into the font atlas");
@@ -445,26 +439,6 @@ void OverlayRenderer::process_uploads(VkDevice device, VkQueue queue) {
     }
 
     textures_.process_pending();
-}
-
-void* OverlayRenderer::rasterise_atlas(void* self) {
-    auto* renderer = static_cast<OverlayRenderer*>(self);
-    const AtlasJob& job = renderer->atlas_job_;
-    ensure_fonts(job.pixels, job.reference, job.body.c_str(), job.strong.c_str());
-    unsigned char* rgba = nullptr;
-    int width = 0;
-    int height = 0;
-    fonts_atlas()->GetTexDataAsRGBA32(&rgba, &width, &height);
-    renderer->atlas_rasterised_.store(true, std::memory_order_release);
-    return nullptr;
-}
-
-void OverlayRenderer::join_atlas_worker() {
-    std::lock_guard<std::mutex> worker_guard(worker_lock_);
-    if (atlas_worker_running_) {
-        pthread_join(atlas_worker_, nullptr);
-        atlas_worker_running_ = false;
-    }
 }
 
 void OverlayRenderer::shutdown() {
@@ -489,7 +463,7 @@ void OverlayRenderer::shutdown_locked() {
     session().reset_clock();
     // A rasterisation still running uses the context and atlas about to go: it
     // finishes first (at most one atlas build, and only at teardown).
-    join_atlas_worker();
+    atlas_worker().join();
     textures_.shutdown();
     if (backend_ready_) {
         ImGui_ImplVulkan_Shutdown();
@@ -505,7 +479,7 @@ void OverlayRenderer::shutdown_locked() {
     // the new one.
     functions_loaded_ = false;
     failed_ = false;
-    font_retry_at_ = 0.0;
+    font_retry_ = UploadRetry();
     device_ = VK_NULL_HANDLE;
     queue_ = VK_NULL_HANDLE;
     format_ = VK_FORMAT_UNDEFINED;
