@@ -76,7 +76,7 @@ test had left under `build/tests`: the test now removes it, and the manifest's
 of the copy. `find . -path ./.git -prune -o -type s -print` before building is
 the check.
 
-`--subject` is not decoration. The branch is `25.08`, which says which runtime
+`--subject` is not decoration. A branch (`25.08`, `26.08`) says which runtime
 the extension fits and nothing about what is in it, so without a subject
 `flatpak info` reads "Export org.freedesktop.Platform.VulkanLayer.VocemOverlay"
 and a user has no way to tell whether the fix a release announced is in the copy
@@ -143,8 +143,9 @@ same pull must be refused for the signature. A pull that succeeds either way has
 proved nothing.
 
 Nothing is attached to the GitHub release. The extension has no version of its
-own: on Flatpak the number is `25.08`, which is the runtime's extension point,
-and `flatpak update` simply takes what is newest on the branch.
+own: on Flatpak the numbers are its branches, `25.08` and `26.08`, which are the
+runtimes' extension points, and `flatpak update` simply takes what is newest on
+each branch.
 
 ## The branches
 

@@ -28,7 +28,7 @@ branch=${1:?usage: branch-manifest.sh <branch>}
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source="$here/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml"
 
-if ! grep -qx "$branch" "$here/branches"; then
+if ! grep -Fqx -- "$branch" "$here/branches"; then
     echo "branch-manifest.sh: $branch is not in $here/branches" >&2
     exit 1
 fi

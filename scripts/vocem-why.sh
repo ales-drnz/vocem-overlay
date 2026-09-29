@@ -213,7 +213,9 @@ if [ "${1:-}" = "--system" ]; then
         # "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  615.71.09 ...":
         # the first dotted number, since the architecture has digits too.
         module=$(head -n 1 /proc/driver/nvidia/version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
-        userspace=$(ls /usr/lib/libGLX_nvidia.so.[0-9]*.[0-9]* 2>/dev/null | sed 's/.*libGLX_nvidia\.so\.//' | head -1)
+        # The newest installed, by version: a leftover older file sorts first
+        # by name and would read as a driver waiting for a reboot.
+        userspace=$(ls /usr/lib/libGLX_nvidia.so.[0-9]*.[0-9]* 2>/dev/null | sed 's/.*libGLX_nvidia\.so\.//' | sort -V | tail -1)
         if [ -z "$module" ] || [ -z "$userspace" ]; then
             echo "  NVIDIA: module '${module:-?}', userspace '${userspace:-?}' (could not compare)"
         elif [ "$module" = "$userspace" ]; then

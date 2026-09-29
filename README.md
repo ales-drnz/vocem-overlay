@@ -281,8 +281,8 @@ repository as the remote `vocem-overlay`:
 flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref
 ```
 
-That is the 25.08 branch, for games on the freedesktop 25.08, GNOME 50 and KDE
-6.x runtimes. Games on freedesktop 26.08 or GNOME 51 -- Steam from Flathub among
+That is the 25.08 branch, for games on the freedesktop 25.08, GNOME 49 and 50,
+and KDE 6.10 and 6.11 runtimes. Games on freedesktop 26.08 or GNOME 51 -- Steam from Flathub among
 them -- mount the 26.08 branch instead, and a runtime whose branch is missing
 simply goes without the layer:
 
