@@ -12,8 +12,8 @@
 //
 // It exports a dispatcher and the two names the test asks that dispatcher for,
 // each answering with a marker of its own so the test can say whose pointer it
-// was handed rather than merely that it got one. Its basename is nothing
-// `is_system_gl` recognises, which is the whole point: this library is exactly
+// was handed rather than merely that it got one. Its SONAME, and its file
+// name, are nothing `is_system_gl` recognises, which is the whole point: this library is exactly
 // what entry 36 calls a private GL.
 
 static void swap_marker(void) {}

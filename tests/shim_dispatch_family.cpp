@@ -57,6 +57,7 @@ struct Hook {
     int next_attempted;
     void* chain;
     int next_chain;
+    int said_not_followed;
 };
 
 const char* base_name(const void* pointer) {

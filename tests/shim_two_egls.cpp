@@ -94,7 +94,27 @@ int main() {
         printf("FAIL could not open the stub: %s\n", dlerror());
         return 1;
     }
+    // Asked under VOCEM_DEBUG, with this process's stderr caught in a file:
+    // the shim leaves ANGLE's dispatcher alone, and says so -- the one line a
+    // system library under a name it does not know would get too (the shape of
+    // entry 38; 0.1.12-2's shim said nothing). Set before the first question
+    // the shim declines, because it reads the variable once.
+    setenv("VOCEM_DEBUG", "1", 1);
+    char said_path[] = "/tmp/vocem-two-egls-XXXXXX";
+    const int said_fd = mkstemp(said_path);
+    const int saved_stderr = dup(2);
+    check(said_fd >= 0 && saved_stderr >= 0, "stderr can be caught");
+    dup2(said_fd, 2);
     PFN_get_proc gp1 = reinterpret_cast<PFN_get_proc>(dlsym(h1, "eglGetProcAddress"));
+    dup2(saved_stderr, 2);
+    close(saved_stderr);
+    char said[1024] = {};
+    const ssize_t said_length = pread(said_fd, said, sizeof(said) - 1, 0);
+    close(said_fd);
+    unlink(said_path);
+    check(said_length > 0 && strstr(said, "not following eglGetProcAddress into ") &&
+              strstr(said, stub_path),
+          "under VOCEM_DEBUG the shim says it does not follow the private dispatcher");
     PFN_marker marker_fn = reinterpret_cast<PFN_marker>(dlsym(h1, "vocem_stub_marker"));
     check(gp1 != nullptr, "the first library's dispatcher resolves");
     check(marker_fn != nullptr, "and its marker with it");

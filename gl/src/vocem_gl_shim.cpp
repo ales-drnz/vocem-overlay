@@ -17,6 +17,7 @@
 // widths (tests/shim_artifact.cmake); exactly the 12 hooks below are exported.
 
 #include <dlfcn.h>
+#include <link.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,10 +142,11 @@ bool disabled() {
 }
 
 // A line on stderr without stdio: write(2) of the pieces, no buffer, no
-// allocation. Used once per process at most, on the present path, for the one
-// failure this file can have that looks exactly like success.
-void say(const char* a, const char* b = "", const char* c = "", const char* d = "") {
-    const char* parts[] = {"[vocem/gl-shim] ", a, b, c, d, "\n"};
+// allocation. Only under VOCEM_DEBUG, and once per process and cause, for the
+// failures this file can have that look exactly like success.
+void say(const char* a, const char* b = "", const char* c = "", const char* d = "",
+         const char* e = "", const char* f = "", const char* g = "") {
+    const char* parts[] = {"[vocem/gl-shim] ", a, b, c, d, e, f, g, "\n"};
     for (const char* part : parts) {
         size_t length = strlen(part);
         while (length > 0) {
@@ -323,14 +325,55 @@ const char* base_name(const char* path) {
 // library.
 //
 // dladdr answers "whose pointer is this" from memory, with no file syscall
-// (this runs in sandboxed processes). The trailing dot is load-bearing: the
-// system library is libEGL.so.1..., ANGLE's is exactly libEGL.so.
-bool is_system_gl(void* pointer) {
+// (this runs in sandboxed processes). The name judged is the object's SONAME,
+// read from its own dynamic section in memory, and the file's name only when
+// it has none: the system library is libEGL.so.1 however it was opened, and
+// ANGLE's is exactly libEGL.so. By file name, a game that opened the system's
+// libGL through its unversioned development link `libGL.so` -- or a library
+// the distribution renamed -- was taken for a private GL, and the overlay never
+// saw a frame and said nothing (tests/gl_draw_local.cpp, scenario `soname`).
+// The trailing dot is load-bearing either way.
+const char* object_name(void* pointer, const char** file) {
     Dl_info info;
-    if (!pointer || dladdr(pointer, &info) == 0 || !info.dli_fname) {
+    struct link_map* map = nullptr;
+    if (!pointer ||
+        dladdr1(pointer, &info, reinterpret_cast<void**>(&map), RTLD_DL_LINKMAP) == 0 ||
+        !info.dli_fname) {
+        return nullptr;
+    }
+    if (file) {
+        *file = info.dli_fname;
+    }
+    if (map && map->l_ld) {
+        ElfW(Addr) strtab = 0;
+        ElfW(Addr) soname = 0;
+        bool has_soname = false;
+        for (const ElfW(Dyn)* entry = map->l_ld; entry->d_tag != DT_NULL; ++entry) {
+            if (entry->d_tag == DT_STRTAB) {
+                strtab = entry->d_un.d_ptr;
+            } else if (entry->d_tag == DT_SONAME) {
+                soname = entry->d_un.d_val;
+                has_soname = true;
+            }
+        }
+        if (has_soname && strtab) {
+            // ld.so relocates the dynamic section in place where it is
+            // writable (x86); where it is read-only the address is still
+            // relative to the object.
+            if (strtab < map->l_addr) {
+                strtab += map->l_addr;
+            }
+            return reinterpret_cast<const char*>(strtab + soname);
+        }
+    }
+    return base_name(info.dli_fname);
+}
+
+bool is_system_gl(void* pointer) {
+    const char* base = object_name(pointer, nullptr);
+    if (!base) {
         return false;
     }
-    const char* base = base_name(info.dli_fname);
     static const char* const prefixes[] = {
         // libglvnd's dispatchers, versioned -- the dot excludes ANGLE's "libEGL.so".
         "libEGL.so.", "libGLX.so.", "libGL.so.", "libOpenGL.so.",
@@ -487,6 +530,7 @@ struct Hook {
     int next_attempted;
     void* chain = nullptr;
     int next_chain = 0;
+    int said_not_followed = 0;
 };
 
 Hook g_hooks[] = {
@@ -532,6 +576,37 @@ struct Target {
     bool chain;
 };
 
+// Under VOCEM_DEBUG, once per name: the application found a present or a
+// dispatcher somewhere that is neither the system's GL nor a link of the
+// chain, so the overlay will not see the frames that go through it. Right for
+// ANGLE; for a system library under a name this file does not know, it is the
+// only line anything says (the shape of entry 38). Our own exports, which
+// RTLD_DEFAULT hands back, are not news.
+void not_followed(Hook& entry, void* pointer) {
+    static int debug = -1;  // -1 unknown, 0 off, 1 on
+    int enabled = __atomic_load_n(&debug, __ATOMIC_ACQUIRE);
+    if (enabled < 0) {
+        const char* env = getenv("VOCEM_DEBUG");
+        enabled = (env && env[0] == '1') ? 1 : 0;
+        __atomic_store_n(&debug, enabled, __ATOMIC_RELEASE);
+    }
+    if (enabled == 0 || !pointer || __atomic_load_n(&entry.said_not_followed, __ATOMIC_ACQUIRE)) {
+        return;
+    }
+    const char* file = nullptr;
+    const char* name = object_name(pointer, &file);
+    Dl_info self;
+    if (!name || !file || (dladdr(reinterpret_cast<void*>(&not_followed), &self) != 0 &&
+                           self.dli_fname && strcmp(file, self.dli_fname) == 0)) {
+        return;
+    }
+    if (__atomic_exchange_n(&entry.said_not_followed, 1, __ATOMIC_ACQ_REL)) {
+        return;
+    }
+    say("not following ", entry.name, " into ", file, " (", name,
+        "): not the system's GL library, so no overlay on frames presented there");
+}
+
 // Remembers what a road showed us for a hooked name: the system's function in
 // `seen`, another interposer's in `chain`, first one wins in each. Anything
 // else -- a private GL, our own export -- is not remembered (entry 36). True
@@ -544,6 +619,7 @@ bool remember(Hook& entry, void* pointer) {
                   : preloaded_after_us(pointer) ? &entry.chain
                                              : nullptr;
     if (!slot) {
+        not_followed(entry, pointer);
         return false;
     }
     void* expected = nullptr;

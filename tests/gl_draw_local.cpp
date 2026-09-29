@@ -119,6 +119,32 @@ long lines_containing(const char* path, const char* needle) {
     return count;
 }
 
+// The system's libGL.so.1 of this process's width, found by reading ELF
+// headers rather than by loading it: once loaded under its own name, a second
+// dlopen by any other path is answered with the same object and the same name,
+// and the soname scene would measure nothing.
+const char* system_libgl_for_this_width() {
+    static const char* const candidates[] = {
+        "/usr/lib/libGL.so.1",       "/usr/lib32/libGL.so.1",
+        "/usr/lib64/libGL.so.1",     "/usr/lib/x86_64-linux-gnu/libGL.so.1",
+        "/usr/lib/i386-linux-gnu/libGL.so.1",
+    };
+    const unsigned char wanted = sizeof(void*) == 8 ? 2 : 1;  // EI_CLASS
+    for (const char* candidate : candidates) {
+        FILE* file = fopen(candidate, "rb");
+        if (!file) {
+            continue;
+        }
+        unsigned char header[5] = {};
+        const bool read = fread(header, 1, sizeof(header), file) == sizeof(header);
+        fclose(file);
+        if (read && memcmp(header, "\x7f" "ELF", 4) == 0 && header[4] == wanted) {
+            return candidate;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 extern "C" {
@@ -143,6 +169,7 @@ int main() {
     const bool arrivals = strcmp(scenario, "arrivals") == 0;
     const bool early_exit = strcmp(scenario, "early-exit") == 0;
     const bool two_windows = strcmp(scenario, "two-windows") == 0;
+    const bool soname = strcmp(scenario, "soname") == 0;
     if (!getenv("VOCEM_GL_LIBRARY") || !getenv("VOCEM_SHIM_PRELOADED")) {
         printf("skip meant to run with the shim preloaded and VOCEM_GL_LIBRARY set\n");
         return 77;
@@ -210,7 +237,29 @@ int main() {
     // The game's half, exactly as GLFW and LWJGL do it: the GL library arrives
     // by dlopen(RTLD_LOCAL), and every symbol by dlsym on that handle -- which
     // is the interposed dlsym, as in a real game.
-    void* gl = dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
+    //
+    // VOCEM_GL_SCENARIO=soname opens the SAME system library under a file name
+    // the shim's list does not know: a link of this test's own, the shape of
+    // the unversioned development link `libGL.so` a game may ask for, or of a
+    // library a distribution renamed. The shim judged the file's name, so the
+    // library was taken for a private GL and this scene drew nothing and said
+    // nothing, VOCEM_DEBUG included (0.1.12-2: 0 pixels, 0 lines). It judges
+    // the object's SONAME now.
+    void* gl = nullptr;
+    if (soname) {
+        const char* found = system_libgl_for_this_width();
+        if (!found) {
+            printf("skip no libGL.so.1 of this width in the system's library directories\n");
+            return 77;
+        }
+        static char link_path[700];
+        snprintf(link_path, sizeof(link_path), "%s/libGL-renamed.so", root);
+        check(symlink(found, link_path) == 0, "a link to the system's libGL under another name");
+        printf("     opening %s -> %s\n", link_path, found);
+        gl = dlopen(link_path, RTLD_LAZY | RTLD_LOCAL);
+    } else {
+        gl = dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
+    }
     if (!gl) {
         printf("skip libGL.so.1 is not installed\n");
         return 77;
