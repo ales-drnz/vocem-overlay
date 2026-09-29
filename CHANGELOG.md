@@ -62,6 +62,8 @@
 - An application whose process name the lists cannot hold is ruled by its executable's name, or refused, instead of hiding two others.
 - The installed settings window no longer carries a RUNPATH.
 - ImGui's asserts are compiled out of the injected libraries in every build type.
+- Switching the overlay off or stopping the daemon while an OpenGL game builds its first font atlas no longer stalls a frame.
+- Two settings windows saving at the same moment no longer undo each other's changes.
 
 ## [0.1.10] - 2026-09-22
 
