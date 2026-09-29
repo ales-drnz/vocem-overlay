@@ -8,7 +8,7 @@ project(vocem-overlay
     # version derives from this or is checked against it: gui/CMakeLists.txt
     # compiles it into the window as VOCEM_VERSION, and tests/version_agrees.cmake
     # holds both PKGBUILDs, .SRCINFO and the metainfo's release list to it.
-    VERSION 0.1.11
+    VERSION 0.1.12
     DESCRIPTION "Discord voice overlay drawn inside the game, on Linux"
     LANGUAGES CXX
 )

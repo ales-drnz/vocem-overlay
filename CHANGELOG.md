@@ -1,15 +1,15 @@
-## [Unreleased]
+## [0.1.12] - 2026-09-29
 
 ### Changed
 
-- `vocem-run` puts the OpenGL shim first in `LD_PRELOAD`, so wrapping it in another OpenGL overlay's launcher no longer hides this one.
+- `vocem-run` puts the OpenGL shim first in `LD_PRELOAD`, so another overlay's wrapper around it no longer hides this one.
 
 ### Fixed
 
-- Another OpenGL overlay loaded after this one, such as MangoHud, now draws beside it in games that load OpenGL themselves (SDL, GLFW, LWJGL) instead of never receiving a frame.
-- An OpenGL overlay loaded after this one that finds the real present with `dlsym(RTLD_NEXT)` no longer recurses until the game crashes.
+- Another OpenGL overlay loaded after this one, such as MangoHud, now draws beside it in games that load OpenGL themselves.
+- An OpenGL overlay loaded after this one that forwards through `dlsym(RTLD_NEXT)` no longer recurses until the game crashes.
 - `VOCEM_DISABLE=1` leaves another OpenGL overlay's hooks to the game as if this one were not loaded.
-- A frame is no longer handed to the OpenGL overlay twice when another overlay behind it looks up the real present through `eglGetProcAddress`.
+- Beside an overlay that looks up the real present through `eglGetProcAddress`, a frame is no longer drawn twice.
 
 ## [0.1.11] - 2026-09-29
 

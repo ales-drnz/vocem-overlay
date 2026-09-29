@@ -91,6 +91,21 @@
        validates cleanly: an out-of-date release list is not something AppStream
        can catch, and nothing else looked. tests/version_agrees.cmake does now. -->
   <releases>
+    <release version="0.1.12" date="2026-09-29">
+      <description>
+        <p>Changed</p>
+        <ul>
+          <li>`vocem-run` puts the OpenGL shim first in `LD_PRELOAD`, so another overlay's wrapper around it no longer hides this one.</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Another OpenGL overlay loaded after this one, such as MangoHud, now draws beside it in games that load OpenGL themselves.</li>
+          <li>An OpenGL overlay loaded after this one that forwards through `dlsym(RTLD_NEXT)` no longer recurses until the game crashes.</li>
+          <li>`VOCEM_DISABLE=1` leaves another OpenGL overlay's hooks to the game as if this one were not loaded.</li>
+          <li>Beside an overlay that looks up the real present through `eglGetProcAddress`, a frame is no longer drawn twice.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.11" date="2026-09-29">
       <description>
         <p>Added</p>
