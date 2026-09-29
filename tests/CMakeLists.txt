@@ -1016,6 +1016,12 @@ vocem_m32_twin(shim_chain ENV ${VOCEM_CHAIN32_ENV})
 # `cmake` of another test can exit between pgrep and the read (DESIGN 193).
 vocem_script_test(vocem_why SERIAL ARGS "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 
+# --system names what an update took away: a shipped program ld.so no longer
+# satisfies (built here, with a version its library lost), a width of the
+# session preload that is not there, a Flatpak runtime whose Vulkan layer
+# extension point has no installed branch. Fails against 0.1.12-2's script.
+vocem_script_test(vocem_why_system ARGS "-DCXX=${CMAKE_CXX_COMPILER}")
+
 # Two OpenGL interposers in one process, against the real MangoHud: with the
 # shim first both draw, with MangoHud first only MangoHud does. The witness is
 # our own debug log, not pixels (MangoHud's are foreign pixels too).

@@ -7,6 +7,7 @@
 #
 #   scripts/vocem-why.sh balatro      # while the game is running
 #   scripts/vocem-why.sh              # everything the overlay has ever been in
+#   scripts/vocem-why.sh --system     # after a system update: what it took away
 #
 # This exists because the registry cannot answer the question on its own. It lists
 # what the overlay was *loaded into*, so a program that never appears there is
@@ -104,6 +105,160 @@ list_names() {
     done
     return 1
 }
+
+# --system: what an update of the system can take away without a word. Every
+# check here is a read; each "!!" line is something that stops the overlay, or
+# the window, and says what to do. Exit status 1 when there is one.
+#
+# The shapes it looks for were each measured on 2026-09-29, and each one is
+# silent from inside a game: a system library the dynamic linker no longer
+# satisfies (a Qt minor dropping a private symbol the window needs, a glibc
+# older than the libraries were built against), a layer manifest the Vulkan
+# loader skips, an NVIDIA driver updated without a reboot (every GL and Vulkan
+# program fails, this overlay included), and a Flatpak runtime whose Vulkan
+# layer extension point has no branch of the extension installed -- that
+# runtime's games get no layer, and nothing is there to say so.
+if [ "${1:-}" = "--system" ]; then
+    problems=0
+    problem() {
+        echo "  !! $*"
+        problems=$((problems + 1))
+    }
+
+    echo "== the session's preload =="
+    # The manager's environment is what a program started from the desktop
+    # inherits after the next login; this shell's is what it inherited at the
+    # last one. Each entry is expanded for both widths, as ld.so does with $LIB.
+    manager=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^LD_PRELOAD=//p' | head -1)
+    manager=$(printf '%s' "$manager" | sed "s/^\\\$'//; s/'\$//")
+    echo "  manager: ${manager:-(empty)}"
+    case "$manager" in
+        *libvocem_gl_shim*) ;;
+        *) problem "the session manager preloads no shim: OpenGL games started after the next login get no overlay" ;;
+    esac
+    for entry in $(printf '%s' "$manager" | tr ': ' '\n\n'); do
+        case "$entry" in *libvocem_gl_shim*) ;; *) continue ;; esac
+        for lib in lib lib32; do
+            path=$(printf '%s' "$entry" | sed "s/\\\$LIB/$lib/g; s/\\\${LIB}/$lib/g")
+            if [ -f "$path" ]; then
+                echo "  ok  $path"
+            else
+                problem "$path is not there: ld.so prints 'cannot be preloaded' into every $lib program"
+            fi
+        done
+    done
+    echo
+
+    echo "== the installed files against the installed system =="
+    # ldd -r resolves every versioned symbol and every function the way ld.so
+    # will: a line saying "undefined symbol" or "version ... not found" is a
+    # program or library that will not start, or will not load into a game.
+    if pacman -Qq vocem-overlay >/dev/null 2>&1; then
+        files=$(pacman -Qlq vocem-overlay 2>/dev/null)
+    else
+        prefix=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+        files=$(ls "$prefix"/bin/vocem* "$prefix"/lib/libvocem_* "$prefix"/lib32/libvocem_* 2>/dev/null)
+    fi
+    if ! command -v ldd >/dev/null 2>&1; then
+        echo "  (ldd is not installed: not checked)"
+    else
+        checked=0
+        for file in $files; do
+            [ -f "$file" ] || continue
+            case "$file" in
+                */bin/vocem|*/bin/vocemd|*/bin/vocem-config|*/libvocem_*.so) ;;
+                *) continue ;;
+            esac
+            checked=$((checked + 1))
+            missing=$(LC_ALL=C ldd -r "$file" 2>&1 | grep -E 'undefined symbol|not found' | head -3)
+            if [ -n "$missing" ]; then
+                problem "$file no longer links against this system:"
+                printf '%s\n' "$missing" | sed 's/^[[:space:]]*/       /'
+                case "$file" in
+                    */vocem-config) echo "     -> rebuild and reinstall the package: the window was built against another Qt" ;;
+                    *) echo "     -> rebuild and reinstall the package" ;;
+                esac
+            else
+                echo "  ok  $file"
+            fi
+        done
+        [ "$checked" -gt 0 ] || problem "no installed file of this project was found to check"
+    fi
+    echo
+
+    echo "== the Vulkan layer =="
+    # The loader skips an implicit layer whose manifest has no
+    # disable_environment (Vulkan-Loader 1.4.357), and says so only under
+    # VK_LOADER_DEBUG.
+    found_manifest=
+    for manifest in /usr/share/vulkan/implicit_layer.d/VkLayer_vocem_overlay*.json \
+                    /etc/vulkan/implicit_layer.d/VkLayer_vocem_overlay*.json \
+                    "${XDG_DATA_HOME:-$HOME/.local/share}"/vulkan/implicit_layer.d/VkLayer_vocem_overlay*.json; do
+        [ -f "$manifest" ] || continue
+        found_manifest=yes
+        if grep -q '"disable_environment"' "$manifest"; then
+            echo "  ok  $manifest"
+        else
+            problem "$manifest has no disable_environment: the Vulkan loader skips the layer in every game"
+        fi
+    done
+    [ -n "$found_manifest" ] || problem "no layer manifest installed: Vulkan games get no overlay"
+    echo
+
+    echo "== the graphics driver =="
+    # NVIDIA's kernel module and its userspace are one version or no GL and no
+    # Vulkan program starts at all. A driver package updated without a reboot
+    # is exactly that, and looks like every game being broken.
+    if [ -r /proc/driver/nvidia/version ]; then
+        # "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  615.71.09 ...":
+        # the first dotted number, since the architecture has digits too.
+        module=$(head -n 1 /proc/driver/nvidia/version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+        userspace=$(ls /usr/lib/libGLX_nvidia.so.[0-9]*.[0-9]* 2>/dev/null | sed 's/.*libGLX_nvidia\.so\.//' | head -1)
+        if [ -z "$module" ] || [ -z "$userspace" ]; then
+            echo "  NVIDIA: module '${module:-?}', userspace '${userspace:-?}' (could not compare)"
+        elif [ "$module" = "$userspace" ]; then
+            echo "  ok  NVIDIA $module, module and userspace agree"
+        else
+            problem "NVIDIA module $module, userspace $userspace: the driver was updated and the machine not restarted -- no GL or Vulkan program works until it is, this overlay included"
+        fi
+    else
+        echo "  (no NVIDIA kernel module: nothing to compare)"
+    fi
+    echo
+
+    echo "== Flatpak games =="
+    # A runtime mounts the extension at the version of the extension point it
+    # declares; a branch that is not installed is not mounted, and the games on
+    # that runtime simply have no layer.
+    if command -v flatpak >/dev/null 2>&1; then
+        refs=$(flatpak list --runtime --columns=ref 2>/dev/null | sort -u)
+        installed=$(printf '%s\n' "$refs" | sed -n 's|^org\.freedesktop\.Platform\.VulkanLayer\.VocemOverlay/[^/]*/||p' | sort -u)
+        for ref in $(printf '%s\n' "$refs" | grep -E '^org\.[a-z]+\.Platform/'); do
+            point=$(flatpak info -m "$ref" 2>/dev/null \
+                | awk '/^\[Extension org\.freedesktop\.Platform\.VulkanLayer\]/ { inside = 1; next }
+                       /^\[/ { inside = 0 }
+                       inside && /^version *=/ { sub(/^version *= */, ""); print; exit }')
+            [ -n "$point" ] || continue
+            if printf '%s\n' "$installed" | grep -Fxq "$point"; then
+                echo "  ok  $ref: the $point extension is installed"
+            elif [ -z "$installed" ]; then
+                echo "  $ref mounts layers at $point; the extension is not installed at all (README 1.4)"
+            else
+                problem "$ref mounts layers at $point and the extension's $point branch is not installed: its Vulkan games get no overlay -- flatpak install --user vocem-overlay org.freedesktop.Platform.VulkanLayer.VocemOverlay//$point"
+            fi
+        done
+    else
+        echo "  (flatpak is not installed)"
+    fi
+    echo
+
+    if [ "$problems" -gt 0 ]; then
+        echo "$problems problem(s) above."
+        exit 1
+    fi
+    echo "Nothing found that an update has taken away."
+    exit 0
+fi
 
 if [ "$#" -eq 0 ]; then
     echo "== what it has seen so far =="
