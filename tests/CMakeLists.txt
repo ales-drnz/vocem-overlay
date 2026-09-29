@@ -147,8 +147,17 @@ vocem_m32_twin(system_font)
 # 0.1.0-42 froze on. The stub plays ANGLE (see the test's header).
 add_library(vocem_stub_egl SHARED stub_egl.cpp)
 set_target_properties(vocem_stub_egl PROPERTIES CXX_VISIBILITY_PRESET hidden)
+# And a private GL carrying the system's SONAME in a directory of its own: the
+# Android emulator's llvmpipe `libEGL.so` is SONAME libEGL.so.1.
+add_library(vocem_stub_versioned_egl SHARED stub_egl.cpp)
+set_target_properties(vocem_stub_versioned_egl PROPERTIES CXX_VISIBILITY_PRESET hidden
+    OUTPUT_NAME EGL NO_SONAME TRUE
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/private-mesa")
+target_link_options(vocem_stub_versioned_egl PRIVATE -Wl,-soname,libEGL.so.1)
 vocem_test(shim_two_egls LINK ${CMAKE_DL_LIBS}
-    ENV ${VOCEM_SHIM_ENV} "VOCEM_STUB_EGL=$<TARGET_FILE:vocem_stub_egl>" SKIP)
+    ENV ${VOCEM_SHIM_ENV} "VOCEM_STUB_EGL=$<TARGET_FILE:vocem_stub_egl>"
+        "VOCEM_STUB_VERSIONED_EGL=$<TARGET_FILE:vocem_stub_versioned_egl>" SKIP)
+add_dependencies(vocem_shim_two_egls vocem_stub_versioned_egl)
 
 # VOCEM_DISABLE=1 switches off the interposition itself, not only the drawing --
 # the escape hatch 50-vocem.conf documents has to exist (it did not, twice).
@@ -325,12 +334,10 @@ vocem_test(gl_context_cycle LINK ${CMAKE_DL_LIBS} EGL GLESv2 rt
 vocem_test(gl_daemon_gone LINK ${CMAKE_DL_LIBS} EGL GLESv2 rt
     ENV ${VOCEM_GL_PROBE_ENV} SKIP TIMEOUT 120)
 
-# The same in a process the overlay declines (plasmashell's shape): no
-# backend, no atlas, one verdict however many contexts.
-# The system's libGL opened under a file name the shim does not know (the
-# unversioned development link, a renamed library): judged by its SONAME, it
-# draws. 0.1.12-2's shim judged the file name: 0 pixels and not one line, even
-# under VOCEM_DEBUG. Both widths.
+# The system's libGL opened through its unversioned development link
+# `libGL.so`: judged by its SONAME (in libc's directory), it draws. 0.1.12-2's
+# shim judged the file name: 0 pixels and not one line, even under
+# VOCEM_DEBUG. Both widths.
 vocem_test_run(gl_soname TARGET gl_draw_local
     ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=soname" SKIP)
 vocem_m32_twin(gl_draw_local
@@ -341,6 +348,8 @@ vocem_m32_twin_run(gl_soname TARGET gl_soname
     ENV "LD_PRELOAD=${VOCEM_BUILD32_DIR}/gl/libvocem_gl_shim.so" "VOCEM_SHIM_PRELOADED=1"
         "VOCEM_GL_LIBRARY=${VOCEM_BUILD32_DIR}/gl/libvocem_gl.so" "VOCEM_GL_SCENARIO=soname")
 
+# The same in a process the overlay declines (plasmashell's shape): no
+# backend, no atlas, one verdict however many contexts.
 vocem_test_run(gl_context_cycle_quiet TARGET gl_context_cycle
     ENV ${VOCEM_GL_PROBE_ENV} "VOCEM_GL_SCENARIO=declining" SKIP TIMEOUT 120)
 

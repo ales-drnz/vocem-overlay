@@ -155,6 +155,30 @@ int main() {
     check(sw2 != nullptr && sw2 == ours,
           "the system library's present function is still hooked");
 
+    // 6. A private GL that carries the system's SONAME, opened by path AFTER
+    //    the system's: the Android emulator's llvmpipe build ships `libEGL.so`
+    //    whose SONAME is libEGL.so.1. Judged by SONAME alone it passed for the
+    //    system's, and its dispatcher was handed our hook, which forwards to
+    //    the system's libEGL -- entry 36's cross-wiring, measured by the
+    //    refutation of the SONAME change. Its own dispatcher must stay its own.
+    if (const char* versioned = getenv("VOCEM_STUB_VERSIONED_EGL")) {
+        void* h3 = dlopen(versioned, RTLD_LAZY | RTLD_LOCAL);
+        check(h3 != nullptr && h3 != h2, "the private libEGL.so (SONAME libEGL.so.1) opens as its own object");
+        if (h3 && h3 != h2) {
+            void* gp3 = dlsym(h3, "eglGetProcAddress");
+            void* own = dlsym(RTLD_DEFAULT, "eglGetProcAddress");
+            auto* marker3 = reinterpret_cast<PFN_marker>(dlsym(h3, "vocem_stub_marker"));
+            check(gp3 != nullptr && gp3 != own,
+                  "a private GL with a versioned SONAME outside libc's directory is not taken for the system's");
+            if (gp3 && gp3 != own && marker3) {
+                check(reinterpret_cast<PFN_get_proc>(gp3)("eglQueryString") == marker3(),
+                      "and its dispatcher answers with its own pointers");
+            }
+        }
+    } else {
+        printf("--  the versioned private stub was not built here\n");
+    }
+
     printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }

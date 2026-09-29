@@ -325,14 +325,24 @@ const char* base_name(const char* path) {
 // library.
 //
 // dladdr answers "whose pointer is this" from memory, with no file syscall
-// (this runs in sandboxed processes). The name judged is the object's SONAME,
-// read from its own dynamic section in memory, and the file's name only when
-// it has none: the system library is libEGL.so.1 however it was opened, and
-// ANGLE's is exactly libEGL.so. By file name, a game that opened the system's
-// libGL through its unversioned development link `libGL.so` -- or a library
-// the distribution renamed -- was taken for a private GL, and the overlay never
-// saw a frame and said nothing (tests/gl_draw_local.cpp, scenario `soname`).
-// The trailing dot is load-bearing either way.
+// (this runs in sandboxed processes). Two names are judged, and the trailing
+// dot is load-bearing in both: the system library is libEGL.so.1..., ANGLE's
+// is exactly libEGL.so.
+//
+//   * The file's name, as it was opened: entry 36's rule, unchanged.
+//   * The object's SONAME, read from its own dynamic section in memory -- but
+//     only for an object in libc's own directory. A game that opened the
+//     system's libGL through its unversioned development link `libGL.so` was
+//     taken for a private GL by its file name alone, and the overlay never saw
+//     a frame and said nothing (tests/gl_draw_local.cpp, scenario `soname`).
+//     Believed anywhere, the SONAME is the wrong witness: a private Mesa ships
+//     `libEGL.so` whose SONAME is libEGL.so.1 (the Android emulator's
+//     llvmpipe build, measured by the refutation of this change), and taking
+//     it for the system's hands its questions to the system's library --
+//     entry 36's cross-wiring (tests/shim_two_egls.cpp, the versioned stub).
+
+// The object's SONAME when it has one, else its file's basename; `file` gets
+// the path it was opened by.
 const char* object_name(void* pointer, const char** file) {
     Dl_info info;
     struct link_map* map = nullptr;
@@ -358,8 +368,8 @@ const char* object_name(void* pointer, const char** file) {
         }
         if (has_soname && strtab) {
             // ld.so relocates the dynamic section in place where it is
-            // writable (x86); where it is read-only the address is still
-            // relative to the object.
+            // writable (x86); where it is read-only (the vDSO) the address is
+            // still relative to the object.
             if (strtab < map->l_addr) {
                 strtab += map->l_addr;
             }
@@ -369,11 +379,7 @@ const char* object_name(void* pointer, const char** file) {
     return base_name(info.dli_fname);
 }
 
-bool is_system_gl(void* pointer) {
-    const char* base = object_name(pointer, nullptr);
-    if (!base) {
-        return false;
-    }
+bool name_is_system_gl(const char* name) {
     static const char* const prefixes[] = {
         // libglvnd's dispatchers, versioned -- the dot excludes ANGLE's "libEGL.so".
         "libEGL.so.", "libGLX.so.", "libGL.so.", "libOpenGL.so.",
@@ -382,11 +388,39 @@ bool is_system_gl(void* pointer) {
         "libEGL_", "libGLX_",
     };
     for (unsigned i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
-        if (strncmp(base, prefixes[i], strlen(prefixes[i])) == 0) {
+        if (strncmp(name, prefixes[i], strlen(prefixes[i])) == 0) {
             return true;
         }
     }
     return false;
+}
+
+// Whether a path lies directly in the directory libc was loaded from -- the
+// system's library directory as this process sees it, the Steam container's
+// overrides included. dladdr of a libc function: memory only.
+bool in_libc_directory(const char* path) {
+    Dl_info libc;
+    if (dladdr(reinterpret_cast<void*>(&dladdr), &libc) == 0 || !libc.dli_fname) {
+        return false;
+    }
+    const char* libc_slash = strrchr(libc.dli_fname, '/');
+    const char* path_slash = strrchr(path, '/');
+    if (!libc_slash || !path_slash) {
+        return false;
+    }
+    const size_t length = static_cast<size_t>(libc_slash - libc.dli_fname);
+    return static_cast<size_t>(path_slash - path) == length &&
+           strncmp(path, libc.dli_fname, length) == 0;
+}
+
+bool is_system_gl(void* pointer) {
+    const char* file = nullptr;
+    const char* soname = object_name(pointer, &file);
+    if (!soname || !file) {
+        return false;
+    }
+    return name_is_system_gl(base_name(file)) ||
+           (name_is_system_gl(soname) && in_libc_directory(file));
 }
 
 // LD_PRELOAD as it was the first time the chain was asked about, kept: a
@@ -581,7 +615,7 @@ struct Target {
 // chain, so the overlay will not see the frames that go through it. Right for
 // ANGLE; for a system library under a name this file does not know, it is the
 // only line anything says (the shape of entry 38). Our own exports, which
-// RTLD_DEFAULT hands back, are not news.
+// RTLD_DEFAULT hands back, are not news, nor another copy's.
 void not_followed(Hook& entry, void* pointer) {
     static int debug = -1;  // -1 unknown, 0 off, 1 on
     int enabled = __atomic_load_n(&debug, __ATOMIC_ACQUIRE);
@@ -596,8 +630,9 @@ void not_followed(Hook& entry, void* pointer) {
     const char* file = nullptr;
     const char* name = object_name(pointer, &file);
     Dl_info self;
-    if (!name || !file || (dladdr(reinterpret_cast<void*>(&not_followed), &self) != 0 &&
-                           self.dli_fname && strcmp(file, self.dli_fname) == 0)) {
+    if (!name || !file || another_copy(pointer) ||
+        (dladdr(reinterpret_cast<void*>(&not_followed), &self) != 0 && self.dli_fname &&
+         strcmp(file, self.dli_fname) == 0)) {
         return;
     }
     if (__atomic_exchange_n(&entry.said_not_followed, 1, __ATOMIC_ACQ_REL)) {

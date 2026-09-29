@@ -238,13 +238,12 @@ int main() {
     // by dlopen(RTLD_LOCAL), and every symbol by dlsym on that handle -- which
     // is the interposed dlsym, as in a real game.
     //
-    // VOCEM_GL_SCENARIO=soname opens the SAME system library under a file name
-    // the shim's list does not know: a link of this test's own, the shape of
-    // the unversioned development link `libGL.so` a game may ask for, or of a
-    // library a distribution renamed. The shim judged the file's name, so the
-    // library was taken for a private GL and this scene drew nothing and said
-    // nothing, VOCEM_DEBUG included (0.1.12-2: 0 pixels, 0 lines). It judges
-    // the object's SONAME now.
+    // VOCEM_GL_SCENARIO=soname opens the SAME system library through its
+    // unversioned development link, `libGL.so` beside `libGL.so.1`, the name a
+    // game may ask for. The shim judged the file's name, so the library was
+    // taken for a private GL and this scene drew nothing and said nothing,
+    // VOCEM_DEBUG included (0.1.12-2: 0 pixels, 0 lines, both widths). It
+    // judges the SONAME too now, for an object in libc's own directory.
     void* gl = nullptr;
     if (soname) {
         const char* found = system_libgl_for_this_width();
@@ -253,9 +252,16 @@ int main() {
             return 77;
         }
         static char link_path[700];
-        snprintf(link_path, sizeof(link_path), "%s/libGL-renamed.so", root);
-        check(symlink(found, link_path) == 0, "a link to the system's libGL under another name");
-        printf("     opening %s -> %s\n", link_path, found);
+        snprintf(link_path, sizeof(link_path), "%.*s/libGL.so",
+                 static_cast<int>(strrchr(found, '/') - found), found);
+        struct stat link_stat;
+        struct stat real_stat;
+        if (stat(link_path, &link_stat) != 0 || stat(found, &real_stat) != 0 ||
+            link_stat.st_ino != real_stat.st_ino || link_stat.st_dev != real_stat.st_dev) {
+            printf("skip %s is not a link to %s here\n", link_path, found);
+            return 77;
+        }
+        printf("     opening %s (the same file as %s)\n", link_path, found);
         gl = dlopen(link_path, RTLD_LAZY | RTLD_LOCAL);
     } else {
         gl = dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
