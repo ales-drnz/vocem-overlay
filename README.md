@@ -436,6 +436,13 @@ overlay out of that game, with nothing logged anywhere. Steam launch options are
 often passed around as `LD_PRELOAD="" %command%`. The Vulkan path is unaffected,
 because the loader needs no environment variable.
 
+Beside another OpenGL overlay in the same game, such as MangoHud, both draw when
+this one is loaded **first**. The session's preload comes before anything a
+wrapper such as `mangohud` appends, and `vocem-run` puts it first. Listed after
+an overlay that presents each frame itself, as MangoHud does, it never sees one,
+and nothing on this side can change that. The Vulkan path is unaffected, because
+the loader chains its layers.
+
 The Minecraft launcher swallows the game's stderr. Use `VOCEM_LOG_FILE` to see what
 the overlay is doing in there.
 

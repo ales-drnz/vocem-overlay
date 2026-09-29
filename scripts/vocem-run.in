@@ -32,8 +32,15 @@ fi
 # would only show up in the games launched one way (tests/one_preload_path.cmake).
 VOCEM_PRELOAD='@VOCEM_LIBDIR_TOKEN@/libvocem_gl_shim.so'
 
+# First, not last: of two OpenGL interposers in one process only the one ahead
+# can hand the frame on to the other. With the shim first, an interposer after
+# it such as MangoHud is given every frame after us; with it last, MangoHud
+# calls the driver itself and we never see a frame. So `mangohud vocem-run
+# game` works as well as `vocem-run mangohud game` (tests/gl_beside_mangohud).
+# A copy the session already put in LD_PRELOAD is harmless: ld.so maps a file
+# once, at its first position.
 if [ -n "${LD_PRELOAD:-}" ]; then
-    LD_PRELOAD="${LD_PRELOAD}:${VOCEM_PRELOAD}"
+    LD_PRELOAD="${VOCEM_PRELOAD}:${LD_PRELOAD}"
 else
     LD_PRELOAD="${VOCEM_PRELOAD}"
 fi

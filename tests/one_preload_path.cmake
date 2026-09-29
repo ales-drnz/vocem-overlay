@@ -108,5 +108,31 @@ if(NOT run_path MATCHES "\\$LIB")
         "(the literal has to survive CMake's configure step)")
 endif()
 
-file(REMOVE_RECURSE "${tree}")
 message("ok   vocem-run and environment.d preload one path, and it follows the install prefix")
+
+# And vocem-run puts it FIRST. Of two OpenGL interposers only the one ahead can
+# hand the frame on (tests/shim_chain.cpp); appended, `mangohud vocem-run game`
+# left MangoHud ahead and this overlay never saw a frame. Run, not grepped: the
+# generated script with another preload already set, printing what it hands
+# the command. The shim it names does not exist at this prefix, so ld.so says
+# "cannot be preloaded" on stderr and nothing is loaded.
+find_program(printenv_program printenv)
+if(NOT printenv_program)
+    message(FATAL_ERROR "no printenv here, so the order vocem-run preloads in cannot be read")
+endif()
+execute_process(
+    COMMAND sh "${run}" "${printenv_program}" LD_PRELOAD
+    OUTPUT_VARIABLE handed
+    ERROR_QUIET
+    RESULT_VARIABLE status
+    ENVIRONMENT_MODIFICATION "LD_PRELOAD=set:/opt/another-interposer/libother.so")
+string(STRIP "${handed}" handed)
+message(STATUS "     vocem-run hands the command LD_PRELOAD=${handed}")
+if(NOT status EQUAL 0 OR NOT handed STREQUAL "${run_path}:/opt/another-interposer/libother.so")
+    message(FATAL_ERROR
+        "vocem-run did not put the shim ahead of a preload already set (exit ${status}): "
+        "an OpenGL interposer ahead of us calls the driver and we never see a frame")
+endif()
+
+file(REMOVE_RECURSE "${tree}")
+message("ok   vocem-run puts the shim ahead of whatever was already preloaded")
