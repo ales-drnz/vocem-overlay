@@ -20,7 +20,7 @@ pkgname=vocem-overlay
 # next one is being written, and moves when the owner tags. PKGBUILD.local, which
 # builds the working tree, carries the release being written instead.
 # tests/version_agrees.cmake holds each of the two to its own rule.
-pkgver=0.1.10
+pkgver=0.1.11
 pkgrel=1
 pkgdesc="Discord voice overlay drawn inside the game, through a Vulkan layer and an OpenGL hook"
 arch=('x86_64')

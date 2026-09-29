@@ -1,6 +1,6 @@
 pkgbase = vocem-overlay
 	pkgdesc = Discord voice overlay drawn inside the game, through a Vulkan layer and an OpenGL hook
-	pkgver = 0.1.10
+	pkgver = 0.1.11
 	pkgrel = 1
 	url = https://github.com/ales-drnz/vocem-overlay
 	arch = x86_64
@@ -24,7 +24,7 @@ pkgbase = vocem-overlay
 	optdepends = vulkan-icd-loader: the loader that puts the overlay layer into 64-bit Vulkan games
 	optdepends = lib32-vulkan-icd-loader: the same for 32-bit Vulkan games, DXVK under Proton among them
 	options = !debug
-	source = git+https://github.com/ales-drnz/vocem-overlay.git#tag=v0.1.10
+	source = git+https://github.com/ales-drnz/vocem-overlay.git#tag=v0.1.11
 	source = imgui::git+https://github.com/ocornut/imgui.git#tag=v1.91.9
 	sha256sums = SKIP
 	sha256sums = SKIP
