@@ -821,6 +821,10 @@ if(TARGET vocem-config)
     # examining the entries that carry its name and not the whole registry.
     vocem_script_test(window_cost ARGS ${VOCEM_WINDOW_ARG})
 
+    # No Qt_6_PRIVATE_API symbol: the next Qt minor must not stop the window
+    # from starting. Fails against 0.1.12-2's window (two AOT references).
+    vocem_script_test(window_private_api ARGS ${VOCEM_WINDOW_ARG})
+
     # The three instant switches, driven where no window test reaches: the
     # bridge built directly (the harness cannot press a Switch). After a switch
     # the window's copy follows an edit made outside, so Apply keeps it.

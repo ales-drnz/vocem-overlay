@@ -30,6 +30,15 @@ set_target_properties(vocem-config PROPERTIES INSTALL_RPATH "")
 # component without threading it through as a property.
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
+# Bytecode only, no QML compiled to C++. The C++ that qmlcachegen writes calls
+# Qt's private API (QQmlPrivate::AOTCompiledContext, symbol version
+# Qt_6_PRIVATE_API), which Qt keeps only within one minor release: Arch rebuilds
+# its own packages at every Qt minor, and nobody rebuilds this one, so the next
+# Qt could leave the window unable to start. Bytecode is data -- a Qt that does
+# not recognise it loads the embedded .qml sources instead -- and costs no
+# measurable startup here (tests/window_private_api.cmake).
+set_target_properties(vocem-config PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
+
 qt_add_qml_module(vocem-config
     URI Vocem
     VERSION 1.0
