@@ -86,8 +86,31 @@ foreach(shim IN ITEMS "${SHIM}" "${SHIM_TWIN32}" "${SHIM_BUILD32}")
         message(FATAL_ERROR "${shim} leaves ${name} undefined, which libc does not answer: "
                             "preloaded under LD_BIND_NOW every program would fail to start")
     endforeach()
+    # The newest glibc the shim needs, held where it is: GLIBC_2.34, where libdl
+    # joined libc. Not because a known place runs the shim on an older libc --
+    # pressure-vessel brings the host's -- but because the one file loaded into
+    # every process of the session should need what it needs on purpose, and a
+    # compiler or a makepkg flag raises it silently: the heavy libraries went
+    # to GLIBC_2.43 that way (acosf, atan2f, sqrtf; readelf, 0.1.12-2), and
+    # -static-libstdc++ brought _dl_find_object@GLIBC_2.35 with it (entry 234).
+    # Raising it is a decision; change this number with the reason beside it.
+    execute_process(COMMAND nm -D --with-symbol-versions --undefined-only "${shim}"
+                    OUTPUT_VARIABLE versioned)
+    string(REGEX MATCHALL "@GLIBC_[0-9]+\\.[0-9]+(\\.[0-9]+)?" glibc_versions "${versioned}")
+    set(newest "0")
+    foreach(version IN LISTS glibc_versions)
+        string(REPLACE "@GLIBC_" "" version "${version}")
+        if(version VERSION_GREATER newest)
+            set(newest "${version}")
+        endif()
+    endforeach()
+    if(newest VERSION_GREATER "2.34")
+        string(REGEX MATCHALL "[^\n ]+@GLIBC_${newest}" culprits "${versioned}")
+        message(FATAL_ERROR "${shim} needs GLIBC_${newest} (${culprits}); the shim has needed "
+                            "2.34 at most, and a rise is a decision, not a side effect")
+    endif()
     message(STATUS "ok ${shim}: libc alone, exactly the twelve hooks, no guard, "
-                   "nothing undefined outside libc")
+                   "nothing undefined outside libc, glibc ${newest} at most")
     math(EXPR held "${held} + 1")
 endforeach()
 if(held EQUAL 0)

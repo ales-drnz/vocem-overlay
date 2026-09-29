@@ -115,6 +115,30 @@ else()
     set(missing32 "${MANIFEST32}")
 endif()
 
+# --- the loader's switch is in both manifests --------------------------------
+# Vulkan-Loader 1.4.357 SKIPS an implicit layer whose manifest has no
+# disable_environment ("doesn't contain required layer object
+# disable_environment ... skipping this layer", measured 2026-09-29 with a copy
+# of the packaged manifest that lacked it; entry 143 met it in a probe's copy).
+# The layer would then be absent from every Vulkan game, and nothing of ours
+# would run to say so. Checked on the generated files, both widths.
+foreach(pair IN ITEMS "manifest|${MANIFEST}" "manifest32|${MANIFEST32}")
+    string(REPLACE "|" ";" pair "${pair}")
+    list(GET pair 0 variable)
+    list(GET pair 1 path)
+    if(NOT path OR NOT EXISTS "${path}")
+        continue()
+    endif()
+    if(${variable} MATCHES "\"disable_environment\"[ \t\r\n]*:[ \t\r\n]*\{[ \t\r\n]*\"VOCEM_DISABLE\"[ \t\r\n]*:[ \t\r\n]*\"1\"")
+        message("ok   ${path} carries disable_environment VOCEM_DISABLE=1, without which the "
+                "loader skips an implicit layer")
+    else()
+        message("FAIL ${path} has no disable_environment { \"VOCEM_DISABLE\": \"1\" }: the "
+                "Vulkan loader skips an implicit layer without one, silently for every game")
+        math(EXPR failures "${failures} + 1")
+    endif()
+endforeach()
+
 # --- the Flatpak variant's two halves stay coupled in the source -------------
 # The extension is mounted where no loader search path reaches, so its
 # library_path must be absolute -- and an absolute path forces a per-architecture
