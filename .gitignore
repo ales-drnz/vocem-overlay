@@ -50,3 +50,6 @@ AUDIT-*.md
 # be a tmpfs the builder's sandbox does not share. See flatpak/README.md.
 vocem-flatpak-build/
 vocem-flatpak-repo/
+# The manifest of every branch but the first, written by
+# flatpak/vulkanlayer/branch-manifest.sh beside the one it is made from.
+flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay-*.yml

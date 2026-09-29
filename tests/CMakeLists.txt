@@ -239,6 +239,11 @@ vocem_script_test(pkgbuild_agree)
 # from the tree.
 vocem_script_test(flatpak_extension_payload)
 
+# A branch of the extension for every VulkanLayer extension point an installed
+# runtime declares, each one the same manifest with its version changed. Fails
+# against the tree that built 25.08 alone, with freedesktop 26.08 installed.
+vocem_script_test(flatpak_branches)
+
 # The shim's two ways into a process (vocem-run and environment.d) name one
 # path (entry 16). Configured at a prefix of its own: at /usr the two agree by
 # accident. Nothing is built.

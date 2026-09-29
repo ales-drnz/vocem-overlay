@@ -39,12 +39,20 @@ Once, the toolchain:
 flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk.Compat.i386 org.freedesktop.Sdk.Extension.toolchain-i386 org.freedesktop.Platform.Compat.i386
 ```
 
+The toolchain is per branch: repeat the line with `//26.08` after each name
+(and `org.freedesktop.Sdk//26.08`) for the second branch.
+
 Then, from the top of the checkout, with the signing key and the project's own
-version:
+version, once per branch in `vulkanlayer/branches`:
 
 ```sh
-flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --subject="Vocem Overlay $(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9.]*\)$/\1/p' CMakeLists.txt | head -1)" --body="Built from $(git rev-parse --short HEAD) of https://github.com/ales-drnz/vocem-overlay" --repo=vocem-flatpak-repo vocem-flatpak-build flatpak/vulkanlayer/org.freedesktop.Platform.VulkanLayer.VocemOverlay.yml
+for branch in $(cat flatpak/vulkanlayer/branches); do flatpak run --filesystem="$PWD" org.flatpak.Builder --force-clean --gpg-sign=FA67BB03AECF6941 --subject="Vocem Overlay $(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9.]*\)$/\1/p' CMakeLists.txt | head -1)" --body="Built from $(git rev-parse --short HEAD) of https://github.com/ales-drnz/vocem-overlay" --repo=vocem-flatpak-repo vocem-flatpak-build "$(flatpak/vulkanlayer/branch-manifest.sh "$branch")" || break; done
 ```
+
+`branch-manifest.sh` prints the manifest for a branch: the source file itself
+for the first, and for the others a copy beside it with `runtime-version` and
+`branch` changed and nothing else (`tests/flatpak_branches.cmake` holds it to
+that). One manifest, so a fix cannot reach one branch and miss the other.
 
 The version in the subject comes from `CMakeLists.txt`, which is the one place
 this project states its release (entry 110). It used to come from
@@ -82,7 +90,8 @@ the export is complete when
 ostree --repo=vocem-flatpak-repo log runtime/org.freedesktop.Platform.VulkanLayer.VocemOverlay/x86_64/25.08
 ```
 
-prints the commit with this release's subject on it.
+prints the commit with this release's subject on it -- for each branch, with
+its own number in the ref.
 
 Stop it then, and look in `~/.gnupg/public-keys.d/` before the next step: the
 sandboxed gpg that signed the commit leaves `pubring.db.lock` behind, naming a
@@ -137,19 +146,27 @@ Nothing is attached to the GitHub release. The extension has no version of its
 own: on Flatpak the number is `25.08`, which is the runtime's extension point,
 and `flatpak update` simply takes what is newest on the branch.
 
-## The branch
+## The branches
 
-`25.08` is the version of the *extension point* the runtime declares, not the
-runtime's own name, so one branch covers several runtimes:
+A branch is the version of the *extension point* the runtime declares, not the
+runtime's own name, so one branch covers several runtimes -- and a runtime whose
+point has no branch mounts nothing, with nothing anywhere saying so:
 
-| Runtime | Used by | Extension point |
+| Runtime | Used by (2026-09-29) | Extension point |
 | --- | --- | --- |
-| `org.freedesktop.Platform/25.08` | Steam, Heroic | 25.08 |
-| `org.gnome.Platform/50`, `/49` | Sober, Lutris, Bottles | 25.08 |
-| `org.kde.Platform/6.10` | PrismLauncher | 25.08 |
+| `org.freedesktop.Platform/26.08` | Steam | 26.08 |
+| `org.gnome.Platform/51` | (none yet of these) | 26.08 |
+| `org.freedesktop.Platform/25.08` | Heroic | 25.08 |
+| `org.gnome.Platform/50`, `/49` | Sober, Bottles, Lutris | 25.08 |
+| `org.kde.Platform/6.11`, `/6.10` | PrismLauncher | 25.08 |
 | `org.kde.Platform/6.9`, `org.freedesktop.Platform/24.08` | older applications | 24.08 |
 
-A second branch is only needed for the last row.
+`vulkanlayer/branches` lists what is built: 25.08 and 26.08. 24.08 is past its
+end of life and is not built. Flathub's Steam moved to 26.08 while only 25.08
+existed here, which is why the list is a file a test reads: `flatpak_branches`
+fails when a runtime installed on the machine declares a point that has no
+branch. A new freedesktop runtime every August means a new line in that file
+about once a year.
 
 ## What the user does
 

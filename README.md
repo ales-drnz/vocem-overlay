@@ -274,13 +274,24 @@ A game it does not recognise draws nothing until you tick its box.
 #### 1.4 Games that are themselves Flatpaks
 
 A Flatpak game inherits neither the session preload nor the host's layer
-manifest. Install the Vulkan layer extension once and it reaches all of them:
+manifest. Install the Vulkan layer extension, which adds this project's
+repository as the remote `vocem-overlay`:
 
 ```bash
 flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref
 ```
 
-`flatpak update` keeps it current afterwards. `vocemd` stays on the host, and
+That is the 25.08 branch, for games on the freedesktop 25.08, GNOME 50 and KDE
+6.x runtimes. Games on freedesktop 26.08 or GNOME 51 -- Steam from Flathub among
+them -- mount the 26.08 branch instead, and a runtime whose branch is missing
+simply goes without the layer:
+
+```bash
+flatpak install --user vocem-overlay org.freedesktop.Platform.VulkanLayer.VocemOverlay//26.08
+```
+
+`vocem-why --system` lists the runtimes installed and whether each one's branch
+is. `flatpak update` keeps both current afterwards. `vocemd` stays on the host, and
 the overlay inside the sandbox reads it through a directory Flatpak shares with
 the host.
 
