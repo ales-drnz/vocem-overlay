@@ -912,15 +912,90 @@ set_target_properties(vocem_stub_private_egl PROPERTIES CXX_VISIBILITY_PRESET hi
 vocem_test(shim_private_dispatch LINK ${CMAKE_DL_LIBS}
     ENV ${VOCEM_SHIM_ENV} "VOCEM_STUB_PRIVATE_EGL=$<TARGET_FILE:vocem_stub_private_egl>" SKIP)
 
+# The shim and another OpenGL interposer preloaded after it (MangoHud's order
+# under its wrapper): each gets every frame, once, and the frame still reaches
+# the system's library. Three shapes of interposer, three doors, both widths;
+# what the shim handed over is counted by a stub overlay library, so nothing
+# needs a display. The other order is asserted as measured (shim_chain.cpp).
+function(vocem_chain_stubs suffix)
+    set(options ${ARGN})
+    foreach(shape OWN_HANDLE NEXT DISPATCHER)
+        string(TOLOWER "${shape}" lower)
+        add_library(vocem_stub_chain_${lower}${suffix} SHARED stub_chain_overlay.cpp)
+        target_compile_definitions(vocem_stub_chain_${lower}${suffix} PRIVATE CHAIN_${shape})
+        target_include_directories(vocem_stub_chain_${lower}${suffix} PRIVATE
+            "${CMAKE_SOURCE_DIR}/gl/src")
+        set_target_properties(vocem_stub_chain_${lower}${suffix} PROPERTIES
+            CXX_VISIBILITY_PRESET hidden)
+        target_compile_options(vocem_stub_chain_${lower}${suffix} PRIVATE ${options})
+        target_link_options(vocem_stub_chain_${lower}${suffix} PRIVATE ${options})
+        target_link_libraries(vocem_stub_chain_${lower}${suffix} PRIVATE ${CMAKE_DL_LIBS})
+    endforeach()
+    # MangoHud's shape once more, bound to itself (see the stub's header).
+    add_library(vocem_stub_chain_symbolic${suffix} SHARED stub_chain_overlay.cpp)
+    target_compile_definitions(vocem_stub_chain_symbolic${suffix} PRIVATE CHAIN_OWN_HANDLE)
+    target_include_directories(vocem_stub_chain_symbolic${suffix} PRIVATE
+        "${CMAKE_SOURCE_DIR}/gl/src")
+    set_target_properties(vocem_stub_chain_symbolic${suffix} PROPERTIES
+        CXX_VISIBILITY_PRESET hidden)
+    target_compile_options(vocem_stub_chain_symbolic${suffix} PRIVATE ${options})
+    target_link_options(vocem_stub_chain_symbolic${suffix} PRIVATE ${options} -Wl,-Bsymbolic)
+    target_link_libraries(vocem_stub_chain_symbolic${suffix} PRIVATE ${CMAKE_DL_LIBS})
+    # MangoHud's shape asking the global dispatcher inside its own present.
+    add_library(vocem_stub_chain_asks${suffix} SHARED stub_chain_overlay.cpp)
+    target_compile_definitions(vocem_stub_chain_asks${suffix} PRIVATE CHAIN_OWN_HANDLE CHAIN_ASKS)
+    target_include_directories(vocem_stub_chain_asks${suffix} PRIVATE
+        "${CMAKE_SOURCE_DIR}/gl/src")
+    set_target_properties(vocem_stub_chain_asks${suffix} PROPERTIES
+        CXX_VISIBILITY_PRESET hidden)
+    target_compile_options(vocem_stub_chain_asks${suffix} PRIVATE ${options})
+    target_link_options(vocem_stub_chain_asks${suffix} PRIVATE ${options})
+    target_link_libraries(vocem_stub_chain_asks${suffix} PRIVATE ${CMAKE_DL_LIBS})
+    # SDL's shape: looks the present up for the game, hooks nothing.
+    add_library(vocem_stub_chain_lookup${suffix} SHARED stub_chain_lookup.cpp)
+    set_target_properties(vocem_stub_chain_lookup${suffix} PROPERTIES
+        CXX_VISIBILITY_PRESET hidden)
+    target_compile_options(vocem_stub_chain_lookup${suffix} PRIVATE ${options})
+    target_link_options(vocem_stub_chain_lookup${suffix} PRIVATE ${options})
+    target_link_libraries(vocem_stub_chain_lookup${suffix} PRIVATE ${CMAKE_DL_LIBS})
+    add_library(vocem_stub_gl_counter${suffix} SHARED stub_gl_counter.cpp)
+    set_target_properties(vocem_stub_gl_counter${suffix} PROPERTIES CXX_VISIBILITY_PRESET hidden)
+    target_compile_options(vocem_stub_gl_counter${suffix} PRIVATE ${options})
+    target_link_options(vocem_stub_gl_counter${suffix} PRIVATE ${options})
+endfunction()
+function(vocem_chain_env out suffix shim linked)
+    set(${out}
+        "VOCEM_CHAIN_SHIM=$<TARGET_FILE:${shim}>"
+        "VOCEM_CHAIN_OWN_HANDLE=$<TARGET_FILE:vocem_stub_chain_own_handle${suffix}>"
+        "VOCEM_CHAIN_SYMBOLIC=$<TARGET_FILE:vocem_stub_chain_symbolic${suffix}>"
+        "VOCEM_CHAIN_ASKS=$<TARGET_FILE:vocem_stub_chain_asks${suffix}>"
+        "VOCEM_CHAIN_LOOKUP=$<TARGET_FILE:vocem_stub_chain_lookup${suffix}>"
+        "VOCEM_CHAIN_NEXT=$<TARGET_FILE:vocem_stub_chain_next${suffix}>"
+        "VOCEM_CHAIN_DISPATCHER=$<TARGET_FILE:vocem_stub_chain_dispatcher${suffix}>"
+        "VOCEM_GL_LIBRARY=$<TARGET_FILE:vocem_stub_gl_counter${suffix}>"
+        "VOCEM_CHAIN_LINKED=$<TARGET_FILE:${linked}>"
+        PARENT_SCOPE)
+endfunction()
+vocem_chain_stubs("")
+vocem_test(shim_chain_linked SOURCES shim_chain.cpp DEFINES CHAIN_LINKED LINK EGL NO_TEST)
+vocem_chain_env(VOCEM_CHAIN_ENV "" vocem_gl_shim vocem_shim_chain_linked)
+vocem_test(shim_chain LINK ${CMAKE_DL_LIBS} ENV ${VOCEM_CHAIN_ENV} SKIP)
+if(VOCEM_HAVE_M32)
+    vocem_chain_stubs(32 -m32)
+    vocem_m32_twin(shim_chain_linked)
+    vocem_chain_env(VOCEM_CHAIN32_ENV 32 vocem_gl_shim32 vocem_shim_chain_linked32)
+endif()
+vocem_m32_twin(shim_chain ENV ${VOCEM_CHAIN32_ENV})
+
 # vocem-why prints one answer when the daemon is down (`systemctl is-active`
 # exits 3; entry 99 is the same fault). Stub systemctl on PATH.
 # SERIAL: it asks the script about `cmake` -- this test's own process -- and a
 # `cmake` of another test can exit between pgrep and the read (DESIGN 193).
 vocem_script_test(vocem_why SERIAL ARGS "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 
-# Two OpenGL interposers in one process: with MangoHud, whoever is first in
-# LD_PRELOAD draws. The witness is our own debug log, not pixels (MangoHud's
-# are foreign pixels too).
+# Two OpenGL interposers in one process, against the real MangoHud: with the
+# shim first both draw, with MangoHud first only MangoHud does. The witness is
+# our own debug log, not pixels (MangoHud's are foreign pixels too).
 find_file(VOCEM_MANGOHUD_SHIM libMangoHud_shim.so
     PATHS /usr/lib/mangohud /usr/lib64/mangohud /usr/local/lib/mangohud
     NO_DEFAULT_PATH)

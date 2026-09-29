@@ -55,6 +55,8 @@ struct Hook {
     void* seen;
     void* next;
     int next_attempted;
+    void* chain;
+    int next_chain;
 };
 
 const char* base_name(const void* pointer) {
@@ -100,6 +102,10 @@ Hook* find_table(const char* path, char* base, size_t& count) {
                     printf("FAIL the shim's g_hooks is %zu bytes, not a whole number of the %zu-byte "
                            "entries this probe reads: the layout changed\n",
                            static_cast<size_t>(symbols[s].st_size), sizeof(Hook));
+                    // Counted, so main() reports the failure it printed: it
+                    // used to fall through to the "no symbol table" skip
+                    // (entry 123's shape).
+                    ++failures;
                     return nullptr;
                 }
                 count = symbols[s].st_size / sizeof(Hook);

@@ -14,31 +14,42 @@
 # Asked here, against MangoHud, which is the case that is live on this machine:
 # MANGOHUD=1 sits in environment.d and the `mangohud` wrapper appends
 # libMangoHud_shim.so *after* the session's preload. That shim exports the same
-# ten names this one does, and its basename fails is_system_gl() exactly as
-# ANGLE's libEGL.so does.
+# ten names this one does, and an unversioned dlsym of its own.
 #
-# The answer is that they exclude each other and whoever is first in LD_PRELOAD
-# wins. Measured with vocem_gl_draw_local -- the miniature game whose GL lives
+# Measured with vocem_gl_draw_local -- the miniature game whose GL lives
 # behind dlopen(RTLD_LOCAL), which is the door the shim exists for -- two passes
-# each:
+# each, MangoHud 0.8.4:
 #
 #   LD_PRELOAD                  foreign pixels     our own log lines
-#   nothing                     0                  --
-#   Vocem alone                 1058 / 1058        2
-#   MangoHud alone              5324 / 5232        --
-#   Vocem, then MangoHud        1058 / 1058        2
-#   MangoHud, then Vocem        5350 / 5298        0 / 0
+#   Vocem alone                 566 / 566          2
+#   MangoHud alone              5126 / 5084        --
+#   Vocem, then MangoHud        5785 / 5706        2
+#   MangoHud, then Vocem        5063 / 5176        0 / 0
 #
-# **The pixel count is the wrong witness for the second order and that is the
-# trap this file exists to avoid.** With MangoHud first the probe still finds
-# thousands of foreign pixels and still passes its own check -- they are
-# MangoHud's. A test built on that number would report our overlay drawing when
-# it had not drawn at all, which is entry 77's shape. The witness here is our
-# own log instead: VOCEM_DEBUG=1 and the two lines only this overlay writes.
+# **First in the preload, both draw.** Until the shim learned to chain, that
+# row was our count to the pixel (1058 / 1058 on the probe of the time): the
+# shim answered the game's dlsym from libc directly -- a versioned lookup,
+# which never finds MangoHud's unversioned dlsym -- and forwarded every frame
+# to the system's function, so MangoHud loaded, hooked, and never saw one.
+# Now the game's question goes to the next dlsym in the chain and a frame goes
+# to MangoHud when MangoHud is what answered (entry 115; the mechanism, each
+# door and each shape of interposer are tests/shim_chain.cpp, which needs no
+# display). The row is asserted as ours plus most of MangoHud's.
 #
-# Asserted in the direction it was measured, like shim_private_dispatch: a shim
-# that learns to chain properly FAILS the second case, and then the DESIGN entry
-# gets rewritten rather than the assertion quietly flipped.
+# **Second, we still never see a frame**, and nothing behind MangoHud can
+# change that: its dlsym hands the game its own hook, which calls the system's
+# function directly. vocem-run puts the shim first for that reason.
+#
+# **The pixel count is the wrong witness for that order and that is the trap
+# this file exists to avoid.** With MangoHud first the probe still finds
+# thousands of foreign pixels -- they are MangoHud's. A test built on that
+# number would report our overlay drawing when it had not drawn at all, which
+# is entry 77's shape. The witness is our own log instead: VOCEM_DEBUG=1 and
+# the two lines only this overlay writes.
+#
+# Asserted in the direction it was measured: a shim that learns to draw behind
+# MangoHud FAILS the fourth check, and then the DESIGN entry is rewritten
+# rather than the assertion quietly flipped -- as happened to the third.
 #
 # Skipped where MangoHud is not installed.
 
@@ -87,13 +98,18 @@ else()
     math(EXPR failures "${failures} + 1")
 endif()
 
-# First in the preload: we draw, and the count is ours alone -- MangoHud
-# contributed nothing to the frame.
-if(first_ours GREATER 0 AND first_pixels EQUAL alone_pixels)
-    message("ok   first in the preload we draw, and the frame carries our pixels and no others")
+# First in the preload: we draw, and so does MangoHud -- the frame carries our
+# pixels and most of what MangoHud draws alone (its own count moves by a few
+# percent between passes, so half of it is the bar, far above ours alone).
+set(both_floor "")
+if(alone_pixels MATCHES "^[0-9]+$" AND mango_pixels MATCHES "^[0-9]+$")
+    math(EXPR both_floor "${alone_pixels} + ${mango_pixels} / 2")
+endif()
+if(first_ours GREATER 0 AND NOT both_floor STREQUAL "" AND first_pixels GREATER both_floor)
+    message("ok   first in the preload we draw, and MangoHud behind us draws as well")
 else()
-    message("FAIL first in the preload: ${first_pixels} px against ${alone_pixels} alone, "
-            "${first_ours} log lines")
+    message("FAIL first in the preload: ${first_pixels} px against ${alone_pixels} ours alone "
+            "and ${mango_pixels} MangoHud's alone, ${first_ours} log lines -- the chain is cut")
     math(EXPR failures "${failures} + 1")
 endif()
 
@@ -110,4 +126,4 @@ endif()
 if(failures)
     message(FATAL_ERROR "the two interposers no longer behave as measured")
 endif()
-message("ok   whoever is first in LD_PRELOAD draws, and the other does not")
+message("ok   first in LD_PRELOAD both draw; behind MangoHud we do not")

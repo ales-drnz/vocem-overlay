@@ -76,8 +76,14 @@
 // would be MangoHud's own blacklist, which this project refuses on principle.
 // The shape a real answer would take is structural rather than nominal: a chain
 // interposer is always in LD_PRELOAD and ANGLE never is, and `dladdr` already
-// yields the object's path. Not attempted and not measured -- written down so
-// the next reader starts from it instead of from the symmetric change.
+// yields the object's path.
+//
+// **That answer was later taken** (is_chain() in the shim, tests/shim_chain.cpp):
+// a pointer from an object LD_PRELOAD names is remembered in a slot of its own
+// and preferred, so the shim forwards to another interposer behind it; any
+// other pointer that is not the system's is what it was here. This file is what
+// shows the second half: the private EGL below is opened, never preloaded, and
+// every case measures exactly what it measured before.
 //
 // Each case runs in its own forked child. The shim's slots are process-global
 // and fill once, so a case that ran after another would be measuring the first
