@@ -1,0 +1,89 @@
+{
+  "id" : "org.freedesktop.Platform.VulkanLayer.VocemOverlay",
+  "branch" : "25.08",
+  "runtime" : "org.freedesktop.Platform",
+  "runtime-version" : "25.08",
+  "runtime-commit" : "96b4841ce2b8c1acc3ede1d19a5cc802d633d21d56e95682bd7fd1b32fb0b506",
+  "sdk" : "org.freedesktop.Sdk",
+  "sdk-commit" : "31507d1bfc6a5bd5835aeb3cb07e7b7aeea69332502ecce1c671cea96ed3ebc2",
+  "build-options" : {
+    "prefix" : "/usr/lib/extensions/vulkan/VocemOverlay",
+    "strip" : true
+  },
+  "modules" : [
+    {
+      "name" : "vocem-overlay",
+      "buildsystem" : "cmake-ninja",
+      "config-opts" : [
+        "-DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu",
+        "-DVOCEM_BUILD_HOST_TOOLS=OFF",
+        "-DVOCEM_ENABLE_BY_DEFAULT=ON",
+        "-DVOCEM_LAYER_FLATPAK_EXTENSION=ON",
+        "-DVOCEM_LIBDIR_OVERRIDDEN=ON"
+      ],
+      "sources" : [
+        {
+          "path" : "../..",
+          "type" : "dir"
+        }
+      ],
+      "build-options" : {
+        "libdir" : "/usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu"
+      },
+      "post-install" : [
+        "install -Dm644 common/emoji/emoji_bank.rgba ${FLATPAK_DEST}/share/vocem/emoji_bank.rgba",
+        "install -Dm644 common/emoji/OFL-NotoColorEmoji.txt ${FLATPAK_DEST}/share/vocem/OFL-NotoColorEmoji.txt",
+        "install -Dm644 LICENSE ${FLATPAK_DEST}/share/licenses/vocem-overlay/LICENSE"
+      ]
+    },
+    {
+      "name" : "vocem-overlay-32bit",
+      "buildsystem" : "cmake-ninja",
+      "config-opts" : [
+        "-DCMAKE_INSTALL_LIBDIR=lib/i386-linux-gnu",
+        "-DVOCEM_BUILD_HOST_TOOLS=OFF",
+        "-DVOCEM_ENABLE_BY_DEFAULT=ON",
+        "-DVOCEM_LAYER_FLATPAK_EXTENSION=ON",
+        "-DVOCEM_LIBDIR_OVERRIDDEN=ON"
+      ],
+      "sources" : [
+        {
+          "path" : "../..",
+          "type" : "dir"
+        }
+      ],
+      "build-options" : {
+        "libdir" : "/usr/lib/extensions/vulkan/VocemOverlay/lib/i386-linux-gnu",
+        "env" : {
+          "CC" : "i686-unknown-linux-gnu-gcc",
+          "CXX" : "i686-unknown-linux-gnu-g++"
+        },
+        "append-path" : "/usr/lib/sdk/toolchain-i386/bin"
+      }
+    }
+  ],
+  "cleanup" : [
+    "/include",
+    "/lib/*/cmake",
+    "/lib/*/pkgconfig"
+  ],
+  "build-extension" : true,
+  "sdk-extensions" : [
+    "org.freedesktop.Sdk.Compat.i386",
+    "org.freedesktop.Sdk.Extension.toolchain-i386"
+  ],
+  "source-date-epoch" : 1785780935,
+  "x-arch-build-options" : {
+    "x86_64" : {
+      "libdir" : "/usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu"
+    },
+    "i386" : {
+      "libdir" : "/usr/lib/extensions/vulkan/VocemOverlay/lib/i386-linux-gnu",
+      "append-path" : "/usr/lib/sdk/toolchain-i386/bin",
+      "env" : {
+        "CC" : "i686-unknown-linux-gnu-gcc",
+        "CXX" : "i686-unknown-linux-gnu-g++"
+      }
+    }
+  }
+}

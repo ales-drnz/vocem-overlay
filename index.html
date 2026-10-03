@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vocem Overlay — Vulkan layer for Flatpak games</title>
+<style>
+  body { max-width: 40rem; margin: 4rem auto; padding: 0 1.5rem;
+         font: 16px/1.65 system-ui, sans-serif; color: #17181c; }
+  h1 { font-size: 1.5rem; margin-bottom: .2em; }
+  p.lead { color: #5b5f68; margin-top: 0; }
+  h2 { font-size: 1.05rem; margin-top: 2.2rem; }
+  code, pre { background: #f3f4f6; border-radius: 4px; }
+  code { padding: .1em .35em; }
+  pre { padding: .8em 1em; overflow-x: auto; font-size: .9em; }
+  a { color: #23a55a; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #17181c; color: #e6e7ea; }
+    p.lead { color: #9aa0aa; }
+    code, pre { background: #23252b; }
+  }
+</style>
+<h1>Vocem Overlay — the Vulkan layer for Flatpak games</h1>
+<p class="lead">A Flatpak repository holding one extension. Signed.</p>
+
+<p><a href="https://github.com/ales-drnz/vocem-overlay">Vocem Overlay</a> draws
+your Discord voice channel inside the game. It is installed on the host; this
+extension is the part that reaches games installed as Flatpaks, which the host
+installation cannot.</p>
+
+<h2>Install</h2>
+<pre><code>flatpak install --user https://ales-drnz.github.io/vocem-overlay/vocem-overlay-layer.flatpakref</code></pre>
+<p>That is the 25.08 branch, for games on the freedesktop 25.08, GNOME 49 and
+50, and KDE 6.10 and 6.11 runtimes. Games on freedesktop 26.08 or GNOME 51 --
+Steam from Flathub among them -- mount the 26.08 branch instead:</p>
+<pre><code>flatpak install --user vocem-overlay org.freedesktop.Platform.VulkanLayer.VocemOverlay//26.08</code></pre>
+<p><code>flatpak update</code> keeps both current afterwards. It needs
+<code>vocemd</code> running on the host, which the main installation provides;
+<code>vocem-why --system</code> there lists the runtimes installed and whether
+each one's branch is.</p>
+
+<h2>OpenGL games</h2>
+<p>Flatpak has no mechanism for a preload, so an OpenGL game needs one more
+command:</p>
+<pre><code>flatpak override --user --env=LD_PRELOAD=libvocem_gl_shim.so --env=LD_LIBRARY_PATH=/usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu:/usr/lib/extensions/vulkan/VocemOverlay/lib/i386-linux-gnu</code></pre>
+<p>Vulkan games need nothing.</p>

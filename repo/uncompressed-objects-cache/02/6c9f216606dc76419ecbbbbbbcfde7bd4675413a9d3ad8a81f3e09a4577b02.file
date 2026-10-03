@@ -1,0 +1,8 @@
+[Runtime]
+name=org.freedesktop.Platform.VulkanLayer.VocemOverlay
+runtime=org.freedesktop.Platform/x86_64/25.08
+sdk=org.freedesktop.Sdk/x86_64/25.08
+
+[ExtensionOf]
+ref=runtime/org.freedesktop.Platform/x86_64/25.08
+runtime=org.freedesktop.Platform/x86_64/25.08

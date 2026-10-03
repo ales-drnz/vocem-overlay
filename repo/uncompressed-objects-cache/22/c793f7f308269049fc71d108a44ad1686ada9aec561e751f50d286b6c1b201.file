@@ -1,0 +1,14 @@
+{
+    "file_format_version": "1.2.1",
+    "layer": {
+        "name": "VK_LAYER_VOCEM_overlay_x86_64",
+        "type": "GLOBAL",
+        "library_path": "/usr/lib/extensions/vulkan/VocemOverlay/lib/x86_64-linux-gnu/libvocem_vk.so",
+        "api_version": "1.4.350",
+        "implementation_version": "1",
+        "description": "Vocem Overlay - Discord voice overlay drawn inside the game",
+        "disable_environment": {
+            "VOCEM_DISABLE": "1"
+        }
+    }
+}
