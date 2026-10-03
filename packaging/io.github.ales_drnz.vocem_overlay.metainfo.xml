@@ -91,6 +91,24 @@
        validates cleanly: an out-of-date release list is not something AppStream
        can catch, and nothing else looked. tests/version_agrees.cmake does now. -->
   <releases>
+    <release version="0.1.13" date="2026-10-03">
+      <description>
+        <p>Added</p>
+        <ul>
+          <li>`vocem-why --system` reports what a system update took away: files that no longer link, a missing preload, a driver awaiting a reboot, a Flatpak runtime without its extension.</li>
+          <li>The Flatpak extension is published for the 26.08 runtimes, Flathub's Steam among them, as well as for 25.08.</li>
+        </ul>
+        <p>Changed</p>
+        <ul>
+          <li>Under `VOCEM_DEBUG=1` the OpenGL shim says when it leaves a game's present to a library it does not take for the system's.</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>The settings window no longer binds Qt's private API, so a new Qt release does not stop it from starting.</li>
+          <li>A game that opens the system's OpenGL library through its unversioned `libGL.so` link gets the overlay.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.12" date="2026-09-29">
       <description>
         <p>Changed</p>

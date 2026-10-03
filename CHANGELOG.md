@@ -1,3 +1,19 @@
+## [0.1.13] - 2026-10-03
+
+### Added
+
+- `vocem-why --system` reports what a system update took away: files that no longer link, a missing preload, a driver awaiting a reboot, a Flatpak runtime without its extension.
+- The Flatpak extension is published for the 26.08 runtimes, Flathub's Steam among them, as well as for 25.08.
+
+### Changed
+
+- Under `VOCEM_DEBUG=1` the OpenGL shim says when it leaves a game's present to a library it does not take for the system's.
+
+### Fixed
+
+- The settings window no longer binds Qt's private API, so a new Qt release does not stop it from starting.
+- A game that opens the system's OpenGL library through its unversioned `libGL.so` link gets the overlay.
+
 ## [0.1.12] - 2026-09-29
 
 ### Changed
