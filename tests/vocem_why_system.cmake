@@ -2,7 +2,8 @@
 # All rights reserved.
 # Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 #
-# `vocem-why --system` names what an update of the system took away.
+# `vocem-why --system` names what an update of the system took away
+# (entry 307).
 #
 # Three of the shapes it looks for, each one silent from inside a game, staged
 # here with nothing of the machine's but ld.so:

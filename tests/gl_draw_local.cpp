@@ -243,7 +243,8 @@ int main() {
     // game may ask for. The shim judged the file's name, so the library was
     // taken for a private GL and this scene drew nothing and said nothing,
     // VOCEM_DEBUG included (0.1.12-2: 0 pixels, 0 lines, both widths). It
-    // judges the SONAME too now, for an object in libc's own directory.
+    // judges the SONAME too now, for an object in libc's own directory
+    // (entry 304).
     void* gl = nullptr;
     if (soname) {
         const char* found = system_libgl_for_this_width();

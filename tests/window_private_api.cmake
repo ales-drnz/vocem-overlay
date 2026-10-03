@@ -2,7 +2,7 @@
 # All rights reserved.
 # Use of this source code is governed by BSD 3-Clause license that can be found in the LICENSE file.
 #
-# The window binds to no private Qt symbol.
+# The window binds to no private Qt symbol (entry 305).
 #
 # qt_add_qml_module() compiles QML to C++ by default, and that C++ calls
 # QQmlPrivate::AOTCompiledContext -- symbols versioned Qt_6_PRIVATE_API, which

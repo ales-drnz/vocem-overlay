@@ -339,7 +339,8 @@ const char* base_name(const char* path) {
 //     `libEGL.so` whose SONAME is libEGL.so.1 (the Android emulator's
 //     llvmpipe build, measured by the refutation of this change), and taking
 //     it for the system's hands its questions to the system's library --
-//     entry 36's cross-wiring (tests/shim_two_egls.cpp, the versioned stub).
+//     entry 36's cross-wiring (tests/shim_two_egls.cpp, the versioned stub;
+//     entry 304).
 
 // The object's SONAME when it has one, else its file's basename; `file` gets
 // the path it was opened by.

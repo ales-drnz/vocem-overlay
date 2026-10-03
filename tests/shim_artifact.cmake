@@ -93,7 +93,8 @@ foreach(shim IN ITEMS "${SHIM}" "${SHIM_TWIN32}" "${SHIM_BUILD32}")
     # compiler or a makepkg flag raises it silently: the heavy libraries went
     # to GLIBC_2.43 that way (acosf, atan2f, sqrtf; readelf, 0.1.12-2), and
     # -static-libstdc++ brought _dl_find_object@GLIBC_2.35 with it (entry 234).
-    # Raising it is a decision; change this number with the reason beside it.
+    # Raising it is a decision; change this number with the reason beside it
+    # (entry 307).
     execute_process(COMMAND nm -D --with-symbol-versions --undefined-only "${shim}"
                     OUTPUT_VARIABLE versioned)
     string(REGEX MATCHALL "@GLIBC_[0-9]+\\.[0-9]+(\\.[0-9]+)?" glibc_versions "${versioned}")

@@ -117,7 +117,7 @@ list_names() {
 # loader skips, an NVIDIA driver updated without a reboot (every GL and Vulkan
 # program fails, this overlay included), and a Flatpak runtime whose Vulkan
 # layer extension point has no branch of the extension installed -- that
-# runtime's games get no layer, and nothing is there to say so.
+# runtime's games get no layer, and nothing is there to say so (entry 307).
 if [ "${1:-}" = "--system" ]; then
     problems=0
     problem() {

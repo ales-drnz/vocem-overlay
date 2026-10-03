@@ -15,9 +15,9 @@
 # 26.08 while this project published 25.08 alone. So every branch in
 # `branches` is built and published, from ONE manifest -- the source file is
 # the first branch, and the others differ from it in `runtime-version` and
-# `branch` and nothing else (tests/flatpak_branches.cmake). flatpak-builder has
-# no option for either, which is why a file is written rather than a flag
-# passed. The file sits beside the source because the manifest's own source
+# `branch` and nothing else (tests/flatpak_branches.cmake, entry 306).
+# flatpak-builder has no option for either, which is why a file is written
+# rather than a flag passed. The file sits beside the source because the manifest's own source
 # path (`../..`) is relative to where it lives; .gitignore keeps it out.
 #
 # Prints the path of the file it wrote.

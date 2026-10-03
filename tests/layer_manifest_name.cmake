@@ -121,7 +121,7 @@ endif()
 # disable_environment ... skipping this layer", measured 2026-09-29 with a copy
 # of the packaged manifest that lacked it; entry 143 met it in a probe's copy).
 # The layer would then be absent from every Vulkan game, and nothing of ours
-# would run to say so. Checked on the generated files, both widths.
+# would run to say so (entry 307). Checked on the generated files, both widths.
 foreach(pair IN ITEMS "manifest|${MANIFEST}" "manifest32|${MANIFEST32}")
     string(REPLACE "|" ";" pair "${pair}")
     list(GET pair 0 variable)

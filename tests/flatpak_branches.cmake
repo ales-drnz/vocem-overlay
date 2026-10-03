@@ -4,7 +4,7 @@
 #
 # Every Vulkan layer extension point an installed runtime declares has a branch
 # of the extension, and every branch is the one manifest with its version
-# changed and nothing else.
+# changed and nothing else (entry 306).
 #
 # A runtime mounts org.freedesktop.Platform.VulkanLayer.* at the version of
 # the extension point it declares. freedesktop 26.08 declares 26.08, and so

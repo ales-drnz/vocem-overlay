@@ -160,7 +160,8 @@ int main() {
     //    whose SONAME is libEGL.so.1. Judged by SONAME alone it passed for the
     //    system's, and its dispatcher was handed our hook, which forwards to
     //    the system's libEGL -- entry 36's cross-wiring, measured by the
-    //    refutation of the SONAME change. Its own dispatcher must stay its own.
+    //    refutation of the SONAME change (entry 304). Its own dispatcher must
+    //    stay its own.
     if (const char* versioned = getenv("VOCEM_STUB_VERSIONED_EGL")) {
         void* h3 = dlopen(versioned, RTLD_LAZY | RTLD_LOCAL);
         check(h3 != nullptr && h3 != h2, "the private libEGL.so (SONAME libEGL.so.1) opens as its own object");

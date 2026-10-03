@@ -36,7 +36,7 @@ set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 # its own packages at every Qt minor, and nobody rebuilds this one, so the next
 # Qt could leave the window unable to start. Bytecode is data -- a Qt that does
 # not recognise it loads the embedded .qml sources instead -- and costs no
-# measurable startup here (tests/window_private_api.cmake).
+# measurable startup here (tests/window_private_api.cmake, entry 305).
 set_target_properties(vocem-config PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
 
 qt_add_qml_module(vocem-config
